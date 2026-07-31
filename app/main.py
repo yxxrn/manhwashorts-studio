@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import BASE_DIR, settings
 from app.db import init_db
-from app.routers import auth, pipeline, projects, publish
+from app.routers import auth, credentials, pipeline, projects, publish
 from app.schemas import HealthOut
 from app.services import render as render_svc
 from app.services import tts as tts_svc
@@ -63,6 +63,7 @@ app = FastAPI(
 )
 
 app.include_router(auth.router)
+app.include_router(credentials.router)
 app.include_router(projects.router)
 app.include_router(pipeline.router)
 app.include_router(publish.router)

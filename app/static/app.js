@@ -100,6 +100,7 @@ async function afterLogin(user) {
   $('auth-section').hidden = true;
   $('studio').hidden = false;
   await loadVoices();
+  await loadByok();
   await loadProjects();
 }
 
@@ -675,6 +676,327 @@ $('publish-form').addEventListener('submit', async (event) => {
   } catch (err) {
     $('publish-status').textContent = 'Gagal: ' + err.message;
     toast(err.message, 'error');
+  }
+});
+
+/* ---------- BYOK: bring your own key (v1.1) ----------
+ *
+ * The API key lives in a password field, is sent once, and is never echoed back
+ * by the server. After a successful save the field is cleared so the value does
+ * not sit in the DOM (or in a browser's autofill) longer than necessary.
+ */
+
+const byok = {
+  catalog: null,     // { llm: [...], tts: [...] }
+  models: [],        // models returned by the last successful test
+  testedFor: null,   // "kind|provider|base" the model list belongs to
+};
+
+function byokSpec() {
+  if (!byok.catalog) return null;
+  const kind = $('byok-kind').value;
+  const provider = $('byok-provider').value;
+  return (byok.catalog[kind] || []).find((p) => p.key === provider) || null;
+}
+
+/** Reset the model picker whenever the key or endpoint changes. */
+function byokInvalidateModels(message) {
+  byok.models = [];
+  byok.testedFor = null;
+  const select = $('byok-model');
+  clear(select);
+  select.appendChild(el('option', null, message || '— tes kunci dulu untuk memuat model —'));
+  select.value = '';
+  select.disabled = true;
+  $('byok-save').disabled = true;
+}
+
+function byokRenderProviders() {
+  const kind = $('byok-kind').value;
+  const select = $('byok-provider');
+  clear(select);
+  for (const spec of (byok.catalog[kind] || [])) {
+    const option = el('option', null, spec.label);
+    option.value = spec.key;
+    select.appendChild(option);
+  }
+  byokRenderProviderNote();
+}
+
+function byokRenderProviderNote() {
+  const spec = byokSpec();
+  const note = $('byok-provider-note');
+  clear(note);
+  if (!spec) return;
+
+  const bits = [];
+  if (spec.custom_endpoint) {
+    bits.push('Penyedia ini wajib pakai base URL sendiri.');
+  } else if (spec.default_base_url) {
+    bits.push(`Default: ${spec.default_base_url}`);
+  }
+  if (spec.notes) bits.push(spec.notes);
+  note.appendChild(document.createTextNode(bits.join(' · ')));
+
+  if (spec.console_url) {
+    note.appendChild(document.createTextNode(' '));
+    const link = el('a', null, 'Ambil API key');
+    link.href = spec.console_url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    note.appendChild(link);
+  }
+  $('byok-base').placeholder = spec.custom_endpoint
+    ? 'wajib, contoh http://127.0.0.1:11434/v1'
+    : (spec.default_base_url || 'otomatis dari penyedia');
+}
+
+async function byokLoadCatalog() {
+  byok.catalog = await api('/api/credentials/providers');
+  byokRenderProviders();
+}
+
+/** Show which provider each stage will really use. */
+async function byokLoadActive() {
+  const active = await api('/api/credentials/active');
+  const box = $('byok-active');
+  clear(box);
+
+  const rows = [
+    ['Analisa & naskah', active.llm],
+    ['Narasi suara', active.tts],
+  ];
+  for (const [label, res] of rows) {
+    const line = el('div', 'item-meta');
+    const badge = el('span', 'badge ' + (res.source === 'byok' ? 'ok' : 'muted'),
+      res.source === 'byok' ? 'kunci kamu' : 'offline');
+    line.appendChild(badge);
+    line.appendChild(document.createTextNode(
+      ` ${label}: ${res.reason}${res.model ? ' · model ' + res.model : ''}`));
+    box.appendChild(line);
+  }
+}
+
+async function byokLoadList() {
+  const rows = await api('/api/credentials');
+  const list = $('byok-list');
+  clear(list);
+
+  if (!rows.length) {
+    list.appendChild(el('p', 'hint', 'Belum ada kunci tersimpan.'));
+    return;
+  }
+
+  for (const row of rows) {
+    const item = el('div', 'item');
+    const main = el('div', 'item-main');
+
+    const kindLabel = row.kind === 'llm' ? 'LLM' : 'TTS';
+    main.appendChild(el('div', 'item-title', `${row.label} · ${kindLabel}`));
+
+    const meta = el('div', 'item-meta');
+    const ok = row.status === 'verified';
+    meta.appendChild(el('span', 'badge ' + (ok ? 'ok' : 'bad'), row.status));
+    meta.appendChild(document.createTextNode(
+      ` kunci ${row.key_hint} · model ${row.model || '(belum dipilih)'}`
+      + (row.is_default ? ' · aktif' : '')));
+    main.appendChild(meta);
+
+    if (row.status_message) {
+      main.appendChild(el('div', 'item-meta', row.status_message));
+    }
+    item.appendChild(main);
+
+    // Switch model without re-entering the key.
+    if ((row.available_models || []).length) {
+      const picker = el('select');
+      picker.setAttribute('aria-label', `Model untuk ${row.label}`);
+      for (const model of row.available_models) {
+        const option = el('option', null, model.label || model.id);
+        option.value = model.id;
+        if (model.id === row.model) option.selected = true;
+        picker.appendChild(option);
+      }
+      picker.addEventListener('change', async () => {
+        try {
+          await api(`/api/credentials/${row.id}/model`, {
+            method: 'POST', body: { model: picker.value },
+          });
+          toast('Model diperbarui.', 'ok');
+          await byokRefreshPanels();
+        } catch (err) { toast(err.message, 'error'); }
+      });
+      item.appendChild(picker);
+    }
+
+    const actions = el('div', 'row-actions');
+
+    const refresh = el('button', 'btn secondary', 'Muat ulang model');
+    refresh.type = 'button';
+    refresh.addEventListener('click', async () => {
+      refresh.disabled = true;
+      try {
+        const updated = await api(`/api/credentials/${row.id}/refresh`, { method: 'POST' });
+        toast(updated.status === 'verified'
+          ? 'Kunci masih valid, daftar model diperbarui.'
+          : `Kunci bermasalah: ${updated.status_message}`,
+          updated.status === 'verified' ? 'ok' : 'error');
+        await byokRefreshPanels();
+      } catch (err) { toast(err.message, 'error'); }
+      finally { refresh.disabled = false; }
+    });
+    actions.appendChild(refresh);
+
+    if (!row.is_default && row.status === 'verified') {
+      const makeDefault = el('button', 'btn secondary', 'Jadikan aktif');
+      makeDefault.type = 'button';
+      makeDefault.addEventListener('click', async () => {
+        try {
+          await api(`/api/credentials/${row.id}/default`, { method: 'POST' });
+          toast('Kunci ini sekarang aktif.', 'ok');
+          await byokRefreshPanels();
+        } catch (err) { toast(err.message, 'error'); }
+      });
+      actions.appendChild(makeDefault);
+    }
+
+    const remove = el('button', 'btn secondary', 'Hapus');
+    remove.type = 'button';
+    remove.addEventListener('click', async () => {
+      if (!window.confirm(
+        `Hapus kunci ${row.label} (${row.key_hint})? Kunci terenkripsi akan `
+        + 'dibuang dan kamu harus memasukkannya lagi kalau ingin dipakai.')) return;
+      try {
+        await api(`/api/credentials/${row.id}`, { method: 'DELETE' });
+        toast('Kunci dihapus.', 'ok');
+        await byokRefreshPanels();
+      } catch (err) { toast(err.message, 'error'); }
+    });
+    actions.appendChild(remove);
+
+    item.appendChild(actions);
+    list.appendChild(item);
+  }
+}
+
+async function byokRefreshPanels() {
+  await byokLoadActive();
+  await byokLoadList();
+}
+
+async function loadByok() {
+  try {
+    if (!byok.catalog) await byokLoadCatalog();
+    await byokRefreshPanels();
+  } catch (err) {
+    $('byok-active').textContent = 'Tidak bisa memuat status penyedia: ' + err.message;
+  }
+}
+
+$('byok-toggle').addEventListener('click', () => {
+  const body = $('byok-body');
+  body.hidden = !body.hidden;
+  $('byok-toggle').setAttribute('aria-expanded', String(!body.hidden));
+  $('byok-toggle').textContent = body.hidden ? 'Atur kunci' : 'Tutup';
+});
+
+$('byok-kind').addEventListener('change', () => {
+  byokRenderProviders();
+  byokInvalidateModels();
+});
+
+$('byok-provider').addEventListener('change', () => {
+  byokRenderProviderNote();
+  byokInvalidateModels();
+});
+
+// Any change to the key or endpoint means the cached model list is stale.
+$('byok-key').addEventListener('input', () => byokInvalidateModels());
+$('byok-base').addEventListener('input', () => byokInvalidateModels());
+
+$('byok-test').addEventListener('click', async () => {
+  const key = $('byok-key').value.trim();
+  const spec = byokSpec();
+  const result = $('byok-test-result');
+  clear(result);
+
+  if (!key) { toast('Masukkan API key dulu.', 'error'); return; }
+  if (spec && spec.custom_endpoint && !$('byok-base').value.trim()) {
+    toast('Penyedia ini butuh base URL.', 'error');
+    return;
+  }
+
+  const button = $('byok-test');
+  button.disabled = true;
+  button.textContent = 'Menghubungi penyedia…';
+  try {
+    const body = {
+      kind: $('byok-kind').value,
+      provider: $('byok-provider').value,
+      api_key: key,
+      base_url: $('byok-base').value.trim() || null,
+    };
+    const data = await api('/api/credentials/test', { method: 'POST', body });
+
+    if (!data.ok) {
+      byokInvalidateModels('— kunci ditolak —');
+      result.textContent = 'Gagal: ' + data.message;
+      toast('Kunci ditolak penyedia.', 'error');
+      return;
+    }
+
+    byok.models = data.models || [];
+    byok.testedFor = `${body.kind}|${body.provider}|${body.base_url || ''}`;
+
+    const select = $('byok-model');
+    clear(select);
+    for (const model of byok.models) {
+      const option = el('option', null, model.label || model.id);
+      option.value = model.id;
+      select.appendChild(option);
+    }
+    select.disabled = false;
+    $('byok-save').disabled = false;
+    result.textContent = `Kunci valid. ${byok.models.length} model tersedia — pilih satu lalu simpan.`;
+    toast('Kunci valid, daftar model dimuat.', 'ok');
+  } catch (err) {
+    byokInvalidateModels();
+    result.textContent = 'Gagal: ' + err.message;
+    toast(err.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Tes & ambil daftar model';
+  }
+});
+
+$('byok-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const key = $('byok-key').value.trim();
+  if (!key) { toast('Masukkan API key dulu.', 'error'); return; }
+  if (!$('byok-model').value) { toast('Pilih model dulu.', 'error'); return; }
+
+  const button = $('byok-save');
+  button.disabled = true;
+  try {
+    const body = {
+      kind: $('byok-kind').value,
+      provider: $('byok-provider').value,
+      api_key: key,
+      base_url: $('byok-base').value.trim() || null,
+      model: $('byok-model').value,
+      label: (byokSpec() && byokSpec().label) || '',
+    };
+    await api('/api/credentials', { method: 'POST', body });
+
+    // Clear the secret from the form as soon as it is stored.
+    $('byok-key').value = '';
+    byokInvalidateModels();
+    $('byok-test-result').textContent = '';
+    toast('Kunci disimpan terenkripsi dan langsung dipakai.', 'ok');
+    await byokRefreshPanels();
+  } catch (err) {
+    toast(err.message, 'error');
+    button.disabled = false;
   }
 });
 

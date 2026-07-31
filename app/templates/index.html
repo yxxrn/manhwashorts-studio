@@ -44,6 +44,69 @@
   <!-- ============ STUDIO ============ -->
   <div id="studio" hidden>
 
+    <!-- BYOK: bring your own key (v1.1) -->
+    <section class="card" aria-labelledby="byok-heading">
+      <div class="row-actions">
+        <h2 id="byok-heading" class="grow">Kunci AI kamu (BYOK)</h2>
+        <button type="button" id="byok-toggle" class="btn secondary"
+                aria-expanded="false" aria-controls="byok-body">Atur kunci</button>
+      </div>
+
+      <div id="byok-active" class="summary" aria-live="polite"></div>
+
+      <div id="byok-body" hidden>
+        <p class="hint">
+          Pakai API key sendiri untuk analisa, highlight, penulisan naskah, dan
+          narasi. Key disimpan terenkripsi di mesin ini, tidak pernah dikirim
+          ke mana pun selain penyedia yang kamu pilih, dan tidak pernah
+          ditampilkan lagi setelah disimpan. Tanpa key, aplikasi tetap jalan
+          memakai mesin offline (rules + espeak-ng).
+        </p>
+
+        <form id="byok-form" class="grid2">
+          <label for="byok-kind">Untuk kebutuhan
+            <select id="byok-kind">
+              <option value="llm">Analisa, highlight &amp; naskah (LLM)</option>
+              <option value="tts">Narasi suara (TTS)</option>
+            </select>
+          </label>
+          <label for="byok-provider">Penyedia
+            <select id="byok-provider"></select>
+          </label>
+          <label for="byok-key" class="span2">API key
+            <input type="password" id="byok-key" autocomplete="off"
+                   spellcheck="false" placeholder="sk-..." maxlength="500">
+          </label>
+          <label for="byok-base" class="span2">Base URL
+            <input type="url" id="byok-base" autocomplete="off"
+                   spellcheck="false" placeholder="otomatis dari penyedia">
+          </label>
+          <p id="byok-provider-note" class="hint span2"></p>
+
+          <div class="row-actions span2">
+            <button type="button" id="byok-test" class="btn secondary">
+              Tes &amp; ambil daftar model
+            </button>
+          </div>
+
+          <label for="byok-model" class="span2">Model
+            <select id="byok-model" disabled>
+              <option value="">— tes kunci dulu untuk memuat model —</option>
+            </select>
+          </label>
+
+          <div class="row-actions span2">
+            <button type="submit" id="byok-save" class="btn" disabled>Simpan kunci</button>
+          </div>
+        </form>
+
+        <div id="byok-test-result" class="summary" aria-live="polite"></div>
+
+        <h3>Kunci tersimpan</h3>
+        <div id="byok-list" class="list" role="region" aria-live="polite"></div>
+      </div>
+    </section>
+
     <section class="card" aria-labelledby="projects-heading">
       <h2 id="projects-heading">Proyek</h2>
       <div class="row-actions">

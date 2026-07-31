@@ -98,6 +98,31 @@ class CheckSeverity(StrEnum):
     INFO = "info"
 
 
+class CredentialKind(StrEnum):
+    """What a bring-your-own-key credential is used for (v1.1 BYOK).
+
+    Split by capability rather than by vendor, because one vendor can serve
+    several roles (OpenAI does both chat and speech) and one role can be served
+    by many vendors.
+    """
+
+    #: Chapter analysis, highlight picking, script rewriting, agentic steps.
+    LLM = "llm"
+    #: Text-to-speech narration.
+    TTS = "tts"
+
+
+class CredentialStatus(StrEnum):
+    """Result of the last verification attempt against the provider."""
+
+    #: Saved but never checked against the provider.
+    UNVERIFIED = "unverified"
+    #: Provider accepted the key and returned a model list.
+    VERIFIED = "verified"
+    #: Provider rejected the key, or the endpoint was unreachable.
+    INVALID = "invalid"
+
+
 class ScriptSection(StrEnum):
     """Default Shorts beat structure, per PRD FR-04."""
 

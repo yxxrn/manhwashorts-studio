@@ -26,6 +26,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.constants import (
     AssetType,
     ContentType,
+    CredentialStatus,
     JobStatus,
     LicenseType,
     NarrationStyle,
@@ -80,6 +81,9 @@ class Workspace(Base, TimestampMixin):
         back_populates="workspace", cascade="all, delete-orphan"
     )
     channels: Mapped[list[YouTubeChannel]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    credentials: Mapped[list[ProviderCredential]] = relationship(
         back_populates="workspace", cascade="all, delete-orphan"
     )
 
@@ -425,6 +429,54 @@ class VideoStat(Base, TimestampMixin):
     subscribers_gained: Mapped[int] = mapped_column(Integer, default=0)
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     source: Mapped[str] = mapped_column(String(40), default="youtube_api")
+
+
+class ProviderCredential(Base, TimestampMixin):
+    """A user-supplied API key for an AI provider (v1.1 BYOK).
+
+    The key itself is never stored in plaintext: only a Fernet-encrypted blob in
+    ``encrypted_secret``, plus a short non-reversible ``key_hint`` (last four
+    characters) so the UI can tell two keys apart without decrypting either.
+
+    ``kind`` is the capability (llm / tts) and ``provider`` is the vendor
+    adapter. One credential per (workspace, kind, provider) pair; the newest
+    ``is_default`` row for a kind is what the pipeline uses.
+    """
+
+    __tablename__ = "provider_credentials"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "kind", "provider", name="uq_credential_scope"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), index=True)
+    provider: Mapped[str] = mapped_column(String(40))
+    label: Mapped[str] = mapped_column(String(120), default="")
+
+    #: Fernet-encrypted JSON: {"api_key": "..."}. Never logged, never returned.
+    encrypted_secret: Mapped[str] = mapped_column(Text, default="")
+    #: Last 4 chars of the key, for display only (e.g. "...4f2a").
+    key_hint: Mapped[str] = mapped_column(String(12), default="")
+    #: Override for self-hosted or proxy endpoints; None means vendor default.
+    base_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    #: Model chosen by the user from the fetched list.
+    model: Mapped[str] = mapped_column(String(120), default="")
+    #: Models returned by the provider at last verification, cached for the UI.
+    available_models: Mapped[list] = mapped_column(JSON, default=list)
+
+    status: Mapped[str] = mapped_column(String(20), default=CredentialStatus.UNVERIFIED)
+    status_message: Mapped[str] = mapped_column(Text, default="")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    is_default: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    workspace: Mapped[Workspace] = relationship(back_populates="credentials")
 
 
 class AuditLog(Base):

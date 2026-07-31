@@ -33,6 +33,7 @@ from app.models import (
 )
 from app.services import analysis as analysis_svc
 from app.services import quality as quality_svc
+from app.services import resolver as resolver_svc
 from app.services import script as script_svc
 from app.services import storage
 from app.services import timeline as timeline_svc
@@ -108,7 +109,11 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
             "No text material to analyse. Paste a recap or upload a TXT/MD/PDF/DOCX first."
         )
 
-    result = analysis_svc.get_analyzer().analyze(sources)
+    # BYOK: a verified workspace key wins over env config, which wins over rules.
+    analyzer, decision = resolver_svc.resolve_analyzer(db, project.workspace_id)
+    result = analyzer.analyze(sources)
+    if decision.reason:
+        result.low_confidence_notes.append(f"Analysis: {decision.reason}.")
 
     # One analysis row per project: replace rather than accumulate.
     for old in db.scalars(select(StoryAnalysis).where(StoryAnalysis.project_id == project_id)):
@@ -134,7 +139,17 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
     )
     db.add(row)
     project.status = ProjectStatus.GENERATING
-    audit(db, "analysis.run", "project", project_id, actor_id, generator=result.generator)
+    audit(
+        db,
+        "analysis.run",
+        "project",
+        project_id,
+        actor_id,
+        generator=result.generator,
+        provider_source=decision.source,
+        provider=decision.provider,
+        model=decision.model,
+    )
     db.flush()
     return row
 
@@ -389,7 +404,10 @@ def generate_voiceover(
     if script is None:
         raise PipelineError("generate a script before the voice-over")
 
-    provider = tts_svc.get_provider(provider_name)
+    # BYOK: a verified speech key wins unless the caller forced a local provider.
+    provider, tts_decision = resolver_svc.resolve_tts(
+        db, project.workspace_id, override=provider_name
+    )
     work = storage.workspace_dir(project_id, "audio")
 
     # Remove old segments and their files so storage does not grow unbounded.
@@ -445,6 +463,7 @@ def generate_voiceover(
     audit(
         db, "voice.generate", "project", project_id, actor_id,
         segments=len(created), provider=provider.name,
+        provider_source=tts_decision.source, model=tts_decision.model,
     )
     db.flush()
     return created

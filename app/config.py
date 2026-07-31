@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.0.0"
+    version: str = "1.1.0"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
 

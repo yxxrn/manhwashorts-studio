@@ -1,6 +1,6 @@
 [project]
 name = "manhwashorts-studio"
-version = "1.0.0"
+version = "1.1.0"
 description = "Auto YouTube Shorts generator for manhwa recaps - rights-aware, human-in-the-loop"
 requires-python = ">=3.11"
 readme = "README.md"

@@ -151,12 +151,15 @@ app/
   deps.py           session auth, ownership guards
   security.py       scrypt hashing, Fernet encryption
   main.py           FastAPI app
-  routers/          auth, projects, pipeline, publish
+  routers/          auth, credentials, projects, pipeline, publish
   services/
     ingest.py       upload handling + content sniffing
-    analysis.py     story extraction (rules | LLM)
+    analysis.py     story extraction (rules | LLM | BYOK)
     script.py       five-beat script generation
-    tts.py          espeak | http | null providers
+    tts.py          espeak | http | null | BYOK providers
+    providers.py    BYOK vendor adapters + model discovery
+    credentials.py  encrypted key storage
+    resolver.py     picks BYOK vs env vs offline per stage
     timeline.py     scene planning, subtitle timing
     render.py       FFmpeg pipeline
     policy.py       rights + transformative-use gates
@@ -173,9 +176,30 @@ docs/               architecture, API, operations, PRD
 tests/              units, API, end-to-end
 ```
 
+## Bring your own key (BYOK)
+
+Optional. The app runs fully offline without any keys, using rule-based analysis
+and espeak-ng narration.
+
+Supply your own API keys to improve quality. Log in, open **Kunci AI kamu
+(BYOK)**, pick a provider, paste the key, then press **Tes & ambil daftar model**
+— the model list is fetched from your key, so you only see models that key can
+actually reach. Choose one and save.
+
+- **LLM** (analysis, highlights, script rewriting): OpenAI, Anthropic, Google AI
+  Studio, OpenRouter, Groq, DeepSeek, Mistral, Together AI, xAI, or any
+  OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, LiteLLM).
+- **TTS** (narration): OpenAI Speech, ElevenLabs, or any `/audio/speech` endpoint.
+
+Keys are encrypted at rest with Fernet, never returned by the API, and never
+logged. The panel always states which provider each stage will actually use, so
+you know whether a render hits your paid key or the offline engine.
+
+Details, security model, and troubleshooting: [docs/BYOK.md](docs/BYOK.md).
+
 ## Known limitations
 
-Being direct about what v1.0 does not do:
+Being direct about what this does not do:
 
 - **Single workspace per user.** Multi-channel is P2 in the PRD.
 - **Inline rendering.** Renders run in a FastAPI background task by default. A
@@ -186,7 +210,13 @@ Being direct about what v1.0 does not do:
 - **espeak voice quality.** Fine for review, not for a published channel.
 - **Rules-based summarising is literal.** It compresses your sentences rather
   than genuinely rewriting them, so expect a similarity warning around 25–35%.
-  An LLM provider fixes this.
+  Adding an LLM key (BYOK) fixes this.
+- **No spend tracking for BYOK.** The app caps input size and only calls a
+  provider when you ask it to, but it cannot tell you what a run cost. Set limits
+  in your provider's console.
+- **BYOK keys are only as safe as `data/`.** They are encrypted, but the key file
+  sits beside the database by default. Not a secrets manager — see
+  [docs/BYOK.md](docs/BYOK.md).
 - **Local storage only.** The storage layer mirrors an S3 interface, but only the
   filesystem backend is implemented.
 - **Not hardened for public exposure.** No rate limiting on login, no CSRF
@@ -197,7 +227,9 @@ Being direct about what v1.0 does not do:
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the pipeline fits together
+- [docs/BYOK.md](docs/BYOK.md) — bring your own key: setup and security model
 - [docs/API.md](docs/API.md) — every endpoint with examples
+- [CHANGELOG.md](CHANGELOG.md) — what changed in each release
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — running, troubleshooting, backups
 - [docs/YOUTUBE_SETUP.md](docs/YOUTUBE_SETUP.md) — OAuth configuration
 - [docs/COPYRIGHT.md](docs/COPYRIGHT.md) — rights model in detail

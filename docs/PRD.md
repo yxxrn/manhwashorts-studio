@@ -401,3 +401,47 @@ Generator naskah rules-based bersifat kompresif, bukan menulis ulang, jadi
 similarity biasanya 25–35% — lolos gate tapi memicu warning. Provider LLM
 memperbaikinya. Voice espeak-ng jelas tapi robotik; layak untuk review, belum
 layak untuk channel produksi.
+
+## 19. Status implementasi v1.1 — BYOK
+
+Ditambahkan di v1.1: pengguna memakai API key sendiri untuk kebutuhan AI, dan
+daftar model diambil langsung dari key tersebut.
+
+### Terimplementasi dan teruji
+
+134 test lolos (naik dari 94), 40 di antaranya khusus BYOK: adapter provider,
+penyimpanan terenkripsi, urutan resolusi, generasi lewat key pengguna, permukaan
+HTTP, dan klaim keamanan.
+
+- **Dua kapabilitas**: `llm` (analisa, highlight, penulisan naskah) dan `tts`
+  (narasi). Dipisah per kapabilitas, bukan per vendor.
+- **13 provider**: OpenAI, Anthropic, Google AI Studio, OpenRouter, Groq,
+  DeepSeek, Mistral, Together, xAI, custom OpenAI-compatible; TTS: OpenAI Speech,
+  ElevenLabs, custom.
+- **Fetch model dari key sendiri** sekaligus jadi langkah verifikasi. Key yang
+  tidak bisa melist model ditolak `400`, bukan disimpan lalu gagal saat render.
+- **Urutan resolusi** terpusat di `services/resolver.py`: BYOK terverifikasi →
+  konfigurasi environment → mesin offline. Jalur offline v1.0 tetap ada dan
+  dijaga test.
+- **Migration `f139cbb1f257`** aditif murni, diuji pada database v1.0 berisi data.
+
+### Keputusan desain yang perlu dicatat
+
+- **Model tidak pernah disubstitusi.** Minta model yang key-nya tak punya =
+  error, karena model lain menagih berbeda.
+- **Analisa turun ke rules kalau gagal** dan mencatat alasannya; **narasi justru
+  error**, karena menyelipkan suara robotik ke video yang akan dipublikasikan
+  lebih buruk daripada berhenti.
+- Kredensial tanpa model terpilih dihitung belum terkonfigurasi, jadi pipeline
+  memakai mesin offline daripada menebak.
+
+### Batasan yang diakui
+
+- **Tanpa pelacakan biaya.** Input dibatasi 12.000 karakter dan provider hanya
+  dipanggil saat diminta, tapi aplikasi tidak bisa melaporkan biaya. Batas
+  sesungguhnya hanya ada di konsol provider.
+- **Keamanan key setara keamanan `data/`.** Key terenkripsi Fernet, tapi
+  `data/.fernet_key` default-nya bersebelahan dengan database. Ini menjaga
+  instalasi lokal tetap sederhana, bukan secrets manager. Mitigasi ada di
+  `docs/BYOK.md`.
+- Belum ada: rotasi key terjadwal, kuota per proyek, provider embedding/vision.

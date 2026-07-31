@@ -278,6 +278,77 @@ class HttpProvider:
         )
 
 
+class ByokProvider:
+    """Speech from a user-supplied key (v1.1 BYOK).
+
+    Holds the decrypted key only for the life of the object, which the pipeline
+    creates per voice-over run and drops immediately afterwards. The key is
+    never written to disk or logged.
+
+    Deliberately does NOT fall back to espeak on failure: the user chose to pay
+    for this voice, so a silent downgrade to a robotic one would be a worse
+    outcome than a clear error they can act on.
+    """
+
+    name = "byok"
+
+    def __init__(
+        self,
+        provider: str,
+        api_key: str,
+        model: str,
+        base_url: str | None = None,
+        voice: str = "",
+        label: str = "",
+    ) -> None:
+        from app.services import providers as pv
+
+        self._adapter = pv.get_tts_adapter(provider)
+        self._provider = provider
+        self._api_key = api_key
+        self._model = model
+        self._base_url = base_url
+        self._voice = voice
+        self.name = f"byok:{provider}"
+        self.label = label or provider
+
+    def available(self) -> bool:
+        return bool(self._api_key and self._model)
+
+    def synthesize(
+        self, text: str, out_path: Path, voice_id: str = "id", speed: float = 1.0
+    ) -> SpeechClip:
+        from app.services.providers import ProviderError
+
+        # For voice-keyed vendors (ElevenLabs) the stored model *is* the voice.
+        voice = self._voice or self._model
+        try:
+            self._adapter.synthesize(
+                api_key=self._api_key,
+                model=self._model,
+                text=text,
+                out_path=out_path,
+                voice=voice,
+                speed=speed,
+                base_url=self._base_url,
+            )
+        except ProviderError as exc:
+            raise TTSError(f"{self.label} speech failed: {exc}") from None
+
+        if not out_path.exists() or out_path.stat().st_size == 0:
+            raise TTSError(f"{self.label} returned empty audio")
+
+        duration = probe_duration(out_path)
+        return SpeechClip(
+            path=out_path,
+            text=text,
+            duration=duration,
+            voice_id=voice or voice_id,
+            provider=self.name,
+            word_timings=estimate_word_timings(text, duration),
+        )
+
+
 _PROVIDERS: dict[str, type] = {
     "espeak": EspeakProvider,
     "null": NullProvider,

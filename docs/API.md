@@ -50,6 +50,125 @@ subtitle font, an FFmpeg build without `zoompan` or `libass`).
 {"provider": "espeak", "voices": [{"id": "id", "label": "Indonesian (espeak)"}]}
 ```
 
+## BYOK credentials
+
+Bring your own key for the AI stages. Conceptual guide in [BYOK.md](BYOK.md).
+
+A stored key is **never** returned by any route. Responses carry `key_hint`
+(last four characters) so you can tell two keys apart.
+
+### `GET /api/credentials/providers`
+
+Supported providers, for building the form. Unauthenticated: static metadata,
+no user data.
+
+```json
+{
+  "llm": [
+    {"key": "openai", "label": "OpenAI", "kind": "llm",
+     "default_base_url": "https://api.openai.com/v1",
+     "console_url": "https://platform.openai.com/api-keys",
+     "custom_endpoint": false, "notes": ""}
+  ],
+  "tts": [{"key": "elevenlabs", "label": "ElevenLabs", "kind": "tts", "...": "..."}]
+}
+```
+
+### `POST /api/credentials/test`
+
+Verify a key and fetch its models **without saving**. A rejected key returns
+`200` with `ok: false` — it is an expected outcome, not a server error.
+
+```bash
+curl -s -b cookies.txt -X POST localhost:8000/api/credentials/test \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"llm","provider":"openai","api_key":"sk-..."}'
+```
+
+```json
+{"ok": true, "message": "key accepted, 42 model(s) available",
+ "models": [{"id": "gpt-4o-mini", "label": "gpt-4o-mini"}]}
+```
+
+### `POST /api/credentials`
+
+Save a key. It is verified against the provider first: a key that cannot list
+models is rejected with `400` rather than stored to fail later mid-render.
+
+| Field      | Required | Notes                                                |
+|------------|----------|------------------------------------------------------|
+| `kind`     | yes      | `llm` or `tts`                                       |
+| `provider` | yes      | key from the catalogue                               |
+| `api_key`  | yes      | min 8 chars; encrypted immediately, never echoed     |
+| `base_url` | for custom | required when `custom_endpoint` is true            |
+| `model`    | no       | must be one the key offers; unset = not used yet     |
+| `label`    | no       | defaults to the provider label                       |
+| `verify`   | no       | default `true`; `false` stores as `unverified`        |
+
+Re-posting the same `kind` + `provider` **replaces** the key rather than adding a
+duplicate, so rotating a key is the same call as adding one.
+
+```json
+{
+  "id": "9f2c...", "kind": "llm", "provider": "openai", "label": "OpenAI",
+  "key_hint": "...4f2a", "base_url": "https://api.openai.com/v1",
+  "model": "gpt-4o-mini",
+  "available_models": [{"id": "gpt-4o-mini", "label": "gpt-4o-mini"}],
+  "status": "verified", "status_message": "key accepted, 42 model(s) available",
+  "verified_at": "2026-08-01T02:10:00Z", "last_used_at": null,
+  "is_default": true, "is_active": true, "created_at": "2026-08-01T02:10:00Z"
+}
+```
+
+`400` — key rejected, unknown provider, missing base URL for a custom endpoint,
+or a model the key does not offer.
+
+### `GET /api/credentials`
+
+All credentials for the caller's workspace, newest first. Keys never included.
+
+### `GET /api/credentials/active`
+
+Which provider each stage will really use, and why. Use this to confirm whether
+a render will hit your paid key or the offline engine.
+
+```json
+{
+  "llm": {"source": "byok", "provider": "openai", "model": "gpt-4o-mini",
+          "label": "OpenAI", "credential_id": "9f2c...",
+          "reason": "using your OpenAI key (...4f2a)"},
+  "tts": {"source": "local", "provider": "espeak", "model": "", "label": "espeak-ng",
+          "credential_id": "", "reason": "no speech key configured; using offline espeak-ng"}
+}
+```
+
+`source` is `byok`, `env`, or `local`.
+
+### `POST /api/credentials/{id}/refresh`
+
+Re-fetch the model list with the stored key. Doubles as a health check: a key
+revoked upstream comes back `status: invalid`. If your selected model has been
+retired, the selection is cleared and `status_message` says so.
+
+### `POST /api/credentials/{id}/model`
+
+```bash
+curl -s -b cookies.txt -X POST localhost:8000/api/credentials/$ID/model \
+  -H 'Content-Type: application/json' -d '{"model":"gpt-4o"}'
+```
+
+`400` if the key does not offer that model — the app never substitutes a
+different (billable) model silently.
+
+### `POST /api/credentials/{id}/default`
+
+Make this credential the active one for its capability. Requires `verified`.
+
+### `DELETE /api/credentials/{id}`
+
+Deletes the row and its ciphertext. If it was the default, another verified key
+for the same capability is promoted; otherwise the stage reverts to offline.
+
 ## Auth
 
 ### `POST /api/auth/register`

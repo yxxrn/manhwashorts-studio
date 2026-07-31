@@ -295,39 +295,137 @@ class LLMAnalyzer:
             )
             return result
 
-        result = AnalysisResult(generator=self.name)
-        for c in data.get("characters", [])[:8]:
-            result.characters.append(
-                Character(
-                    name=str(c.get("name", ""))[:80],
-                    role=str(c.get("role", ""))[:40],
-                    aliases=[str(a)[:80] for a in c.get("aliases", [])[:4]],
-                )
+        return parse_llm_json(data, generator=self.name)
+
+
+def parse_llm_json(data: dict, generator: str) -> AnalysisResult:
+    """Convert a model's JSON response into an AnalysisResult.
+
+    Shared by the env-configured and BYOK analyzers. Every field is length-capped
+    and every enum value is validated, because this is untrusted input: a model
+    can return any shape, and a malformed reply must not reach the database.
+    """
+    result = AnalysisResult(generator=generator)
+    for c in data.get("characters", [])[:8]:
+        if not isinstance(c, dict):
+            continue
+        aliases = c.get("aliases") or []
+        result.characters.append(
+            Character(
+                name=str(c.get("name", ""))[:80],
+                role=str(c.get("role", ""))[:40],
+                aliases=[str(a)[:80] for a in aliases[:4]] if isinstance(aliases, list) else [],
             )
-        result.locations = [str(x)[:80] for x in data.get("locations", [])[:6]]
-        for i, e in enumerate(data.get("events", [])[:40]):
-            kind = str(e.get("kind", "event"))
-            result.events.append(
-                StoryEvent(
-                    order=i,
-                    text=str(e.get("text", ""))[:500],
-                    kind=kind if kind in {"event", "conflict", "twist", "cliffhanger"} else "event",
-                )
+        )
+    locations = data.get("locations") or []
+    if isinstance(locations, list):
+        result.locations = [str(x)[:80] for x in locations[:6]]
+
+    for i, e in enumerate((data.get("events") or [])[:40]):
+        if not isinstance(e, dict):
+            continue
+        kind = str(e.get("kind", "event"))
+        result.events.append(
+            StoryEvent(
+                order=i,
+                text=str(e.get("text", ""))[:500],
+                kind=kind if kind in {"event", "conflict", "twist", "cliffhanger"} else "event",
             )
-        result.main_conflict = str(data.get("main_conflict", ""))[:500]
-        result.twist = str(data.get("twist", ""))[:500]
-        result.cliffhanger = str(data.get("cliffhanger", ""))[:500]
-        result.pronunciation_candidates = [
-            str(x)[:80] for x in data.get("pronunciation_candidates", [])[:12]
-        ]
-        result.low_confidence_notes = [
-            str(x)[:300] for x in data.get("low_confidence_notes", [])[:10]
-        ]
+        )
+    result.main_conflict = str(data.get("main_conflict", ""))[:500]
+    result.twist = str(data.get("twist", ""))[:500]
+    result.cliffhanger = str(data.get("cliffhanger", ""))[:500]
+
+    candidates = data.get("pronunciation_candidates") or []
+    if isinstance(candidates, list):
+        result.pronunciation_candidates = [str(x)[:80] for x in candidates[:12]]
+    notes = data.get("low_confidence_notes") or []
+    if isinstance(notes, list):
+        result.low_confidence_notes = [str(x)[:300] for x in notes[:10]]
+    return result
+
+
+def _strip_code_fence(text: str) -> str:
+    """Remove ```json fences some models add despite being asked for raw JSON."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
+
+
+class ByokAnalyzer:
+    """Analysis using a user-supplied key and model (v1.1 BYOK).
+
+    Falls back to rule-based extraction if the provider call fails, and records
+    why in ``low_confidence_notes``. A failed API call should cost the user a
+    slightly weaker analysis, not a dead pipeline; but it must be visible, never
+    silent, so the note is mandatory.
+    """
+
+    name = "byok"
+
+    def __init__(
+        self,
+        provider: str,
+        api_key: str,
+        model: str,
+        base_url: str | None = None,
+        fallback: Analyzer | None = None,
+        label: str = "",
+    ) -> None:
+        from app.services import providers as pv
+
+        self._adapter = pv.get_llm_adapter(provider)
+        self._api_key = api_key
+        self._model = model
+        self._base_url = base_url
+        self.fallback = fallback or RulesAnalyzer()
+        self.name = f"byok:{provider}:{model}"
+        self.label = label or provider
+
+    def _degrade(self, sources: list[tuple[int, str]], reason: str) -> AnalysisResult:
+        result = self.fallback.analyze(sources)
+        result.low_confidence_notes.append(reason)
         return result
+
+    def analyze(self, sources: list[tuple[int, str]]) -> AnalysisResult:
+        from app.services.providers import ProviderError
+
+        joined = "\n\n".join(f"[source {i}]\n{t}" for i, t in sources if t.strip())[:12000]
+        if not joined:
+            return self.fallback.analyze(sources)
+
+        try:
+            raw = self._adapter.chat_json(
+                api_key=self._api_key,
+                model=self._model,
+                system=_LLM_SYSTEM,
+                user=joined,
+                base_url=self._base_url,
+            )
+            data = json.loads(_strip_code_fence(raw))
+        except ProviderError as exc:
+            return self._degrade(sources, f"{self.label} analysis failed ({exc}); used rules.")
+        except (json.JSONDecodeError, TypeError):
+            return self._degrade(
+                sources, f"{self.label} returned invalid JSON; used rule-based extraction."
+            )
+
+        if not isinstance(data, dict):
+            return self._degrade(
+                sources, f"{self.label} returned an unexpected shape; used rules."
+            )
+        return parse_llm_json(data, generator=self.name)
 
 
 def get_analyzer() -> Analyzer:
-    """Return the analyzer selected by configuration."""
+    """Return the analyzer selected by environment configuration.
+
+    BYOK credentials are resolved per workspace by ``app.services.resolver`` and
+    take precedence over this; this remains the fallback for setups configured
+    entirely through environment variables.
+    """
     if settings.llm_provider == "openai_compatible":
         return LLMAnalyzer()
     return RulesAnalyzer()

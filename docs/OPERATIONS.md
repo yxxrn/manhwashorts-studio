@@ -152,9 +152,33 @@ for a stable value across deployments.
 
 ### `could not decrypt credentials`
 
-`data/.fernet_key` changed or was lost. Stored OAuth tokens are unrecoverable —
-disconnect and reconnect the channel. Back this file up with the database, or set
-`MS_FERNET_KEY` explicitly.
+`data/.fernet_key` changed or was lost. Stored OAuth tokens **and BYOK API keys**
+are unrecoverable — reconnect the channel and paste the API keys in again. Back
+this file up with the database, or set `MS_FERNET_KEY` explicitly.
+
+The pipeline degrades rather than dying here: a credential that cannot be
+decrypted falls back to the offline engine and says so, so a lost key file does
+not make projects un-analysable.
+
+### BYOK key stopped working
+
+Press **Muat ulang model** on the credential, or:
+
+```bash
+curl -b ck.txt -X POST localhost:8000/api/credentials/$CRED_ID/refresh
+```
+
+This re-checks the key against the provider and updates `status`. Common causes:
+revoked upstream, out of quota, or billing lapsed. A `status` of `invalid` means
+the stage has silently reverted to the offline engine — check
+`GET /api/credentials/active` to confirm what is actually running.
+
+### BYOK model disappeared from the list
+
+Providers retire models. `refresh` clears a selection that is no longer offered
+and says so in `status_message`; pick a current model from the dropdown. The app
+deliberately does not substitute a replacement, because a different model bills
+differently.
 
 ### `database is locked`
 
@@ -168,7 +192,7 @@ MS_DATABASE_URL=postgresql+psycopg://user:pass@localhost/manhwashorts
 ### Quality gate blocks with `policy.not_transformative`
 
 Working as intended: narration is ≥50% verbatim from your source. Rewrite it as
-your own commentary, or switch to `MS_LLM_PROVIDER=openai_compatible` for better
+your own commentary, or add an LLM key via BYOK (see `docs/BYOK.md`) for better
 paraphrasing. Do not disable the gate.
 
 ### `subtitle.overlap` errors
@@ -202,7 +226,8 @@ mkdir -p "$DEST"
 # 1. database (sqlite3 .backup is safe against a live writer)
 sqlite3 data/manhwashorts.db ".backup '$DEST/manhwashorts.db'"
 
-# 2. keys — without these, sessions die and OAuth tokens are unreadable
+# 2. keys — without these, sessions die and OAuth tokens plus BYOK API keys
+#    become permanently unreadable
 cp data/.secret_key data/.fernet_key "$DEST/" 2>/dev/null || true
 chmod 600 "$DEST"/.*key 2>/dev/null || true
 

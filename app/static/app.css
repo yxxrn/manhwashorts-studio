@@ -138,6 +138,13 @@ legend { color: var(--muted); font-size: .85rem; padding: 0 6px; }
 .badge.muted { color: var(--muted); }
 
 .hint { color: var(--muted); font-size: .85rem; margin: 4px 0 12px; }
+
+/* Lets a heading push sibling buttons to the right of a .row-actions bar. */
+.grow { flex: 1 1 auto; margin: 0; }
+
+/* --accent on --panel measures ~5.6:1, comfortably past the 4.5:1 AA floor. */
+.hint a { color: var(--accent); }
+.hint a:hover, .hint a:focus { text-decoration: underline; }
 .warn {
   background: rgba(240, 182, 74, .12);
   border-left: 3px solid var(--warn-c);

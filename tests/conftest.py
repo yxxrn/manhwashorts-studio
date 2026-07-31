@@ -135,6 +135,37 @@ def panel_bytes() -> bytes:
     return buffer.getvalue()
 
 
+@pytest.fixture(scope="session")
+def mock_provider_url() -> Iterator[str]:
+    """A local stand-in for an AI vendor, so BYOK tests need no network or key.
+
+    Session-scoped: one server serves every test, on a port the OS picks so
+    parallel runs cannot collide.
+    """
+    import threading
+
+    sys.path.insert(0, str(ROOT / "tests"))
+    import mock_provider
+
+    server = mock_provider.serve(0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture()
+def good_key() -> str:
+    """The only key the mock provider accepts."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import mock_provider
+
+    return mock_provider.GOOD_KEY
+
+
 @pytest.fixture()
 def declared_rights() -> dict:
     return {

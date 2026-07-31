@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.constants import (
     ContentType,
+    CredentialKind,
     LicenseType,
     NarrationStyle,
     PrivacyStatus,
@@ -419,6 +420,108 @@ class StatOut(BaseModel):
     subscribers_gained: int
     synced_at: datetime
     source: str
+
+
+# --- BYOK credentials (v1.1) ----------------------------------------------
+
+
+class CredentialCreate(BaseModel):
+    """Save an API key. The key is verified before it is stored."""
+
+    kind: CredentialKind
+    provider: str = Field(min_length=1, max_length=40)
+    api_key: str = Field(min_length=8, max_length=500)
+    base_url: str | None = Field(default=None, max_length=300)
+    label: str = Field(default="", max_length=120)
+    model: str = Field(default="", max_length=120)
+    #: Only set false for offline/air-gapped setups; the row is then unverified.
+    verify: bool = True
+
+    @field_validator("api_key")
+    @classmethod
+    def _strip_key(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("api_key must not be blank")
+        return cleaned
+
+
+class CredentialTestRequest(BaseModel):
+    """Check a key and list its models without saving anything."""
+
+    kind: CredentialKind
+    provider: str = Field(min_length=1, max_length=40)
+    api_key: str = Field(min_length=8, max_length=500)
+    base_url: str | None = Field(default=None, max_length=300)
+
+
+class ModelSelectRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=120)
+
+
+class ModelOut(BaseModel):
+    id: str
+    label: str = ""
+
+
+class CredentialOut(BaseModel):
+    """A stored credential. Never contains the key itself."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    kind: str
+    provider: str
+    label: str
+    #: Last four characters only, e.g. "...4f2a".
+    key_hint: str
+    base_url: str | None
+    model: str
+    available_models: list[dict] = Field(default_factory=list)
+    status: str
+    status_message: str
+    verified_at: datetime | None
+    last_used_at: datetime | None
+    is_default: bool
+    is_active: bool
+    created_at: datetime
+
+
+class CredentialTestOut(BaseModel):
+    ok: bool
+    message: str
+    models: list[ModelOut] = Field(default_factory=list)
+
+
+class ProviderSpecOut(BaseModel):
+    key: str
+    label: str
+    kind: str
+    default_base_url: str
+    console_url: str
+    custom_endpoint: bool
+    notes: str
+
+
+class ProviderCatalogOut(BaseModel):
+    llm: list[ProviderSpecOut]
+    tts: list[ProviderSpecOut]
+
+
+class ResolutionOut(BaseModel):
+    """Which provider a stage will actually use, and why."""
+
+    source: str
+    provider: str
+    model: str
+    label: str
+    credential_id: str
+    reason: str
+
+
+class ActiveProvidersOut(BaseModel):
+    llm: ResolutionOut
+    tts: ResolutionOut
 
 
 # --- misc ------------------------------------------------------------------

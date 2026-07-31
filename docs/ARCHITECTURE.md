@@ -81,6 +81,50 @@ come out as fragments.
 forbids invention and requires uncertainty to go into `low_confidence_notes`. It
 falls back to rules on any error rather than failing the request.
 
+`ByokAnalyzer` does the same through a user-supplied key (see BYOK below). Both
+share `parse_llm_json`, which length-caps every field and validates every enum:
+a model reply is untrusted input and a malformed one must not reach the database.
+
+## BYOK: bring your own key
+
+Three modules, each with one job:
+
+| Module | Responsibility |
+|---|---|
+| `services/providers.py` | Talks to vendors. One adapter per API *shape*, not per vendor. |
+| `services/credentials.py` | Encrypts, stores, and retrieves keys. No HTTP, no vendor knowledge. |
+| `services/resolver.py` | Decides which provider a stage uses, and reports why. |
+
+**Why adapters are keyed on shape.** Most vendors speak the OpenAI wire format,
+so `OpenAICompatibleLLM` is parameterised by base URL and covers nine of them.
+Anthropic (`x-api-key` + `/messages`) and Google (key as query param +
+`generateContent`) differ enough to need their own classes. Adding another
+OpenAI-compatible vendor is a table entry, not a class.
+
+**Model discovery is the verification step.** `list_models` is the only method
+needed to save a credential: a provider that returns a model list has accepted
+the key. This avoids a separate "test key" code path that could drift from the
+real one, and it means the UI offers exactly the models that key can reach rather
+than a hardcoded guess that goes stale.
+
+**Resolution order**, in one place so stages cannot disagree:
+
+1. Verified BYOK credential with a model selected, for this workspace.
+2. Environment configuration (`MS_LLM_*`, `MS_TTS_HTTP_*`).
+3. Offline engine (rules, espeak-ng).
+
+Rule 3 is why the app never hard-fails for want of a key, and it is covered by
+tests so the v1.0 offline path cannot silently regress.
+
+Every resolution returns a `Resolution` describing the choice and a human-readable
+`reason`, surfaced by `GET /api/credentials/active` and in analysis notes. Silent
+provider selection is how users end up surprised by a bill or by robotic audio.
+
+**Failure policy differs by stage on purpose.** Analysis degrades to the offline
+analyser and records why. Narration raises instead: the user chose to pay for a
+specific voice, and quietly substituting espeak into a video they are about to
+publish is the worse outcome.
+
 ### 3. Script (`services/script.py`)
 
 Builds five beats against a timing budget:
