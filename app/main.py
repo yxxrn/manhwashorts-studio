@@ -1,0 +1,143 @@
+"""FastAPI application entry point.
+
+Security note for local deployment: this app binds to 127.0.0.1 by default and
+authenticates every project route with a signed session cookie. It is not
+hardened for direct exposure to the internet — there is no rate limiting on
+login, no CSRF token on state-changing form posts, and no TLS. If you put it on
+a public address, place it behind a reverse proxy that adds TLS and rate
+limiting, and set MS_ENVIRONMENT=production so session cookies become Secure.
+"""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from app.config import BASE_DIR, settings
+from app.db import init_db
+from app.routers import auth, pipeline, projects, publish
+from app.schemas import HealthOut
+from app.services import render as render_svc
+from app.services import tts as tts_svc
+
+logging.basicConfig(
+    level=logging.INFO if not settings.debug else logging.DEBUG,
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+)
+logger = logging.getLogger("manhwashorts")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings.ensure_dirs()
+    init_db()
+    problems = render_svc.check_environment()
+    if problems:
+        for problem in problems:
+            logger.warning("environment: %s", problem)
+    else:
+        logger.info("environment OK: ffmpeg, ffprobe, and subtitle font present")
+    logger.info(
+        "tts=%s llm=%s youtube=%s",
+        settings.tts_provider,
+        settings.llm_provider,
+        "configured" if settings.youtube_enabled else "dry-run",
+    )
+    yield
+
+
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.version,
+    description=(
+        "Auto YouTube Shorts for manhwa recaps. Rights-aware and "
+        "human-in-the-loop: nothing publishes without an explicit approval."
+    ),
+    lifespan=lifespan,
+)
+
+app.include_router(auth.router)
+app.include_router(projects.router)
+app.include_router(pipeline.router)
+app.include_router(publish.router)
+
+TEMPLATES_DIR = BASE_DIR / "app" / "templates"
+STATIC_DIR = BASE_DIR / "app" / "static"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Return a readable message instead of raw pydantic error objects."""
+    messages = []
+    for error in exc.errors():
+        location = " -> ".join(str(p) for p in error.get("loc", ()) if p != "body")
+        messages.append(f"{location}: {error.get('msg', 'invalid value')}" if location else error.get("msg", ""))
+    return JSONResponse(status_code=422, content={"detail": "; ".join(messages) or "Invalid request."})
+
+
+@app.get("/api/health", response_model=HealthOut, tags=["system"])
+def health() -> dict:
+    """Report whether the local environment can actually render."""
+    problems = render_svc.check_environment()
+    provider = tts_svc.get_provider()
+    return {
+        "status": "ok" if not problems else "degraded",
+        "version": settings.version,
+        "environment": settings.environment,
+        "ffmpeg": render_svc.ffmpeg_available(),
+        "tts_provider": provider.name,
+        "llm_provider": settings.llm_provider,
+        "youtube_enabled": settings.youtube_enabled,
+        "problems": problems,
+    }
+
+
+@app.get("/api/voices", tags=["system"])
+def list_voices() -> dict:
+    """Available narration voices (FR-05)."""
+    return {
+        "provider": tts_svc.get_provider().name,
+        "voices": [
+            {"id": key, "label": value["label"]}
+            for key, value in tts_svc.VOICE_CATALOG.items()
+        ],
+    }
+
+
+@app.get("/", response_class=HTMLResponse, tags=["ui"])
+def dashboard(request: Request) -> HTMLResponse:
+    """Single-page studio UI."""
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "app_name": settings.app_name,
+            "version": settings.version,
+            "max_duration": settings.max_short_seconds,
+            "youtube_enabled": settings.youtube_enabled,
+        },
+    )
+
+
+def run() -> None:  # pragma: no cover - manual entry point
+    import uvicorn
+
+    uvicorn.run(
+        "app.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    run()

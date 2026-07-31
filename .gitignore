@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environment & secrets  -- never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!tests/fixtures/*.key
+client_secret*.json
+credentials.json
+token.json
+.fernet_key
+
+# Application data (user material, renders, database)
+data/
+!data/.gitkeep
+
+# Test scratch runs (disk-backed; /tmp is too small for real renders)
+data/test_runs/
+
+# Logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Build artifacts
+dist/
+build/
+node_modules/

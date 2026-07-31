@@ -1,0 +1,208 @@
+# ManhwaShorts Studio
+
+Auto-generate YouTube Shorts that recap manhwa chapters. Give it your recap text
+and panels you have the right to use; it produces a narrated, subtitled 9:16 MP4
+ready for review and upload.
+
+**Version 1.0** — runs locally end to end, no cloud services required.
+
+```
+material → analysis → script → voice-over → timeline → subtitles
+         → quality gate → render → approve → upload
+```
+
+Nothing publishes without your explicit approval. That is the point of the
+design, not a limitation.
+
+---
+
+## What it actually does
+
+| Stage | What happens | Editable |
+|---|---|---|
+| Ingest | Text, PDF, DOCX, MD, or images, each with a rights declaration | yes |
+| Analysis | Extracts characters, events, conflict, twist, cliffhanger | yes |
+| Script | Five-beat structure (hook, setup, conflict, twist, CTA) with 3 hook variants | yes |
+| Voice-over | Per-section TTS with word-level timings | yes, per section |
+| Timeline | Scenes derived from audio, Ken Burns / pan effects, 9:16 crop | yes, per scene |
+| Subtitles | Karaoke-timed cues inside the Shorts safe area, SRT export | yes, per cue |
+| Quality | Blocking errors and overridable warnings | overrides recorded |
+| Render | FFmpeg → H.264 + AAC, 1080×1920, burned-in captions | retryable |
+| Publish | YouTube upload, private by default | double-gated |
+
+## Requirements
+
+- Python 3.11+
+- FFmpeg with `zoompan` and `libass` (Ubuntu: `apt install ffmpeg`)
+- espeak-ng for local TTS (`apt install espeak-ng`)
+- DejaVu fonts for subtitles (`apt install fonts-dejavu-core`)
+- ~500 MB disk for a working project
+
+No GPU, no API keys, no paid services needed for the default configuration.
+
+## Quick start
+
+```bash
+# system dependencies (Debian/Ubuntu)
+sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core
+
+# project
+git clone git@github.com:yxxrn/manhwashorts-studio.git
+cd manhwashorts-studio
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+
+# verify the environment can render
+.venv/bin/python -c "from app.services.render import check_environment; print(check_environment() or 'environment OK')"
+
+# run
+.venv/bin/python -m uvicorn app.main:app --reload
+```
+
+Open <http://127.0.0.1:8000>. Register an account (local only, stored in your
+own SQLite file), then work down the numbered steps in the UI.
+
+### Try it with the demo project
+
+```bash
+.venv/bin/python scripts/make_fixtures.py          # synthetic test panels
+.venv/bin/python scripts/seed_demo.py --render     # seed + full render
+```
+
+This creates `demo@manhwashorts.local` / `demo12345` and renders a real MP4 to
+`data/output/<project-id>/final.mp4`. Everything it uses is generated locally —
+no third-party artwork.
+
+## Configuration
+
+Copy `.env.example` to `.env`. All values are optional; the defaults run offline.
+
+The settings that change behaviour most:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `MS_TTS_PROVIDER` | `espeak` | `espeak` (offline), `http` (external API), `null` (silence) |
+| `MS_LLM_PROVIDER` | `rules` | `rules` (offline heuristics) or `openai_compatible` |
+| `MS_YOUTUBE_ENABLED` | `false` | `false` keeps uploads in dry-run mode |
+| `MS_REQUIRE_RIGHTS_DECLARATION` | `true` | The main copyright safeguard |
+| `MS_ALLOW_PUBLIC_PUBLISH` | `false` | Public uploads need this **and** per-request confirmation |
+
+### Better narration quality
+
+espeak-ng is intelligible but robotic. For publishable audio, point
+`MS_TTS_PROVIDER=http` at a real TTS service, or record your own voice-over and
+upload it per section.
+
+Likewise, `MS_LLM_PROVIDER=rules` writes competent but plain summaries. An
+LLM endpoint produces noticeably better hooks and paraphrasing:
+
+```bash
+MS_LLM_PROVIDER=openai_compatible
+MS_LLM_BASE_URL=https://api.openai.com/v1
+MS_LLM_API_KEY=sk-...
+```
+
+## Copyright, honestly
+
+This tool helps you **record** permissions and keep recaps transformative. It
+does not grant you any rights, and it cannot tell you whether your use qualifies
+as fair use or fair dealing — that depends on your jurisdiction, the amount you
+use, and how transformative your commentary is. When in doubt, get permission or
+consult a lawyer.
+
+What the app enforces:
+
+- Every asset needs an owner and a licence basis before publication. Ticking a
+  box alone is not enough.
+- Narration that is ≥50% verbatim from your source is **blocked**; ≥25% raises a
+  warning.
+- More than 8 panels from one chapter warns that the video may read as a
+  reproduction rather than commentary.
+- Public uploads require config opt-in **and** explicit per-request confirmation.
+- Every approval, override, and upload is written to an audit log.
+
+What it deliberately does **not** do:
+
+- Scrape manhwa sites. Material only enters by your upload.
+- Remove watermarks.
+- Upload anything you have not approved.
+- Train models on your material.
+
+## Testing
+
+```bash
+.venv/bin/python -m pytest -m "not slow"   # fast: units + API (~25s)
+.venv/bin/python -m pytest                 # everything, incl. real renders
+.venv/bin/python -m ruff check .           # lint
+```
+
+The slow tests run FFmpeg for real and assert on the resulting file: dimensions,
+codecs, duration matching the narration, and caption pixels actually present in
+the frame.
+
+## Project layout
+
+```
+app/
+  config.py         settings; persists secret + Fernet keys
+  constants.py      enums, beat structure, timing budgets
+  models.py         SQLAlchemy models (15 tables)
+  schemas.py        request/response validation
+  deps.py           session auth, ownership guards
+  security.py       scrypt hashing, Fernet encryption
+  main.py           FastAPI app
+  routers/          auth, projects, pipeline, publish
+  services/
+    ingest.py       upload handling + content sniffing
+    analysis.py     story extraction (rules | LLM)
+    script.py       five-beat script generation
+    tts.py          espeak | http | null providers
+    timeline.py     scene planning, subtitle timing
+    render.py       FFmpeg pipeline
+    policy.py       rights + transformative-use gates
+    quality.py      pre-publication checks
+    pipeline.py     stage orchestration
+    publish.py      upload flow
+    youtube.py      Data/Analytics API (+ dry run)
+    storage.py      content-addressed local storage
+scripts/
+  make_fixtures.py  synthetic test panels
+  seed_demo.py      demo project
+  worker.py         standalone render worker
+docs/               architecture, API, operations, PRD
+tests/              units, API, end-to-end
+```
+
+## Known limitations
+
+Being direct about what v1.0 does not do:
+
+- **Single workspace per user.** Multi-channel is P2 in the PRD.
+- **Inline rendering.** Renders run in a FastAPI background task by default. A
+  standalone worker (`scripts/worker.py`) exists, but there is no Redis queue,
+  so concurrency is limited to one process.
+- **No scheduling UI.** The API accepts `scheduled_at`, but there is no calendar
+  view yet (PRD FR-11, P1).
+- **espeak voice quality.** Fine for review, not for a published channel.
+- **Rules-based summarising is literal.** It compresses your sentences rather
+  than genuinely rewriting them, so expect a similarity warning around 25–35%.
+  An LLM provider fixes this.
+- **Local storage only.** The storage layer mirrors an S3 interface, but only the
+  filesystem backend is implemented.
+- **Not hardened for public exposure.** No rate limiting on login, no CSRF
+  tokens, no TLS. Keep it on `127.0.0.1` or behind a reverse proxy.
+- **Analytics needs a live upload.** Dry-run mode reports "no data" rather than
+  inventing numbers.
+
+## Documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the pipeline fits together
+- [docs/API.md](docs/API.md) — every endpoint with examples
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — running, troubleshooting, backups
+- [docs/YOUTUBE_SETUP.md](docs/YOUTUBE_SETUP.md) — OAuth configuration
+- [docs/COPYRIGHT.md](docs/COPYRIGHT.md) — rights model in detail
+- [docs/PRD.md](docs/PRD.md) — original product requirements
+
+## License
+
+Private project. All rights reserved.

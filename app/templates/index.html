@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ app_name }}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Lewati ke konten utama</a>
+
+<header class="topbar">
+  <h1>{{ app_name }} <span class="version">v{{ version }}</span></h1>
+  <div class="topbar-right">
+    <span id="health-badge" class="badge" role="status" aria-live="polite">memeriksa…</span>
+    <span id="user-badge" class="badge muted"></span>
+    <button type="button" id="logout-btn" class="btn-link" hidden>Keluar</button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ============ AUTH ============ -->
+  <section id="auth-section" class="card" aria-labelledby="auth-heading">
+    <h2 id="auth-heading">Masuk</h2>
+    <p class="hint">Belum punya akun? Isi form ini lalu pilih Daftar.</p>
+    <form id="auth-form" class="grid2">
+      <label for="auth-email">Email
+        <input type="email" id="auth-email" name="email" required autocomplete="username">
+      </label>
+      <label for="auth-password">Password (min. 8 karakter)
+        <input type="password" id="auth-password" name="password" required minlength="8" autocomplete="current-password">
+      </label>
+      <label for="auth-name">Nama (opsional, untuk pendaftaran)
+        <input type="text" id="auth-name" name="name" autocomplete="name">
+      </label>
+      <div class="row-actions">
+        <button type="submit" id="login-btn" class="btn">Masuk</button>
+        <button type="button" id="register-btn" class="btn secondary">Daftar</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- ============ STUDIO ============ -->
+  <div id="studio" hidden>
+
+    <section class="card" aria-labelledby="projects-heading">
+      <h2 id="projects-heading">Proyek</h2>
+      <div class="row-actions">
+        <label for="project-select" class="inline">Pilih proyek
+          <select id="project-select"></select>
+        </label>
+        <button type="button" id="refresh-projects" class="btn secondary">Muat ulang</button>
+        <button type="button" id="new-project-toggle" class="btn">Proyek baru</button>
+      </div>
+
+      <form id="project-form" class="grid2" hidden>
+        <label for="p-title">Judul proyek *
+          <input type="text" id="p-title" required maxlength="200">
+        </label>
+        <label for="p-manhwa">Judul manhwa
+          <input type="text" id="p-manhwa" maxlength="200">
+        </label>
+        <label for="p-chapter">Chapter
+          <input type="text" id="p-chapter" maxlength="60" placeholder="12">
+        </label>
+        <label for="p-duration">Target durasi (detik, maks {{ max_duration }})
+          <input type="number" id="p-duration" min="10" max="{{ max_duration }}" value="60">
+        </label>
+        <label for="p-style">Gaya narasi
+          <select id="p-style">
+            <option value="dramatic">Dramatis</option>
+            <option value="casual">Santai</option>
+            <option value="mysterious">Misterius</option>
+            <option value="fast">Cepat</option>
+            <option value="informative">Informatif</option>
+          </select>
+        </label>
+        <label for="p-spoiler">Tingkat spoiler
+          <select id="p-spoiler">
+            <option value="minimal">Minimal</option>
+            <option value="medium" selected>Sedang</option>
+            <option value="full">Penuh</option>
+          </select>
+        </label>
+        <label for="p-voice">Voice
+          <select id="p-voice"></select>
+        </label>
+        <label for="p-cta">CTA (opsional)
+          <input type="text" id="p-cta" maxlength="500">
+        </label>
+        <div class="row-actions">
+          <button type="submit" class="btn">Buat proyek</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="workspace" hidden>
+
+      <!-- STEP 1: material + rights -->
+      <section class="card" aria-labelledby="mat-heading">
+        <h2 id="mat-heading">1. Materi sumber &amp; hak pakai</h2>
+        <p class="warn">
+          Hanya unggah materi yang kamu miliki, lisensikan, atau sudah diizinkan.
+          Aset tanpa deklarasi hak akan memblokir publikasi.
+        </p>
+
+        <form id="text-form">
+          <label for="src-text">Rangkuman / catatan cerita (min. 40 karakter)
+            <textarea id="src-text" rows="7" required minlength="40"
+              placeholder="Tulis atau tempel rangkuman chapter di sini…"></textarea>
+          </label>
+          <fieldset>
+            <legend>Deklarasi hak</legend>
+            <div class="grid2">
+              <label for="r-owner">Pemilik hak
+                <input type="text" id="r-owner" placeholder="Nama kamu / penerbit">
+              </label>
+              <label for="r-license">Dasar lisensi
+                <select id="r-license">
+                  <option value="owned">Karya sendiri</option>
+                  <option value="licensed">Berlisensi</option>
+                  <option value="permission_granted">Ada izin tertulis</option>
+                  <option value="public_domain">Domain publik</option>
+                  <option value="creative_commons">Creative Commons</option>
+                  <option value="unknown">Belum jelas</option>
+                </select>
+              </label>
+              <label for="r-source">Nama sumber
+                <input type="text" id="r-source" placeholder="Ditulis sendiri / URL izin">
+              </label>
+              <label for="r-attr">Kredit / atribusi
+                <input type="text" id="r-attr">
+              </label>
+            </div>
+            <label class="check">
+              <input type="checkbox" id="r-declared">
+              Saya menyatakan berhak memakai materi ini
+            </label>
+          </fieldset>
+          <button type="submit" class="btn">Tambah teks</button>
+        </form>
+
+        <hr>
+
+        <form id="upload-form">
+          <label for="up-files">Unggah panel / dokumen (JPG, PNG, WebP, TXT, MD, PDF, DOCX)
+            <input type="file" id="up-files" multiple
+              accept=".jpg,.jpeg,.png,.webp,.txt,.md,.pdf,.docx">
+          </label>
+          <p class="hint">Deklarasi hak di atas dipakai juga untuk berkas ini.</p>
+          <button type="submit" class="btn">Unggah</button>
+        </form>
+
+        <h3>Aset</h3>
+        <div id="assets-list" class="list" role="region" aria-live="polite"></div>
+      </section>
+
+      <!-- STEP 2: draft -->
+      <section class="card" aria-labelledby="draft-heading">
+        <h2 id="draft-heading">2. Buat draft</h2>
+        <p class="hint">Menjalankan analisis cerita, naskah, voice-over, timeline, dan subtitle.</p>
+        <div class="row-actions">
+          <button type="button" id="draft-btn" class="btn">Buat draft otomatis</button>
+          <button type="button" id="regen-script-btn" class="btn secondary">Ulang naskah saja</button>
+        </div>
+        <div id="draft-summary" class="summary" aria-live="polite"></div>
+      </section>
+
+      <!-- STEP 3: script review -->
+      <section class="card" aria-labelledby="script-heading">
+        <h2 id="script-heading">3. Tinjau naskah</h2>
+        <p class="hint">Centang “kunci” agar bagian itu tidak berubah saat naskah dibuat ulang.</p>
+        <div id="hook-options"></div>
+        <div id="script-sections"></div>
+        <div id="script-warnings" class="warnings" aria-live="polite"></div>
+        <div class="row-actions">
+          <button type="button" id="save-script-btn" class="btn secondary">Simpan perubahan</button>
+          <button type="button" id="approve-script-btn" class="btn">Setujui naskah</button>
+          <button type="button" id="voice-btn" class="btn secondary">Buat ulang voice-over</button>
+        </div>
+      </section>
+
+      <!-- STEP 4: timeline -->
+      <section class="card" aria-labelledby="tl-heading">
+        <h2 id="tl-heading">4. Timeline &amp; subtitle</h2>
+        <div class="row-actions">
+          <button type="button" id="timeline-btn" class="btn secondary">Bangun ulang timeline</button>
+          <a id="srt-link" class="btn secondary" href="#" download>Unduh SRT</a>
+        </div>
+        <div id="timeline-list" class="list"></div>
+        <details>
+          <summary>Subtitle (<span id="cue-count">0</span> cue)</summary>
+          <div id="cues-list" class="list small"></div>
+        </details>
+      </section>
+
+      <!-- STEP 5: quality -->
+      <section class="card" aria-labelledby="q-heading">
+        <h2 id="q-heading">5. Pemeriksaan kualitas</h2>
+        <div class="row-actions">
+          <button type="button" id="quality-btn" class="btn">Jalankan pemeriksaan</button>
+        </div>
+        <div id="quality-summary" class="summary" aria-live="polite"></div>
+        <div id="quality-list" class="list"></div>
+      </section>
+
+      <!-- STEP 6: render -->
+      <section class="card" aria-labelledby="r-heading">
+        <h2 id="r-heading">6. Render</h2>
+        <div class="row-actions">
+          <button type="button" id="render-btn" class="btn">Render final</button>
+          <button type="button" id="preview-btn" class="btn secondary">Render preview</button>
+        </div>
+        <div id="render-status" class="summary" aria-live="polite"></div>
+        <progress id="render-progress" value="0" max="100" hidden>0%</progress>
+        <div id="render-output"></div>
+      </section>
+
+      <!-- STEP 7: publish -->
+      <section class="card" aria-labelledby="pub-heading">
+        <h2 id="pub-heading">7. Publikasi</h2>
+        {% if not youtube_enabled %}
+        <p class="warn">
+          Mode dry-run: YouTube OAuth belum dikonfigurasi, jadi tidak ada video
+          yang benar-benar diunggah. Sistem hanya mencatat rencana unggahan.
+        </p>
+        {% endif %}
+        <div class="row-actions">
+          <button type="button" id="metadata-btn" class="btn secondary">Isi metadata otomatis</button>
+          <button type="button" id="connect-yt-btn" class="btn secondary">Hubungkan YouTube</button>
+        </div>
+        <form id="publish-form" class="grid2">
+          <label for="pub-title">Judul video
+            <input type="text" id="pub-title" maxlength="100">
+          </label>
+          <label for="pub-privacy">Privasi
+            <select id="pub-privacy">
+              <option value="private" selected>Private</option>
+              <option value="unlisted">Unlisted</option>
+              <option value="public">Public</option>
+            </select>
+          </label>
+          <label for="pub-desc" class="span2">Deskripsi
+            <textarea id="pub-desc" rows="4" maxlength="5000"></textarea>
+          </label>
+          <label for="pub-tags" class="span2">Tag (pisahkan dengan koma)
+            <input type="text" id="pub-tags">
+          </label>
+          <label class="check span2">
+            <input type="checkbox" id="pub-confirm">
+            Saya sudah meninjau video ini dan setuju mempublikasikan sebagai public
+          </label>
+          <div class="row-actions">
+            <button type="submit" class="btn">Unggah</button>
+          </div>
+        </form>
+        <div id="publish-status" class="summary" aria-live="polite"></div>
+      </section>
+
+    </section>
+  </div>
+</main>
+
+<div id="toast" class="toast" role="alert" aria-live="assertive" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
