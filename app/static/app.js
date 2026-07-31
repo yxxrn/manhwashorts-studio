@@ -12,7 +12,46 @@ const state = {
   projectId: null,
   script: null,
   renderPoll: null,
+  analysis: null,
+  settingsLoaded: false,
+  gpuAvailable: false,
+  busy: new Set(),
 };
+
+/* ---------- UX guards ----------
+ *
+ * Two problems this solves on a slow machine:
+ *
+ * 1. Double submits. A user who does not see instant feedback clicks again, and
+ *    a second render/draft is queued. `withBusy` disables the control, shows a
+ *    spinner, and refuses re-entry for the same key.
+ * 2. Silent waits. Any action over ~200ms gets a visible spinner, so nothing
+ *    ever looks frozen.
+ */
+async function withBusy(button, label, fn) {
+  const key = button ? button.id || label : label;
+  if (state.busy.has(key)) return undefined;
+  state.busy.add(key);
+
+  let original = '';
+  if (button) {
+    original = button.textContent;
+    button.disabled = true;
+    clear(button);
+    button.appendChild(el('span', 'spinner'));
+    button.appendChild(document.createTextNode(label || original));
+  }
+  try {
+    return await fn();
+  } finally {
+    state.busy.delete(key);
+    if (button) {
+      button.disabled = false;
+      clear(button);
+      button.textContent = original;
+    }
+  }
+}
 
 /* ---------- helpers ---------- */
 
@@ -96,11 +135,13 @@ async function loadVoices() {
 async function afterLogin(user) {
   state.user = user;
   $('user-badge').textContent = user.email;
+  $('user-badge').hidden = false;
   $('logout-btn').hidden = false;
   $('auth-section').hidden = true;
   $('studio').hidden = false;
   await loadVoices();
   await loadByok();
+  await loadEncoders();
   await loadProjects();
 }
 
@@ -151,8 +192,11 @@ $('logout-btn').addEventListener('click', async () => {
   state.projectId = null;
   $('logout-btn').hidden = true;
   $('user-badge').textContent = '';
+  $('user-badge').hidden = true;
+  $('encoder-badge').hidden = true;
   $('studio').hidden = true;
   $('auth-section').hidden = false;
+  state.settingsLoaded = false;
   toast('Sudah keluar.', 'ok');
 });
 
@@ -180,6 +224,24 @@ async function loadProjects() {
   }
   select.value = state.projectId;
   $('workspace').hidden = false;
+
+  // Show the selected project's settings, so the user can confirm they are
+  // working on the right chapter without opening the edit form.
+  const current = projects.find((p) => p.id === state.projectId);
+  const meta = $('project-meta');
+  clear(meta);
+  if (current) {
+    const line = el('div', 'item-meta');
+    line.appendChild(el('span', 'badge info', current.status));
+    line.appendChild(document.createTextNode(
+      ` ${current.manhwa_title || '(tanpa judul manhwa)'}`
+      + (current.chapter ? ` ch.${current.chapter}` : '')
+      + ` · target ${current.target_duration}s`
+      + ` · ${current.narration_style} · spoiler ${current.spoiler_level}`
+      + ` · voice ${current.voice_id}`));
+    meta.appendChild(line);
+  }
+
   await loadProjectDetail();
 }
 
@@ -218,9 +280,22 @@ $('project-form').addEventListener('submit', async (event) => {
 });
 
 async function loadProjectDetail() {
-  await Promise.all([loadAssets(), loadScript(), loadTimeline(), loadQuality()]);
+  // Run the independent fetches concurrently. Serially this was 8 round trips
+  // before the UI settled, which is noticeable on a slow box.
+  await Promise.all([
+    loadAssets(),
+    loadAnalysis(),
+    loadScript(),
+    loadTimeline(),
+    loadQuality(),
+  ]);
   $('srt-link').href = `/api/projects/${state.projectId}/subtitles.srt`;
-  await loadRenders();
+  await Promise.all([
+    loadRenders(),
+    loadRenderHistory(),
+    loadScriptVersions(),
+    loadPublications(),
+  ]);
 }
 
 /* ---------- assets ---------- */
@@ -239,8 +314,10 @@ async function loadAssets() {
   const assets = await api(`/api/projects/${state.projectId}/assets`);
   const list = $('assets-list');
   clear(list);
+  $('asset-count').textContent = String(assets.length);
   if (!assets.length) {
-    list.appendChild(el('p', 'hint', 'Belum ada materi. Tambahkan teks atau unggah panel.'));
+    list.appendChild(el('div', 'empty',
+      'Belum ada materi. Tambahkan teks atau unggah panel di atas.'));
     return;
   }
   assets.forEach((asset) => {
@@ -331,14 +408,27 @@ async function loadScript() {
   const hooks = $('hook-options');
   const warnings = $('script-warnings');
   clear(container); clear(hooks); clear(warnings);
+  const status = $('script-status');
+  clear(status);
   let script;
   try {
     script = await api(`/api/projects/${state.projectId}/script`);
   } catch (_) {
-    container.appendChild(el('p', 'hint', 'Belum ada naskah. Jalankan “Buat draft otomatis”.'));
+    container.appendChild(el('div', 'empty',
+      'Belum ada naskah. Jalankan “Buat draft otomatis” di langkah 2.'));
     return;
   }
   state.script = script;
+
+  // Note: the script row carries no similarity figure — that ratio is computed
+  // by the policy gate and reported as a quality check, so it is shown in step 6
+  // rather than invented here.
+  const approved = Boolean(script.approved_at);
+  status.appendChild(el('span', 'badge ' + (approved ? 'ok' : 'muted'),
+    approved ? `disetujui v${script.version}` : `draft v${script.version}`));
+  status.appendChild(el('span', 'badge info', `mesin: ${script.generator}`));
+  status.appendChild(document.createTextNode(
+    ` estimasi ${fmt(script.estimated_duration)} · ${script.word_count} kata`));
 
   if (script.hook_options.length) {
     hooks.appendChild(el('h3', null, 'Pilihan hook'));
@@ -390,7 +480,7 @@ async function loadScript() {
     warnings.appendChild(el('div', 'chk ' + (warning.severity || 'warning'), warning.message));
   });
 
-  const approved = Boolean(script.approved_at);
+  // `approved` is already computed above for the status badge.
   $('approve-script-btn').textContent = approved
     ? `Disetujui (v${script.version})`
     : 'Setujui naskah';
@@ -545,11 +635,58 @@ async function loadQuality() {
 
 /* ---------- render ---------- */
 
+/* Encoder picker. Options come from a real probe on the server, so an entry is
+ * only offered when that backend actually works on this machine. */
+async function loadEncoders() {
+  const select = $('render-encoder');
+  const note = $('encoder-note');
+  try {
+    const data = await api('/api/encoders');
+    clear(select);
+    clear(note);
+
+    const auto = el('option', null,
+      data.gpu_available ? 'Otomatis (pakai GPU)' : 'Otomatis (CPU)');
+    auto.value = 'auto';
+    select.appendChild(auto);
+
+    for (const e of data.encoders) {
+      const option = el('option', null,
+        e.available ? e.label : `${e.label} — tidak tersedia`);
+      option.value = e.key;
+      // Keep unavailable backends visible but unselectable: seeing *why* a GPU
+      // is missing is more useful than the option silently not being there.
+      option.disabled = !e.available;
+      if (!e.available && e.detail) option.title = e.detail;
+      select.appendChild(option);
+    }
+    select.value = data.configured || 'auto';
+
+    const active = data.active;
+    note.appendChild(document.createTextNode(
+      data.gpu_available
+        ? `GPU terdeteksi. Aktif: ${active.label}.`
+        : `Tidak ada GPU yang bisa dipakai; render jalan di CPU. ${active.reason}`));
+    state.gpuAvailable = data.gpu_available;
+
+    // Mirror it in the top bar so the encoder is visible without scrolling.
+    const badge = $('encoder-badge');
+    badge.textContent = data.gpu_available ? `GPU · ${active.encoder}` : 'CPU';
+    badge.className = 'badge ' + (data.gpu_available ? 'ok' : 'muted');
+    badge.hidden = false;
+  } catch (err) {
+    note.textContent = 'Tidak bisa memeriksa encoder: ' + err.message;
+  }
+}
+
 async function startRender(kind) {
   const button = kind === 'final' ? $('render-btn') : $('preview-btn');
   button.disabled = true;
   try {
-    const job = await api(`/api/projects/${state.projectId}/render`, { method: 'POST', body: { kind } });
+    const encoder = $('render-encoder').value || 'auto';
+    const job = await api(`/api/projects/${state.projectId}/render`, {
+      method: 'POST', body: { kind, encoder },
+    });
     toast(`Render ${kind} masuk antrean.`, 'ok');
     $('render-progress').hidden = false;
     pollRender(job.id);
@@ -575,8 +712,16 @@ function pollRender(jobId) {
         $('preview-btn').disabled = false;
         $('render-progress').hidden = true;
         if (job.status === 'succeeded') {
+          // Say which encoder ran. A fallback must never be silent: the user
+          // asked for a GPU and deserves to know it was not used.
+          const enc = job.encoder_hardware ? `GPU ${job.encoder}` : `CPU ${job.encoder}`;
+          const fallback = job.encoder_fell_back ? ` · ${job.encoder_reason}` : '';
           $('render-status').textContent =
-            `Selesai · ${fmt(job.duration)} · ${job.width}x${job.height} · sha ${job.checksum.slice(0, 12)}`;
+            `Selesai · ${fmt(job.duration)} · ${job.width}x${job.height} · ${enc}`
+            + ` · sha ${job.checksum.slice(0, 12)}${fallback}`;
+          if (job.encoder_fell_back) {
+            toast('Render selesai di CPU: GPU yang diminta tidak tersedia.', 'error', 7000);
+          }
           showOutput(job);
           toast('Render selesai.', 'ok');
         } else {
@@ -893,11 +1038,18 @@ async function loadByok() {
   }
 }
 
-$('byok-toggle').addEventListener('click', () => {
-  const body = $('byok-body');
+$('settings-toggle').addEventListener('click', () => {
+  const body = $('settings-body');
   body.hidden = !body.hidden;
-  $('byok-toggle').setAttribute('aria-expanded', String(!body.hidden));
-  $('byok-toggle').textContent = body.hidden ? 'Atur kunci' : 'Tutup';
+  $('settings-toggle').setAttribute('aria-expanded', String(!body.hidden));
+  $('settings-toggle').textContent = body.hidden ? 'Buka pengaturan' : 'Tutup';
+  // Load the heavier panels only when the section is first opened, so the
+  // initial page render stays cheap on a slow machine.
+  if (!body.hidden && !state.settingsLoaded) {
+    state.settingsLoaded = true;
+    loadEncoderTable().catch(() => {});
+    loadChannels().catch(() => {});
+  }
 });
 
 $('byok-kind').addEventListener('change', () => {
@@ -998,6 +1150,356 @@ $('byok-form').addEventListener('submit', async (event) => {
     toast(err.message, 'error');
     button.disabled = false;
   }
+});
+
+/* ---------- analysis (FR-03, exposed in the UI from v1.3) ----------
+ *
+ * The script is generated from this data, so letting the user correct a
+ * misdetected character or twist here is the cheapest way to improve the final
+ * video. Previously the endpoints existed but nothing called them.
+ */
+
+function linesToList(value) {
+  return value.split('\n').map((s) => s.trim()).filter(Boolean);
+}
+
+async function loadAnalysis() {
+  const notes = $('analysis-notes');
+  clear(notes);
+  let analysis;
+  try {
+    analysis = await api(`/api/projects/${state.projectId}/analysis`);
+  } catch (_) {
+    notes.textContent = 'Belum ada analisa. Jalankan “Buat draft otomatis” atau “Analisa ulang”.';
+    $('event-count').textContent = '0';
+    clear($('events-list'));
+    return;
+  }
+  state.analysis = analysis;
+
+  $('an-conflict').value = analysis.main_conflict || '';
+  $('an-twist').value = analysis.twist || '';
+  $('an-cliff').value = analysis.cliffhanger || '';
+  $('an-characters').value = (analysis.characters || [])
+    .map((c) => c.name).filter(Boolean).join('\n');
+  $('an-locations').value = (analysis.locations || []).join('\n');
+
+  const list = $('events-list');
+  clear(list);
+  const events = analysis.events || [];
+  $('event-count').textContent = String(events.length);
+  events.forEach((event) => {
+    const item = el('div', 'item');
+    const main = el('div', 'item-main');
+    main.appendChild(el('div', 'item-title', event.text || ''));
+    main.appendChild(el('div', 'item-meta', `jenis: ${event.kind || 'event'}`));
+    item.appendChild(main);
+    list.appendChild(item);
+  });
+
+  const lowConfidence = analysis.low_confidence_notes || [];
+  if (lowConfidence.length) {
+    lowConfidence.forEach((note) => {
+      notes.appendChild(el('div', 'item-meta', '• ' + note));
+    });
+  } else {
+    notes.textContent = 'Analisa siap. Tidak ada catatan ketidakpastian.';
+  }
+}
+
+$('analysis-run-btn').addEventListener('click', () => withBusy(
+  $('analysis-run-btn'), 'Menganalisa…', async () => {
+    try {
+      await api(`/api/projects/${state.projectId}/analysis`, { method: 'POST' });
+      toast('Analisa selesai.', 'ok');
+      await loadAnalysis();
+    } catch (err) { toast(err.message, 'error'); }
+  }));
+
+$('analysis-save-btn').addEventListener('click', () => withBusy(
+  $('analysis-save-btn'), 'Menyimpan…', async () => {
+    // Keep the roles and citations the analyser found; only the name changed.
+    const previous = (state.analysis && state.analysis.characters) || [];
+    const characters = linesToList($('an-characters').value).map((name) => {
+      const match = previous.find((c) => c.name === name);
+      return match || { name, role: '', aliases: [] };
+    });
+    const body = {
+      main_conflict: $('an-conflict').value.trim(),
+      twist: $('an-twist').value.trim(),
+      cliffhanger: $('an-cliff').value.trim(),
+      characters,
+      locations: linesToList($('an-locations').value),
+    };
+    try {
+      await api(`/api/projects/${state.projectId}/analysis`, { method: 'PATCH', body });
+      toast('Analisa disimpan. Buat ulang naskah agar perubahan terpakai.', 'ok');
+      await loadAnalysis();
+    } catch (err) { toast(err.message, 'error'); }
+  }));
+
+/* ---------- script version history (v1.3) ---------- */
+
+async function loadScriptVersions() {
+  const box = $('script-versions');
+  clear(box);
+  try {
+    const versions = await api(`/api/projects/${state.projectId}/scripts`);
+    if (!versions.length) {
+      box.appendChild(el('p', 'hint', 'Belum ada versi naskah.'));
+      return;
+    }
+    versions.forEach((version) => {
+      const item = el('div', 'item');
+      const main = el('div', 'item-main');
+      main.appendChild(el('div', 'item-title', `Versi ${version.version}`));
+      main.appendChild(el('div', 'item-meta',
+        `${fmt(version.estimated_duration)} · ${version.word_count} kata`
+        + ` · mesin ${version.generator}`));
+      item.appendChild(main);
+      item.appendChild(el('span', 'badge ' + (version.approved_at ? 'ok' : 'muted'),
+        version.approved_at ? 'disetujui' : 'draft'));
+      box.appendChild(item);
+    });
+  } catch (_) {
+    box.appendChild(el('p', 'hint', 'Riwayat belum tersedia.'));
+  }
+}
+
+/* ---------- render history (v1.3) ---------- */
+
+async function loadRenderHistory() {
+  const box = $('render-history');
+  clear(box);
+  try {
+    const jobs = await api(`/api/projects/${state.projectId}/render`);
+    if (!jobs.length) {
+      box.appendChild(el('p', 'hint', 'Belum ada render.'));
+      return;
+    }
+    jobs.forEach((job) => {
+      const item = el('div', 'item');
+      const main = el('div', 'item-main');
+      main.appendChild(el('div', 'item-title', `${job.kind} · percobaan ${job.attempt}`));
+      const bits = [job.status];
+      if (job.duration) bits.push(fmt(job.duration));
+      if (job.encoder) bits.push(job.encoder_hardware ? `GPU ${job.encoder}` : `CPU ${job.encoder}`);
+      if (job.encoder_fell_back) bits.push('fallback ke CPU');
+      if (job.error_code) bits.push(job.error_code);
+      main.appendChild(el('div', 'item-meta', bits.join(' · ')));
+      item.appendChild(main);
+
+      const good = job.status === 'succeeded';
+      item.appendChild(el('span', 'badge ' + (good ? 'ok' : job.status === 'failed' ? 'bad' : 'muted'),
+        job.status));
+      box.appendChild(item);
+    });
+  } catch (_) { /* none yet */ }
+}
+
+/* ---------- publish readiness + history (v1.3) ---------- */
+
+$('readiness-btn').addEventListener('click', () => withBusy(
+  $('readiness-btn'), 'Memeriksa…', loadReadiness));
+
+async function loadReadiness() {
+  const box = $('readiness-status');
+  clear(box);
+  try {
+    // Shape from publish.can_publish(): { ready, reason, checks }.
+    const data = await api(`/api/projects/${state.projectId}/publish/readiness`);
+    box.appendChild(el('span', 'badge ' + (data.ready ? 'ok' : 'bad'),
+      data.ready ? 'siap diunggah' : 'belum siap'));
+
+    if (data.reason) {
+      box.appendChild(el('div', 'item-meta', 'Penghalang: ' + data.reason));
+    } else if (data.ready) {
+      box.appendChild(document.createTextNode(' Semua prasyarat terpenuhi.'));
+    }
+    if (data.checks) {
+      box.appendChild(el('div', 'item-meta',
+        `${data.checks.total} pemeriksaan · ${data.checks.errors} error · `
+        + `${data.checks.warnings} warning`));
+    }
+  } catch (err) {
+    box.textContent = 'Tidak bisa memeriksa kesiapan: ' + err.message;
+  }
+}
+
+async function loadPublications() {
+  const box = $('publications-list');
+  clear(box);
+  try {
+    const rows = await api(`/api/projects/${state.projectId}/publications`);
+    if (!rows.length) {
+      box.appendChild(el('div', 'empty', 'Belum ada riwayat publikasi.'));
+      return;
+    }
+    rows.forEach((row) => {
+      const item = el('div', 'item');
+      const main = el('div', 'item-main');
+      main.appendChild(el('div', 'item-title', row.video_title || '(tanpa judul)'));
+      main.appendChild(el('div', 'item-meta',
+        `${row.privacy_status} · ${row.upload_status}`
+        + (row.youtube_video_id ? ` · id ${row.youtube_video_id}` : ' · dry-run')
+        + (row.error_message ? ` · ${row.error_message}` : '')));
+      item.appendChild(main);
+
+      const actions = el('div', 'row-actions');
+      if (row.upload_status === 'failed') {
+        const retry = el('button', 'btn secondary small', 'Coba lagi');
+        retry.type = 'button';
+        retry.addEventListener('click', () => withBusy(retry, 'Mengulang…', async () => {
+          try {
+            await api(`/api/publications/${row.id}/retry`, { method: 'POST' });
+            toast('Unggahan diulang.', 'ok');
+            await loadPublications();
+          } catch (err) { toast(err.message, 'error'); }
+        }));
+        actions.appendChild(retry);
+      }
+      if (row.youtube_video_id) {
+        const stats = el('button', 'btn secondary small', 'Sinkron statistik');
+        stats.type = 'button';
+        stats.addEventListener('click', () => withBusy(stats, 'Menyinkron…', async () => {
+          try {
+            const data = await api(`/api/publications/${row.id}/stats/sync`, { method: 'POST' });
+            toast(data && data.available === false
+              ? 'Statistik belum tersedia (mode dry-run).'
+              : 'Statistik diperbarui.', data && data.available === false ? 'error' : 'ok');
+            await loadPublications();
+          } catch (err) { toast(err.message, 'error'); }
+        }));
+        actions.appendChild(stats);
+      }
+      if (actions.childNodes.length) item.appendChild(actions);
+      box.appendChild(item);
+    });
+  } catch (_) { /* none yet */ }
+}
+
+/* ---------- YouTube channels (v1.3) ---------- */
+
+async function loadChannels() {
+  const box = $('channels-list');
+  clear(box);
+  try {
+    const rows = await api('/api/youtube/channels');
+    if (!rows.length) {
+      box.appendChild(el('div', 'empty', 'Belum ada channel terhubung.'));
+      return;
+    }
+    rows.forEach((row) => {
+      const item = el('div', 'item');
+      const main = el('div', 'item-main');
+      main.appendChild(el('div', 'item-title', row.channel_title || row.channel_id || 'Channel'));
+      main.appendChild(el('div', 'item-meta',
+        row.revoked ? 'akses dicabut' : 'terhubung'));
+      item.appendChild(main);
+
+      const remove = el('button', 'btn secondary small', 'Putuskan');
+      remove.type = 'button';
+      remove.addEventListener('click', async () => {
+        if (!window.confirm(`Putuskan channel ${row.channel_title || row.channel_id}?`)) return;
+        try {
+          await api(`/api/youtube/channels/${row.id}`, { method: 'DELETE' });
+          toast('Channel diputuskan.', 'ok');
+          await loadChannels();
+        } catch (err) { toast(err.message, 'error'); }
+      });
+      item.appendChild(remove);
+      box.appendChild(item);
+    });
+  } catch (err) {
+    box.appendChild(el('p', 'hint', 'Tidak bisa memuat channel: ' + err.message));
+  }
+}
+
+$('refresh-channels-btn').addEventListener('click', () => withBusy(
+  $('refresh-channels-btn'), 'Memuat…', loadChannels));
+
+/* ---------- encoder capability table (v1.3) ---------- */
+
+async function loadEncoderTable() {
+  const box = $('encoder-table');
+  clear(box);
+  try {
+    const data = await api('/api/encoders');
+    const table = el('table');
+    const head = el('tr');
+    ['Encoder', 'Jenis', 'Status'].forEach((h) => head.appendChild(el('th', null, h)));
+    table.appendChild(head);
+
+    data.encoders.forEach((e) => {
+      const row = el('tr');
+      row.appendChild(el('td', null, e.label));
+      row.appendChild(el('td', null, e.hardware ? 'GPU' : 'CPU'));
+      const status = el('td');
+      status.appendChild(el('span', 'badge ' + (e.available ? 'ok' : 'muted'),
+        e.available ? 'siap' : 'tidak tersedia'));
+      if (!e.available && e.detail) {
+        status.appendChild(el('div', 'item-meta', e.detail));
+      }
+      row.appendChild(status);
+      table.appendChild(row);
+    });
+    box.appendChild(table);
+  } catch (err) {
+    box.appendChild(el('p', 'hint', 'Tidak bisa memuat daftar encoder: ' + err.message));
+  }
+}
+
+/* ---------- project actions (v1.3) ---------- */
+
+$('duplicate-project-btn').addEventListener('click', () => withBusy(
+  $('duplicate-project-btn'), 'Menduplikat…', async () => {
+    if (!state.projectId) { toast('Pilih proyek dulu.', 'error'); return; }
+    try {
+      const copy = await api(`/api/projects/${state.projectId}/duplicate`, { method: 'POST' });
+      toast('Proyek diduplikat beserta materinya.', 'ok');
+      state.projectId = copy.id;
+      await loadProjects();
+    } catch (err) { toast(err.message, 'error'); }
+  }));
+
+$('delete-project-btn').addEventListener('click', async () => {
+  if (!state.projectId) { toast('Pilih proyek dulu.', 'error'); return; }
+  const select = $('project-select');
+  const name = select.options[select.selectedIndex]
+    ? select.options[select.selectedIndex].textContent : 'proyek ini';
+  if (!window.confirm(
+    `Hapus ${name}? Semua materi, naskah, dan hasil render ikut terhapus. `
+    + 'Tindakan ini tidak bisa dibatalkan.')) return;
+  try {
+    await api(`/api/projects/${state.projectId}`, { method: 'DELETE' });
+    toast('Proyek dihapus.', 'ok');
+    state.projectId = null;
+    await loadProjects();
+  } catch (err) { toast(err.message, 'error'); }
+});
+
+$('cancel-project-btn').addEventListener('click', () => {
+  $('project-form').hidden = true;
+});
+
+/* ---------- step navigation ---------- */
+
+$('steps-nav').addEventListener('click', (event) => {
+  const chip = event.target.closest('.step-chip');
+  if (!chip) return;
+  const target = document.getElementById(chip.dataset.target);
+  if (!target) return;
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // Move focus too, so keyboard and screen-reader users follow the jump.
+  target.setAttribute('tabindex', '-1');
+  target.focus({ preventScroll: true });
+});
+
+/* ---------- character counter ---------- */
+
+$('src-text').addEventListener('input', () => {
+  const count = $('src-text').value.length;
+  $('src-count').textContent = String(count);
 });
 
 /* ---------- boot ---------- */

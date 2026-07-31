@@ -162,6 +162,7 @@ app/
     resolver.py     picks BYOK vs env vs offline per stage
     timeline.py     scene planning, subtitle timing
     render.py       FFmpeg pipeline
+    encoders.py     CPU/GPU encoder detection and flags
     policy.py       rights + transformative-use gates
     quality.py      pre-publication checks
     pipeline.py     stage orchestration
@@ -175,6 +176,46 @@ scripts/
 docs/               architecture, API, operations, PRD
 tests/              units, API, end-to-end
 ```
+
+## Interface
+
+Neobrutalism with a pastel palette: thick black borders, hard offset shadows,
+flat pastel fills, buttons that visibly sink when pressed. Eight colour-coded
+steps with a jump-to nav.
+
+All text is a single near-black ink and every pastel sits behind it as a
+background, so **every combination clears WCAG 2.1 AAA (7:1)** — the lowest is
+8.4:1. Those ratios are computed from the CSS variables in a test, so a future
+colour tweak cannot quietly break readability.
+
+Built for weak hardware: no framework, no build step, no web fonts, no CDN. No
+blur effects, and transitions only touch `transform` and `box-shadow` so they
+never trigger layout. Long lists use `content-visibility` to skip off-screen
+work. Async actions are guarded against double-submit and always show a spinner
+with a verb, because a slow machine should never look frozen.
+
+Details and the full contrast table: [docs/UI.md](docs/UI.md).
+
+## GPU rendering (optional)
+
+Encoding is the slowest stage, and the only one a GPU meaningfully accelerates.
+Pick an encoder per render in the UI (**6. Render → Encoder**), or set a default
+with `MS_VIDEO_ENCODER=auto`.
+
+Supported: `libx264` (CPU, always works), NVENC (NVIDIA), Quick Sync (Intel),
+VAAPI (AMD/Intel on Linux), VideoToolbox (Apple).
+
+```bash
+curl -s localhost:8000/api/encoders | jq .   # what this machine can actually do
+```
+
+Detection runs a real one-frame encode rather than trusting `ffmpeg -encoders`,
+which lists `h264_nvenc` whether or not a GPU exists. An unavailable GPU never
+fails a render: it falls back to CPU and records why, in the job and the UI.
+
+Expect 5–15x faster encoding on a GPU, with 10–30% larger files at similar
+quality. Image prep, Ken Burns, and subtitles stay on the CPU and become the new
+bottleneck. Details in [docs/GPU.md](docs/GPU.md).
 
 ## Bring your own key (BYOK)
 
@@ -228,6 +269,8 @@ Being direct about what this does not do:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the pipeline fits together
 - [docs/BYOK.md](docs/BYOK.md) — bring your own key: setup and security model
+- [docs/GPU.md](docs/GPU.md) — CPU/GPU encoding, requirements, troubleshooting
+- [docs/UI.md](docs/UI.md) — design language, contrast table, UX decisions
 - [docs/API.md](docs/API.md) — every endpoint with examples
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each release
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — running, troubleshooting, backups

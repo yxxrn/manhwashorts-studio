@@ -50,6 +50,35 @@ subtitle font, an FFmpeg build without `zoompan` or `libass`).
 {"provider": "espeak", "voices": [{"id": "id", "label": "Indonesian (espeak)"}]}
 ```
 
+### `GET /api/encoders`
+
+Which video encoders work on this machine. Unauthenticated: static machine
+capability, no user data. Conceptual guide in [GPU.md](GPU.md).
+
+Each backend is probed by encoding one real frame, because every FFmpeg build
+lists `h264_nvenc` whether or not a GPU is present. Cached per process.
+
+```json
+{
+  "configured": "auto",
+  "gpu_available": false,
+  "active": {
+    "encoder": "cpu", "label": "CPU (libx264)", "codec": "libx264",
+    "hardware": false, "requested": "auto", "fell_back": false,
+    "reason": "no working GPU encoder found; using CPU"
+  },
+  "encoders": [
+    {"key": "nvenc", "label": "NVIDIA GPU (NVENC)", "codec": "h264_nvenc",
+     "hardware": true, "available": false,
+     "detail": "NVIDIA driver not loadable. Install the driver, or check nvidia-smi works",
+     "notes": "Needs an NVIDIA GPU (GTX 900+) with a driver the FFmpeg build can load."}
+  ]
+}
+```
+
+`detail` is the useful field when a backend is unavailable: it carries the actual
+FFmpeg failure, not a guess.
+
 ## BYOK credentials
 
 Bring your own key for the AI stages. Conceptual guide in [BYOK.md](BYOK.md).
@@ -401,8 +430,18 @@ Common blocking codes: `rights.undeclared_assets`, `policy.not_transformative`,
 
 `POST /api/projects/{id}/render` with `{"kind": "final"}` or `"preview"`.
 
+| Field | Default | Notes |
+|---|---|---|
+| `kind` | `final` | `preview` skips quality gating and encodes fast |
+| `encoder` | `auto` | `auto \| cpu \| nvenc \| qsv \| vaapi \| videotoolbox` |
+
 A **final** render requires quality checks to pass; blocking errors return 422
 listing them. Returns a job immediately and renders in the background.
+
+`encoder` is validated against a strict pattern, so a typo like `nvnec` returns
+422 rather than silently becoming a CPU render. The choice is stored on the job
+and resolved by whichever machine does the encoding, which may be a separate
+worker. See [GPU.md](GPU.md).
 
 `GET …/render/{job_id}` to poll:
 
@@ -414,7 +453,19 @@ listing them. Returns a job immediately and renders in the background.
 ```
 
 `status` ∈ `queued | running | succeeded | failed`. On success you also get
-`duration`, `width`, `height`, `checksum`, `output_key`, `subtitle_key`.
+`duration`, `width`, `height`, `checksum`, `output_key`, `subtitle_key`, plus the
+encoder that actually ran:
+
+```json
+{
+  "encoder_requested": "nvenc", "encoder": "cpu",
+  "encoder_hardware": false, "encoder_fell_back": true,
+  "encoder_reason": "NVIDIA GPU (NVENC) unavailable (NVIDIA driver not loadable…); fell back to CPU"
+}
+```
+
+`encoder_requested` and `encoder` differ exactly when a GPU was unavailable. The
+render still succeeds — a missing GPU slows a render, it does not fail one.
 
 `POST …/render/{job_id}/retry` queues a fresh attempt and preserves the failed
 job for the audit trail.

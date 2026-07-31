@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
 <title>{{ app_name }}</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -13,7 +14,8 @@
   <h1>{{ app_name }} <span class="version">v{{ version }}</span></h1>
   <div class="topbar-right">
     <span id="health-badge" class="badge" role="status" aria-live="polite">memeriksa…</span>
-    <span id="user-badge" class="badge muted"></span>
+    <span id="encoder-badge" class="badge muted" hidden></span>
+    <span id="user-badge" class="badge muted" hidden></span>
     <button type="button" id="logout-btn" class="btn-link" hidden>Keluar</button>
   </div>
 </header>
@@ -44,23 +46,38 @@
   <!-- ============ STUDIO ============ -->
   <div id="studio" hidden>
 
-    <!-- BYOK: bring your own key (v1.1) -->
-    <section class="card" aria-labelledby="byok-heading">
+    <!-- Step navigation: jump straight to a stage instead of scrolling. -->
+    <nav aria-label="Tahapan produksi">
+      <ul class="steps" id="steps-nav">
+        <li><button type="button" class="step-chip" data-target="mat-heading">1 · Materi</button></li>
+        <li><button type="button" class="step-chip" data-target="draft-heading">2 · Draft</button></li>
+        <li><button type="button" class="step-chip" data-target="analysis-heading">3 · Analisa</button></li>
+        <li><button type="button" class="step-chip" data-target="script-heading">4 · Naskah</button></li>
+        <li><button type="button" class="step-chip" data-target="tl-heading">5 · Timeline</button></li>
+        <li><button type="button" class="step-chip" data-target="q-heading">6 · Kualitas</button></li>
+        <li><button type="button" class="step-chip" data-target="r-heading">7 · Render</button></li>
+        <li><button type="button" class="step-chip" data-target="pub-heading">8 · Publikasi</button></li>
+      </ul>
+    </nav>
+
+    <!-- ---------- settings: BYOK + encoder ---------- -->
+    <section class="card" aria-labelledby="settings-heading">
       <div class="row-actions">
-        <h2 id="byok-heading" class="grow">Kunci AI kamu (BYOK)</h2>
-        <button type="button" id="byok-toggle" class="btn secondary"
-                aria-expanded="false" aria-controls="byok-body">Atur kunci</button>
+        <h2 id="settings-heading" class="grow">Pengaturan</h2>
+        <button type="button" id="settings-toggle" class="btn secondary"
+                aria-expanded="false" aria-controls="settings-body">Buka pengaturan</button>
       </div>
 
       <div id="byok-active" class="summary" aria-live="polite"></div>
 
-      <div id="byok-body" hidden>
+      <div id="settings-body" hidden>
+        <h3>Kunci AI kamu (BYOK)</h3>
         <p class="hint">
           Pakai API key sendiri untuk analisa, highlight, penulisan naskah, dan
-          narasi. Key disimpan terenkripsi di mesin ini, tidak pernah dikirim
-          ke mana pun selain penyedia yang kamu pilih, dan tidak pernah
-          ditampilkan lagi setelah disimpan. Tanpa key, aplikasi tetap jalan
-          memakai mesin offline (rules + espeak-ng).
+          narasi. Key disimpan terenkripsi di mesin ini, tidak pernah dikirim ke
+          mana pun selain penyedia yang kamu pilih, dan tidak pernah ditampilkan
+          lagi setelah disimpan. Tanpa key, aplikasi tetap jalan memakai mesin
+          offline (rules + espeak-ng).
         </p>
 
         <form id="byok-form" class="grid2">
@@ -104,18 +121,45 @@
 
         <h3>Kunci tersimpan</h3>
         <div id="byok-list" class="list" role="region" aria-live="polite"></div>
+
+        <hr>
+
+        <h3>Channel YouTube</h3>
+        <p class="hint">
+          {% if youtube_enabled %}
+          Channel yang terhubung dipakai untuk mengunggah.
+          {% else %}
+          OAuth belum dikonfigurasi, jadi aplikasi berjalan dalam mode dry-run.
+          {% endif %}
+        </p>
+        <div class="row-actions">
+          <button type="button" id="connect-yt-btn" class="btn secondary">Hubungkan channel</button>
+          <button type="button" id="refresh-channels-btn" class="btn secondary">Muat ulang</button>
+        </div>
+        <div id="channels-list" class="list" role="region" aria-live="polite"></div>
+
+        <hr>
+
+        <h3>Mesin render</h3>
+        <div id="encoder-table"></div>
       </div>
     </section>
 
+    <!-- ---------- projects ---------- -->
     <section class="card" aria-labelledby="projects-heading">
       <h2 id="projects-heading">Proyek</h2>
       <div class="row-actions">
-        <label for="project-select" class="inline">Pilih proyek
+        <label for="project-select" class="inline grow">Pilih proyek
           <select id="project-select"></select>
         </label>
+      </div>
+      <div class="row-actions">
         <button type="button" id="refresh-projects" class="btn secondary">Muat ulang</button>
         <button type="button" id="new-project-toggle" class="btn">Proyek baru</button>
+        <button type="button" id="duplicate-project-btn" class="btn secondary">Duplikat</button>
+        <button type="button" id="delete-project-btn" class="btn danger">Hapus</button>
       </div>
+      <div id="project-meta" class="summary" aria-live="polite"></div>
 
       <form id="project-form" class="grid2" hidden>
         <label for="p-title">Judul proyek *
@@ -154,6 +198,7 @@
         </label>
         <div class="row-actions">
           <button type="submit" class="btn">Buat proyek</button>
+          <button type="button" id="cancel-project-btn" class="btn secondary">Batal</button>
         </div>
       </form>
     </section>
@@ -161,7 +206,7 @@
     <section id="workspace" hidden>
 
       <!-- STEP 1: material + rights -->
-      <section class="card" aria-labelledby="mat-heading">
+      <section class="card step-1" aria-labelledby="mat-heading">
         <h2 id="mat-heading">1. Materi sumber &amp; hak pakai</h2>
         <p class="warn">
           Hanya unggah materi yang kamu miliki, lisensikan, atau sudah diizinkan.
@@ -173,6 +218,7 @@
             <textarea id="src-text" rows="7" required minlength="40"
               placeholder="Tulis atau tempel rangkuman chapter di sini…"></textarea>
           </label>
+          <p class="hint"><span id="src-count">0</span> karakter</p>
           <fieldset>
             <legend>Deklarasi hak</legend>
             <div class="grid2">
@@ -215,12 +261,12 @@
           <button type="submit" class="btn">Unggah</button>
         </form>
 
-        <h3>Aset</h3>
-        <div id="assets-list" class="list" role="region" aria-live="polite"></div>
+        <h3>Aset (<span id="asset-count">0</span>)</h3>
+        <div id="assets-list" class="list long" role="region" aria-live="polite"></div>
       </section>
 
       <!-- STEP 2: draft -->
-      <section class="card" aria-labelledby="draft-heading">
+      <section class="card step-2" aria-labelledby="draft-heading">
         <h2 id="draft-heading">2. Buat draft</h2>
         <p class="hint">Menjalankan analisis cerita, naskah, voice-over, timeline, dan subtitle.</p>
         <div class="row-actions">
@@ -230,10 +276,46 @@
         <div id="draft-summary" class="summary" aria-live="polite"></div>
       </section>
 
-      <!-- STEP 3: script review -->
-      <section class="card" aria-labelledby="script-heading">
-        <h2 id="script-heading">3. Tinjau naskah</h2>
+      <!-- STEP 3: analysis (FR-03) -->
+      <section class="card step-3" aria-labelledby="analysis-heading">
+        <h2 id="analysis-heading">3. Analisa cerita</h2>
+        <p class="hint">
+          Fakta yang diekstrak dari materimu. Boleh disunting: naskah dibuat dari
+          data ini, jadi memperbaiki di sini memperbaiki hasil akhirnya.
+        </p>
+        <div class="row-actions">
+          <button type="button" id="analysis-run-btn" class="btn secondary">Analisa ulang</button>
+          <button type="button" id="analysis-save-btn" class="btn">Simpan suntingan</button>
+        </div>
+        <div id="analysis-notes" class="summary" aria-live="polite"></div>
+        <form id="analysis-form" class="grid2">
+          <label for="an-conflict" class="span2">Konflik utama
+            <textarea id="an-conflict" rows="2" maxlength="500"></textarea>
+          </label>
+          <label for="an-twist" class="span2">Twist
+            <textarea id="an-twist" rows="2" maxlength="500"></textarea>
+          </label>
+          <label for="an-cliff" class="span2">Cliffhanger
+            <textarea id="an-cliff" rows="2" maxlength="500"></textarea>
+          </label>
+          <label for="an-characters">Karakter (satu per baris)
+            <textarea id="an-characters" rows="4"></textarea>
+          </label>
+          <label for="an-locations">Lokasi (satu per baris)
+            <textarea id="an-locations" rows="4"></textarea>
+          </label>
+        </form>
+        <details>
+          <summary>Kejadian terdeteksi (<span id="event-count">0</span>)</summary>
+          <div id="events-list" class="list small long"></div>
+        </details>
+      </section>
+
+      <!-- STEP 4: script review -->
+      <section class="card step-4" aria-labelledby="script-heading">
+        <h2 id="script-heading">4. Tinjau naskah</h2>
         <p class="hint">Centang “kunci” agar bagian itu tidak berubah saat naskah dibuat ulang.</p>
+        <div id="script-status" class="summary" aria-live="polite"></div>
         <div id="hook-options"></div>
         <div id="script-sections"></div>
         <div id="script-warnings" class="warnings" aria-live="polite"></div>
@@ -242,25 +324,29 @@
           <button type="button" id="approve-script-btn" class="btn">Setujui naskah</button>
           <button type="button" id="voice-btn" class="btn secondary">Buat ulang voice-over</button>
         </div>
+        <details>
+          <summary>Riwayat versi naskah</summary>
+          <div id="script-versions" class="list small"></div>
+        </details>
       </section>
 
-      <!-- STEP 4: timeline -->
-      <section class="card" aria-labelledby="tl-heading">
-        <h2 id="tl-heading">4. Timeline &amp; subtitle</h2>
+      <!-- STEP 5: timeline -->
+      <section class="card step-5" aria-labelledby="tl-heading">
+        <h2 id="tl-heading">5. Timeline &amp; subtitle</h2>
         <div class="row-actions">
           <button type="button" id="timeline-btn" class="btn secondary">Bangun ulang timeline</button>
           <a id="srt-link" class="btn secondary" href="#" download>Unduh SRT</a>
         </div>
-        <div id="timeline-list" class="list"></div>
+        <div id="timeline-list" class="list long"></div>
         <details>
           <summary>Subtitle (<span id="cue-count">0</span> cue)</summary>
-          <div id="cues-list" class="list small"></div>
+          <div id="cues-list" class="list small long"></div>
         </details>
       </section>
 
-      <!-- STEP 5: quality -->
-      <section class="card" aria-labelledby="q-heading">
-        <h2 id="q-heading">5. Pemeriksaan kualitas</h2>
+      <!-- STEP 6: quality -->
+      <section class="card step-6" aria-labelledby="q-heading">
+        <h2 id="q-heading">6. Pemeriksaan kualitas</h2>
         <div class="row-actions">
           <button type="button" id="quality-btn" class="btn">Jalankan pemeriksaan</button>
         </div>
@@ -268,21 +354,29 @@
         <div id="quality-list" class="list"></div>
       </section>
 
-      <!-- STEP 6: render -->
-      <section class="card" aria-labelledby="r-heading">
-        <h2 id="r-heading">6. Render</h2>
+      <!-- STEP 7: render -->
+      <section class="card step-7" aria-labelledby="r-heading">
+        <h2 id="r-heading">7. Render</h2>
         <div class="row-actions">
+          <label for="render-encoder" class="inline">Encoder
+            <select id="render-encoder"></select>
+          </label>
           <button type="button" id="render-btn" class="btn">Render final</button>
           <button type="button" id="preview-btn" class="btn secondary">Render preview</button>
         </div>
+        <p id="encoder-note" class="hint"></p>
         <div id="render-status" class="summary" aria-live="polite"></div>
         <progress id="render-progress" value="0" max="100" hidden>0%</progress>
         <div id="render-output"></div>
+        <details>
+          <summary>Riwayat render</summary>
+          <div id="render-history" class="list small long"></div>
+        </details>
       </section>
 
-      <!-- STEP 7: publish -->
-      <section class="card" aria-labelledby="pub-heading">
-        <h2 id="pub-heading">7. Publikasi</h2>
+      <!-- STEP 8: publish -->
+      <section class="card step-7" aria-labelledby="pub-heading">
+        <h2 id="pub-heading">8. Publikasi</h2>
         {% if not youtube_enabled %}
         <p class="warn">
           Mode dry-run: YouTube OAuth belum dikonfigurasi, jadi tidak ada video
@@ -290,9 +384,10 @@
         </p>
         {% endif %}
         <div class="row-actions">
+          <button type="button" id="readiness-btn" class="btn secondary">Cek kesiapan</button>
           <button type="button" id="metadata-btn" class="btn secondary">Isi metadata otomatis</button>
-          <button type="button" id="connect-yt-btn" class="btn secondary">Hubungkan YouTube</button>
         </div>
+        <div id="readiness-status" class="summary" aria-live="polite"></div>
         <form id="publish-form" class="grid2">
           <label for="pub-title">Judul video
             <input type="text" id="pub-title" maxlength="100">
@@ -319,6 +414,9 @@
           </div>
         </form>
         <div id="publish-status" class="summary" aria-live="polite"></div>
+
+        <h3>Riwayat publikasi</h3>
+        <div id="publications-list" class="list long" role="region" aria-live="polite"></div>
       </section>
 
     </section>

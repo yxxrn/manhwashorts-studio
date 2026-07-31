@@ -22,7 +22,8 @@ from fastapi.templating import Jinja2Templates
 from app.config import BASE_DIR, settings
 from app.db import init_db
 from app.routers import auth, credentials, pipeline, projects, publish
-from app.schemas import HealthOut
+from app.schemas import EncoderCapabilityOut, HealthOut
+from app.services import encoders
 from app.services import render as render_svc
 from app.services import tts as tts_svc
 
@@ -90,6 +91,7 @@ def health() -> dict:
     """Report whether the local environment can actually render."""
     problems = render_svc.check_environment()
     provider = tts_svc.get_provider()
+    encoder = encoders.select()
     return {
         "status": "ok" if not problems else "degraded",
         "version": settings.version,
@@ -99,7 +101,20 @@ def health() -> dict:
         "llm_provider": settings.llm_provider,
         "youtube_enabled": settings.youtube_enabled,
         "problems": problems,
+        "video_encoder": encoder.key,
+        "gpu_encoding": encoder.hardware,
     }
+
+
+@app.get("/api/encoders", response_model=EncoderCapabilityOut, tags=["system"])
+def list_encoders() -> dict:
+    """Which video encoders work on this machine, CPU and GPU.
+
+    Each backend is probed by encoding one real frame, because every FFmpeg build
+    advertises `h264_nvenc` whether or not an NVIDIA card is present. Results are
+    cached for the process lifetime.
+    """
+    return encoders.describe()
 
 
 @app.get("/api/voices", tags=["system"])

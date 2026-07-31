@@ -684,12 +684,32 @@ def override_warning(
 
 
 def enqueue_render(
-    db: Session, project_id: str, kind: str = "final", actor_id: str = ""
+    db: Session,
+    project_id: str,
+    kind: str = "final",
+    actor_id: str = "",
+    encoder: str = "auto",
 ) -> RenderJob:
-    """Queue a render. Final renders require passing quality checks."""
+    """Queue a render. Final renders require passing quality checks.
+
+    ``encoder`` is stored on the job rather than resolved now: the worker may run
+    on a different machine than the API, so the GPU probe has to happen where the
+    encoding actually happens.
+    """
     project = get_project(db, project_id)
     if kind not in {"preview", "final"}:
         raise PipelineError("render kind must be 'preview' or 'final'")
+
+    # Reject an unknown name here so the user finds out at request time rather
+    # than discovering a silent CPU fallback after the render.
+    from app.services import encoders as encoders_svc
+
+    requested = (encoder or "auto").strip().lower()
+    if requested != "auto":
+        try:
+            encoders_svc.get_spec(requested)
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
 
     scenes = project_scenes(db, project_id)
     if not scenes:
@@ -704,11 +724,17 @@ def enqueue_render(
                 + "; ".join(r.message for r in blocking[:3])
             )
 
-    job = RenderJob(project_id=project_id, kind=kind, status=JobStatus.QUEUED, stage="queued")
+    job = RenderJob(
+        project_id=project_id,
+        kind=kind,
+        status=JobStatus.QUEUED,
+        stage="queued",
+        encoder_requested=requested,
+    )
     db.add(job)
     project.status = ProjectStatus.RENDERING
     project.error_message = ""
-    audit(db, "render.enqueue", "project", project_id, actor_id, kind=kind)
+    audit(db, "render.enqueue", "project", project_id, actor_id, kind=kind, encoder=requested)
     db.flush()
     return job
 
@@ -791,6 +817,7 @@ def build_render_request(db: Session, job: RenderJob):
         output_path=storage.output_path(job.project_id, filename),
         preview=job.kind == "preview",
         title_text=project.title,
+        encoder=job.encoder_requested or None,
     )
 
 
@@ -849,11 +876,17 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
     job.duration = result.duration
     job.width = result.width
     job.height = result.height
+    job.encoder = result.encoder
+    job.encoder_hardware = result.encoder_hardware
+    job.encoder_fell_back = result.encoder_fell_back
+    job.encoder_reason = result.encoder_reason[:1000]
     project.status = ProjectStatus.READY
     project.error_message = ""
     audit(
         db, "render.succeeded", "render_job", job.id,
         duration=result.duration, size=result.size_bytes,
+        encoder=result.encoder, gpu=result.encoder_hardware,
+        encoder_fell_back=result.encoder_fell_back,
     )
     db.flush()
     db.commit()
@@ -874,6 +907,8 @@ def retry_render(db: Session, job_id: str, actor_id: str = "") -> RenderJob:
         status=JobStatus.QUEUED,
         stage="queued",
         attempt=old.attempt + 1,
+        # Keep the original encoder choice so a retry reproduces the same run.
+        encoder_requested=old.encoder_requested or "auto",
     )
     db.add(job)
     project = get_project(db, old.project_id)

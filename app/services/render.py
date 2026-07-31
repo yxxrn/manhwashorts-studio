@@ -27,6 +27,7 @@ from PIL import Image
 
 from app.config import settings
 from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
+from app.services import encoders
 from app.services.timeline import CueSpec, wrap_caption
 
 
@@ -70,6 +71,9 @@ class RenderRequest:
     music_gain_db: float = -18.0
     title_text: str = ""
     preview: bool = False
+    #: auto | cpu | nvenc | qsv | vaapi | videotoolbox. None uses the configured
+    #: default. An unavailable GPU falls back to CPU rather than failing.
+    encoder: str | None = None
 
 
 @dataclass
@@ -82,6 +86,13 @@ class RenderResult:
     height: int
     checksum: str
     size_bytes: int
+    #: Which encoder actually did the work, so the UI can report CPU vs GPU.
+    encoder: str = "cpu"
+    encoder_label: str = ""
+    encoder_hardware: bool = False
+    #: Set when a requested GPU was unavailable and we fell back.
+    encoder_fell_back: bool = False
+    encoder_reason: str = ""
 
 
 def _run(cmd: list[str], timeout: int = 900, step: str = "ffmpeg") -> str:
@@ -238,8 +249,15 @@ def render_scene_clip(
     width: int,
     height: int,
     fps: int,
+    encoder: encoders.Selection | None = None,
+    preview: bool = False,
 ) -> Path:
-    """Render one silent scene clip."""
+    """Render one silent scene clip.
+
+    ``encoder`` selects CPU or GPU encoding; when omitted the configured default
+    is resolved, so callers and tests can stay unaware of the choice.
+    """
+    selection = encoder or encoders.select()
     duration = scene.duration
     frames = max(2, int(round(duration * fps)))
     motion = _motion_filter(scene.effect, width, height, duration, fps)
@@ -250,9 +268,13 @@ def render_scene_clip(
     if fade > 0.05:
         vf += f",fade=t=in:st=0:d={fade:.2f},fade=t=out:st={duration - fade:.2f}:d={fade:.2f}"
 
+    # VAAPI encodes from GPU surfaces, so the chain must end with an upload.
+    vf = encoders.apply_filter_suffix(selection, vf)
+
     _run(
         [
             settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+            *encoders.input_args(selection),
             # -t must NOT be an input option here: zoompan expands every input
             # frame into d frames, so limiting the input to `duration` seconds
             # of looped stills multiplies the output length. Cap the output with
@@ -262,8 +284,7 @@ def render_scene_clip(
             "-vf", vf,
             "-r", str(fps),
             "-frames:v", str(frames),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-pix_fmt", "yuv420p",
+            *encoders.video_args(selection, preview=preview),
             str(dest),
         ],
         timeout=600,
@@ -361,6 +382,11 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         if progress:
             progress(pct, stage)
 
+    # Resolve the encoder ONCE per render. Probing per scene would spawn a
+    # subprocess for every clip, and a mid-render switch could mix codecs in the
+    # concat stream, which "-c copy" cannot join.
+    selection = encoders.select(request.encoder)
+
     from app.services import storage
 
     work = storage.workspace_dir(request.project_id, "render")
@@ -388,7 +414,10 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             placeholder_image(prepared, width, height, scene.overlay_text or "no image")
 
         clip = work / f"clip{i:03d}.mp4"
-        render_scene_clip(scene, prepared, clip, width, height, fps)
+        render_scene_clip(
+            scene, prepared, clip, width, height, fps,
+            encoder=selection, preview=request.preview,
+        )
         clips.append(clip)
         report(5 + int(45 * (i + 1) / len(request.scenes)), f"scene {i + 1}/{len(request.scenes)}")
 
@@ -417,13 +446,18 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         font_name = "DejaVu Sans"
         ass_path.write_text(build_ass(request.cues, width, height, font_name), encoding="utf-8")
         burned = work / "burned.mp4"
+        # libass draws on CPU frames, so the hardware upload (if any) has to come
+        # after the subtitles filter rather than before it.
+        burn_vf = encoders.apply_filter_suffix(
+            selection, f"subtitles='{_escape_filter_path(ass_path)}'"
+        )
         _run(
             [
                 settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+                *encoders.input_args(selection),
                 "-i", str(silent),
-                "-vf", f"subtitles='{_escape_filter_path(ass_path)}'",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                "-pix_fmt", "yuv420p",
+                "-vf", burn_vf,
+                *encoders.video_args(selection, preview=request.preview),
                 str(burned),
             ],
             timeout=900,
@@ -517,6 +551,11 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         height=info["height"] or height,
         checksum=checksum,
         size_bytes=output.stat().st_size,
+        encoder=selection.key,
+        encoder_label=selection.spec.label,
+        encoder_hardware=selection.hardware,
+        encoder_fell_back=selection.fell_back,
+        encoder_reason=selection.reason,
     )
 
 

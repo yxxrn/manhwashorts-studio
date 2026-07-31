@@ -2,6 +2,195 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.3.0] — 2026-08-01
+
+### Added — neobrutalism UI, pastel palette
+
+Complete visual rebuild plus twelve features that existed in the API but had no
+way to reach them from the interface.
+
+- **Neobrutalism styling**: thick black borders, hard offset shadows with no blur
+  radius, flat pastel fills, buttons that visibly sink when pressed.
+- **Pastel palette on a single ink colour.** All text is `#1a1a2e`; pastels are
+  only ever backgrounds behind it. Every pair clears **WCAG 2.1 AAA (7:1)**, not
+  just AA — the lowest is coral at 8.4:1. Ratios are computed from the CSS
+  variables in a test, so a future colour change cannot quietly break contrast.
+- **Step navigation**: eight chips jump to any stage, moving focus as well as
+  scroll so keyboard and screen-reader users follow.
+- **Colour-coded stages** so the eight-step flow is scannable while scrolling.
+- **`docs/UI.md`** covering the design language, measured contrast table,
+  performance decisions, and the invariants to keep when extending it.
+
+### Added — twelve features the UI could not previously reach
+
+An audit compared every API route against the frontend. These were unreachable:
+
+| Feature | Why it matters |
+|---|---|
+| Analysis view + editor (FR-03) | The script is generated from this data, so correcting a misdetected twist here is the cheapest way to improve the video |
+| Script version history | See what changed between takes |
+| Render history | Which encoder ran, which attempt failed, why |
+| Publish readiness check | Know before uploading, not after |
+| Publication history + retry | A failed upload was previously invisible |
+| Analytics sync | Reports honestly when no data exists |
+| YouTube channel list + disconnect | Connecting worked; reviewing did not |
+| Encoder capability table | Shows *why* a GPU is unavailable |
+| Project duplicate | Reuse settings for the next chapter |
+| Project delete | Was API-only |
+| Project metadata display | Confirm the right chapter at a glance |
+| Source text character counter | The 40-character minimum was invisible |
+
+A test now asserts every pipeline stage is reachable from the UI, so a new
+endpoint cannot ship without a way to use it.
+
+### Added — UX guards for slow hardware
+
+- **Double-submit protection.** On a slow machine a user who sees no feedback
+  clicks again, queueing a second render. Every async action routes through
+  `withBusy()`, which disables the control, shows a spinner, and refuses re-entry.
+- **Nothing waits silently.** Buttons show a spinner and a verb
+  (“Menganalisa…”, “Menyimpan…”) while working.
+- **Destructive actions confirm and say what is lost.**
+- **Empty states instruct** rather than showing a blank list.
+- **Lazy panels**: encoder probing and channel listing run on first open of the
+  settings section, not at boot.
+- **Parallel fetches**: opening a project was eight sequential round trips before
+  the UI settled; the independent ones now run concurrently.
+
+### Changed
+
+- Top bar shows the active encoder (CPU/GPU) alongside health, so it is visible
+  without scrolling.
+- BYOK moved into a unified **Pengaturan** section together with YouTube channels
+  and the encoder table.
+- Script step now shows version, generator, word count, and estimated duration.
+
+### Fixed
+
+Three real bugs, all found by checking the UI against the actual schemas rather
+than assuming:
+
+- **`script.similarity_score` never existed.** The script panel read it and
+  always rendered “0%”. The ratio is computed by the policy gate and reported as
+  a quality check, so it is shown in step 6 instead of invented in step 4.
+- **Publish readiness read the wrong key.** The endpoint returns `reason`
+  (singular) plus a `checks` summary; the UI read `reasons`, so the blocking
+  explanation never appeared.
+- **A stale element id would have crashed the handler chain.** Renaming the BYOK
+  toggle to `settings-toggle` left `app.js` calling `$('byok-toggle')`, which
+  returns `null` — that throws at load and kills every listener registered after
+  it. Now enforced by a test that every `$('id')` exists in the template.
+
+### Accessibility
+
+- Every control has a label, wrapping label, or `aria-label` — enforced by test.
+- Sections are `aria-labelledby` their heading.
+- 3px offset focus ring everywhere; `outline: none` appears nowhere.
+- `prefers-reduced-motion` disables all animation.
+- Colour is never the only signal; severity is always spelled out in text.
+
+Full WCAG conformance still needs manual testing with real assistive technology
+and expert review. What is verified is the measurable part.
+
+### Performance
+
+- No `backdrop-filter`, no `filter: blur()`, no gradients on large surfaces, no
+  web fonts, no CDN requests, no framework runtime.
+- Transitions touch only `transform` and `box-shadow`, never `width`, `height`,
+  `top`, or `all`, which force layout every frame.
+- `content-visibility: auto` on long lists so off-screen rows skip layout and
+  paint.
+- Tests enforce the first two, so the jank cannot creep back.
+
+### Tests
+
+217 passing (was 177). 40 new UI contract tests: element wiring, API field
+existence, XSS guards, measured contrast ratios, labelling, focus visibility,
+live regions, feature coverage, and the performance rules above. They read the
+real CSS and JS files, so they fail if the contract drifts.
+
+## [1.2.0] — 2026-08-01
+
+### Added — CPU/GPU encoder choice
+
+Pick the video encoder per render, or let the app detect one. Encoding is the
+slowest stage and the only one a GPU meaningfully accelerates.
+
+- **Five backends**: `libx264` (CPU), NVENC (NVIDIA), Quick Sync (Intel), VAAPI
+  (AMD/Intel on Linux), VideoToolbox (Apple). Plus `auto`, which prefers a
+  working GPU.
+- **New `app/services/encoders.py`** owning encoder selection and flag
+  construction, so `render.py` never has to know whether work lands on a CPU or
+  a GPU.
+- **`GET /api/encoders`** reports every backend, whether it works here, and *why
+  not* when it does not — usually a driver or permissions problem rather than
+  missing hardware.
+- **Encoder picker in the UI** (6. Render). Unavailable backends stay visible but
+  disabled, with the reason in a tooltip; hiding them would leave users guessing.
+- **`/api/health`** now reports `video_encoder` and `gpu_encoding`.
+- **`MS_VIDEO_ENCODER`** sets a server-wide default.
+- **Per-job persistence**: `encoder_requested` vs `encoder` (what actually ran),
+  plus `encoder_hardware`, `encoder_fell_back`, `encoder_reason`. A retry reuses
+  the original choice so it reproduces the same run.
+- **`docs/GPU.md`** covering requirements per vendor, Docker device passthrough,
+  realistic speedups, and troubleshooting.
+- **Migration `92dae0b434f1`**, verified on a database that already had
+  `render_jobs` rows. Historic jobs are backfilled as CPU renders, which is what
+  they were.
+
+### Changed
+
+- Preview renders now use per-backend fast presets rather than one CPU setting,
+  so a preview is cheap on every encoder.
+- The encoder is resolved **once per render**, not per scene. Probing per clip
+  would spawn a subprocess for every scene, and a mid-render switch could mix
+  codecs in the concat stream, which `-c copy` cannot join.
+- Render jobs store the encoder request rather than a resolved encoder, because
+  the worker may run on a different machine than the API — the GPU probe has to
+  happen where encoding happens.
+
+### Behaviour worth knowing
+
+- **An unavailable GPU never fails a render.** It falls back to CPU, records
+  `encoder_fell_back` with the reason, warns in the UI, and keeps it in the audit
+  log. A slow render beats a failed one, but a silent 20x slowdown is its own bug.
+- **A misspelled encoder is rejected** with `422` instead of quietly becoming a
+  CPU render, which would leave you believing you had GPU encoding.
+- **Detection proves the encoder works.** Every FFmpeg build advertises
+  `h264_nvenc` whether or not a GPU exists, so the app encodes one real frame to
+  a temp file and checks it is non-empty. Results are cached per process.
+- **VAAPI needs a render node**, not just `/dev/dri/card0` — that exists on VMs
+  with a virtual VGA adapter which cannot encode at all.
+- **The GPU only accelerates encoding.** Image prep (Pillow), Ken Burns
+  (`zoompan`), and subtitles (libass) stay on the CPU and become the new
+  bottleneck on a fast GPU.
+
+### Fixed
+
+- **Encoder probe diagnostics were useless.** Two causes: `-f null -` let a
+  broken hardware encoder exit 0 while writing nothing, masking the real error;
+  and the error log was truncated from the *end*, discarding FFmpeg's root-cause
+  first line (`Cannot load libcuda.so.1`) in favour of cascading thread noise.
+  Probes now write a real file and keep the head of the log.
+- **The generated migration would have failed on any populated database.**
+  Autogenerate emitted five `NOT NULL` columns with no `server_default`, which
+  existing `render_jobs` rows cannot satisfy. Added defaults and verified the
+  upgrade against a database containing a row.
+
+### Security
+
+- The encoder name reaches an FFmpeg command line, so it is constrained by regex
+  at the schema (`^(auto|cpu|nvenc|qsv|vaapi|videotoolbox)$`) and re-validated in
+  `enqueue_render`. Values like `cpu; touch /tmp/x` are rejected, and a test
+  confirms nothing reaches a shell.
+
+### Tests
+
+177 passing (was 134). 43 new encoder tests covering the catalogue, probing,
+fallback, flag construction per backend, the HTTP surface, injection rejection,
+and persistence. They pass with or without a GPU: tests that need a specific
+backend construct the selection directly rather than requiring the hardware.
+
 ## [1.1.0] — 2026-08-01
 
 ### Added — BYOK (bring your own key)
@@ -139,5 +328,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.3.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.3.0
+[1.2.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.2.0
 [1.1.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.1.0
 [1.0.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.0.0

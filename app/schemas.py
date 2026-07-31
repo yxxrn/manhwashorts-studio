@@ -318,6 +318,12 @@ class OverrideRequest(BaseModel):
 
 class RenderRequestIn(BaseModel):
     kind: str = Field(default="final", pattern="^(preview|final)$")
+    #: Which encoder to use. "auto" prefers a working GPU; an unavailable GPU
+    #: falls back to CPU rather than failing the render.
+    encoder: str = Field(
+        default="auto",
+        pattern="^(auto|cpu|nvenc|qsv|vaapi|videotoolbox)$",
+    )
 
 
 class RenderJobOut(BaseModel):
@@ -341,6 +347,12 @@ class RenderJobOut(BaseModel):
     attempt: int
     started_at: datetime | None
     completed_at: datetime | None
+    #: Encoder requested vs the one that actually ran (they differ on fallback).
+    encoder_requested: str = "auto"
+    encoder: str = ""
+    encoder_hardware: bool = False
+    encoder_fell_back: bool = False
+    encoder_reason: str = ""
 
 
 class DraftOut(BaseModel):
@@ -527,6 +539,38 @@ class ActiveProvidersOut(BaseModel):
 # --- misc ------------------------------------------------------------------
 
 
+class EncoderOut(BaseModel):
+    """One encoder backend and whether it works on this machine."""
+
+    key: str
+    label: str
+    codec: str
+    hardware: bool
+    available: bool
+    #: Why it is unavailable, when it is not.
+    detail: str = ""
+    notes: str = ""
+
+
+class ActiveEncoderOut(BaseModel):
+    encoder: str
+    label: str
+    codec: str
+    hardware: bool
+    requested: str
+    fell_back: bool
+    reason: str
+
+
+class EncoderCapabilityOut(BaseModel):
+    """Encoder report for the settings UI: what is configured vs what will run."""
+
+    configured: str
+    active: ActiveEncoderOut
+    encoders: list[EncoderOut]
+    gpu_available: bool
+
+
 class HealthOut(BaseModel):
     status: str
     version: str
@@ -536,6 +580,9 @@ class HealthOut(BaseModel):
     llm_provider: str
     youtube_enabled: bool
     problems: list[str]
+    #: Encoder actually in use, e.g. "cpu" or "nvenc".
+    video_encoder: str = "cpu"
+    gpu_encoding: bool = False
 
 
 class MessageOut(BaseModel):

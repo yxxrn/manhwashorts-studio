@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.1.0"
+    version: str = "1.3.0"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
 
@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
     render_workers: int = 1
+    # Which encoder to use: auto | cpu | nvenc | qsv | vaapi | videotoolbox.
+    # "auto" prefers a working GPU and falls back to CPU. An unavailable GPU
+    # never fails a render; it falls back and records why.
+    video_encoder: str = Field(
+        default="auto",
+        description="auto | cpu | nvenc | qsv | vaapi | videotoolbox",
+    )
     subtitle_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
     # --- TTS ---

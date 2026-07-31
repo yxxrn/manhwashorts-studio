@@ -198,6 +198,44 @@ took 258s per 4s scene versus ~4s after removal.
 Work happens in a scratch directory that is wiped on start and removed on
 success, so a failed run never leaves a partial file where publish could find it.
 
+### 6b. Encoder selection (`services/encoders.py`)
+
+Encoding is the only stage a GPU meaningfully accelerates, so the choice is
+isolated in one module and `render.py` never branches on hardware. It asks for
+three things — input flags, output flags, and a filter suffix — and passes them
+through unchanged.
+
+**Detection runs a real encode.** Every FFmpeg build advertises `h264_nvenc`
+whether or not an NVIDIA card exists, so `ffmpeg -encoders` proves nothing. Each
+backend is probed by encoding one frame to a temp file and checking the file is
+non-empty. Two details were learned the hard way:
+
+- `-f null -` is unusable for probing. The null muxer discards frames, so a broken
+  hardware encoder can exit 0 having produced nothing.
+- FFmpeg reports the root cause on its *first* line (`Cannot load libcuda.so.1`)
+  then emits cascading thread and muxer noise. Truncating the log from the end
+  throws away the only useful line.
+
+**Resolution happens once per render, not per scene.** Probing spawns a
+subprocess; doing it per clip would add one per scene. More importantly, a
+mid-render switch could mix codecs across scene clips, and the concat stage uses
+`-c copy`, which cannot join dissimilar streams.
+
+**Fallback is loud.** An unavailable GPU falls back to `libx264` and records
+`encoder_fell_back` plus the reason on the job. A render that silently takes 20x
+longer than the user expected is its own kind of bug. A misspelled encoder *name*,
+by contrast, raises — otherwise a typo would masquerade as working GPU support.
+
+**VAAPI is the awkward one.** It encodes from GPU surfaces, so the CPU-side filter
+chain must end with `format=nv12,hwupload` and `-pix_fmt` must be omitted or it
+fights the upload. That is why `apply_filter_suffix` exists rather than each call
+site appending flags itself. libass draws on CPU frames, so the upload has to come
+*after* the subtitles filter.
+
+Jobs store the *request* (`auto`, `nvenc`, …) rather than a resolved encoder,
+because the worker may run on a different machine than the API. The probe has to
+happen where the encoding happens.
+
 ### 7. Quality gate (`services/quality.py`)
 
 Errors block; warnings are overridable with a recorded reason and actor.

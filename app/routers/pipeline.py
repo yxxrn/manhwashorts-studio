@@ -321,7 +321,7 @@ def enqueue_render(
     user: CurrentUser,
     background: BackgroundTasks,
 ) -> RenderJob:
-    job = _guard(pl.enqueue_render, db, project.id, payload.kind, user.id)
+    job = _guard(pl.enqueue_render, db, project.id, payload.kind, user.id, payload.encoder)
     job_id = job.id
     db.commit()
 

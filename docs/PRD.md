@@ -445,3 +445,77 @@ HTTP, dan klaim keamanan.
   instalasi lokal tetap sederhana, bukan secrets manager. Mitigasi ada di
   `docs/BYOK.md`.
 - Belum ada: rotasi key terjadwal, kuota per proyek, provider embedding/vision.
+
+## 20. Status implementasi v1.2 — pilihan encoder CPU/GPU
+
+Encoding adalah tahap paling lambat dan satu-satunya yang bisa dipercepat GPU.
+
+- **Lima backend**: `libx264` (CPU), NVENC, Quick Sync, VAAPI, VideoToolbox, plus
+  `auto` yang memilih GPU kalau ada.
+- **Semua menghasilkan H.264.** Yang berubah hanya siapa yang mengerjakan
+  encoding, bukan codec-nya. H.265/AV1 sengaja tidak dipakai: YouTube meng-encode
+  ulang apa pun yang diunggah, jadi efisiensi codec upload sebagian besar
+  terbuang, dan `libx265` justru 2–4x lebih lambat di CPU.
+- **Deteksi membuktikan encoder benar-benar jalan** dengan meng-encode satu frame
+  nyata, karena setiap build FFmpeg mengiklankan `h264_nvenc` terlepas dari ada
+  atau tidaknya GPU.
+- **GPU tidak tersedia tidak pernah menggagalkan render** — turun ke CPU dan
+  mencatat alasannya. Sebaliknya, nama encoder salah tulis ditolak `422`.
+
+### Batasan yang diakui
+
+- GPU hanya mempercepat encoding. Persiapan gambar (Pillow), Ken Burns
+  (`zoompan`), dan subtitle (libass) tetap di CPU dan jadi bottleneck baru.
+- File hasil GPU 10–30% lebih besar pada kualitas setara.
+
+## 21. Status implementasi v1.3 — UI neobrutalism + kelengkapan fitur
+
+### Terimplementasi dan teruji
+
+217 test lolos (naik dari 177), 40 di antaranya khusus UI: keterhubungan elemen,
+keberadaan field API, proteksi XSS, rasio kontras terukur, pelabelan, fokus,
+live region, cakupan fitur, dan aturan performa.
+
+- **Neobrutalism pastel.** Semua teks satu warna ink `#1a1a2e`, pastel hanya jadi
+  latar. **Semua kombinasi lolos WCAG 2.1 AAA (7:1)**, terendah 8.4:1. Rasio
+  dihitung dari variabel CSS di dalam test, jadi perubahan warna di masa depan
+  tidak bisa diam-diam merusak keterbacaan.
+- **Dua belas fitur yang sebelumnya tidak terjangkau UI** kini ada, termasuk
+  penyunting hasil analisa (FR-03), riwayat versi naskah, riwayat render, cek
+  kesiapan publikasi, riwayat publikasi + retry, daftar channel YouTube, tabel
+  kapabilitas encoder, duplikat dan hapus proyek.
+- **Test memastikan setiap tahap pipeline terjangkau dari UI**, jadi endpoint baru
+  tidak bisa dirilis tanpa cara memakainya.
+
+### Keputusan untuk mesin lemah
+
+Diuji di VPS yang sama yang merender video (2 vCPU, 3.6 GB):
+
+- Tanpa framework, tanpa build step, tanpa web font, tanpa CDN.
+- Tanpa `backdrop-filter` dan `filter: blur()`. Shadow neobrutalism tanpa blur
+  radius justru yang paling murah dirender.
+- Transisi hanya menyentuh `transform` dan `box-shadow`, tidak pernah `width`,
+  `height`, `top`, atau `all` yang memicu layout tiap frame.
+- `content-visibility: auto` pada daftar panjang.
+- Fetch independen dijalankan paralel; sebelumnya delapan round trip berurutan.
+- Panel berat (probe encoder, daftar channel) dimuat saat pertama dibuka.
+- `withBusy()` menolak klik ganda dan selalu menampilkan spinner bernarasi.
+
+### Bug yang ditemukan saat pengerjaan
+
+Tiga bug nyata, semuanya ketemu karena memeriksa UI terhadap skema sebenarnya:
+
+1. `script.similarity_score` **tidak pernah ada** — panel naskah selalu
+   menampilkan 0%. Rasio itu dihitung policy gate dan dilaporkan sebagai quality
+   check, jadi sekarang ditampilkan di langkah 6.
+2. Readiness membaca key `reasons`, padahal endpoint mengembalikan `reason`
+   tunggal, sehingga penjelasan penghalang tidak pernah muncul.
+3. Mengganti nama tombol BYOK menjadi `settings-toggle` meninggalkan
+   `$('byok-toggle')` di `app.js` — `null.addEventListener` melempar error saat
+   load dan mematikan semua listener setelahnya.
+
+### Batasan yang diakui
+
+- Konformansi WCAG penuh masih butuh pengujian manual dengan teknologi bantu
+  nyata dan tinjauan ahli. Yang diverifikasi di sini adalah bagian terukurnya.
+- Belum ada: tampilan kalender FR-11, ekspor CSV analitik, dan mode gelap.

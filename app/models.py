@@ -356,6 +356,15 @@ class RenderJob(Base, TimestampMixin):
     error_message: Mapped[str] = mapped_column(Text, default="")
     log_tail: Mapped[str] = mapped_column(Text, default="")
     attempt: Mapped[int] = mapped_column(Integer, default=1)
+
+    # Encoder choice (v1.2). ``requested`` is what the caller asked for
+    # (auto | cpu | nvenc | qsv | vaapi | videotoolbox); ``encoder`` is what
+    # actually ran, which differs when a GPU was unavailable and we fell back.
+    encoder_requested: Mapped[str] = mapped_column(String(20), default="auto")
+    encoder: Mapped[str] = mapped_column(String(20), default="")
+    encoder_hardware: Mapped[bool] = mapped_column(Boolean, default=False)
+    encoder_fell_back: Mapped[bool] = mapped_column(Boolean, default=False)
+    encoder_reason: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

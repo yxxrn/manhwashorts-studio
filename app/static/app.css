@@ -1,53 +1,109 @@
-/* ManhwaShorts Studio - dark studio theme.
-   Colour pairs are chosen to hold a >=4.5:1 contrast ratio against their
-   background so text stays readable (WCAG 2.1 AA for body text). */
+/* ManhwaShorts Studio — neobrutalism, pastel palette (v1.3)
+ *
+ * Design rules, and why they also happen to be fast on weak hardware:
+ *
+ * 1. Hard offset shadows (`4px 4px 0`) with NO blur radius. Blurred shadows
+ *    force the compositor to run a gaussian pass per element; a zero-blur
+ *    shadow is a cheap solid rect. Neobrutalism wants hard shadows anyway, so
+ *    the style and the performance goal point the same way.
+ * 2. No `backdrop-filter`, no `filter: blur()`, no gradients on large surfaces.
+ *    Those are the usual culprits behind jank on a 2 vCPU box with no GPU.
+ * 3. Motion is limited to `transform` and `box-shadow` on hover/active only,
+ *    which stay off the layout path. Nothing animates width, height, or top.
+ * 4. Every animation is disabled under `prefers-reduced-motion`.
+ *
+ * Contrast: ALL text is ink (#1a1a2e). Measured against every pastel used as a
+ * background, the lowest ratio is 8.35:1 (coral) and most exceed 11:1, so body
+ * text clears WCAG 2.1 AAA (7:1), not just AA. Muted text is #4a4a60 on paper
+ * (7.98:1). No pastel is ever used for text on another pastel.
+ */
 
 :root {
-  --bg: #14141b;
-  --panel: #1e1e28;
-  --panel-2: #262632;
-  --border: #343442;
-  --text: #f0f0f5;
-  --muted: #a8a8bb;
-  --accent: #7c8cff;
-  --accent-text: #10101a;
-  --ok: #4ec98b;
-  --warn-c: #f0b64a;
-  --err: #ff7b7b;
-  --radius: 10px;
+  /* Ink and paper. Ink is the ONLY text colour. */
+  --ink: #1a1a2e;
+  --paper: #fdf6e3;
+  --card: #ffffff;
+
+  /* Pastels, all verified >=8.3:1 against --ink. */
+  --lemon: #ffe66d;
+  --mint: #a8e6cf;
+  --sky: #a8d8f0;
+  --peach: #ffc4a3;
+  --lilac: #d4b8f0;
+  --rose: #ffb3c6;
+  --lime: #c7f0a8;
+  --coral: #ff9b85;
+  --aqua: #7fdbda;
+  --sand: #f5e6c8;
+
+  /* Semantic roles. */
+  --primary: var(--lemon);
+  --ok: var(--mint);
+  --warn-c: var(--peach);
+  --err: var(--coral);
+  --info: var(--sky);
+
+  /* Muted text: 7.98:1 on paper, so still AAA. */
+  --muted: #4a4a60;
+
+  --border-w: 3px;
+  --radius: 6px;
+  --shadow: 4px 4px 0 var(--ink);
+  --shadow-sm: 2px 2px 0 var(--ink);
+  --shadow-lg: 6px 6px 0 var(--ink);
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Subtle dot grid. A repeating radial is rasterised once and tiled, unlike a
+     full-page gradient which repaints on every scroll. */
+  background-image: radial-gradient(var(--sand) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
+
+/* ---------- accessibility ---------- */
 
 .skip-link {
   position: absolute;
   left: -9999px;
   top: 0;
-  background: var(--accent);
-  color: var(--accent-text);
-  padding: 10px 16px;
+  background: var(--lemon);
+  color: var(--ink);
+  padding: 12px 18px;
+  border: var(--border-w) solid var(--ink);
+  font-weight: 800;
   z-index: 100;
 }
 .skip-link:focus { left: 8px; top: 8px; }
 
-/* Visible focus ring everywhere: keyboard users must be able to see where
-   they are. */
+/* A thick offset ring, not a hairline: keyboard position must be obvious. */
 a:focus-visible,
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
-summary:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 2px;
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 3px;
+  border-radius: 2px;
 }
+
+/* Anyone who asked the OS to calm down gets no motion at all. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------- top bar ---------- */
 
 .topbar {
   display: flex;
@@ -55,112 +111,259 @@ summary:focus-visible {
   justify-content: space-between;
   gap: 12px;
   padding: 14px 20px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  background: var(--lemon);
+  border-bottom: var(--border-w) solid var(--ink);
   flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 50;
 }
-.topbar h1 { font-size: 1.1rem; margin: 0; }
-.version { color: var(--muted); font-weight: 400; font-size: .85rem; }
-.topbar-right { display: flex; align-items: center; gap: 10px; }
+.topbar h1 {
+  font-size: 1.15rem;
+  margin: 0;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+.version {
+  font-weight: 700;
+  font-size: .75rem;
+  background: var(--ink);
+  color: var(--lemon);
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-left: 6px;
+}
+.topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-main { max-width: 900px; margin: 0 auto; padding: 20px; }
+main { max-width: 940px; margin: 0 auto; padding: 22px 20px 60px; }
+
+/* ---------- cards ---------- */
 
 .card {
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: var(--card);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius);
+  box-shadow: var(--shadow);
   padding: 18px 20px;
-  margin-bottom: 18px;
+  margin-bottom: 22px;
 }
-.card h2 { margin: 0 0 4px; font-size: 1.05rem; }
-.card h3 { margin: 18px 0 8px; font-size: .95rem; color: var(--muted); }
+.card > h2 {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+  display: inline-block;
+  background: var(--sky);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 5px 12px;
+}
+/* Step colours make the seven-stage flow scannable at a glance. */
+.card.step-1 > h2 { background: var(--mint); }
+.card.step-2 > h2 { background: var(--sky); }
+.card.step-3 > h2 { background: var(--lilac); }
+.card.step-4 > h2 { background: var(--peach); }
+.card.step-5 > h2 { background: var(--lemon); }
+.card.step-6 > h2 { background: var(--aqua); }
+.card.step-7 > h2 { background: var(--rose); }
 
-label { display: block; margin-bottom: 12px; font-size: .88rem; color: var(--muted); }
+.card h3 {
+  margin: 20px 0 8px;
+  font-size: .9rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+/* ---------- forms ---------- */
+
+label {
+  display: block;
+  margin-bottom: 14px;
+  font-size: .82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  color: var(--ink);
+}
 label.inline { display: inline-block; margin-right: 12px; }
-label.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
-label.check input { width: auto; }
+label.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: .9rem;
+  font-weight: 600;
+  background: var(--sand);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+label.check input { width: auto; margin: 2px 0 0; flex: none; }
 
 input, select, textarea {
   width: 100%;
-  margin-top: 5px;
-  padding: 9px 11px;
-  background: var(--panel-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: var(--card);
+  color: var(--ink);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
   font: inherit;
+  font-weight: 500;
 }
-textarea { resize: vertical; }
+input:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) { background: #fffdf5; }
+input:disabled, select:disabled, textarea:disabled {
+  background: #efece2;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+textarea { resize: vertical; min-height: 90px; }
+/* Checkboxes get the ink treatment so they read as part of the same system. */
+input[type="checkbox"] { accent-color: var(--ink); width: 20px; height: 20px; }
+input[type="file"] { padding: 8px; background: var(--sand); font-weight: 600; }
 
 fieldset {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 14px;
-  margin: 0 0 14px;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin: 0 0 16px;
+  background: var(--paper);
 }
-legend { color: var(--muted); font-size: .85rem; padding: 0 6px; }
+legend {
+  font-size: .78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: 3px 10px;
+  background: var(--lilac);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+}
 
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
 .grid2 .span2, .grid2 .row-actions { grid-column: 1 / -1; }
-@media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+@media (max-width: 680px) { .grid2 { grid-template-columns: 1fr; } }
+
+/* ---------- buttons ---------- */
 
 .btn {
   display: inline-block;
-  padding: 9px 16px;
-  background: var(--accent);
-  color: var(--accent-text);
-  border: 1px solid transparent;
-  border-radius: 8px;
+  padding: 10px 18px;
+  background: var(--primary);
+  color: var(--ink);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
   font: inherit;
-  font-weight: 600;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .02em;
   cursor: pointer;
   text-decoration: none;
+  /* Only transform and shadow animate: both skip layout and paint. */
+  transition: transform .06s ease, box-shadow .06s ease;
 }
-.btn:hover:not(:disabled) { filter: brightness(1.12); }
-.btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn.secondary { background: var(--panel-2); color: var(--text); border-color: var(--border); }
+.btn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow);
+}
+/* The press: the button physically sinks onto the page. */
+.btn:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ink);
+}
+.btn:disabled {
+  background: #e8e4d8;
+  color: var(--muted);
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+}
+.btn.secondary { background: var(--card); }
+.btn.danger { background: var(--err); }
+.btn.small { padding: 6px 12px; font-size: .8rem; }
+
 .btn-link {
-  background: none; border: none; color: var(--accent);
-  cursor: pointer; font: inherit; text-decoration: underline;
+  background: none;
+  border: none;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  padding: 4px;
 }
 
-.row-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin: 10px 0; }
+.row-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  margin: 12px 0;
+}
+
+/* ---------- badges ---------- */
 
 .badge {
+  display: inline-block;
   padding: 3px 10px;
+  border: var(--border-w) solid var(--ink);
   border-radius: 999px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  font-size: .8rem;
+  background: var(--card);
+  font-size: .75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  white-space: nowrap;
 }
-.badge.ok { color: var(--ok); border-color: var(--ok); }
-.badge.bad { color: var(--err); border-color: var(--err); }
-.badge.muted { color: var(--muted); }
+.badge.ok { background: var(--ok); }
+.badge.bad { background: var(--err); }
+.badge.muted { background: var(--sand); }
+.badge.info { background: var(--info); }
+.badge.warn { background: var(--warn-c); }
 
-.hint { color: var(--muted); font-size: .85rem; margin: 4px 0 12px; }
+/* ---------- text helpers ---------- */
 
-/* Lets a heading push sibling buttons to the right of a .row-actions bar. */
+.hint {
+  color: var(--muted);
+  font-size: .85rem;
+  font-weight: 500;
+  margin: 6px 0 14px;
+  line-height: 1.5;
+}
+.hint a { color: var(--ink); font-weight: 700; text-decoration-thickness: 2px; }
 .grow { flex: 1 1 auto; margin: 0; }
 
-/* --accent on --panel measures ~5.6:1, comfortably past the 4.5:1 AA floor. */
-.hint a { color: var(--accent); }
-.hint a:hover, .hint a:focus { text-decoration: underline; }
 .warn {
-  background: rgba(240, 182, 74, .12);
-  border-left: 3px solid var(--warn-c);
-  padding: 10px 12px;
-  border-radius: 6px;
-  font-size: .87rem;
-  margin: 0 0 14px;
+  background: var(--warn-c);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 12px 14px;
+  font-size: .88rem;
+  font-weight: 600;
+  margin: 0 0 16px;
 }
 
-.list { display: flex; flex-direction: column; gap: 8px; }
-.list.small { font-size: .84rem; }
+/* ---------- lists ---------- */
+
+.list { display: flex; flex-direction: column; gap: 10px; }
+.list.small { font-size: .85rem; }
 .item {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  background: var(--card);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 12px 14px;
   display: flex;
   justify-content: space-between;
   gap: 12px;
@@ -168,61 +371,247 @@ legend { color: var(--muted); font-size: .85rem; padding: 0 6px; }
   flex-wrap: wrap;
 }
 .item-main { flex: 1 1 260px; min-width: 0; }
-.item-title { font-weight: 600; word-break: break-word; }
-.item-meta { color: var(--muted); font-size: .82rem; margin-top: 2px; }
+.item-title { font-weight: 800; word-break: break-word; }
+.item-meta {
+  color: var(--muted);
+  font-size: .82rem;
+  font-weight: 500;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 
 .summary {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  background: var(--sand);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  padding: 12px 14px;
   font-size: .87rem;
-  margin: 10px 0;
+  font-weight: 600;
+  margin: 12px 0;
   white-space: pre-wrap;
+  word-break: break-word;
 }
 .summary:empty { display: none; }
-
 .warnings:empty { display: none; }
-.chk { padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--border); background: var(--panel-2); font-size: .86rem; }
-.chk.error { border-left-color: var(--err); }
-.chk.warning { border-left-color: var(--warn-c); }
-.chk.info { border-left-color: var(--ok); }
 
-.section-block { margin-bottom: 14px; }
+/* Quality check rows: colour-coded, but severity is also spelled out in text
+   so the meaning never depends on colour alone. */
+.chk {
+  padding: 10px 12px;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--card);
+  font-size: .86rem;
+  font-weight: 600;
+}
+.chk.error { background: var(--err); }
+.chk.warning { background: var(--warn-c); }
+.chk.info { background: var(--info); }
+
+/* ---------- script sections ---------- */
+
+.section-block {
+  margin-bottom: 16px;
+  background: var(--paper);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
 .section-block header {
-  display: flex; justify-content: space-between; align-items: center;
-  gap: 10px; margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 .section-label {
   text-transform: uppercase;
   letter-spacing: .06em;
   font-size: .75rem;
-  color: var(--accent);
-  font-weight: 700;
+  font-weight: 900;
+  background: var(--lemon);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  padding: 3px 10px;
 }
 .section-block textarea { margin-top: 0; }
 
-progress { width: 100%; height: 16px; margin: 8px 0; }
+/* ---------- progress ---------- */
 
-hr { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
+progress {
+  width: 100%;
+  height: 22px;
+  margin: 10px 0;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--card);
+  /* Reset the UA look so the bar can be styled on both engines. */
+  -webkit-appearance: none;
+  appearance: none;
+}
+progress::-webkit-progress-bar { background: var(--card); }
+progress::-webkit-progress-value { background: var(--mint); }
+progress::-moz-progress-bar { background: var(--mint); }
 
-details summary { cursor: pointer; color: var(--muted); font-size: .88rem; padding: 6px 0; }
+/* ---------- misc ---------- */
 
-video { width: 100%; max-width: 320px; border-radius: 8px; margin-top: 10px; background: #000; }
+hr { border: none; border-top: var(--border-w) solid var(--ink); margin: 20px 0; }
+
+details {
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 0 12px;
+  margin-bottom: 12px;
+}
+details[open] { padding-bottom: 12px; }
+details summary {
+  cursor: pointer;
+  font-size: .85rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  padding: 10px 0;
+}
+
+video {
+  width: 100%;
+  max-width: 300px;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  margin-top: 12px;
+  background: #000;
+  display: block;
+}
+
+table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+th, td {
+  border: 2px solid var(--ink);
+  padding: 8px 10px;
+  text-align: left;
+}
+th {
+  background: var(--sky);
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: .75rem;
+  letter-spacing: .03em;
+}
+
+/* ---------- toast ---------- */
 
 .toast {
   position: fixed;
-  bottom: 20px;
+  bottom: 24px;
   left: 50%;
-  transform: translateX(-50%);
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
-  padding: 12px 18px;
-  border-radius: 8px;
-  max-width: 90vw;
+  background: var(--lemon);
+  color: var(--ink);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 14px 20px;
+  max-width: min(90vw, 460px);
+  font-weight: 700;
+  font-size: .9rem;
   z-index: 200;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+  /* translateX is part of the animation, so it lives in the keyframes to avoid
+     fighting the transform. */
+  animation: toast-in .18s ease-out;
 }
-.toast.error { border-left-color: var(--err); }
-.toast.ok { border-left-color: var(--ok); }
+.toast.error { background: var(--err); }
+.toast.ok { background: var(--ok); }
+
+@keyframes toast-in {
+  from { transform: translate(-50%, 12px); opacity: 0; }
+  to { transform: translate(-50%, 0); opacity: 1; }
+}
+.toast { transform: translateX(-50%); }
+
+/* ---------- step flow indicator ---------- */
+
+.steps {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding: 0;
+  list-style: none;
+}
+.steps li {
+  flex: 1 1 auto;
+  min-width: 96px;
+}
+.step-chip {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 8px 6px;
+  background: var(--card);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  font-size: .72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--ink);
+  transition: transform .06s ease, box-shadow .06s ease;
+}
+.step-chip:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow); }
+.step-chip[aria-current="true"] { background: var(--lemon); }
+.step-chip.done { background: var(--mint); }
+
+/* ---------- empty states ---------- */
+
+.empty {
+  text-align: center;
+  padding: 24px 16px;
+  background: var(--paper);
+  border: var(--border-w) dashed var(--ink);
+  border-radius: var(--radius);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* ---------- spinner ---------- */
+
+/* A rotating border, not an SVG or multi-element shape: one composited layer. */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 3px solid var(--ink);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+  vertical-align: -2px;
+  margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 560px) {
+  main { padding: 16px 12px 48px; }
+  .card { padding: 14px 14px; }
+  :root { --border-w: 2px; --shadow: 3px 3px 0 var(--ink); --shadow-sm: 2px 2px 0 var(--ink); }
+  .topbar { padding: 12px 14px; }
+  .topbar h1 { font-size: 1rem; }
+  .row-actions .btn { flex: 1 1 auto; }
+}
+
+/* Long lists (assets, cues, publications) skip layout and paint work while
+   off-screen. Harmless where unsupported. */
+@supports (content-visibility: auto) {
+  .list.long > .item {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 64px;
+  }
+}
