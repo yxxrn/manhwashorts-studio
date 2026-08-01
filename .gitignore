@@ -44,3 +44,6 @@ Thumbs.db
 dist/
 build/
 node_modules/
+
+# Downloaded installers (cloudflared etc)
+*.deb

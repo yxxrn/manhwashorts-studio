@@ -571,6 +571,18 @@ class EncoderCapabilityOut(BaseModel):
     gpu_available: bool
 
 
+class DiskUsageOut(BaseModel):
+    """Data directory usage (v1.3.1). Lets an operator see growth early."""
+
+    tmp_bytes: int = 0
+    output_bytes: int = 0
+    storage_bytes: int = 0
+    total_bytes: int = 0
+    total_human: str = ""
+    max_bytes: int = 0
+    over_limit: bool = False
+
+
 class HealthOut(BaseModel):
     status: str
     version: str
@@ -583,6 +595,8 @@ class HealthOut(BaseModel):
     #: Encoder actually in use, e.g. "cpu" or "nvenc".
     video_encoder: str = "cpu"
     gpu_encoding: bool = False
+    #: Empty when the usage scan could not run; health must never fail on it.
+    disk_usage: DiskUsageOut | None = None
 
 
 class MessageOut(BaseModel):

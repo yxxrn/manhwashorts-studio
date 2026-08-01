@@ -2,6 +2,72 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.3.1] — 2026-08-01
+
+Operational release: remote access, automatic disk cleanup, and two fixes on the
+path an AI agent uses to drive the app.
+
+### Added
+
+- **`app/services/cleanup.py`** — age-based cleanup for `data/tmp` and
+  reference-checked cleanup for `data/output`, plus a `max_data_gb` soft limit
+  that triggers a more aggressive pass. Stdlib only; SQLAlchemy is imported
+  lazily so the module stays cheap enough to run from the lifespan hook.
+- **Cleanup runs on startup** and is exposed as a CLI:
+  `python -m app.cleanup [--usage|--dry-run|--force]`.
+- **`disk_usage` in `GET /api/health`** so growth is visible without a separate
+  admin endpoint, with a `DiskUsageOut` schema to match.
+- **`docs/AGENT.md`** — how to drive the whole pipeline over REST, including the
+  two gotchas below and the guardrails that deliberately stay in an agent's way.
+- **Cloudflare tunnel** wiring so the UI is reachable from a browser.
+
+### Fixed
+
+- **Secure cookies locked out local API clients.** Setting
+  `MS_ENVIRONMENT=production` marked every session cookie `Secure`, and a client
+  on `http://127.0.0.1:8000` will not send a `Secure` cookie back — so login
+  returned `200` and the very next call returned `401`. This broke exactly the
+  agent-driven path the project is built for. `Secure` is now decided per request
+  from `X-Forwarded-Proto` (which Cloudflare sets) rather than from a global
+  setting, so the browser over HTTPS and a loopback agent over HTTP both work at
+  once, each with the correct flag.
+- **Session cookies were not marked `Secure` at all** before that, despite being
+  served over HTTPS through the tunnel.
+- **Cleanup ignored orphaned scratch.** `cleanup_tmp` only looked at age, so
+  `data/tmp/<project_id>/` left behind by a deleted project was kept until the
+  retention window expired. In practice 139 of 140 directories were orphans —
+  **99% of `data/tmp`, 1.2 GB** — all zero days old and therefore untouched.
+  Orphans are now deleted immediately, since a project that no longer exists can
+  never use them. Directories for live projects still wait out the window,
+  because a render may be in flight. If the database cannot be read, orphan
+  deletion is skipped rather than guessed.
+- **`GET /api/health` silently lost its schema.** Adding `disk_usage` dropped
+  `response_model=HealthOut`, so the endpoint was no longer validated and an
+  agent parsing it had no guaranteed shape. Restored, with `disk_usage` declared.
+
+### Changed
+
+- `.gitignore` now excludes `*.deb` so downloaded installers cannot be committed.
+
+### Tests
+
+226 passing (was 217). 9 new agent-contract tests: session survival over plain
+HTTP, `Secure` flag driven by `X-Forwarded-Proto` (including a comma-separated
+proxy chain), the health response model, a full create → upload → draft →
+approve → quality pass over REST, and OpenAPI discoverability.
+
+### Measured on the 2 vCPU / 3.6 GB box
+
+```
+idle     143 MB   (uvicorn 97 MB + cloudflared 39 MB)
+render   602 MB peak, ffmpeg 389 MB, load 1.49/2
+         102s for a 49.5s video (~2x realtime)
+agent    draft 1.7s · render 45s · whole REST flow under a minute
+```
+
+Encoding is CPU-bound, so more RAM would not help. Memory returns to idle after
+a render, with no leak.
+
 ## [1.3.0] — 2026-08-01
 
 ### Added — neobrutalism UI, pastel palette
@@ -328,6 +394,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.3.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.3.1
 [1.3.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.3.0
 [1.2.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.2.0
 [1.1.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.1.0

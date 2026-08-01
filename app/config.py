@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.3.0"
+    version: str = "1.3.1"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
 
@@ -85,6 +85,14 @@ class Settings(BaseSettings):
         description="auto | cpu | nvenc | qsv | vaapi | videotoolbox",
     )
     subtitle_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+    # --- Cleanup (Fase 0.1 - keep the project light) ---
+    # How old scratch files in data/tmp can be before being deleted.
+    tmp_retention_days: int = 2
+    # How old final videos in data/output can be before being deleted (only if not referenced).
+    output_retention_days: int = 45
+    # Soft limit. When exceeded, cleanup will be more aggressive on next run.
+    max_data_gb: int = 12
 
     # --- TTS ---
     tts_provider: str = Field(default="espeak", description="espeak | null | http")

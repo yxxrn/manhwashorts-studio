@@ -271,6 +271,7 @@ Being direct about what this does not do:
 - [docs/BYOK.md](docs/BYOK.md) — bring your own key: setup and security model
 - [docs/GPU.md](docs/GPU.md) — CPU/GPU encoding, requirements, troubleshooting
 - [docs/UI.md](docs/UI.md) — design language, contrast table, UX decisions
+- [docs/AGENT.md](docs/AGENT.md) — driving the whole pipeline from an AI agent
 - [docs/API.md](docs/API.md) — every endpoint with examples
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each release
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — running, troubleshooting, backups

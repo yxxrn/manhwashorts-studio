@@ -38,6 +38,14 @@ logger = logging.getLogger("manhwashorts")
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     init_db()
+
+    # Fase 0.1: light cleanup on every start (cheap age-based only)
+    try:
+        from app.services import cleanup as cleanup_svc
+        cleanup_svc.cleanup_on_startup()
+    except Exception as exc:
+        logger.warning("cleanup on startup failed: %s", exc)
+
     problems = render_svc.check_environment()
     if problems:
         for problem in problems:
@@ -88,10 +96,24 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
 
 @app.get("/api/health", response_model=HealthOut, tags=["system"])
 def health() -> dict:
-    """Report whether the local environment can actually render."""
+    """Report whether the local environment can actually render.
+
+    Fase 0.1 addition: includes lightweight disk usage (data/tmp + data/output)
+    so operators can see growth without a separate endpoint.
+    The import is lazy to keep the module light.
+    """
     problems = render_svc.check_environment()
     provider = tts_svc.get_provider()
     encoder = encoders.select()
+
+    # Fase 0.1: lightweight disk usage (lazy import)
+    disk_usage: dict = {}
+    try:
+        from app.services import cleanup as cleanup_mod
+        disk_usage = cleanup_mod.get_data_usage()
+    except Exception:
+        pass
+
     return {
         "status": "ok" if not problems else "degraded",
         "version": settings.version,
@@ -103,6 +125,7 @@ def health() -> dict:
         "problems": problems,
         "video_encoder": encoder.key,
         "gpu_encoding": encoder.hardware,
+        "disk_usage": disk_usage,
     }
 
 
