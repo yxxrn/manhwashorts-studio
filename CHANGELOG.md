@@ -2,6 +2,19 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.3] — 2026-08-01
+
+- **Smoother panel motion** — still images now enter FFmpeg at one frame per
+  second, zoom/pan coordinates are quantized to even pixels, and the motion
+  filter remains responsible for the full 30 fps output. This removes source
+  frame duplication and subpixel chroma micro-jitter while preserving movement.
+- Added all 24 official English OmniVoice featured archetypes to the sample
+  selection workflow: gender, age, pitch, accent/style, and stable instruct.
+- Rendered a 128.54s voice montage for direct listening.
+
+Motion regression render passed: 1080x1920, 29.6s, H.264 + AAC, checksum
+`7b66ccb0587597a4acb5e6153ee5967747c0b63b4a7aeb1c6c9270ba6f090696`.
+
 ## [1.5.2] — 2026-08-01
 
 - Restored the requested **Indonesian default** for new projects and voice IDs.
@@ -514,6 +527,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.3]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.3
 [1.5.2]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.2
 [1.5.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.1
 [1.5.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.0

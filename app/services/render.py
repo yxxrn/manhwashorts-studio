@@ -217,43 +217,43 @@ def _motion_filter(effect: str, width: int, height: int, duration: float, fps: i
     if effect == "kenburns_in":
         return (
             f"zoompan=z='min(1.0+0.12*on/{frames},1.12)'"
-            f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+            f":x='trunc((iw/2-(iw/zoom/2))/2)*2':y='trunc((ih/2-(ih/zoom/2))/2)*2'"
             f":d={frames}:s={width}x{height}:fps={fps}"
         )
     if effect == "kenburns_out":
         return (
             f"zoompan=z='max(1.12-0.12*on/{frames},1.0)'"
-            f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+            f":x='trunc((iw/2-(iw/zoom/2))/2)*2':y='trunc((ih/2-(ih/zoom/2))/2)*2'"
             f":d={frames}:s={width}x{height}:fps={fps}"
         )
     if effect == "pan_right":
         return (
-            f"zoompan=z='1.08':x='(iw-iw/zoom)*on/{frames}'"
-            f":y='ih/2-(ih/zoom/2)'"
+            f"zoompan=z='1.08':x='trunc((iw-iw/zoom)*on/{frames}/2)*2'"
+            f":y='trunc((ih/2-(ih/zoom/2))/2)*2'"
             f":d={frames}:s={width}x{height}:fps={fps}"
         )
     if effect == "pan_left":
         return (
-            f"zoompan=z='1.08':x='(iw-iw/zoom)*(1-on/{frames})'"
-            f":y='ih/2-(ih/zoom/2)'"
+            f"zoompan=z='1.08':x='trunc((iw-iw/zoom)*(1-on/{frames})/2)*2'"
+            f":y='trunc((ih/2-(ih/zoom/2))/2)*2'"
             f":d={frames}:s={width}x{height}:fps={fps}"
         )
     if effect == "push_up":
         return (
-            f"zoompan=z='1.08':x='iw/2-(iw/zoom/2)'"
-            f":y='(ih-ih/zoom)*(1-on/{frames})'"
+            f"zoompan=z='1.08':x='trunc((iw/2-(iw/zoom/2))/2)*2'"
+            f":y='trunc((ih-ih/zoom)*(1-on/{frames})/2)*2'"
             f":d={frames}:s={width}x{height}:fps={fps}"
         )
     if effect == "push_down":
         return (
-            f"zoompan=z='1.08':x='iw/2-(iw/zoom/2)'"
-            f":y='(ih-ih/zoom)*on/{frames}'"
+            f"zoompan=z='1.08':x='trunc((iw/2-(iw/zoom/2))/2)*2'"
+            f":y='trunc((ih-ih/zoom)*on/{frames}/2)*2'"
             f":d={frames}:s={width}x{height}:fps={fps}"
         )
     if effect == "pan_diagonal":
         return (
-            f"zoompan=z='1.08':x='(iw-iw/zoom)*on/{frames}'"
-            f":y='(ih-ih/zoom)*(1-on/{frames})'"
+            f"zoompan=z='1.08':x='trunc((iw-iw/zoom)*on/{frames}/2)*2'"
+            f":y='trunc((ih-ih/zoom)*(1-on/{frames})/2)*2'"
             f":d={frames}:s={width}x{height}:fps={fps}"
         )
     # Unknown effect: fall back to a safe static frame.
@@ -297,7 +297,7 @@ def render_scene_clip(
             # frame into d frames, so limiting the input to `duration` seconds
             # of looped stills multiplies the output length. Cap the output with
             # -frames:v instead, which yields exactly the frames we want.
-            "-loop", "1",
+            "-framerate", "1", "-loop", "1",
             "-i", str(prepared_image),
             "-vf", vf,
             "-r", str(fps),
