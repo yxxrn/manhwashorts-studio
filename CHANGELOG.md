@@ -2,6 +2,15 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.1] — 2026-08-01
+
+- Default project language and voice changed to **English** for the overseas
+  target. Explicit `en`/`id` selection only; no image-language autodetection.
+- OmniVoice HTTP TTS now receives the project language from the explicit voice
+  choice instead of a static server environment value.
+- Rebuilt the English validation timeline after script edits, preventing stale
+  subtitle/audio cues from surviving a script update.
+
 ## [1.5.0] — 2026-08-01
 
 ### Added
@@ -498,6 +507,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.1
 [1.5.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.0
 [1.4.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.4.0
 [1.3.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.3.1

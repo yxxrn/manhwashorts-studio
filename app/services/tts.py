@@ -261,7 +261,8 @@ class HttpProvider:
                 "voice": settings.tts_http_voice or voice_id or "default",
                 "response_format": settings.tts_http_response_format,
                 "speed": max(0.25, min(4.0, speed)),
-                "language": settings.tts_http_language,
+                # Explicit project voice choice; never infer from image content.
+                "language": "id" if voice_id.startswith("id") else "en",
                 "instruct": settings.tts_http_instruct,
             }
         else:

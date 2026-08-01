@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -53,11 +54,11 @@ class ProjectCreate(BaseModel):
     manhwa_title: str = Field(default="", max_length=200)
     chapter: str = Field(default="", max_length=60)
     content_type: ContentType = ContentType.CHAPTER_RECAP
-    language: str = Field(default="id", max_length=10)
+    language: Literal["en", "id"] = "en"
     spoiler_level: SpoilerLevel = SpoilerLevel.MEDIUM
     narration_style: NarrationStyle = NarrationStyle.DRAMATIC
     target_duration: int = Field(default=60, ge=10, le=60)
-    voice_id: str = Field(default="id", max_length=80)
+    voice_id: str = Field(default="en", max_length=80)
     series_name: str = Field(default="", max_length=200)
     cta_text: str = Field(default="", max_length=500)
     banned_words: list[str] = Field(default_factory=list)
@@ -70,7 +71,7 @@ class ProjectUpdate(BaseModel):
     manhwa_title: str | None = Field(default=None, max_length=200)
     chapter: str | None = Field(default=None, max_length=60)
     content_type: ContentType | None = None
-    language: str | None = Field(default=None, max_length=10)
+    language: Literal["en", "id"] | None = None
     spoiler_level: SpoilerLevel | None = None
     narration_style: NarrationStyle | None = None
     target_duration: int | None = Field(default=None, ge=10, le=60)
