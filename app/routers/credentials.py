@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.constants import CredentialKind
 from app.deps import CurrentUser, CurrentWorkspace, DbSession
+from app.routing import CommitRoute
 from app.schemas import (
     ActiveProvidersOut,
     CredentialCreate,
@@ -33,7 +34,7 @@ from app.services import credentials as cred_svc
 from app.services import providers as pv
 from app.services import resolver as resolver_svc
 
-router = APIRouter(prefix="/api/credentials", tags=["credentials"])
+router = APIRouter(prefix="/api/credentials", tags=["credentials"], route_class=CommitRoute)
 
 
 def _bad_request(exc: Exception) -> HTTPException:

@@ -2,6 +2,69 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.4.0] — 2026-08-01
+
+Webtoon pages are one long vertical strip. This release stops throwing most of
+them away, and fixes a persistence bug found while proving it on real pages.
+
+### Added
+
+- **`app/services/strips.py`** — slices a tall page into consecutive 9:16 pieces
+  instead of cropping it once. Each cut is nudged to the most gutter-like row
+  nearby (flat *and* near-white/near-black), so cuts land between panels rather
+  than through faces and speech balloons. Pillow only, no new dependencies.
+- **`ingest_image_parts` / `ingest_upload_parts`** — one uploaded page can now
+  become several assets, numbered `_p01`, `_p02`, … so lexical order matches
+  reading order. Slicing never bypasses content verification, and any slicing
+  failure falls back to keeping the original image.
+- **Settings**: `strip_slice_enabled` (kill switch), `strip_slice_min_ratio`
+  (2.5, clear of both a normal portrait panel and 9:16 itself),
+  `strip_slice_max_parts` (12).
+
+### Fixed
+
+- **The database commit landed after the response was sent.** `get_db` committed
+  in its post-`yield` teardown, and since FastAPI 0.106 that runs *after* the
+  client already has its reply. So `POST /api/auth/register` returned 201 and the
+  caller's very next request opened a fresh session that could not see the
+  uncommitted row — `401 Account not found`. Measured against a live server:
+  **12/12 failures with no delay, 0/6 with a 1.5s delay**, and a separate
+  read-only connection confirmed the row was absent at the exact moment the 201
+  arrived. Browsers never noticed (a human is slower than a millisecond) and the
+  test suite never noticed (`TestClient` completes teardown before returning), so
+  only a fast programmatic client — the AI-agent path this project targets —
+  could hit it. Now `app/routing.py::CommitRoute` commits after the handler and
+  **before** replying, for every writing route. A handler that raised still rolls
+  back.
+- **Piece count no longer assumes rounding down is safer.** Flooring keeps every
+  piece at least a frame tall, which sounds right but crops *height* — on a
+  720x3667 page that discards 30% of the story, while rounding up costs ~5% of
+  the side margins. Both candidates are now scored and the better one wins.
+- **`getdata()` deprecation** — replaced with `tobytes()`, which works on every
+  Pillow version (`getdata()` is removed in Pillow 14 and its replacement does
+  not exist on older ones). Slicing output verified byte-identical.
+
+### Measured on real webtoon pages
+
+Four pages at 1:4.60–1:6.07 became 12 panels, and retention of page content rose
+from **29–39% to 86–95%**:
+
+```
+720x4372  1:6.07  ->  3 pieces   29.3% -> 87.8%
+720x3667  1:5.09  ->  3 pieces   34.9% -> 94.6%
+720x3309  1:4.60  ->  3 pieces   38.7% -> 86.2%
+720x3642  1:5.06  ->  3 pieces   35.1% -> 94.8%
+```
+
+Rendered end to end over REST with no UI: 45.1s video, 1080x1920, 8 scenes.
+
+### Tests
+
+248 passing (was 226). 22 new: 16 covering slice geometry, gutter snapping,
+retention, the part-count chooser, the kill switch and ingest/upload integration;
+6 covering commit visibility, including a structural check that every writing
+route uses `CommitRoute` so a future router cannot silently reintroduce the bug.
+
 ## [1.3.1] — 2026-08-01
 
 Operational release: remote access, automatic disk cleanup, and two fixes on the
@@ -394,6 +457,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.4.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.4.0
 [1.3.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.3.1
 [1.3.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.3.0
 [1.2.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.2.0

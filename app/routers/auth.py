@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.deps import CurrentUser, CurrentWorkspace, DbSession, issue_session
 from app.models import User, Workspace
+from app.routing import CommitRoute
 from app.schemas import (
     LoginRequest,
     MessageOut,
@@ -18,7 +19,7 @@ from app.schemas import (
 from app.security import hash_password, verify_password
 from app.services.pipeline import audit
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+router = APIRouter(prefix="/api/auth", tags=["auth"], route_class=CommitRoute)
 
 
 def _is_secure_request(request: Request) -> bool:

@@ -23,6 +23,7 @@ from app.models import (
     SubtitleCue,
     TimelineScene,
 )
+from app.routing import CommitRoute
 from app.schemas import (
     AnalysisOut,
     AnalysisUpdate,
@@ -45,7 +46,9 @@ from app.schemas import (
 from app.services import pipeline as pl
 from app.services import quality as quality_svc
 
-router = APIRouter(prefix="/api/projects/{project_id}", tags=["pipeline"])
+router = APIRouter(
+    prefix="/api/projects/{project_id}", tags=["pipeline"], route_class=CommitRoute
+)
 
 
 def _guard(fn, *args, **kwargs):

@@ -215,15 +215,98 @@ def ingest_image(project_id: str, filename: str, data: bytes) -> IngestedAsset:
     )
 
 
-def ingest_upload(project_id: str, filename: str, mime_type: str, data: bytes) -> IngestedAsset:
-    """Dispatch on declared type, then verify against real content."""
-    suffix = Path(filename).suffix.lower()
-    if suffix in {".jpg", ".jpeg", ".png", ".webp"} or mime_type.startswith("image/"):
-        return ingest_image(project_id, filename, data)
-    if suffix in {".txt", ".md", ".markdown", ".pdf", ".docx"} or (
+def ingest_image_parts(project_id: str, filename: str, data: bytes) -> list[IngestedAsset]:
+    """Ingest an image, splitting a tall webtoon strip into scene-sized pieces.
+
+    A webtoon page is one long vertical strip. Forcing it into a single 9:16
+    frame keeps under a third of the page, so a whole story beat can vanish.
+    Tall images are therefore sliced (see ``app.services.strips``) and each piece
+    is stored as its own asset, preserving reading order.
+
+    Always returns at least one asset. Anything not tall enough to slice comes
+    back as a single item holding the original bytes, so callers need no special
+    case. If slicing fails for any reason the original image is kept — losing a
+    panel would be worse than an unsliced one.
+    """
+    _check_size(data)
+    # Validate first: never slice bytes that are not a real image.
+    _sniff_image(data)
+
+    from app.services import strips
+
+    try:
+        pieces = strips.slice_strip(data)
+    except Exception:  # noqa: BLE001 - never lose a panel over a slicing bug
+        pieces = []
+
+    if len(pieces) <= 1:
+        return [ingest_image(project_id, filename, data)]
+
+    stem = Path(filename).stem or "panel"
+    suffix = Path(filename).suffix or ".jpg"
+    assets: list[IngestedAsset] = []
+    for number, piece in enumerate(pieces, start=1):
+        # Zero-padded so lexical order matches reading order.
+        part_name = f"{stem}_p{number:02d}{suffix}"
+        mime, width, height = _sniff_image(piece.data)
+        obj = storage.put_bytes(f"projects/{project_id}/images", part_name, piece.data)
+        assets.append(
+            IngestedAsset(
+                type=AssetType.IMAGE,
+                original_filename=part_name,
+                mime_type=mime,
+                storage_key=obj.storage_key,
+                size_bytes=obj.size_bytes,
+                checksum=obj.checksum,
+                width=width,
+                height=height,
+            )
+        )
+    return assets
+
+
+def _is_image(suffix: str, mime_type: str) -> bool:
+    return suffix in {".jpg", ".jpeg", ".png", ".webp"} or mime_type.startswith("image/")
+
+
+def _is_document(suffix: str, mime_type: str) -> bool:
+    return suffix in {".txt", ".md", ".markdown", ".pdf", ".docx"} or (
         mime_type in settings.allowed_doc_types
-    ):
-        return ingest_document(project_id, filename, mime_type, data)
-    raise IngestError(
+    )
+
+
+def _unsupported(filename: str) -> IngestError:
+    return IngestError(
         f"unsupported file type: {filename}. Accepted: JPG, PNG, WebP, TXT, MD, PDF, DOCX"
     )
+
+
+def ingest_upload(project_id: str, filename: str, mime_type: str, data: bytes) -> IngestedAsset:
+    """Dispatch on declared type, then verify against real content.
+
+    Single-asset form, kept for callers that want the original image untouched.
+    Use :func:`ingest_upload_parts` to have tall strips sliced.
+    """
+    suffix = Path(filename).suffix.lower()
+    if _is_image(suffix, mime_type):
+        return ingest_image(project_id, filename, data)
+    if _is_document(suffix, mime_type):
+        return ingest_document(project_id, filename, mime_type, data)
+    raise _unsupported(filename)
+
+
+def ingest_upload_parts(
+    project_id: str, filename: str, mime_type: str, data: bytes
+) -> list[IngestedAsset]:
+    """Like :func:`ingest_upload`, but one tall image may yield several assets.
+
+    This is what the upload endpoint uses: a webtoon page is a long strip, and
+    splitting it into consecutive scenes preserves the beats that a single 9:16
+    crop would discard. Documents and normal-shaped images return one asset.
+    """
+    suffix = Path(filename).suffix.lower()
+    if _is_image(suffix, mime_type):
+        return ingest_image_parts(project_id, filename, data)
+    if _is_document(suffix, mime_type):
+        return [ingest_document(project_id, filename, mime_type, data)]
+    raise _unsupported(filename)

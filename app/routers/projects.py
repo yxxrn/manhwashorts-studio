@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.constants import LicenseType, ProjectStatus
 from app.deps import CurrentUser, CurrentWorkspace, DbSession, OwnedProject
 from app.models import Project, SourceAsset
+from app.routing import CommitRoute
 from app.schemas import (
     AssetOut,
     AssetRightsUpdate,
@@ -20,7 +21,7 @@ from app.schemas import (
 from app.services import ingest, storage
 from app.services.pipeline import audit, project_assets
 
-router = APIRouter(prefix="/api/projects", tags=["projects"])
+router = APIRouter(prefix="/api/projects", tags=["projects"], route_class=CommitRoute)
 
 
 @router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
@@ -250,11 +251,14 @@ async def upload_assets(
     )
 
     created: list[SourceAsset] = []
-    start_index = len(project_assets(db, project.id))
-    for offset, upload in enumerate(files):
+    # A running counter, not the file's position: one tall webtoon page is sliced
+    # into several assets, and order_index has to stay dense and in reading order
+    # because it decides which panel lands in which scene.
+    next_index = len(project_assets(db, project.id))
+    for upload in files:
         data = await upload.read()
         try:
-            result = ingest.ingest_upload(
+            results = ingest.ingest_upload_parts(
                 project.id, upload.filename or "upload", upload.content_type or "", data
             )
         except ingest.IngestError as exc:
@@ -262,29 +266,31 @@ async def upload_assets(
                 status_code=422, detail=f"{upload.filename}: {exc}"
             ) from exc
 
-        asset = SourceAsset(
-            project_id=project.id,
-            type=result.type,
-            original_filename=result.original_filename,
-            storage_key=result.storage_key,
-            mime_type=result.mime_type,
-            size_bytes=result.size_bytes,
-            checksum=result.checksum,
-            extracted_text=result.extracted_text,
-            width=result.width,
-            height=result.height,
-            source_name=rights.source_name,
-            rights_owner=rights.rights_owner,
-            license_type=rights.license_type,
-            permission_reference=rights.permission_reference,
-            permission_date=rights.permission_date,
-            usage_limits=rights.usage_limits,
-            attribution=rights.attribution,
-            rights_status=rights.status,
-            order_index=start_index + offset,
-        )
-        db.add(asset)
-        created.append(asset)
+        for result in results:
+            asset = SourceAsset(
+                project_id=project.id,
+                type=result.type,
+                original_filename=result.original_filename,
+                storage_key=result.storage_key,
+                mime_type=result.mime_type,
+                size_bytes=result.size_bytes,
+                checksum=result.checksum,
+                extracted_text=result.extracted_text,
+                width=result.width,
+                height=result.height,
+                source_name=rights.source_name,
+                rights_owner=rights.rights_owner,
+                license_type=rights.license_type,
+                permission_reference=rights.permission_reference,
+                permission_date=rights.permission_date,
+                usage_limits=rights.usage_limits,
+                attribution=rights.attribution,
+                rights_status=rights.status,
+                order_index=next_index,
+            )
+            next_index += 1
+            db.add(asset)
+            created.append(asset)
 
     audit(
         db, "asset.upload", "project", project.id, user.id,

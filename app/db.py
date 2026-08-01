@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from fastapi import Request
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -41,12 +42,26 @@ def _sqlite_pragmas(dbapi_conn, _record) -> None:  # pragma: no cover - driver h
     cur.close()
 
 
-def get_db() -> Iterator[Session]:
-    """FastAPI dependency yielding a request-scoped session."""
+def get_db(request: Request) -> Iterator[Session]:
+    """FastAPI dependency yielding a request-scoped session.
+
+    The session is published on ``request.state.db`` so ``app.routing.CommitRoute``
+    can commit it *before* the response reaches the client. Code after the
+    ``yield`` in a dependency runs after the response has already been sent, so
+    committing only here let a fast caller issue its next request against a
+    transaction that had not landed yet — a register/login would return 201 and
+    the very next call 401. See ``app/routing.py`` for the measurements.
+
+    The commit below is kept as a fallback for anything not served through
+    ``CommitRoute`` (and is a no-op when the route already committed), so no
+    caller can silently lose a write.
+    """
     db = SessionLocal()
+    request.state.db = db
     try:
         yield db
-        db.commit()
+        if db.in_transaction():
+            db.commit()
     except Exception:
         db.rollback()
         raise

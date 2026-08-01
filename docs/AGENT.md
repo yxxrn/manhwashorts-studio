@@ -138,8 +138,14 @@ whole batch.
 
 Things worth knowing:
 
-- **Order matters.** `order_index` follows upload order, and that decides which
-  panel appears in which scene. Upload in story order.
+- **Tall pages are sliced automatically.** A webtoon strip (taller than 1:2.5) is
+  split into consecutive 9:16 pieces, each stored as its own asset named
+  `<page>_p01`, `_p02`, … Cropping such a page to one frame would keep under a
+  third of it. So one uploaded page can return several assets — read the response
+  rather than assuming one asset per file.
+- **Order matters.** `order_index` follows upload order (and slice order within a
+  page), and that decides which panel appears in which scene. Upload in story
+  order.
 - **Content is verified, not the filename.** Pillow opens the actual bytes, so a
   renamed non-image is rejected.
 - **Duplicates are free.** Storage is content-addressed by SHA-256, so

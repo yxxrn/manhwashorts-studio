@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.3.1"
+    version: str = "1.4.0"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
 
@@ -93,6 +93,18 @@ class Settings(BaseSettings):
     output_retention_days: int = 45
     # Soft limit. When exceeded, cleanup will be more aggressive on next run.
     max_data_gb: int = 12
+
+    # --- Strip slicing (v1.4.0) ---
+    # Webtoon pages ship as one long vertical strip. Cropping such a page to a
+    # single 9:16 frame throws away most of it (measured: 70.7% on a 1:6 page),
+    # so tall images are split into consecutive scene-sized pieces instead.
+    strip_slice_enabled: bool = True
+    # Height/width above which an image is treated as a strip. 2.5 sits well
+    # clear of a normal portrait panel (~1:1.5) and of 9:16 itself (~1:1.78).
+    strip_slice_min_ratio: float = 2.5
+    # Ceiling on pieces from one image, so a freakishly long scan cannot flood
+    # a project with assets.
+    strip_slice_max_parts: int = 12
 
     # --- TTS ---
     tts_provider: str = Field(default="espeak", description="espeak | null | http")

@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.deps import CurrentUser, CurrentWorkspace, DbSession, OwnedProject
 from app.models import Publication, VideoStat, YouTubeChannel
+from app.routing import CommitRoute
 from app.schemas import (
     ChannelOut,
     MessageOut,
@@ -24,7 +25,7 @@ from app.services import publish as publish_svc
 from app.services import youtube as yt
 from app.services.pipeline import PipelineError, audit
 
-router = APIRouter(prefix="/api", tags=["publish"])
+router = APIRouter(prefix="/api", tags=["publish"], route_class=CommitRoute)
 
 # Short-lived OAuth state values, keyed by state -> workspace id. In a
 # multi-process deployment this belongs in Redis; for the local single-process
