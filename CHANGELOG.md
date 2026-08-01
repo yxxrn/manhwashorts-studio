@@ -2,6 +2,14 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.8] — 2026-08-01
+
+- Subtitle text is now progressively revealed word-by-word in uppercase.
+- Active spoken word remains yellow; already spoken words remain white.
+- Subtitle size increased for phone readability.
+- Reworked crop motion visibility to 18% with integer-pixel movement; frame
+  regression confirms animation without shimmer.
+
 ## [1.5.7] — 2026-08-01
 
 - Continuous OmniVoice session now generates the complete narration once,
@@ -562,6 +570,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.8]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.8
 [1.5.7]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.7
 [1.5.6]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.6
 [1.5.5]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.5

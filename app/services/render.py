@@ -209,7 +209,8 @@ def _motion_filter(effect: str, width: int, height: int, duration: float, fps: i
     if effect == "static":
         return static
 
-    z = "1.08"
+    # 18% movement is visible on a phone; integer coordinates prevent shimmer.
+    z = "1.18"
     if effect == "kenburns_in":
         z = f"(1+0.12*n/{last})"
         x = f"trunc((iw-iw/{z})/4)*2"
@@ -323,7 +324,7 @@ def build_ass(
     Bottom margin keeps text clear of the YouTube UI overlay; a heavy outline
     keeps it readable over busy artwork.
     """
-    font_size = max(36, int(height * 0.038))
+    font_size = max(42, int(height * 0.045))
     margin_v = int(height * SUBTITLE_SAFE_BOTTOM)
     margin_h = int(width * 0.08)
 
@@ -355,19 +356,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for weight in weights:
             offsets.append(offsets[-1] + duration * weight / total)
 
-        # Keep the whole caption on screen while highlighting the active word.
-        # Timing follows the measured audio span; no forced-aligner dependency.
-        wrapped_words = wrap_caption(cue.text, max_chars)
+        # Reveal words progressively. The current spoken word is yellow; words
+        # already spoken stay white. Uppercase improves phone-size scanability.
+        display_text = cue.text.upper()
+        wrapped_words = wrap_caption(display_text, max_chars)
         for index, (start, end) in enumerate(zip(offsets, offsets[1:], strict=False)):
             rendered: list[str] = []
             word_index = 0
             for line in wrapped_words:
                 parts: list[str] = []
                 for word in line.split():
-                    colour = "&H0000FFFF&" if word_index == index else "&H00FFFFFF&"
-                    parts.append(f"{{\\c{colour}}}{_ass_escape(word)}")
+                    if word_index <= index:
+                        colour = "&H0000FFFF&" if word_index == index else "&H00FFFFFF&"
+                        parts.append(f"{{\\c{colour}}}{_ass_escape(word)}")
                     word_index += 1
-                rendered.append(" ".join(parts) + "{\\c&H00FFFFFF&}")
+                if parts:
+                    rendered.append(" ".join(parts) + "{\\c&H00FFFFFF&}")
             highlighted = "\\N".join(rendered)
             lines.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},"

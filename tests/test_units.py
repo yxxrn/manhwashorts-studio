@@ -417,7 +417,7 @@ def test_ass_uses_karaoke_word_highlight():
     assert "Style: Caption,Anton" in ass
     assert ass.count("Dialogue:") == 4
     assert "\\c&H0000FFFF&" in ass
-    assert "This" in ass and "test" in ass
+    assert "THIS" in ass and "TEST" in ass
 
 
 def test_environment_check_returns_list():
