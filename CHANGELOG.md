@@ -2,6 +2,15 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.4] — 2026-08-01
+
+- Selected no. 4 English narrator delivery as the default OmniVoice instruct
+  preset: male, young adult, moderate pitch, American accent.
+- Added safe HTTP-TTS audio mastering presets; production uses `expressive`.
+- Mastering fails loudly instead of shipping an invalid/empty clip.
+- Regenerated timeline from measured audio before subtitle burn, preserving
+  word-level karaoke highlighting and smoother panel motion.
+
 ## [1.5.3] — 2026-08-01
 
 - **Smoother panel motion** — still images now enter FFmpeg at one frame per
@@ -527,6 +536,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.4]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.4
 [1.5.3]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.3
 [1.5.2]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.2
 [1.5.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.1

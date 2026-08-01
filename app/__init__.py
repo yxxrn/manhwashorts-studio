@@ -1,3 +1,3 @@
 """ManhwaShorts Studio - auto YouTube Shorts for manhwa recaps."""
 
-__version__ = "1.5.3"
+__version__ = "1.5.4"

@@ -281,6 +281,7 @@ class HttpProvider:
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(response.content)
+        self._polish(out_path)
         duration = probe_duration(out_path)
         return SpeechClip(
             path=out_path,
@@ -290,6 +291,32 @@ class HttpProvider:
             provider=self.name,
             word_timings=estimate_word_timings(text, duration),
         )
+
+    @staticmethod
+    def _polish(path: Path) -> None:
+        """Apply a selected mastering preset without hiding bad TTS output."""
+        preset = settings.tts_http_audio_filter.lower().strip()
+        filters = {
+            "natural": "highpass=f=70,lowpass=f=15000,loudnorm=I=-16:TP=-1.5:LRA=7",
+            "warm": "highpass=f=65,lowpass=f=14500,equalizer=f=180:t=q:w=0.8:g=1.2,equalizer=f=3200:t=q:w=1:g=1.2,acompressor=threshold=-20dB:ratio=2:attack=18:release=100,loudnorm=I=-16:TP=-1.5:LRA=7",
+            "clear": "highpass=f=80,lowpass=f=16000,equalizer=f=2800:t=q:w=1:g=1.5,equalizer=f=6500:t=q:w=1:g=0.8,acompressor=threshold=-22dB:ratio=2:attack=12:release=90,loudnorm=I=-15:TP=-1.5:LRA=6",
+            "expressive": "highpass=f=70,lowpass=f=15500,acompressor=threshold=-24dB:ratio=2.5:attack=25:release=140,equalizer=f=2200:t=q:w=1:g=1.0,equalizer=f=5200:t=q:w=1:g=0.7,loudnorm=I=-15:TP=-1.5:LRA=7",
+        }
+        audio_filter = filters.get(preset)
+        if not audio_filter:
+            return
+        polished = path.with_name(f".{path.stem}.polished{path.suffix}")
+        try:
+            subprocess.run(
+                [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error", "-i", str(path), "-af", audio_filter, "-ar", "24000", "-ac", "1", str(polished)],
+                capture_output=True, text=True, timeout=180, check=True,
+            )
+            if polished.stat().st_size < 1024:
+                raise TTSError("audio mastering returned an empty clip")
+            polished.replace(path)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            polished.unlink(missing_ok=True)
+            raise TTSError(f"audio mastering failed: {exc}") from exc
 
 
 class ByokProvider:

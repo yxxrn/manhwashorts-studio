@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.5.3"
+    version: str = "1.5.4"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
     # Registration stays open for local development, closed on the private
@@ -94,9 +94,12 @@ class Settings(BaseSettings):
     tts_http_protocol: str = "legacy"
     tts_http_model: str = "omnivoice"
     tts_http_response_format: str = "wav"
-    tts_http_instruct: str = "natural, conversational narration"
+    tts_http_instruct: str = "male, young adult, moderate pitch, american accent"
     tts_http_language: str = "en"
     tts_http_voice: str = "default"
+    # Preset audio polish applied after OmniVoice returns a valid clip.
+    # "expressive" = the selected no. 4 mastering profile.
+    tts_http_audio_filter: str = "expressive"
 
 
     # --- Cleanup (Fase 0.1 - keep the project light) ---
