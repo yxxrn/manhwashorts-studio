@@ -2,6 +2,13 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.2] — 2026-08-01
+
+- Restored the requested **Indonesian default** for new projects and voice IDs.
+- Language remains an explicit `en`/`id` choice; no image-language detection.
+- OmniVoice Indonesian HTTP smoke test passed: HTTP 200, valid 24 kHz WAV.
+- English remains available by creating a project with `language: "en"`.
+
 ## [1.5.1] — 2026-08-01
 
 - Default project language and voice changed to **English** for the overseas
@@ -507,6 +514,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.2]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.2
 [1.5.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.1
 [1.5.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.0
 [1.4.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.4.0
