@@ -278,7 +278,11 @@ def render_scene_clip(
     selection = encoder or encoders.select()
     duration = scene.duration
     frames = max(2, int(round(duration * fps)))
-    motion = _motion_filter(scene.effect, width, height, duration, fps)
+    motion = (
+        _motion_filter(scene.effect, width, height, duration, fps)
+        if settings.motion_enabled
+        else f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
+    )
     vf = f"{motion},format=yuv420p"
 
     # Short fade in/out on every clip smooths the joins.

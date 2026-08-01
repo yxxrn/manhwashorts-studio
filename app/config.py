@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.5.4"
+    version: str = "1.5.5"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
     # Registration stays open for local development, closed on the private
@@ -97,9 +97,15 @@ class Settings(BaseSettings):
     tts_http_instruct: str = "male, young adult, moderate pitch, american accent"
     tts_http_language: str = "en"
     tts_http_voice: str = "default"
+    tts_http_seed: int = 42
+    tts_http_num_step: int = 32
+    tts_http_guidance_scale: float = 1.8
     # Preset audio polish applied after OmniVoice returns a valid clip.
     # "expressive" = the selected no. 4 mastering profile.
     tts_http_audio_filter: str = "expressive"
+    # zoompan can introduce micro-jitter on still webtoon art; production keeps
+    # panels static and uses clip fades. Re-enable only after a visual A/B pass.
+    motion_enabled: bool = False
 
 
     # --- Cleanup (Fase 0.1 - keep the project light) ---

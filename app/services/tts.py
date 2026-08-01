@@ -264,6 +264,9 @@ class HttpProvider:
                 # Explicit project voice choice; never infer from image content.
                 "language": "id" if voice_id.startswith("id") else "en",
                 "instruct": settings.tts_http_instruct,
+                "num_step": settings.tts_http_num_step,
+                "guidance_scale": settings.tts_http_guidance_scale,
+                "seed": settings.tts_http_seed,
             }
         else:
             payload = {

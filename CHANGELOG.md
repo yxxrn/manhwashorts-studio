@@ -2,6 +2,14 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.5] — 2026-08-01
+
+- Locked OmniVoice seed, quality steps, and guidance across every section so
+  one narrator does not change timbre mid-video.
+- Disabled zoom/pan motion in production by default; still webtoon panels now
+  use stable pixel crops plus fades, eliminating zoompan micro-jitter.
+- Kept word-level karaoke timing derived from the measured audio clips.
+
 ## [1.5.4] — 2026-08-01
 
 - Selected no. 4 English narrator delivery as the default OmniVoice instruct
@@ -536,6 +544,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.5]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.5
 [1.5.4]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.4
 [1.5.3]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.3
 [1.5.2]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.2
