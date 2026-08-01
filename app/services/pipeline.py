@@ -35,7 +35,7 @@ from app.services import analysis as analysis_svc
 from app.services import quality as quality_svc
 from app.services import resolver as resolver_svc
 from app.services import script as script_svc
-from app.services import storage
+from app.services import storage, visual_scoring
 from app.services import timeline as timeline_svc
 from app.services import tts as tts_svc
 
@@ -545,7 +545,22 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
         db.delete(old_cue)
     db.flush()
 
-    specs = timeline_svc.plan_scenes(spans, [a.id for a in images])
+    scored = visual_scoring.analyze_assets(images, storage.read_bytes)
+    planned = visual_scoring.plan_content_aware_scenes(spans, scored)
+    specs = [
+        timeline_svc.SceneSpec(
+            order_index=shot["order_index"],
+            section=shot["section"],
+            start_time=shot["start_time"],
+            end_time=shot["end_time"],
+            asset_id=shot["asset_id"],
+            focus_x=shot["focus_x"],
+            focus_y=shot["focus_y"],
+            effect=shot["effect"],
+            transition="fade" if shot["order_index"] else "none",
+        )
+        for shot in planned
+    ]
     scenes: list[TimelineScene] = []
     for spec in specs:
         scene = TimelineScene(

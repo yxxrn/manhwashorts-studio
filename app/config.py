@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.5.10"
+    version: str = "1.6.0"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
     # Registration stays open for local development, closed on the private
@@ -103,9 +103,9 @@ class Settings(BaseSettings):
     # Preset audio polish applied after OmniVoice returns a valid clip.
     # "expressive" = the selected no. 4 mastering profile.
     tts_http_audio_filter: str = "expressive"
-    # zoompan can introduce micro-jitter on still webtoon art; production keeps
-    # panels static and uses clip fades. Re-enable only after a visual A/B pass.
-    motion_enabled: bool = False
+    # Deterministic crop motion is on by default; unlike zoompan it updates at
+    # the output frame rate and rounds crop coordinates to whole pixels.
+    motion_enabled: bool = True
 
 
     # --- Cleanup (Fase 0.1 - keep the project light) ---

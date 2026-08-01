@@ -2,6 +2,18 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.6.0] — 2026-08-01
+
+- Added content-aware visual panel scoring with face, expression, action,
+  weapon, monster, effects, motion-line, impact, close-up, composition, density,
+  empty/scenery/transition penalties, OCR, and focal-point extraction.
+- Added semantic narration matching, nearby higher-interest panel replacement,
+  repetition suppression, and configurable score weights.
+- Added semantic camera planning: dialogue zoom, thinking pan, reveal push,
+  action punch zoom, and explosion shake zoom.
+- Replaced chronological-only timeline assignment with scored panel planning.
+- Added `docs/VISUAL_SELECTION.md` and regression coverage.
+
 ## [1.5.10] — 2026-08-01
 
 - Slowed default narrator generation to `0.90` for more comfortable delivery.
@@ -588,6 +600,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.6.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.0
 [1.5.10]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.10
 [1.5.9]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.9
 [1.5.8]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.8

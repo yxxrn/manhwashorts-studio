@@ -215,6 +215,15 @@ def _motion_filter(effect: str, width: int, height: int, duration: float, fps: i
         z = f"(1+0.12*n/{last})"
         x = f"trunc((iw-iw/{z})/4)*2"
         y = f"trunc((ih-ih/{z})/4)*2"
+    elif effect == "punch_zoom":
+        progress = f"(n/{last})"
+        z = f"(1+0.20*(1-abs(2*{progress}-1)))"
+        x = f"trunc((iw-iw/{z})/4)*2"
+        y = f"trunc((ih-ih/{z})/4)*2"
+    elif effect == "shake_zoom":
+        z = "(1.22+0.04*sin(n*0.55))"
+        x = f"trunc((iw-iw/{z})*(0.25+0.05*sin(n*0.8)))*2"
+        y = f"trunc((ih-ih/{z})*(0.25+0.05*cos(n*0.7)))*2"
     elif effect == "kenburns_out":
         z = f"(1.12-0.12*n/{last})"
         x = f"trunc((iw-iw/{z})/4)*2"
