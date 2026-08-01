@@ -298,72 +298,72 @@ class HttpProvider:
     def synthesize_sections(
         self, texts: list[str], work_dir: Path, voice_id: str = "en", speed: float = 1.0
     ) -> list[SpeechClip]:
-        """Generate sections against one shared reference clip.
+        """Generate all sections in one continuous model session.
 
-        A giant one-shot request times out on CPU. A shared first clip keeps the
-        narrator identity stable while each section remains within the engine's
-        execution budget.
+        This is intentionally one inference call: separate calls can drift in
+        timbre even with a fixed seed. A low step count keeps the full session
+        under OmniVoice's CPU execution budget; sections are split at pauses.
         """
         import httpx
 
         if not texts or not all(text.strip() for text in texts):
             raise TTSError("cannot synthesize empty sections")
         language = "id" if voice_id.startswith("id") else "en"
-        headers = {"Content-Type": "application/json"}
-        if settings.tts_http_key:
-            headers["Authorization"] = f"Bearer {settings.tts_http_key.get_secret_value()}"
-        base_payload = {
+        combined = " [pause 700ms] ".join(texts)
+        payload = {
             "model": settings.tts_http_model,
-            "input": texts[0],
+            "input": combined,
             "voice": settings.tts_http_voice or voice_id or "default",
             "response_format": settings.tts_http_response_format,
             "speed": max(0.25, min(4.0, speed)),
             "language": language,
             "instruct": settings.tts_http_instruct,
-            "num_step": settings.tts_http_num_step,
+            "num_step": 8,
             "guidance_scale": settings.tts_http_guidance_scale,
             "seed": settings.tts_http_seed,
         }
-        clips: list[SpeechClip] = []
-        ref_path = work_dir / "shared_voice_reference.wav"
+        headers = {"Content-Type": "application/json"}
+        if settings.tts_http_key:
+            headers["Authorization"] = f"Bearer {settings.tts_http_key.get_secret_value()}"
+        master = work_dir / "voice_master_session.wav"
         try:
-            response = httpx.post(settings.tts_http_url, headers=headers, json=base_payload, timeout=900)
+            response = httpx.post(settings.tts_http_url, headers=headers, json=payload, timeout=900)
             response.raise_for_status()
-            ref_path.write_bytes(response.content)
-            self._polish(ref_path)
+            master.write_bytes(response.content)
+            self._polish(master)
+            total = probe_duration(master)
+            probe = subprocess.run(
+                [settings.ffmpeg_bin, "-hide_banner", "-i", str(master), "-af", "silencedetect=noise=-35dB:d=0.45", "-f", "null", "-"],
+                capture_output=True, text=True, timeout=180, check=False,
+            )
+            starts = [float(x) for x in re.findall(r"silence_start: ([0-9.]+)", probe.stderr)]
+            ends = [float(x) for x in re.findall(r"silence_end: ([0-9.]+)", probe.stderr)]
+            gaps = [(a, b) for a, b in zip(starts, ends, strict=False) if b - a >= 0.45 and a > 0.1 and b < total - 0.1]
+            if len(gaps) >= len(texts) - 1:
+                cuts = [(a + b) / 2 for a, b in gaps[: len(texts) - 1]]
+            else:
+                weights = [max(1, len(re.sub(r"\W", "", text))) for text in texts]
+                scale = total / sum(weights)
+                cuts = []
+                cursor = 0.0
+                for weight in weights[:-1]:
+                    cursor += weight * scale
+                    cuts.append(cursor)
+            boundaries = [0.0, *cuts, total]
+            clips: list[SpeechClip] = []
             for index, text in enumerate(texts):
                 path = work_dir / f"{index:02d}_session.wav"
-                if index == 0:
-                    path.write_bytes(ref_path.read_bytes())
-                else:
-                    generate_url = settings.tts_http_url.replace("/v1/audio/speech", "/generate")
-                    data = {
-                        "text": text,
-                        "language": language,
-                        "ref_text": texts[0],
-                        "instruct": settings.tts_http_instruct,
-                        "duration": "",
-                        "num_step": str(settings.tts_http_num_step),
-                        "guidance_scale": str(settings.tts_http_guidance_scale),
-                        "speed": str(max(0.25, min(4.0, speed))),
-                    }
-                    with ref_path.open("rb") as reference:
-                        result = httpx.post(
-                            generate_url,
-                            data=data,
-                            files={"ref_audio": ("reference.wav", reference, "audio/wav")},
-                            timeout=900,
-                        )
-                    result.raise_for_status()
-                    path.write_bytes(result.content)
-                    self._polish(path)
+                subprocess.run(
+                    [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error", "-i", str(master), "-ss", f"{boundaries[index]:.3f}", "-to", f"{boundaries[index + 1]:.3f}", "-ar", "24000", "-ac", "1", str(path)],
+                    capture_output=True, text=True, timeout=180, check=True,
+                )
                 duration = probe_duration(path)
                 clips.append(SpeechClip(path, text, duration, voice_id, self.name, estimate_word_timings(text, duration)))
             return clips
         except Exception as exc:
-            raise TTSError(f"shared-reference TTS failed: {type(exc).__name__}: {exc}") from exc
+            raise TTSError(f"continuous-session TTS failed: {type(exc).__name__}: {exc}") from exc
         finally:
-            ref_path.unlink(missing_ok=True)
+            master.unlink(missing_ok=True)
 
     @staticmethod
     def _polish(path: Path) -> None:
