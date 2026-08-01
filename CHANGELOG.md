@@ -2,6 +2,16 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.6.1] — 2026-08-01
+
+- Added optional OpenCV and Tesseract-backed face/OCR signals to the visual
+  scorer; missing OCR remains non-blocking.
+- Added coarse perceptual signatures and stronger fresh-panel penalties so one
+  high-scoring image cannot dominate a whole sequence.
+- Fixed timeline gap absorption in content-aware planning.
+- Real-panel validation selected 7 content-aware shots with semantic camera
+  plans and focal points before render.
+
 ## [1.6.0] — 2026-08-01
 
 - Added content-aware visual panel scoring with face, expression, action,
@@ -600,6 +610,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.6.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.1
 [1.6.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.0
 [1.5.10]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.10
 [1.5.9]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.9

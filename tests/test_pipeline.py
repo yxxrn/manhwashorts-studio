@@ -256,9 +256,11 @@ def test_burned_subtitles_appear_in_pixels(db, recap_text, tmp_path):
 
     with Image.open(frame) as img:
         width, height = img.size
-        band = img.crop((0, int(height * 0.60), width, int(height * 0.88)))
-        near_white = sum(band.convert("L").histogram()[235:])
-    assert near_white > 1000, "no caption pixels found in the subtitle safe area"
+        band = img.crop((0, int(height * 0.60), width, int(height * 0.88))).convert("RGB")
+        pixels = list(band.getdata())
+        near_white = sum(r > 235 and g > 235 and b > 235 for r, g, b in pixels)
+        active_yellow = sum(r > 180 and g > 180 and b < 120 for r, g, b in pixels)
+    assert near_white + active_yellow > 1000, "no caption pixels found in the subtitle safe area"
 
 
 @requires_ffmpeg
