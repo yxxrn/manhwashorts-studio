@@ -394,7 +394,7 @@ def generate_voiceover(
     db: Session,
     project_id: str,
     *,
-    speed: float = 1.0,
+    speed: float = 0.90,
     provider_name: str | None = None,
     actor_id: str = "",
 ) -> list[AudioSegment]:

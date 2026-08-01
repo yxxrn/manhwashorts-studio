@@ -280,7 +280,7 @@ def render_scene_clip(
             # frame into d frames, so limiting the input to `duration` seconds
             # of looped stills multiplies the output length. Cap the output with
             # -frames:v instead, which yields exactly the frames we want.
-            "-framerate", "1", "-loop", "1",
+            "-framerate", str(fps), "-loop", "1",
             "-i", str(prepared_image),
             "-vf", vf,
             "-r", str(fps),

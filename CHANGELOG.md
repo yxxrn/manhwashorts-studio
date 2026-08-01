@@ -2,6 +2,14 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.10] — 2026-08-01
+
+- Slowed default narrator generation to `0.90` for more comfortable delivery.
+- Installed and selected Barber Chop for subtitles; increased subtitle size.
+- Fixed the actual animation bug: still-image input now enters FFmpeg at the
+  output frame rate instead of 1 fps, so crop motion updates every frame.
+- Kept one-active-word karaoke: uppercase, yellow, only the spoken word.
+
 ## [1.5.9] — 2026-08-01
 
 - Restored the proven no. 4 shared-reference voice path after the continuous
@@ -580,6 +588,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.10]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.10
 [1.5.9]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.9
 [1.5.8]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.8
 [1.5.7]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.7
