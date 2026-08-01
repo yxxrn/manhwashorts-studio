@@ -118,7 +118,7 @@ def _ocr(image: Image.Image) -> str:
         import pytesseract
 
         return pytesseract.image_to_string(image, config="--psm 11")[:500].strip().lower()
-    except (ImportError, OSError, subprocess.SubprocessError):
+    except (ImportError, OSError, RuntimeError, subprocess.SubprocessError):
         return ""
 
 
