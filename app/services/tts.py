@@ -295,6 +295,76 @@ class HttpProvider:
             word_timings=estimate_word_timings(text, duration),
         )
 
+    def synthesize_sections(
+        self, texts: list[str], work_dir: Path, voice_id: str = "en", speed: float = 1.0
+    ) -> list[SpeechClip]:
+        """Generate sections against one shared reference clip.
+
+        A giant one-shot request times out on CPU. A shared first clip keeps the
+        narrator identity stable while each section remains within the engine's
+        execution budget.
+        """
+        import httpx
+
+        if not texts or not all(text.strip() for text in texts):
+            raise TTSError("cannot synthesize empty sections")
+        language = "id" if voice_id.startswith("id") else "en"
+        headers = {"Content-Type": "application/json"}
+        if settings.tts_http_key:
+            headers["Authorization"] = f"Bearer {settings.tts_http_key.get_secret_value()}"
+        base_payload = {
+            "model": settings.tts_http_model,
+            "input": texts[0],
+            "voice": settings.tts_http_voice or voice_id or "default",
+            "response_format": settings.tts_http_response_format,
+            "speed": max(0.25, min(4.0, speed)),
+            "language": language,
+            "instruct": settings.tts_http_instruct,
+            "num_step": settings.tts_http_num_step,
+            "guidance_scale": settings.tts_http_guidance_scale,
+            "seed": settings.tts_http_seed,
+        }
+        clips: list[SpeechClip] = []
+        ref_path = work_dir / "shared_voice_reference.wav"
+        try:
+            response = httpx.post(settings.tts_http_url, headers=headers, json=base_payload, timeout=900)
+            response.raise_for_status()
+            ref_path.write_bytes(response.content)
+            self._polish(ref_path)
+            for index, text in enumerate(texts):
+                path = work_dir / f"{index:02d}_session.wav"
+                if index == 0:
+                    path.write_bytes(ref_path.read_bytes())
+                else:
+                    generate_url = settings.tts_http_url.replace("/v1/audio/speech", "/generate")
+                    data = {
+                        "text": text,
+                        "language": language,
+                        "ref_text": texts[0],
+                        "instruct": settings.tts_http_instruct,
+                        "duration": "",
+                        "num_step": str(settings.tts_http_num_step),
+                        "guidance_scale": str(settings.tts_http_guidance_scale),
+                        "speed": str(max(0.25, min(4.0, speed))),
+                    }
+                    with ref_path.open("rb") as reference:
+                        result = httpx.post(
+                            generate_url,
+                            data=data,
+                            files={"ref_audio": ("reference.wav", reference, "audio/wav")},
+                            timeout=900,
+                        )
+                    result.raise_for_status()
+                    path.write_bytes(result.content)
+                    self._polish(path)
+                duration = probe_duration(path)
+                clips.append(SpeechClip(path, text, duration, voice_id, self.name, estimate_word_timings(text, duration)))
+            return clips
+        except Exception as exc:
+            raise TTSError(f"shared-reference TTS failed: {type(exc).__name__}: {exc}") from exc
+        finally:
+            ref_path.unlink(missing_ok=True)
+
     @staticmethod
     def _polish(path: Path) -> None:
         """Apply a selected mastering preset without hiding bad TTS output."""

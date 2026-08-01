@@ -420,21 +420,33 @@ def generate_voiceover(
         db.delete(segment)
     db.flush()
 
-    created: list[AudioSegment] = []
+    prepared: list[tuple[int, dict, str]] = []
     for index, section in enumerate(script.sections or []):
         text = (section.get("text") or "").strip()
-        if not text:
-            continue
-        spoken = script_svc.apply_pronunciations(text, project.pronunciations or {})
-        clip_path = work / f"{index:02d}_{section['section']}.wav"
-        try:
-            clip = provider.synthesize(spoken, clip_path, project.voice_id, speed)
-        except tts_svc.TTSError as exc:
-            raise PipelineError(
-                f"voice-over failed on the {section['section']} section: {exc}"
-            ) from exc
+        if text:
+            prepared.append((index, section, script_svc.apply_pronunciations(text, project.pronunciations or {})))
+    if not prepared:
+        raise PipelineError("script has no spoken text")
 
-        stored = storage.put_file(f"projects/{project_id}/audio", clip.path, clip_path.name)
+    try:
+        if isinstance(provider, tts_svc.HttpProvider):
+            clips = provider.synthesize_sections(
+                [spoken for _, _, spoken in prepared], work, project.voice_id, speed
+            )
+        else:
+            clips = [
+                provider.synthesize(
+                    spoken, work / f"{index:02d}_{section['section']}.wav", project.voice_id, speed
+                )
+                for index, section, spoken in prepared
+            ]
+    except tts_svc.TTSError as exc:
+        raise PipelineError(f"voice-over failed: {exc}") from exc
+
+    created: list[AudioSegment] = []
+    for (index, section, _), clip in zip(prepared, clips, strict=True):
+        text = (section.get("text") or "").strip()
+        stored = storage.put_file(f"projects/{project_id}/audio", clip.path, clip.path.name)
         segment = AudioSegment(
             script_version_id=script.id,
             section=section["section"],

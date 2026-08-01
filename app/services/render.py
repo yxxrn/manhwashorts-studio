@@ -202,62 +202,40 @@ def placeholder_image(dest: Path, width: int, height: int, text: str = "") -> Pa
 
 
 def _motion_filter(effect: str, width: int, height: int, duration: float, fps: int) -> str:
-    """Build the zoompan/crop filter implementing a scene's camera move.
-
-    The input image is already prepared at 1.15x the output size by
-    ``crop_to_vertical``, so zoompan works on it directly. Pre-scaling to 2x
-    here would push every frame to ~8 MP and made rendering unusably slow on a
-    small VPS.
-    """
+    """Build smooth integer-pixel crop motion; avoids zoompan frame jitter."""
     frames = max(2, int(round(duration * fps)))
-
+    last = frames - 1
+    static = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
     if effect == "static":
-        return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
+        return static
 
+    z = "1.08"
     if effect == "kenburns_in":
-        return (
-            f"zoompan=z='min(1.0+0.12*on/{frames},1.12)'"
-            f":x='trunc((iw/2-(iw/zoom/2))/2)*2':y='trunc((ih/2-(ih/zoom/2))/2)*2'"
-            f":d={frames}:s={width}x{height}:fps={fps}"
-        )
-    if effect == "kenburns_out":
-        return (
-            f"zoompan=z='max(1.12-0.12*on/{frames},1.0)'"
-            f":x='trunc((iw/2-(iw/zoom/2))/2)*2':y='trunc((ih/2-(ih/zoom/2))/2)*2'"
-            f":d={frames}:s={width}x{height}:fps={fps}"
-        )
-    if effect == "pan_right":
-        return (
-            f"zoompan=z='1.08':x='trunc((iw-iw/zoom)*on/{frames}/2)*2'"
-            f":y='trunc((ih/2-(ih/zoom/2))/2)*2'"
-            f":d={frames}:s={width}x{height}:fps={fps}"
-        )
-    if effect == "pan_left":
-        return (
-            f"zoompan=z='1.08':x='trunc((iw-iw/zoom)*(1-on/{frames})/2)*2'"
-            f":y='trunc((ih/2-(ih/zoom/2))/2)*2'"
-            f":d={frames}:s={width}x{height}:fps={fps}"
-        )
-    if effect == "push_up":
-        return (
-            f"zoompan=z='1.08':x='trunc((iw/2-(iw/zoom/2))/2)*2'"
-            f":y='trunc((ih-ih/zoom)*(1-on/{frames})/2)*2'"
-            f":d={frames}:s={width}x{height}:fps={fps}"
-        )
-    if effect == "push_down":
-        return (
-            f"zoompan=z='1.08':x='trunc((iw/2-(iw/zoom/2))/2)*2'"
-            f":y='trunc((ih-ih/zoom)*on/{frames}/2)*2'"
-            f":d={frames}:s={width}x{height}:fps={fps}"
-        )
-    if effect == "pan_diagonal":
-        return (
-            f"zoompan=z='1.08':x='trunc((iw-iw/zoom)*on/{frames}/2)*2'"
-            f":y='trunc((ih-ih/zoom)*(1-on/{frames})/2)*2'"
-            f":d={frames}:s={width}x{height}:fps={fps}"
-        )
-    # Unknown effect: fall back to a safe static frame.
-    return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
+        z = f"(1+0.12*n/{last})"
+        x = f"trunc((iw-iw/{z})/4)*2"
+        y = f"trunc((ih-ih/{z})/4)*2"
+    elif effect == "kenburns_out":
+        z = f"(1.12-0.12*n/{last})"
+        x = f"trunc((iw-iw/{z})/4)*2"
+        y = f"trunc((ih-ih/{z})/4)*2"
+    elif effect == "pan_right":
+        x = f"trunc((iw-iw/{z})*n/{last}/2)*2"
+        y = f"trunc((ih-ih/{z})/4)*2"
+    elif effect == "pan_left":
+        x = f"trunc((iw-iw/{z})*(1-n/{last})/2)*2"
+        y = f"trunc((ih-ih/{z})/4)*2"
+    elif effect == "push_up":
+        x = f"trunc((iw-iw/{z})/4)*2"
+        y = f"trunc((ih-ih/{z})*(1-n/{last})/2)*2"
+    elif effect == "push_down":
+        x = f"trunc((iw-iw/{z})/4)*2"
+        y = f"trunc((ih-ih/{z})*n/{last}/2)*2"
+    elif effect == "pan_diagonal":
+        x = f"trunc((iw-iw/{z})*n/{last}/2)*2"
+        y = f"trunc((ih-ih/{z})*(1-n/{last})/2)*2"
+    else:
+        return static
+    return f"crop=w='iw/{z}':h='ih/{z}':x='{x}':y='{y}',scale={width}:{height}:flags=lanczos"
 
 
 def render_scene_clip(

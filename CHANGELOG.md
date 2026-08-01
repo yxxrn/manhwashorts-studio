@@ -2,6 +2,15 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.6] — 2026-08-01
+
+- Fixed mid-video timbre drift: HTTP TTS now creates one shared reference
+  clip, then generates every section against that same reference.
+- Replaced jitter-prone `zoompan` motion with deterministic integer-pixel crop
+  motion at 30 fps; animation stays active without frame micro-jitter.
+- Added audio, frame-variation, decode, subtitle, and upload verification to
+  the final render check.
+
 ## [1.5.5] — 2026-08-01
 
 - Locked OmniVoice seed, quality steps, and guidance across every section so
@@ -544,6 +553,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.6]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.6
 [1.5.5]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.5
 [1.5.4]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.4
 [1.5.3]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.3
