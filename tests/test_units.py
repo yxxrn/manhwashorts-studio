@@ -409,6 +409,17 @@ def test_ass_escapes_braces():
     assert "{\\an8}" not in ass
 
 
+def test_ass_uses_karaoke_word_highlight():
+    from app.services.render import build_ass
+    from app.services.timeline import CueSpec
+
+    ass = build_ass([CueSpec(0, "This is a test", 0.0, 2.0)], 1080, 1920, "Anton")
+    assert "Style: Caption,Anton" in ass
+    assert ass.count("Dialogue:") == 4
+    assert "\\c&H0000FFFF&" in ass
+    assert "This" in ass and "test" in ass
+
+
 def test_environment_check_returns_list():
     from app.services.render import check_environment
 

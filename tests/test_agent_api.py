@@ -25,6 +25,18 @@ pytestmark = pytest.mark.usefixtures("app_settings")
 # --- session auth over plain HTTP (the agent path) -------------------------
 
 
+def test_registration_can_be_closed(client, monkeypatch):
+    from app.routers import auth
+
+    monkeypatch.setattr(auth.settings, "allow_registration", False)
+    response = client.post(
+        "/api/auth/register",
+        json={"email": "closed@example.com", "password": "closedpass1234"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Registration is currently closed."
+
+
 def _cookie_header(response) -> str:
     return response.headers.get("set-cookie", "")
 

@@ -238,6 +238,24 @@ def _motion_filter(effect: str, width: int, height: int, duration: float, fps: i
             f":y='ih/2-(ih/zoom/2)'"
             f":d={frames}:s={width}x{height}:fps={fps}"
         )
+    if effect == "push_up":
+        return (
+            f"zoompan=z='1.08':x='iw/2-(iw/zoom/2)'"
+            f":y='(ih-ih/zoom)*(1-on/{frames})'"
+            f":d={frames}:s={width}x{height}:fps={fps}"
+        )
+    if effect == "push_down":
+        return (
+            f"zoompan=z='1.08':x='iw/2-(iw/zoom/2)'"
+            f":y='(ih-ih/zoom)*on/{frames}'"
+            f":d={frames}:s={width}x{height}:fps={fps}"
+        )
+    if effect == "pan_diagonal":
+        return (
+            f"zoompan=z='1.08':x='(iw-iw/zoom)*on/{frames}'"
+            f":y='(ih-ih/zoom)*(1-on/{frames})'"
+            f":d={frames}:s={width}x{height}:fps={fps}"
+        )
     # Unknown effect: fall back to a safe static frame.
     return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
 
@@ -345,11 +363,34 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for cue in cues:
         if not cue.text.strip() or cue.end_time <= cue.start_time:
             continue
-        wrapped = "\\N".join(_ass_escape(line) for line in wrap_caption(cue.text, max_chars))
-        lines.append(
-            f"Dialogue: 0,{_ass_time(cue.start_time)},{_ass_time(cue.end_time)},"
-            f"Caption,,0,0,0,,{wrapped}"
-        )
+        words = re.findall(r"\S+", cue.text)
+        if not words:
+            continue
+        duration = cue.end_time - cue.start_time
+        weights = [max(1, len(re.sub(r"[^\w']", "", word))) for word in words]
+        total = sum(weights)
+        offsets = [cue.start_time]
+        for weight in weights:
+            offsets.append(offsets[-1] + duration * weight / total)
+
+        # Keep the whole caption on screen while highlighting the active word.
+        # Timing follows the measured audio span; no forced-aligner dependency.
+        wrapped_words = wrap_caption(cue.text, max_chars)
+        for index, (start, end) in enumerate(zip(offsets, offsets[1:], strict=False)):
+            rendered: list[str] = []
+            word_index = 0
+            for line in wrapped_words:
+                parts: list[str] = []
+                for word in line.split():
+                    colour = "&H0000FFFF&" if word_index == index else "&H00FFFFFF&"
+                    parts.append(f"{{\\c{colour}}}{_ass_escape(word)}")
+                    word_index += 1
+                rendered.append(" ".join(parts) + "{\\c&H00FFFFFF&}")
+            highlighted = "\\N".join(rendered)
+            lines.append(
+                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},"
+                f"Caption,,0,0,0,,{highlighted}"
+            )
     return header + "\n".join(lines) + "\n"
 
 
@@ -443,8 +484,10 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     video_stage = silent
     if request.cues:
         ass_path = work / "captions.ass"
-        font_name = "DejaVu Sans"
-        ass_path.write_text(build_ass(request.cues, width, height, font_name), encoding="utf-8")
+        ass_path.write_text(
+            build_ass(request.cues, width, height, settings.subtitle_font_name),
+            encoding="utf-8",
+        )
         burned = work / "burned.mp4"
         # libass draws on CPU frames, so the hardware upload (if any) has to come
         # after the subtitles filter rather than before it.

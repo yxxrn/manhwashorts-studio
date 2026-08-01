@@ -254,13 +254,26 @@ class HttpProvider:
         if settings.tts_http_key:
             headers["Authorization"] = f"Bearer {settings.tts_http_key.get_secret_value()}"
 
+        if settings.tts_http_protocol == "openai":
+            payload = {
+                "model": settings.tts_http_model,
+                "input": text,
+                "voice": settings.tts_http_voice or voice_id or "default",
+                "response_format": settings.tts_http_response_format,
+                "speed": max(0.25, min(4.0, speed)),
+                "language": settings.tts_http_language,
+                "instruct": settings.tts_http_instruct,
+            }
+        else:
+            payload = {
+                "text": text,
+                "voice": voice_id,
+                "speed": speed,
+                "format": "wav",
+            }
+
         try:
-            response = httpx.post(
-                url,
-                headers=headers,
-                json={"text": text, "voice": voice_id, "speed": speed, "format": "wav"},
-                timeout=180,
-            )
+            response = httpx.post(url, headers=headers, json=payload, timeout=900)
             response.raise_for_status()
         except Exception as exc:
             raise TTSError(f"TTS HTTP request failed: {type(exc).__name__}: {exc}") from exc

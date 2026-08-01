@@ -29,9 +29,12 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.4.0"
+    version: str = "1.5.0"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
+    # Registration stays open for local development, closed on the private
+    # production instance after the initial account is created.
+    allow_registration: bool = True
 
     host: str = "127.0.0.1"
     port: int = 8000
@@ -85,6 +88,16 @@ class Settings(BaseSettings):
         description="auto | cpu | nvenc | qsv | vaapi | videotoolbox",
     )
     subtitle_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    subtitle_font_name: str = "Anton"
+    # "legacy" accepts the original {text, format} local API; "openai" sends
+    # {input, response_format} to OmniVoice's /v1/audio/speech endpoint.
+    tts_http_protocol: str = "legacy"
+    tts_http_model: str = "omnivoice"
+    tts_http_response_format: str = "wav"
+    tts_http_instruct: str = "natural, conversational narration"
+    tts_http_language: str = "en"
+    tts_http_voice: str = "default"
+
 
     # --- Cleanup (Fase 0.1 - keep the project light) ---
     # How old scratch files in data/tmp can be before being deleted.

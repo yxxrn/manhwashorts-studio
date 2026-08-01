@@ -52,8 +52,18 @@ class CueSpec:
         return round(max(0.0, self.end_time - self.start_time), 3)
 
 
-# Effects alternate so consecutive panels do not feel static.
-_EFFECT_CYCLE = ("kenburns_in", "pan_right", "kenburns_out", "pan_left")
+# Effects alternate so consecutive panels do not feel static. The extra
+# directional pushes matter on webtoon strips: a still panel now has a clear
+# reading vector instead of only zooming around its centre.
+_EFFECT_CYCLE = (
+    "kenburns_in",
+    "pan_right",
+    "push_up",
+    "kenburns_out",
+    "pan_left",
+    "push_down",
+    "pan_diagonal",
+)
 
 # The hook needs the strongest visual, so it always gets a push-in.
 _SECTION_EFFECT = {

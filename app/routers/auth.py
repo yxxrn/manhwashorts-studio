@@ -61,6 +61,12 @@ def register(
     payload: RegisterRequest, db: DbSession, request: Request, response: Response
 ) -> User:
     """Create an account plus its default workspace."""
+    if not settings.allow_registration:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is currently closed.",
+        )
+
     email = payload.email.lower().strip()
     existing = db.scalars(select(User).where(User.email == email)).first()
     if existing is not None:

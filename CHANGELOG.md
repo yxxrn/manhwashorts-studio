@@ -2,6 +2,47 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.0] — 2026-08-01
+
+### Added
+
+- **OmniVoice local TTS on UpCloud** — isolated `/opt/OmniVoice-Studio` venv,
+  CPU inference, systemd service on loopback port 3900, OpenAI-compatible adapter
+  in ManhwaShorts. Deep self-check passed; real English speech endpoint returned
+  HTTP 200 and a valid 24 kHz WAV. CPU quality is better than espeak but slow:
+  about 20–51 seconds for 2.2–2.3 seconds of audio on this 12-vCPU host.
+- **English TTS adapter mode** — `tts_http_protocol=openai`, model, language,
+  voice, response format, and instruct settings. No network leaves UpCloud for
+  synthesis.
+- **Anton subtitles** — configurable `subtitle_font_name`, with Anton installed
+  on UpCloud for a relaxed but legible Shorts style.
+- **Karaoke word highlighting** — the active spoken word turns yellow while the
+  full caption remains visible; timing derives from measured audio spans without
+  a new forced-aligner dependency.
+- **More varied panel motion** — `push_up`, `push_down`, and `pan_diagonal`, in
+  addition to Ken Burns and horizontal pans.
+- Registration toggle test and ASS karaoke/motion regression tests.
+
+### Changed
+
+- Default project language remains **Indonesian** (`id`). English was used only
+  for the validation render requested for overseas-target testing.
+- UpCloud production `.env` now uses local OmniVoice, Anton, and registration
+  closed. The local machine remains orchestration-only.
+
+### Validation
+
+Real material: 4 webtoon pages → 12 auto-sliced panels → 8 scenes → English
+OmniVoice voice-over → Anton karaoke captions → varied motion → final MP4.
+
+```
+38.933s · 1080x1920 · H.264 + AAC · 11.0 MB
+render: 16s after TTS
+sha256: 5dc49f31c5c716dc093c0f024f8ba45eafac7e48d20544279144e19513e73319
+```
+
+Verified download from Uguu: same size and SHA-256.
+
 ## [1.4.0] — 2026-08-01
 
 Webtoon pages are one long vertical strip. This release stops throwing most of
@@ -457,6 +498,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.0
 [1.4.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.4.0
 [1.3.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.3.1
 [1.3.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.3.0
