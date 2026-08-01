@@ -2,6 +2,16 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## [1.5.9] — 2026-08-01
+
+- Restored the proven no. 4 shared-reference voice path after the continuous
+  low-step experiment degraded timbre.
+- Karaoke now displays **only the currently spoken word**, uppercase, yellow,
+  with no previously spoken words left on screen.
+- Increased crop motion visibility while retaining integer-pixel anti-shimmer.
+- Added final gates for speech transcription, exactly-one-word karaoke, frame
+  variation, decode, and upload checksum.
+
 ## [1.5.8] — 2026-08-01
 
 - Subtitle text is now progressively revealed word-by-word in uppercase.
@@ -570,6 +580,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.5.9]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.9
 [1.5.8]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.8
 [1.5.7]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.7
 [1.5.6]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.6

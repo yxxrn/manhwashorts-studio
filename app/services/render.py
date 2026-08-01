@@ -209,8 +209,8 @@ def _motion_filter(effect: str, width: int, height: int, duration: float, fps: i
     if effect == "static":
         return static
 
-    # 18% movement is visible on a phone; integer coordinates prevent shimmer.
-    z = "1.18"
+    # 28% movement is visible on a phone; integer coordinates prevent shimmer.
+    z = "1.28"
     if effect == "kenburns_in":
         z = f"(1+0.12*n/{last})"
         x = f"trunc((iw-iw/{z})/4)*2"
@@ -366,9 +366,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             for line in wrapped_words:
                 parts: list[str] = []
                 for word in line.split():
-                    if word_index <= index:
-                        colour = "&H0000FFFF&" if word_index == index else "&H00FFFFFF&"
-                        parts.append(f"{{\\c{colour}}}{_ass_escape(word)}")
+                    if word_index == index:
+                        parts.append(f"{{\\c&H0000FFFF&}}{_ass_escape(word)}")
                     word_index += 1
                 if parts:
                     rendered.append(" ".join(parts) + "{\\c&H00FFFFFF&}")
