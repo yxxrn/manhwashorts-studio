@@ -205,7 +205,7 @@ def _event_times(span: object) -> list[float]:
 
 def _anticipate_events(
     scenes: list[ShotPlan], first: int, last: int,
-    event_times: list[float], minimum: float, maximum: float,
+    event_times: list[float], minimum: float, maximum: float, exact: bool = False,
 ) -> None:
     """Move internal cuts before multiple timed dramatic words."""
     if not event_times or last <= first:
@@ -217,7 +217,7 @@ def _anticipate_events(
         )
         left, right = scenes[boundary], scenes[boundary + 1]
         left_duration = left.end_time - left.start_time
-        target = event_time - min(_ANTICIPATION, left_duration * 0.18)
+        target = event_time if exact else event_time - min(0.18, left_duration * 0.18)
         lower = max(left.start_time + minimum, right.end_time - maximum)
         upper = min(right.end_time - minimum, left.start_time + maximum)
         cut = round(max(lower, min(target, upper)), 3)
@@ -375,7 +375,8 @@ def plan_shots(
                 previous_vector = vector
             order += 1
         _anticipate_events(
-            scenes, first_index, len(scenes) - 1, event_times, min_seconds, span_max
+            scenes, first_index, len(scenes) - 1, event_times, min_seconds, span_max,
+            getattr(span, "impact_lock", False),
         )
         if candidate:
             previous_order = candidate.order_index

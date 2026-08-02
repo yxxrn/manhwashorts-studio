@@ -23,6 +23,8 @@ class StoryBeat:
     camera_intent: str
     visual_timing: str
     composition: str = "rule_of_thirds"
+    timing_offset: float = 0.0
+    impact_lock: bool = False
 
 
 _TRIGGER_GROUPS = {
@@ -76,7 +78,11 @@ def _beat(section: str, text: str, start: float, end: float, timings: list[dict]
     intent, _camera_curve = _INTENT[kind]
     emotion = {"reveal": "surprise", "attack": "urgency", "impact": "shock", "explosion": "chaos", "victory": "triumph", "suspense": "tension", "thinking": "reflection"}.get(kind, "neutral")
     composition = "negative_space" if kind in {"suspense", "approach"} else "rule_of_thirds"
-    return StoryBeat(section, text, round(start, 3), round(end, 3), timings, intent, emotion, intent, timing, composition)
+    offset = 0.0 if kind in {"impact", "explosion"} else (-0.18 if kind in {"reveal", "attack", "action"} else 0.0)
+    return StoryBeat(
+        section, text, round(start, 3), round(end, 3), timings, intent, emotion,
+        intent, timing, composition, offset, kind in {"impact", "explosion"},
+    )
 
 
 def analyze_span(span: object, block_end: float | None = None) -> list[StoryBeat]:
@@ -92,12 +98,14 @@ def analyze_span(span: object, block_end: float | None = None) -> list[StoryBeat
     cursor = start
     for event_start, event_kind in events:
         event_start = max(cursor, min(event_start, end))
-        if event_start - cursor >= 0.45:
-            before = [t for t in timings if cursor <= float(t.get("start", 0)) < event_start]
-            beats.append(_beat(str(span.section), str(span.text), cursor, event_start, before, "suspense" if event_kind == "reveal" else kind, "visual_before"))
+        lead = 0.0 if event_kind in {"impact", "explosion"} else 0.18
+        visual_start = max(cursor, start, event_start - lead)
+        if visual_start - cursor >= 0.45:
+            before = [t for t in timings if cursor <= float(t.get("start", 0)) < visual_start]
+            beats.append(_beat(str(span.section), str(span.text), cursor, visual_start, before, "suspense" if event_kind == "reveal" else kind, "visual_before"))
         event_end = min(end, max(event_start + 0.7, event_start + 1.15))
         event_timings = [t for t in timings if event_start <= float(t.get("start", 0)) < event_end]
-        beats.append(_beat(str(span.section), str(span.text), event_start, event_end, event_timings, event_kind, "visual_sync"))
+        beats.append(_beat(str(span.section), str(span.text), visual_start, event_end, event_timings, event_kind, "visual_sync"))
         cursor = event_end
     if end - cursor >= 0.35:
         beats.append(_beat(str(span.section), str(span.text), cursor, end, [t for t in timings if float(t.get("start", 0)) >= cursor], kind, "visual_after"))
@@ -114,7 +122,22 @@ def analyze_story(spans: Iterable[object]) -> list[StoryBeat]:
     return output
 
 
-__all__ = ["StoryBeat", "analyze_span", "analyze_story"]
+def audit_sequence(shots: Iterable[object]) -> list[str]:
+    """Run the human-editor boredom check before a render is accepted."""
+    items = list(shots)
+    issues: list[str] = []
+    for left, right in zip(items, items[1:], strict=False):
+        if getattr(left, "roi_label", "") == getattr(right, "roi_label", "") and getattr(left, "asset_id", None) == getattr(right, "asset_id", None):
+            issues.append("repeated_roi")
+    for first, second, third in zip(items, items[1:], items[2:], strict=False):
+        if getattr(first, "camera_curve", "") == getattr(second, "camera_curve", "") == getattr(third, "camera_curve", ""):
+            issues.append("repeated_camera_curve")
+    if items and max(float(getattr(item, "end_time", 0)) - float(getattr(item, "start_time", 0)) for item in items) > 3.0:
+        issues.append("long_hold")
+    return sorted(set(issues))
+
+
+__all__ = ["StoryBeat", "analyze_span", "analyze_story", "audit_sequence"]
 
 # ponytail: deterministic beat parser ceiling; replace only this module with an
 # LLM director later while keeping StoryBeat's contract stable.

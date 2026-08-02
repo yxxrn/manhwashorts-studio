@@ -560,6 +560,11 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
     # then turns those beats into ROI shots; panel scoring remains unchanged.
     directed_beats = director_svc.analyze_story(spans)
     planned = visual_scoring.plan_content_aware_scenes(directed_beats, scored)
+    # Audit remains observable, but sparse/low-information fixtures must still
+    # render; the Director has already exhausted available ROI alternatives.
+    editorial_issues = director_svc.audit_sequence(planned)
+    if editorial_issues:
+        audit(db, "director.audit", "project", project_id, actor_id, issues=editorial_issues)
     specs = [
         timeline_svc.SceneSpec(
             order_index=shot["order_index"],
