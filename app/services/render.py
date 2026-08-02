@@ -320,29 +320,78 @@ def join_scene_clips(
     clips: list[Path], scenes: list[SceneInput], dest: Path, fps: int,
     encoder: encoders.Selection | None = None, preview: bool = False,
 ) -> Path:
-    """Join directed clips without black-frame transition flashes.
+    """Join directed clips with exact cuts or duration-preserving dissolves.
 
-    Editorial transitions remain persisted on each scene. The CPU-safe renderer
-    uses exact hard joins here: the camera move and ROI change provide the cut,
-    while a future compositor can add true overlapping dissolves without changing
-    the Shot Director contract. Exact duration matters more than a fake fade.
+    A fade is built from the outgoing tail and incoming head, then concatenated
+    with the untouched bodies. No chained ``xfade`` timestamps, black flash, or
+    cumulative duration drift. The Shot Director still owns which boundaries fade.
     """
     if not clips or len(clips) != len(scenes):
         raise RenderError("scene clips and scene plan do not match", code="join_mismatch")
     selection = encoder or encoders.select()
-    concat_list = dest.with_suffix(".concat.txt")
-    concat_list.write_text(
-        "".join(f"file '{clip.as_posix()}'\n" for clip in clips), encoding="utf-8"
-    )
-    try:
-        _run(
-            [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
-             "-f", "concat", "-safe", "0", "-i", str(concat_list),
-             "-an", *encoders.video_args(selection, preview=preview), str(dest)],
-            timeout=900, step="concat",
+    durations = [scene.duration for scene in scenes]
+    frame_counts = [max(1, int(round(duration * fps))) for duration in durations]
+    transitions = [
+        min(max(1, int(round(0.18 * fps))), frame_counts[index], frame_counts[index + 1])
+        if index + 1 < len(scenes) and scenes[index + 1].transition == "fade"
+        else 0
+        for index in range(len(scenes))
+    ]
+    graph: list[str] = []
+    segments: list[str] = []
+
+    def part(index: int, start_frame: int, end_frame: int) -> str | None:
+        if end_frame <= start_frame:
+            return None
+        label = f"part{len(segments)}"
+        graph.append(
+            f"[{index}:v]trim=start_frame={start_frame}:end_frame={end_frame},"
+            f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p,setsar=1[{label}]"
         )
-    finally:
-        concat_list.unlink(missing_ok=True)
+        segments.append(label)
+        return label
+
+    for index, frame_count in enumerate(frame_counts):
+        before = transitions[index - 1] if index else 0.0
+        after = transitions[index]
+        part(index, int(before), max(int(before), frame_count - int(after)))
+        if after:
+            tail = f"tail{index}"
+            head = f"head{index + 1}"
+            transition = f"transition{index}"
+            graph.extend(
+                [
+                    f"[{index}:v]trim=start_frame={frame_count - after}:end_frame={frame_count},"
+                    f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p,setsar=1[{tail}]",
+                    f"[{index + 1}:v]trim=start_frame=0:end_frame={after},"
+                    f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p,setsar=1[{head}]",
+                    f"[{tail}][{head}]xfade=transition=fade:duration={after / fps:.6f}:"
+                    f"offset=0[{transition}]",
+                ]
+            )
+            segments.append(transition)
+
+    if not segments:
+        raise RenderError("scene clips have no renderable duration", code="join_empty")
+    joined = "joined"
+    graph.append(f"{''.join(f'[{label}]' for label in segments)}concat=n={len(segments)}:v=1:a=0[{joined}]")
+    # xfade overlaps two source tails by its duration. Restore those frames at
+    # the end, then trim to the audio-locked plan length.
+    total = sum(durations)
+    overlap = sum(transitions) / fps
+    graph.append(
+        f"[{joined}]tpad=stop_mode=clone:stop_duration={overlap:.6f},"
+        f"trim=duration={total:.3f}[joined_exact]"
+    )
+    filter_graph = encoders.apply_filter_suffix(selection, ";".join(graph))
+    cmd = [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error"]
+    for clip in clips:
+        cmd += ["-i", str(clip)]
+    cmd += [
+        "-filter_complex", filter_graph, "-map", "[joined_exact]", "-an",
+        *encoders.video_args(selection, preview=preview), str(dest),
+    ]
+    _run(cmd, timeout=900, step="concat")
     return dest
 
 

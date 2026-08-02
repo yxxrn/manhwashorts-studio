@@ -107,10 +107,9 @@ ordinary `TimelineScene`, so manual edits and the existing quality gate continue
 to work.
 
 Shot Director emits hard cuts between ROIs on the same panel. A panel change is
-marked `fade` in the editorial plan, while the current CPU-safe joiner uses an
-exact hard join for both cases; this avoids slideshow-like black flashes and keeps
-video duration audio-locked. A future compositor can add true overlapping
-crossfades without changing the Shot Director contract.
+marked `fade` in the editorial plan. The renderer builds that dissolve from the
+outgoing tail and incoming head, then restores the overlapped frames at the end;
+video duration stays audio-locked without black flashes or chained-`xfade` drift.
 
 This is deliberately a deterministic editorial ceiling. A future director can
 replace ROI ranking or scheduling without changing `VisualFeatures`, the DB scene

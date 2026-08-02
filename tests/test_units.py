@@ -387,6 +387,38 @@ def test_crop_clamps_extreme_focal_point(tmp_path, panel_bytes):
         assert img.size[0] / img.size[1] == pytest.approx(1080 / 1920, abs=0.001)
 
 
+def test_join_scene_clips_preserves_duration_with_editorial_fade(tmp_path):
+    """A panel dissolve must not shorten the audio-locked visual timeline."""
+    from PIL import Image
+
+    from app.services import encoders
+    from app.services.render import (
+        SceneInput,
+        join_scene_clips,
+        probe,
+        render_scene_clip,
+    )
+
+    encoder = encoders.select("cpu")
+    clips = []
+    scenes = []
+    for index, colour in enumerate(("red", "blue")):
+        image = tmp_path / f"panel{index}.jpg"
+        clip = tmp_path / f"clip{index}.mp4"
+        Image.new("RGB", (800, 1200), colour).save(image)
+        scene = SceneInput(
+            image, index * 2.0, (index + 1) * 2.0,
+            camera_curve="slow_push_in", transition="none" if index == 0 else "fade",
+        )
+        render_scene_clip(scene, image, clip, 360, 640, 30, encoder=encoder)
+        clips.append(clip)
+        scenes.append(scene)
+
+    output = tmp_path / "joined.mp4"
+    join_scene_clips(clips, scenes, output, 30, encoder)
+    assert probe(output)["duration"] == pytest.approx(4.0, abs=0.05)
+
+
 def test_ass_subtitle_stays_in_safe_area():
     from app.services.render import build_ass
     from app.services.timeline import CueSpec
