@@ -157,3 +157,38 @@ and publish decisions.
 
 Regression coverage: `tests/test_visual_scoring.py` checks pixel analysis,
 semantic selection, repetition penalty, camera mapping, and tunable weights.
+
+## Shot Sequencer
+
+Panel selection and shot sequencing are separate. A selected panel is a scene
+source, not one shot. `roi_detection.rank_rois()` converts the panel's detected
+anchors into distinct regions:
+
+```text
+face → eyes → speech_bubble → hands → weapon → monster → magic_effect → detail
+```
+
+The available regions are emitted once each, ranked by narration relevance and
+salience. `shot_director.plan_shots()` consumes one region per shot, keeps the
+same `asset_id` until its meaningful ROI set is exhausted, then asks panel
+selection for another source. It caps a composition at 3 seconds and preserves
+the exact audio span duration.
+
+Same-panel ROI changes use hard cuts; panel changes use editorial fades. This
+prevents `face → same face → same face` while avoiding a slideshow. Each shot
+stores `roi_label`, start/end focal points, camera intent, and camera curve.
+
+Camera intent:
+
+```text
+dialogue  → slow push / drift
+thinking  → slow pan
+reveal    → cinematic push-in
+action    → punch zoom
+attack    → micro shake
+explosion → impact shake
+victory   → slow pull-out
+```
+
+The existing panel scorer is unchanged. This layer only sequences its selected
+panel and ROI outputs.

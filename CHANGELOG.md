@@ -14,6 +14,17 @@ Notable changes per release. Dates are ISO 8601.
 - Shot Director now persists ROI labels, end focal points, camera intent, narration
   lead/follow timing, and camera curves; Camera Planner only executes curves.
 
+## [1.6.3] — 2026-08-02
+
+- Added the Shot Sequencer: one selected panel can now produce multiple
+  cinematic ROI shots before the director switches panels.
+- Added semantic ROI labels for face, eyes, speech bubble, hands, weapon,
+  monster, magic effect, and detail; duplicate labels are suppressed.
+- Preserved narration-aware camera intent, ROI travel, shot pacing, and panel
+  transition behavior.
+- Added real-case validation: 13 shots from the existing 5-beat project, 6
+  source panels, 13 distinct ROI labels/camera targets.
+
 ## [1.6.2] — 2026-08-02
 
 - Made new projects default to English narration and The Explainer no. 4.
@@ -630,6 +641,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.6.3]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.3
 [1.6.2]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.2
 [1.6.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.1
 [1.6.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.0

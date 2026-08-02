@@ -118,6 +118,22 @@ def test_shot_director_exhausts_rois_and_diversifies_motion():
     assert shots[0].focus_end_x == shots[1].focus_x
 
 
+def test_roi_detector_emits_new_semantic_regions_per_panel():
+    candidate = PanelCandidate(
+        "panel", 0,
+        VisualFeatures(
+            face_visibility=1.0, facial_expression=0.8, action_pose=1.0,
+            weapons=1.0, visual_effects=1.0, ocr_text="look out",
+            focal_points=((0.2, 0.3), (0.7, 0.6), (0.5, 0.8)),
+            face_points=((0.2, 0.3),),
+        ),
+        8.0,
+    )
+    labels = [roi.label for roi in rank_rois(candidate, "the warrior attacked with a weapon")]
+    assert {"face", "eyes", "speech_bubble", "weapon", "hands", "magic_effect"} <= set(labels)
+    assert len(labels) == len(set(labels))
+
+
 def test_shot_director_anticipates_next_dramatic_beat():
     class Setup:
         section = "setup"

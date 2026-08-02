@@ -65,6 +65,7 @@ class VisualFeatures:
     ocr_text: str = ""
     semantic_tags: frozenset[str] = frozenset()
     focal_points: tuple[tuple[float, float], ...] = ((0.5, 0.4),)
+    face_points: tuple[tuple[float, float], ...] = ()
     visual_signature: str = ""
 
 
@@ -228,6 +229,7 @@ def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0) -> Pane
         ocr_text=text,
         semantic_tags=frozenset(tags),
         focal_points=tuple(face_points or _focal_points(image)),
+        face_points=tuple(face_points),
         visual_signature=_visual_signature(image),
     )
     positive = sum(
