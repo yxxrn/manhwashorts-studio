@@ -361,3 +361,21 @@ def test_camera_curve_follows_roi_direction():
     )
     shots = plan_shots([Span()], [candidate])
     assert shots[0].camera_curve == "pan_horizontal"
+
+
+def test_camera_does_not_reverse_pan_without_dramatic_beat():
+    class Span:
+        section = "thinking"
+        start_time = 0.0
+        end_time = 9.0
+        text = "He thinks about the choice."
+        word_timings = []
+
+    candidate = PanelCandidate(
+        "panel", 0,
+        VisualFeatures(face_visibility=1.0, focal_points=((0.1, 0.5), (0.8, 0.5), (0.1, 0.5))),
+        6.0,
+    )
+    shots = plan_shots([Span()], [candidate])
+    assert shots[0].camera_curve == "pan_horizontal"
+    assert shots[1].camera_curve != "pan_horizontal"

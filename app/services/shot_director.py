@@ -107,6 +107,7 @@ def _camera_curve(intent: str, index: int, recent: list[str]) -> str:
 def _directed_curve(
     intent: str, index: int, recent: list[str],
     focus_x: float, focus_y: float, end_x: float, end_y: float,
+    previous_vector: tuple[float, float] | None = None,
 ) -> str:
     """Select a curve that agrees with the approved ROI movement."""
     dx, dy = end_x - focus_x, end_y - focus_y
@@ -122,6 +123,14 @@ def _directed_curve(
         directional = directional + _CURVES[intent]
     else:
         directional = _CURVES[intent]
+    vector = (dx, dy)
+    reverses = (
+        previous_vector is not None
+        and max(abs(dx), abs(dy)) >= 0.12
+        and previous_vector[0] * vector[0] + previous_vector[1] * vector[1] < -0.01
+    )
+    if reverses and intent not in {"action", "attack", "explosion", "reveal", "victory"}:
+        directional = tuple(curve for curve in directional if not curve.startswith("pan_"))
     for curve in directional:
         if curve not in recent[-2:]:
             return curve
@@ -247,6 +256,7 @@ def plan_shots(
     signatures: set[str] = set()
     previous_order: int | None = None
     previous_focus: tuple[float, float] | None = None
+    previous_vector: tuple[float, float] | None = None
     order = 0
 
     for span_index, span in enumerate(spans):
@@ -319,6 +329,7 @@ def plan_shots(
             camera_curve = _directed_curve(
                 camera_intent, order, recent_curves,
                 roi.x, roi.y, next_roi.x, next_roi.y,
+                previous_vector,
             )
             recent_curves.append(camera_curve)
             scenes.append(
@@ -341,6 +352,9 @@ def plan_shots(
                 )
             )
             previous_focus = (next_roi.x, next_roi.y)
+            vector = (next_roi.x - roi.x, next_roi.y - roi.y)
+            if max(abs(vector[0]), abs(vector[1])) >= 0.12:
+                previous_vector = vector
             order += 1
         _anticipate_events(
             scenes, first_index, len(scenes) - 1, event_times, min_seconds, span_max

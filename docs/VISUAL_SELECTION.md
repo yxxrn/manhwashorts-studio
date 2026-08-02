@@ -114,6 +114,10 @@ Camera curves also follow the approved ROI vector: horizontal, vertical, or
 diagonal ROI travel requests the matching pan before intent-specific fallback
 curves. Motion diversity still rejects the last two curves.
 
+The Director remembers the previous meaningful ROI vector. A non-dramatic beat
+cannot immediately reverse that direction; reveal/action/impact beats may break
+the flow deliberately.
+
 `app.services.camera_planner` executes the selected curve. It has no editorial
 fallback: unsupported curves fail fast instead of silently changing the director's
 choice.
