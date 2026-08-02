@@ -235,7 +235,7 @@ def build_cues(
     spans: list[AudioSpan],
     max_chars: int = MAX_SUBTITLE_CHARS_PER_LINE,
     max_lines: int = MAX_SUBTITLE_LINES,
-    min_cue_seconds: float = 0.7,
+    min_cue_seconds: float = 0.45,
 ) -> list[CueSpec]:
     """Chunk narration into cues timed from real word timings.
 
@@ -275,7 +275,7 @@ def build_cues(
         current: list[dict] = []
         for timing in timings:
             candidate = " ".join([*(t["word"] for t in current), timing["word"]])
-            if current and not fits(candidate):
+            if current and (len(current) >= 6 or not fits(candidate)):
                 cues.append(
                     CueSpec(
                         order_index=order,

@@ -138,22 +138,22 @@ DEFAULT_ENGLISH_VOICE_ID = "the-explainer-american"
 DEFAULT_ENGLISH_SPEED = 0.90
 
 
-#: Default timing envelope (seconds) for a 60s Short.
+#: Default timing envelope (seconds) for the 75s editorial target.
 SECTION_BUDGET: dict[ScriptSection, tuple[float, float]] = {
-    ScriptSection.HOOK: (0.0, 3.0),
-    ScriptSection.SETUP: (3.0, 12.0),
-    ScriptSection.CONFLICT: (12.0, 40.0),
-    ScriptSection.TWIST: (40.0, 55.0),
-    ScriptSection.CTA: (55.0, 60.0),
+    ScriptSection.HOOK: (0.0, 2.0),
+    ScriptSection.SETUP: (2.0, 8.0),
+    ScriptSection.CONFLICT: (8.0, 45.0),
+    ScriptSection.TWIST: (45.0, 65.0),
+    ScriptSection.CTA: (65.0, 75.0),
 }
 
 #: Fraction of the target duration each section should occupy.
 SECTION_WEIGHTS: dict[ScriptSection, float] = {
-    ScriptSection.HOOK: 0.05,
-    ScriptSection.SETUP: 0.15,
-    ScriptSection.CONFLICT: 0.47,
-    ScriptSection.TWIST: 0.25,
-    ScriptSection.CTA: 0.08,
+    ScriptSection.HOOK: 0.027,
+    ScriptSection.SETUP: 0.08,
+    ScriptSection.CONFLICT: 0.493,
+    ScriptSection.TWIST: 0.267,
+    ScriptSection.CTA: 0.133,
 }
 
 #: Words per second used for duration estimates before TTS runs.

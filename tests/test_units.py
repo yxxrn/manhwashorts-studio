@@ -519,14 +519,14 @@ def test_environment_check_returns_list():
 def test_duration_over_limit_is_blocking(app_settings):
     from app.services.quality import check_duration
 
-    results = check_duration(75.0, 60.0)
+    results = check_duration(95.0, 75.0)
     assert any(r.blocking and r.code == "duration.too_long" for r in results)
 
 
 def test_duration_within_limit_passes(app_settings):
     from app.services.quality import check_duration
 
-    assert all(r.passed for r in check_duration(58.0, 60.0))
+    assert all(r.passed for r in check_duration(75.0, 75.0))
 
 
 def test_youtube_metadata_within_limits():

@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.6.5"
+    version: str = "1.7.0"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
     # Registration stays open for local development, closed on the private
@@ -73,8 +73,8 @@ class Settings(BaseSettings):
     video_width: int = 1080
     video_height: int = 1920
     video_fps: int = 30
-    max_short_seconds: int = 60
-    default_target_seconds: int = 60
+    max_short_seconds: int = 90
+    default_target_seconds: int = 75
 
     # --- Rendering ---
     ffmpeg_bin: str = "ffmpeg"

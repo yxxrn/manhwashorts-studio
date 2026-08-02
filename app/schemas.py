@@ -57,7 +57,8 @@ class ProjectCreate(BaseModel):
     language: Literal["en", "id"] = "en"
     spoiler_level: SpoilerLevel = SpoilerLevel.MEDIUM
     narration_style: NarrationStyle = NarrationStyle.DRAMATIC
-    target_duration: int = Field(default=60, ge=10, le=60)
+    # Legacy short projects may still be opened; production QC rejects <60s.
+    target_duration: int = Field(default=75, ge=10, le=90)
     voice_id: str = Field(default="the-explainer-american", max_length=80)
     series_name: str = Field(default="", max_length=200)
     cta_text: str = Field(default="", max_length=500)
@@ -74,7 +75,7 @@ class ProjectUpdate(BaseModel):
     language: Literal["en", "id"] | None = None
     spoiler_level: SpoilerLevel | None = None
     narration_style: NarrationStyle | None = None
-    target_duration: int | None = Field(default=None, ge=10, le=60)
+    target_duration: int | None = Field(default=None, ge=10, le=90)
     voice_id: str | None = Field(default=None, max_length=80)
     series_name: str | None = Field(default=None, max_length=200)
     cta_text: str | None = Field(default=None, max_length=500)

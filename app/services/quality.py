@@ -180,12 +180,12 @@ def check_duration(duration: float, target: float) -> list[CheckResult]:
                 f"Video is {duration:.1f}s versus a {target:.0f}s target.",
             )
         )
-    if duration < 8:
+    if duration < 60:
         results.append(
             _fail(
                 "duration.too_short",
                 CheckSeverity.WARNING,
-                f"Video is only {duration:.1f}s. Very short Shorts often underperform.",
+                f"Video is only {duration:.1f}s; editorial target is 60–90s.",
             )
         )
     if not results:

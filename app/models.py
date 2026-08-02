@@ -102,7 +102,7 @@ class Project(Base, TimestampMixin):
     language: Mapped[str] = mapped_column(String(10), default="en")
     spoiler_level: Mapped[str] = mapped_column(String(20), default=SpoilerLevel.MEDIUM)
     narration_style: Mapped[str] = mapped_column(String(20), default=NarrationStyle.DRAMATIC)
-    target_duration: Mapped[int] = mapped_column(Integer, default=60)
+    target_duration: Mapped[int] = mapped_column(Integer, default=75)
     status: Mapped[str] = mapped_column(String(20), default=ProjectStatus.DRAFT, index=True)
 
     series_name: Mapped[str] = mapped_column(String(200), default="")

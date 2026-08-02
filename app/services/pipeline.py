@@ -13,7 +13,10 @@ Stage order:
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,6 +42,7 @@ from app.models import (
 )
 from app.services import analysis as analysis_svc
 from app.services import director as director_svc
+from app.services import policy as policy_svc
 from app.services import quality as quality_svc
 from app.services import resolver as resolver_svc
 from app.services import script as script_svc
@@ -558,8 +562,9 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
     scored = visual_scoring.analyze_assets(images, storage.read_bytes)
     # Director decides story beats and visual timing first. The Shot Sequencer
     # then turns those beats into ROI shots; panel scoring remains unchanged.
-    directed_beats = director_svc.analyze_story(spans)
-    planned = visual_scoring.plan_content_aware_scenes(directed_beats, scored)
+    from app.services import editorial_visual_planner
+
+    planned = editorial_visual_planner.plan(spans, scored)
     # Audit remains observable, but sparse/low-information fixtures must still
     # render; the Director has already exhausted available ROI alternatives.
     editorial_issues = director_svc.audit_sequence(planned)
@@ -581,6 +586,7 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             camera_intent=shot.get("camera_intent", "neutral"),
             narration_timing=shot.get("narration_timing", "narration_lead"),
             effect=shot["effect"],
+            overlay_text=shot.get("overlay_text", ""),
             transition=shot.get("transition", "fade" if shot["order_index"] else "none"),
         )
         for shot in planned
@@ -818,8 +824,6 @@ def successful_render(db: Session, project_id: str) -> RenderJob | None:
 
 def build_render_request(db: Session, job: RenderJob):
     """Assemble a RenderRequest from persisted state."""
-    from pathlib import Path
-
     from app.services import render as render_svc
 
     project = get_project(db, job.project_id)
@@ -941,6 +945,59 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
     job.encoder_hardware = result.encoder_hardware
     job.encoder_fell_back = result.encoder_fell_back
     job.encoder_reason = result.encoder_reason[:1000]
+    from app.services import editorial_qc
+
+    scenes = project_scenes(db, job.project_id)
+    cues = cue_specs(project_cues(db, job.project_id))
+    assets = project_assets(db, job.project_id)
+    source_findings = policy_svc.check_source_cleanliness(assets)
+    rights_confidence = 5 if all(asset.is_publishable for asset in assets) else 0
+    source_cleanliness = 5 if not source_findings else 0
+    qc = editorial_qc.build_report(
+        scenes=scenes,
+        cues=cues,
+        duration=result.duration,
+        job_path=Path(result.output_path),
+        rights_confidence=rights_confidence,
+        source_cleanliness=source_cleanliness,
+    )
+    report_dir = Path(result.output_path).parent
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "final.qc.json").write_text(
+        json.dumps(qc.as_dict(), indent=2), encoding="utf-8"
+    )
+    (report_dir / "shot_list.json").write_text(
+        json.dumps([
+            {
+                "order_index": s.order_index,
+                "asset_id": s.asset_id,
+                "roi_label": s.roi_label,
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+                "camera_intent": s.camera_intent,
+                "camera_curve": s.camera_curve,
+            }
+            for s in scenes
+        ], indent=2), encoding="utf-8"
+    )
+    (report_dir / "subtitle_list.json").write_text(
+        json.dumps([asdict(c) for c in cues], indent=2), encoding="utf-8"
+    )
+    (report_dir / "panel_to_script_mapping.json").write_text(
+        json.dumps([
+            {"shot": s.order_index, "panel": s.asset_id, "section": s.section, "roi": s.roi_label}
+            for s in scenes
+        ], indent=2), encoding="utf-8"
+    )
+    (report_dir / "source_rights_report.json").write_text(
+        json.dumps({
+            "rights_confidence": rights_confidence,
+            "source_cleanliness": source_cleanliness,
+            "findings": [f.__dict__ for f in source_findings],
+            "publishable": not source_findings and rights_confidence == 5,
+        }, indent=2), encoding="utf-8"
+    )
+    audit(db, "editorial.qc", "render_job", job.id, qc=qc.as_dict())
     project.status = ProjectStatus.READY
     project.error_message = ""
     audit(

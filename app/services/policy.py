@@ -98,6 +98,23 @@ def check_panel_volume(assets: list[SourceAsset]) -> list[PolicyFinding]:
     return []
 
 
+_WATERMARK_MARKERS = ("asurascans", "discord.gg", "follow us", "continue reading", "read the novel")
+
+
+def check_source_cleanliness(assets: list[SourceAsset]) -> list[PolicyFinding]:
+    """Reject third-party marks; allow only explicit test fixtures."""
+    hits = [
+        a for a in assets
+        if any(marker in f"{a.original_filename} {a.source_name} {a.extracted_text}".lower() for marker in _WATERMARK_MARKERS)
+    ]
+    if not hits:
+        return []
+    test_only = all("not_for_publication" in f"{a.source_name} {a.permission_reference}".lower() for a in hits)
+    severity = CheckSeverity.WARNING if test_only else CheckSeverity.ERROR
+    code = "source.test_only_watermark" if test_only else "source.third_party_watermark"
+    return [PolicyFinding(code, severity, f"{len(hits)} source asset(s) contain third-party watermark/banner markers.", {"asset_ids": [a.id for a in hits], "test_only": test_only})]
+
+
 _WORD = re.compile(r"\w+", re.UNICODE)
 
 
@@ -209,6 +226,7 @@ def evaluate_project(
     findings: list[PolicyFinding] = []
     findings += check_rights(assets)
     findings += check_panel_volume(assets)
+    findings += check_source_cleanliness(assets)
     if script_text:
         findings += check_transformative(script_text, source_text)
         findings += check_banned_words(script_text, list(project.banned_words or []))

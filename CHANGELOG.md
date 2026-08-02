@@ -14,6 +14,16 @@ Notable changes per release. Dates are ISO 8601.
 - Shot Director now persists ROI labels, end focal points, camera intent, narration
   lead/follow timing, and camera curves; Camera Planner only executes curves.
 
+## [1.7.0] — 2026-08-02
+
+- Added 60–90 second production duration contract; default target is 75s.
+- Added `editorial_visual_planner` for Director → ROI → micro-shot planning and
+  analysis overlays.
+- Added phrase-level caption constraints and post-render editorial QC JSON,
+  shot list, subtitle list, panel mapping, and source rights report.
+- Added freeze detection, third-party watermark source gate, and test-only
+  `NOT_FOR_PUBLICATION` handling.
+
 ## [1.6.5] — 2026-08-02
 
 - Added 100–300 ms Director micro-offsets before reveal/action beats.
@@ -659,6 +669,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.7.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.7.0
 [1.6.5]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.5
 [1.6.4]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.4
 [1.6.3]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.3
