@@ -210,9 +210,10 @@ def plan_shots(
         if tags & {"action", "attack", "explosion"} and word_rate >= 1.8:
             span_max = min(span_max, 2.25)
         event_times = _event_times(span)
+        slot_cap = 10 if span_max < max_seconds else 6
         max_slots = max(1, int(duration // min_seconds))
         slots = min(
-            6,
+            slot_cap,
             max_slots,
             max(
                 math.ceil(duration / span_max),
