@@ -239,3 +239,26 @@ def test_shot_director_leads_timed_event_with_visual_cut():
     assert len(shots) == 2
     assert shots[0].end_time < 3.6
     assert shots[0].end_time >= 1.25
+
+
+def test_timed_event_uses_absolute_span_time():
+    class Span:
+        section = "conflict"
+        start_time = 10.0
+        end_time = 16.0
+        text = "Dia akhirnya mengalahkan musuh."
+        word_timings = [
+            {"word": "Dia", "start": 10.0, "end": 11.0},
+            {"word": "akhirnya", "start": 11.0, "end": 12.0},
+            {"word": "mengalahkan", "start": 12.0, "end": 13.0},
+            {"word": "musuh", "start": 13.0, "end": 14.0},
+        ]
+
+    candidate = PanelCandidate(
+        "panel", 0,
+        VisualFeatures(action_pose=1.0, focal_points=((0.2, 0.2), (0.8, 0.8))),
+        6.0,
+    )
+    shots = plan_shots([Span()], [candidate])
+    assert shots[0].end_time < 12.0
+    assert shots[0].end_time >= 11.25

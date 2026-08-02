@@ -105,10 +105,10 @@ def _camera_curve(intent: str, index: int, recent: list[str]) -> str:
 
 
 _EVENT_WORDS = {
-    "action": {"attack", "attacked", "attacks", "strike", "struck", "hit", "serang", "menyerang", "memukul"},
-    "reveal": {"reveal", "finally", "appears", "awakens", "muncul", "akhirnya", "ternyata"},
+    "action": {"attack", "attacked", "attacks", "strike", "struck", "hit", "serang", "menyerang", "memukul", "merampas", "menebas", "bertarung"},
+    "reveal": {"reveal", "finally", "appears", "awakens", "muncul", "akhirnya", "ternyata", "datang", "hadir"},
     "explosion": {"explosion", "explode", "blast", "ledakan", "meledak"},
-    "victory": {"victory", "wins", "won", "triumph", "menang", "kemenangan"},
+    "victory": {"victory", "wins", "won", "triumph", "menang", "kemenangan", "mengalahkan"},
 }
 
 
@@ -119,6 +119,7 @@ def _event_time(span: object) -> float | None:
     for timing in words:
         token = re.sub(r"[^a-z]", "", str(timing.get("word", "")).lower())
         if any(token in _EVENT_WORDS[tag] for tag in tags if tag in _EVENT_WORDS):
+            # AudioSpan timings are already on the master timeline.
             return float(timing.get("start", 0.0))
     return None
 
