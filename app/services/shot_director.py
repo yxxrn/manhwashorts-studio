@@ -138,7 +138,7 @@ def _continuity_order(rois: tuple[ROI, ...], x: float, y: float) -> tuple[ROI, .
     return tuple(
         sorted(
             rois,
-            key=lambda roi: roi.priority - 1.5 * math.hypot(roi.x - x, roi.y - y),
+            key=lambda roi: roi.priority - 4.0 * math.hypot(roi.x - x, roi.y - y),
             reverse=True,
         )
     )
@@ -232,6 +232,8 @@ def plan_shots(
         duration = max(0.0, block_end - span.start_time)
         candidate = _candidate_for(candidates, span.text, previous_order, used, signatures)
         rois = rank_rois(candidate, span.text)
+        if previous_focus:
+            rois = _continuity_order(rois, *previous_focus)
         roi_cursor = 0
         if candidate:
             used.add(candidate.asset_id)
