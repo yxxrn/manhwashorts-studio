@@ -556,6 +556,10 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             asset_id=shot["asset_id"],
             focus_x=shot["focus_x"],
             focus_y=shot["focus_y"],
+            focus_end_x=shot.get("focus_end_x", shot["focus_x"]),
+            focus_end_y=shot.get("focus_end_y", shot["focus_y"]),
+            roi_label=shot.get("roi_label", ""),
+            camera_curve=shot.get("camera_curve", shot["effect"]),
             effect=shot["effect"],
             transition="fade" if shot["order_index"] else "none",
         )
@@ -572,6 +576,10 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             end_time=spec.end_time,
             focus_x=spec.focus_x,
             focus_y=spec.focus_y,
+            focus_end_x=spec.focus_end_x,
+            focus_end_y=spec.focus_end_y,
+            roi_label=spec.roi_label,
+            camera_curve=spec.camera_curve,
             effect=spec.effect,
             transition=spec.transition,
         )
@@ -830,6 +838,9 @@ def build_render_request(db: Session, job: RenderJob):
                 end_time=scene.end_time,
                 focus_x=scene.focus_x,
                 focus_y=scene.focus_y,
+                focus_end_x=scene.focus_end_x,
+                focus_end_y=scene.focus_end_y,
+                camera_curve=scene.camera_curve,
                 effect=scene.effect,
                 overlay_text=scene.overlay_text,
             )

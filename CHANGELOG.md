@@ -2,6 +2,16 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## Unreleased — Shot Director
+
+- Added a modular Shot Director between panel selection and FFmpeg rendering.
+- Long narration beats now split into directed 1.25–3 second shots, with ROI-to-ROI
+  camera interpolation, motion diversity, and short anticipation cuts for dramatic beats.
+- Added semantic camera curves for dialogue, thinking, reveal, action/attack,
+  explosion, and victory shots; the existing Indonesian default and production voice
+  settings remain unchanged.
+- Persisted ROI labels, end focal points, and camera curves on timeline scenes.
+
 ## [1.6.1] — 2026-08-01
 
 - Added optional OpenCV and Tesseract-backed face/OCR signals to the visual

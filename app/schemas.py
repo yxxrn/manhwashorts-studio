@@ -254,6 +254,10 @@ class SceneOut(BaseModel):
     end_time: float
     focus_x: float
     focus_y: float
+    focus_end_x: float
+    focus_end_y: float
+    roi_label: str
+    camera_curve: str
     effect: str
     overlay_text: str
     transition: str
@@ -263,6 +267,10 @@ class SceneUpdate(BaseModel):
     asset_id: str | None = None
     focus_x: float | None = Field(default=None, ge=0.0, le=1.0)
     focus_y: float | None = Field(default=None, ge=0.0, le=1.0)
+    focus_end_x: float | None = Field(default=None, ge=0.0, le=1.0)
+    focus_end_y: float | None = Field(default=None, ge=0.0, le=1.0)
+    roi_label: str | None = Field(default=None, max_length=40)
+    camera_curve: str | None = Field(default=None, max_length=40)
     effect: str | None = Field(default=None, max_length=40)
     overlay_text: str | None = Field(default=None, max_length=500)
     transition: str | None = Field(default=None, max_length=40)

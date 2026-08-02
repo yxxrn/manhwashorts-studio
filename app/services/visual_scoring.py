@@ -77,12 +77,14 @@ class PanelCandidate:
     semantic_score: float = 0.0
 
 
-_ACTION = {"attack", "attacked", "attacks", "hit", "struck", "strike", "fight", "fought", "run", "jump", "fall", "battle", "chase"}
-_REVEAL = {"reveal", "finally", "opened", "awakens", "appears", "discovers"}
-_EXPLOSION = {"explosion", "explode", "blast", "fire", "destroy", "impact"}
-_THINKING = {"think", "thinks", "remember", "wonder", "realize", "considers"}
-_WEAPON = {"sword", "axe", "blade", "weapon", "bow", "spear", "gun"}
-_MONSTER = {"dragon", "monster", "demon", "beast", "boss", "ogre", "creature"}
+_ACTION = {"attack", "attacked", "attacks", "hit", "struck", "strike", "fight", "fought", "run", "jump", "fall", "battle", "chase", "serang", "menyerang", "memukul", "bertarung", "berlari", "melompat", "jatuh", "kejar", "mengejar"}
+_REVEAL = {"reveal", "finally", "opened", "awakens", "appears", "discovers", "ternyata", "akhirnya", "muncul", "terbuka", "bangkit", "menemukan"}
+_EXPLOSION = {"explosion", "explode", "blast", "fire", "destroy", "impact", "ledakan", "meledak", "hancur", "menghancurkan", "dampak"}
+_THINKING = {"think", "thinks", "remember", "wonder", "realize", "considers", "berpikir", "teringat", "bertanya", "menyadari", "mempertimbangkan"}
+_WEAPON = {"sword", "axe", "blade", "weapon", "bow", "spear", "gun", "pedang", "kapak", "bilah", "senjata", "busur", "tombak", "pistol"}
+_MONSTER = {"dragon", "monster", "demon", "beast", "boss", "ogre", "creature", "naga", "iblis", "binatang", "bos", "makhluk"}
+_VICTORY = {"victory", "victorious", "wins", "won", "triumph", "defeated", "menang", "kemenangan", "mengalahkan", "ditaklukkan"}
+
 
 
 def _clip(value: float) -> float:
@@ -98,6 +100,8 @@ def narration_tags(text: str) -> frozenset[str]:
     tags: set[str] = set()
     if tokens & _ACTION:
         tags.add("action")
+        if tokens & {"attack", "attacked", "attacks", "strike", "struck", "hit"}:
+            tags.add("attack")
     if tokens & _REVEAL:
         tags.add("reveal")
     if tokens & _EXPLOSION:
@@ -110,6 +114,8 @@ def narration_tags(text: str) -> frozenset[str]:
         tags.add("monster")
     if {"dialogue", "says", "tells"} & tokens:
         tags.add("dialogue")
+    if tokens & _VICTORY:
+        tags.add("victory")
     return frozenset(tags)
 
 
@@ -317,47 +323,10 @@ def planned_focus(candidate: PanelCandidate | None, shot_index: int = 0) -> tupl
 
 
 def plan_content_aware_scenes(spans: Iterable[object], candidates: list[PanelCandidate], min_scene_seconds: float = 2.0, max_scene_seconds: float = 6.0) -> list[dict]:
-    """Plan timed shots from scored panels, not asset order."""
-    scenes: list[dict] = []
-    previous_order: int | None = None
-    used: set[str] = set()
-    used_signatures: set[str] = set()
-    order = 0
-    span_list = list(spans)
-    for span_index, span in enumerate(span_list):
-        next_start = (
-            span_list[span_index + 1].start_time
-            if span_index + 1 < len(span_list)
-            else span.end_time
-        )
-        duration = max(0.0, max(span.end_time, next_start) - span.start_time)
-        if duration <= 0:
-            continue
-        slots = max(1, min(4, int(duration // max_scene_seconds) + 1))
-        if duration / slots < min_scene_seconds and slots > 1:
-            slots = max(1, int(duration // min_scene_seconds))
-        slot_duration = duration / slots
-        for slot in range(slots):
-            start = span.start_time + slot * slot_duration
-            end = span.start_time + (slot + 1) * slot_duration
-            candidate = select_panel(candidates, span.text, previous_order, used, used_signatures)
-            focus_x, focus_y = planned_focus(candidate, slot)
-            scenes.append({
-                "order_index": order, "section": span.section,
-                "start_time": round(start, 3), "end_time": round(end, 3),
-                "asset_id": candidate.asset_id if candidate else None,
-                "focus_x": focus_x, "focus_y": focus_y,
-                "effect": camera_effect(span.text, order),
-                "visual_score": candidate.visual_score if candidate else 0.0,
-                "semantic_score": candidate.semantic_score if candidate else 0.0,
-            })
-            if candidate:
-                previous_order = candidate.order_index
-                used.add(candidate.asset_id)
-                if candidate.features.visual_signature:
-                    used_signatures.add(candidate.features.visual_signature)
-            order += 1
-    return scenes
+    """Plan directed shots; panel scoring remains the candidate provider."""
+    from app.services.shot_director import plan_shots
+
+    return [shot.as_dict() for shot in plan_shots(list(spans), candidates, min_scene_seconds, max_scene_seconds)]
 
 
 def score_breakdown(candidate: PanelCandidate) -> dict[str, float | str]:

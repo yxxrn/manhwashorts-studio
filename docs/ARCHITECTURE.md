@@ -33,7 +33,8 @@ How the pieces fit together, and why they are arranged this way.
 │ app/services                                    │
 │   pipeline.py    orchestration + audit          │
 │   ingest  analysis  script  tts                 │
-│   timeline  render  quality  policy             │
+│   timeline  shot_director  render  quality      │
+│                         policy                  │
 │   publish  youtube  storage                     │
 ├─────────────────────────────────────────────────┤
 │ app/models.py    SQLAlchemy · 15 tables         │

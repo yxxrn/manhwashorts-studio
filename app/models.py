@@ -287,6 +287,10 @@ class TimelineScene(Base, TimestampMixin):
     # focal point 0..1 used for 9:16 crop
     focus_x: Mapped[float] = mapped_column(Float, default=0.5)
     focus_y: Mapped[float] = mapped_column(Float, default=0.4)
+    focus_end_x: Mapped[float] = mapped_column(Float, default=0.5)
+    focus_end_y: Mapped[float] = mapped_column(Float, default=0.4)
+    roi_label: Mapped[str] = mapped_column(String(40), default="")
+    camera_curve: Mapped[str] = mapped_column(String(40), default="")
     effect: Mapped[str] = mapped_column(String(40), default="kenburns_in")
     overlay_text: Mapped[str] = mapped_column(Text, default="")
     transition: Mapped[str] = mapped_column(String(40), default="fade")

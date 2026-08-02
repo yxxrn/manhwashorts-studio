@@ -66,8 +66,34 @@ local vision encoder.
 
 `planned_focus()` chooses the strongest detected focal region. Multiple focal
 regions can therefore produce multiple shots from one panel before switching to
-the next asset. `plan_content_aware_scenes()` handles this while splitting long
-narration beats into 2–6 second shots.
+the next asset. `plan_content_aware_scenes()` now delegates shot scheduling to the
+Shot Director, which ranks those ROIs, interpolates between them, splits long beats
+into 1.25–3 second shots, anticipates dramatic beats, and suppresses repeated
+camera curves. The persisted plan carries `roi_label`, `focus_end_x/y`, and
+`camera_curve` so render and future editor tooling remain independent.
+
+## Shot Director
+
+`app.services.shot_director` is the editorial layer between panel selection and
+FFmpeg. It does not detect panels or add a vision dependency. It answers:
+
+- which ROI leads each shot (`face`, `weapon`, `opponent`, `effect`, `detail`),
+- whether the same panel should continue while another ROI is available,
+- which action-specific curve fits the narration (`slow_push_in`, `focus_shift`,
+  `punch_zoom`, `impact_shake`, `dramatic_zoom_out`, `orbit`),
+- whether the next dramatic beat should lead by a short anticipation cut.
+
+The renderer interpolates the start and end ROI using smoothstep crop coordinates;
+integer-pixel rounding stays in place to avoid shimmer. Every shot remains an
+ordinary `TimelineScene`, so manual edits and the existing quality gate continue
+to work.
+
+This is deliberately a deterministic editorial ceiling. A future director can
+replace ROI ranking or scheduling without changing `VisualFeatures`, the DB scene
+contract, or FFmpeg.
+
+Regression coverage: `tests/test_visual_scoring.py` covers ROI exhaustion, motion
+diversity, anticipation, and semantic action curves.
 
 ## Deliberate ceiling
 

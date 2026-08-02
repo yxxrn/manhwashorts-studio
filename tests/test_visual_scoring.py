@@ -1,5 +1,6 @@
 from PIL import Image, ImageDraw
 
+from app.services.shot_director import plan_shots
 from app.services.visual_scoring import (
     PanelCandidate,
     VisualFeatures,
@@ -90,3 +91,46 @@ def test_content_aware_plan_uses_semantic_camera_and_focus():
     assert scenes[0]["asset_id"] == "dragon"
     assert scenes[0]["effect"] == "punch_zoom"
     assert scenes[0]["focus_x"] == 0.2
+
+
+def test_shot_director_exhausts_rois_and_diversifies_motion():
+    class Span:
+        section = "conflict"
+        start_time = 0.0
+        end_time = 8.0
+        text = "The warrior attacked, then the monster won."
+
+    candidate = PanelCandidate(
+        "panel", 0,
+        VisualFeatures(
+            face_visibility=1.0, action_pose=1.0, monsters=1.0,
+            focal_points=((0.2, 0.2), (0.7, 0.4), (0.5, 0.8)),
+        ),
+        8.0,
+    )
+    shots = plan_shots([Span()], [candidate])
+    assert len(shots) == 3
+    assert [shot.roi_label for shot in shots] == ["face", "opponent", "detail"]
+    assert len({shot.effect for shot in shots}) == 3
+    assert shots[0].asset_id == shots[1].asset_id == shots[2].asset_id
+    assert shots[0].focus_end_x == shots[1].focus_x
+
+
+def test_shot_director_anticipates_next_dramatic_beat():
+    class Setup:
+        section = "setup"
+        start_time = 0.0
+        end_time = 3.0
+        text = "He waits in silence."
+
+    class Reveal:
+        section = "twist"
+        start_time = 3.0
+        end_time = 6.0
+        text = "Then the dragon finally appears."
+
+    candidate = _candidate("p", 0, 4.0, face=1.0)
+    shots = plan_shots([Setup(), Reveal()], [candidate])
+    assert shots[0].end_time < 3.0
+    assert shots[1].start_time == shots[0].end_time
+    assert shots[1].effect == "push_in"
