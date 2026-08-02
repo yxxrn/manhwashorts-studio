@@ -106,6 +106,10 @@ at 2.25s, hook/reveal/twist stays tight, while thinking/dialogue/CTA may hold up
 the configured 3s ceiling because camera motion remains active. This prevents both
 the uniform-grid feel and over-cutting reflective narration.
 
+At panel changes, the Director ranks the incoming panel's ROIs with a continuity
+penalty: a salient ROI near the outgoing focal point beats an equally salient ROI
+across the frame. The cut remains editorial; the renderer only executes it.
+
 `app.services.camera_planner` executes the selected curve. It has no editorial
 fallback: unsupported curves fail fast instead of silently changing the director's
 choice.

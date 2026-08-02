@@ -133,6 +133,17 @@ def _slot_weights(slots: int, section: str, tags: frozenset[str]) -> list[float]
     return weights
 
 
+def _continuity_order(rois: tuple[ROI, ...], x: float, y: float) -> tuple[ROI, ...]:
+    """Prefer a nearby salient ROI when a panel switch changes composition."""
+    return tuple(
+        sorted(
+            rois,
+            key=lambda roi: roi.priority - 1.5 * math.hypot(roi.x - x, roi.y - y),
+            reverse=True,
+        )
+    )
+
+
 _EVENT_WORDS = {
     "action": {"attack", "attacked", "attacks", "strike", "struck", "hit", "serang", "menyerang", "memukul", "merampas", "menebas", "bertarung"},
     "reveal": {"reveal", "finally", "appears", "awakens", "muncul", "akhirnya", "ternyata", "datang", "hadir"},
@@ -211,6 +222,7 @@ def plan_shots(
     used: set[str] = set()
     signatures: set[str] = set()
     previous_order: int | None = None
+    previous_focus: tuple[float, float] | None = None
     order = 0
 
     for span_index, span in enumerate(spans):
@@ -265,6 +277,8 @@ def plan_shots(
                 previous_order = candidate.order_index if candidate else previous_order
                 candidate = _candidate_for(candidates, span.text, previous_order, used, signatures)
                 rois = rank_rois(candidate, span.text)
+                if previous_focus:
+                    rois = _continuity_order(rois, *previous_focus)
                 roi_cursor = 0
                 if candidate:
                     used.add(candidate.asset_id)
@@ -297,6 +311,7 @@ def plan_shots(
                     semantic_score=candidate.semantic_score if candidate else 0.0,
                 )
             )
+            previous_focus = (next_roi.x, next_roi.y)
             order += 1
         _anticipate_events(
             scenes, first_index, len(scenes) - 1, event_times, min_seconds, span_max

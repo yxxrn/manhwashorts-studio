@@ -324,3 +324,23 @@ def test_hold_release_choreography_shapes_reveal_and_action():
     action = plan_shots([Action()], [candidate])
     assert reveal[0].end_time - reveal[0].start_time > reveal[-1].end_time - reveal[-1].start_time
     assert action[0].end_time - action[0].start_time > action[-1].end_time - action[-1].start_time
+
+
+def test_panel_switch_prefers_roi_near_previous_focus():
+    class Span:
+        section = "setup"
+        start_time = 0.0
+        end_time = 6.0
+        text = "The scene continues."
+        word_timings = []
+
+    first = PanelCandidate("first", 0, VisualFeatures(focal_points=((0.8, 0.8),)), 6.0)
+    second = PanelCandidate(
+        "second", 1,
+        VisualFeatures(monsters=1.0, focal_points=((0.1, 0.1), (0.75, 0.75))),
+        5.0,
+    )
+    shots = plan_shots([Span()], [first, second])
+    second_shot = next(shot for shot in shots if shot.asset_id == "second")
+    assert second_shot.focus_x == 0.75
+    assert second_shot.focus_y == 0.75
