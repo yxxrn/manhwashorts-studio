@@ -344,3 +344,20 @@ def test_panel_switch_prefers_roi_near_previous_focus():
     second_shot = next(shot for shot in shots if shot.asset_id == "second")
     assert second_shot.focus_x == 0.75
     assert second_shot.focus_y == 0.75
+
+
+def test_camera_curve_follows_roi_direction():
+    class Span:
+        section = "thinking"
+        start_time = 0.0
+        end_time = 6.0
+        text = "He thinks about the choice."
+        word_timings = []
+
+    candidate = PanelCandidate(
+        "panel", 0,
+        VisualFeatures(face_visibility=1.0, focal_points=((0.1, 0.5), (0.8, 0.52))),
+        6.0,
+    )
+    shots = plan_shots([Span()], [candidate])
+    assert shots[0].camera_curve == "pan_horizontal"

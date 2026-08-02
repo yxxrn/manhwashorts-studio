@@ -104,6 +104,30 @@ def _camera_curve(intent: str, index: int, recent: list[str]) -> str:
     return options[index % len(options)]
 
 
+def _directed_curve(
+    intent: str, index: int, recent: list[str],
+    focus_x: float, focus_y: float, end_x: float, end_y: float,
+) -> str:
+    """Select a curve that agrees with the approved ROI movement."""
+    dx, dy = end_x - focus_x, end_y - focus_y
+    directional: tuple[str, ...] = ()
+    if max(abs(dx), abs(dy)) >= 0.12:
+        if abs(dx) >= abs(dy) * 1.35:
+            directional = ("pan_horizontal",)
+        elif abs(dy) >= abs(dx) * 1.35:
+            directional = ("pan_vertical",)
+        else:
+            directional = ("pan_diagonal",)
+    if intent in {"action", "attack", "explosion", "victory", "reveal"} or directional:
+        directional = directional + _CURVES[intent]
+    else:
+        directional = _CURVES[intent]
+    for curve in directional:
+        if curve not in recent[-2:]:
+            return curve
+    return _camera_curve(intent, index, recent)
+
+
 def _pacing_max(section: str, tags: frozenset[str], dense: bool, default: float) -> float:
     """Choose an editorial hold ceiling by beat, not one global split size."""
     if tags & {"action", "attack", "explosion"}:
@@ -292,7 +316,10 @@ def plan_shots(
             next_roi = rois[(roi_cursor + 1) % len(rois)] if len(rois) > 1 else roi
             roi_cursor += 1
             camera_intent = _camera_intent(span.text)
-            camera_curve = _camera_curve(camera_intent, order, recent_curves)
+            camera_curve = _directed_curve(
+                camera_intent, order, recent_curves,
+                roi.x, roi.y, next_roi.x, next_roi.y,
+            )
             recent_curves.append(camera_curve)
             scenes.append(
                 ShotPlan(

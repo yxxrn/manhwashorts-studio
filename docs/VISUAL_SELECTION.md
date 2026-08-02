@@ -110,6 +110,10 @@ At panel changes, the Director ranks the incoming panel's ROIs with a continuity
 penalty: a salient ROI near the outgoing focal point beats an equally salient ROI
 across the frame. The cut remains editorial; the renderer only executes it.
 
+Camera curves also follow the approved ROI vector: horizontal, vertical, or
+diagonal ROI travel requests the matching pan before intent-specific fallback
+curves. Motion diversity still rejects the last two curves.
+
 `app.services.camera_planner` executes the selected curve. It has no editorial
 fallback: unsupported curves fail fast instead of silently changing the director's
 choice.
