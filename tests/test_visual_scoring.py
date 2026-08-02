@@ -346,6 +346,17 @@ def test_panel_switch_prefers_roi_near_previous_focus():
     assert second_shot.focus_y == 0.75
 
 
+def test_fade_continuity_is_stronger_than_hard_cut_continuity():
+    from app.services.roi_detection import ROI
+    from app.services.shot_director import _continuity_order
+
+    rois = (ROI("salient", 0.1, 0.1, 1.0), ROI("near", 0.75, 0.75, 0.55))
+    fade = _continuity_order(rois, 0.8, 0.8, "fade")
+    cut = _continuity_order(rois, 0.8, 0.8, "cut")
+    assert fade[0].label == "near"
+    assert cut[0].label == "salient"
+
+
 def test_camera_curve_follows_roi_direction():
     class Span:
         section = "thinking"

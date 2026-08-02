@@ -166,12 +166,15 @@ def _slot_weights(slots: int, section: str, tags: frozenset[str]) -> list[float]
     return weights
 
 
-def _continuity_order(rois: tuple[ROI, ...], x: float, y: float) -> tuple[ROI, ...]:
-    """Prefer a nearby salient ROI when a panel switch changes composition."""
+def _continuity_order(
+    rois: tuple[ROI, ...], x: float, y: float, transition: str = "fade",
+) -> tuple[ROI, ...]:
+    """Prefer nearby ROIs; fades enforce stronger compositional continuity."""
+    penalty = 4.0 if transition == "fade" else 0.0
     return tuple(
         sorted(
             rois,
-            key=lambda roi: roi.priority - 4.0 * math.hypot(roi.x - x, roi.y - y),
+            key=lambda roi: roi.priority - penalty * math.hypot(roi.x - x, roi.y - y),
             reverse=True,
         )
     )
@@ -256,6 +259,7 @@ def plan_shots(
     signatures: set[str] = set()
     previous_order: int | None = None
     previous_focus: tuple[float, float] | None = None
+    previous_asset_id: str | None = None
     previous_vector: tuple[float, float] | None = None
     order = 0
 
@@ -264,10 +268,11 @@ def plan_shots(
         next_start = span_list[span_index + 1].start_time if span_index + 1 < len(span_list) else span.end_time
         block_end = max(span.end_time, next_start)
         duration = max(0.0, block_end - span.start_time)
+        previous_asset_id = scenes[-1].asset_id if scenes else None
         candidate = _candidate_for(candidates, span.text, previous_order, used, signatures)
         rois = rank_rois(candidate, span.text)
-        if previous_focus:
-            rois = _continuity_order(rois, *previous_focus)
+        if previous_focus and candidate and candidate.asset_id != previous_asset_id:
+            rois = _continuity_order(rois, *previous_focus, "fade")
         roi_cursor = 0
         if candidate:
             used.add(candidate.asset_id)
@@ -311,10 +316,11 @@ def plan_shots(
             # then ask panel selection for the next image.
             if roi_cursor >= len(rois):
                 previous_order = candidate.order_index if candidate else previous_order
+                previous_asset_id = candidate.asset_id if candidate else previous_asset_id
                 candidate = _candidate_for(candidates, span.text, previous_order, used, signatures)
                 rois = rank_rois(candidate, span.text)
-                if previous_focus:
-                    rois = _continuity_order(rois, *previous_focus)
+                if previous_focus and candidate and candidate.asset_id != previous_asset_id:
+                    rois = _continuity_order(rois, *previous_focus, "fade")
                 roi_cursor = 0
                 if candidate:
                     used.add(candidate.asset_id)

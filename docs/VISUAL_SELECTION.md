@@ -118,6 +118,10 @@ The Director remembers the previous meaningful ROI vector. A non-dramatic beat
 cannot immediately reverse that direction; reveal/action/impact beats may break
 the flow deliberately.
 
+Transition policy matters: a `fade` applies a strong continuity penalty to the
+incoming ROI; a hard `cut` keeps salience-first ordering and may make a larger
+compositional jump when the beat calls for impact.
+
 `app.services.camera_planner` executes the selected curve. It has no editorial
 fallback: unsupported curves fail fast instead of silently changing the director's
 choice.
