@@ -77,7 +77,7 @@ class PanelCandidate:
     semantic_score: float = 0.0
 
 
-_ACTION = {"attack", "attacked", "attacks", "hit", "struck", "strike", "fight", "fought", "run", "jump", "fall", "battle", "chase", "serang", "menyerang", "memukul", "bertarung", "berlari", "melompat", "jatuh", "kejar", "mengejar"}
+_ACTION = {"attack", "attacked", "attacks", "hit", "struck", "strike", "fight", "fought", "run", "jump", "fall", "battle", "chase", "serang", "menyerang", "memukul", "merampas", "menebas", "bertarung", "berlari", "melompat", "jatuh", "kejar", "mengejar"}
 _REVEAL = {"reveal", "finally", "opened", "awakens", "appears", "discovers", "ternyata", "akhirnya", "muncul", "terbuka", "bangkit", "menemukan"}
 _EXPLOSION = {"explosion", "explode", "blast", "fire", "destroy", "impact", "ledakan", "meledak", "hancur", "menghancurkan", "dampak"}
 _THINKING = {"think", "thinks", "remember", "wonder", "realize", "considers", "berpikir", "teringat", "bertanya", "menyadari", "mempertimbangkan"}
