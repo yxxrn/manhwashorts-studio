@@ -262,3 +262,24 @@ def test_timed_event_uses_absolute_span_time():
     shots = plan_shots([Span()], [candidate])
     assert shots[0].end_time < 12.0
     assert shots[0].end_time >= 11.25
+
+
+def test_dense_action_uses_faster_editorial_pacing():
+    class Span:
+        section = "conflict"
+        start_time = 0.0
+        end_time = 9.0
+        text = "He attacks, strikes, hits, then explodes."
+        word_timings = [
+            {"word": word, "start": index * 0.5, "end": index * 0.5 + 0.4}
+            for index, word in enumerate(("He", "attacks", "strikes", "hits", "then", "explodes"))
+        ]
+
+    candidate = PanelCandidate(
+        "panel", 0,
+        VisualFeatures(action_pose=1.0, visual_effects=1.0, focal_points=((0.2, 0.2), (0.8, 0.8))),
+        6.0,
+    )
+    shots = plan_shots([Span()], [candidate])
+    assert len(shots) >= 4
+    assert max(shot.end_time - shot.start_time for shot in shots) <= 2.25

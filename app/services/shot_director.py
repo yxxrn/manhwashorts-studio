@@ -112,38 +112,42 @@ _EVENT_WORDS = {
 }
 
 
-def _event_time(span: object) -> float | None:
-    """Find a timed dramatic word inside a narration span."""
+def _event_times(span: object) -> list[float]:
+    """Find all timed dramatic words inside a narration span."""
     tags = visual_scoring.narration_tags(span.text)
     words = getattr(span, "word_timings", []) or []
+    events: list[float] = []
     for timing in words:
         token = re.sub(r"[^a-z]", "", str(timing.get("word", "")).lower())
         if any(token in _EVENT_WORDS[tag] for tag in tags if tag in _EVENT_WORDS):
             # AudioSpan timings are already on the master timeline.
-            return float(timing.get("start", 0.0))
-    return None
+            events.append(float(timing.get("start", 0.0)))
+    return events
 
 
-def _anticipate_event(
+def _anticipate_events(
     scenes: list[ShotPlan], first: int, last: int,
-    event_time: float | None, minimum: float,
+    event_times: list[float], minimum: float, maximum: float,
 ) -> None:
-    """Move the nearest internal cut just before a timed dramatic word."""
-    if event_time is None or last <= first:
+    """Move internal cuts before multiple timed dramatic words."""
+    if not event_times or last <= first:
         return
-    boundary = min(
-        range(first, last),
-        key=lambda index: abs(scenes[index].end_time - event_time),
-    )
-    left, right = scenes[boundary], scenes[boundary + 1]
-    left_duration = left.end_time - left.start_time
-    target = event_time - min(_ANTICIPATION, left_duration * 0.18)
-    lower = left.start_time + minimum
-    upper = right.end_time - minimum
-    cut = round(max(lower, min(target, upper)), 3)
-    if lower <= cut <= upper:
-        scenes[boundary] = ShotPlan(**{**left.as_dict(), "end_time": cut})
-        scenes[boundary + 1] = ShotPlan(**{**right.as_dict(), "start_time": cut})
+    for event_time in event_times:
+        boundary = min(
+            range(first, last),
+            key=lambda index: abs(scenes[index].end_time - event_time),
+        )
+        left, right = scenes[boundary], scenes[boundary + 1]
+        left_duration = left.end_time - left.start_time
+        target = event_time - min(_ANTICIPATION, left_duration * 0.18)
+        lower = left.start_time + minimum
+        upper = right.end_time - minimum
+        cut = round(max(lower, min(target, upper)), 3)
+        left_after = cut - left.start_time
+        right_after = right.end_time - cut
+        if lower <= cut <= upper and left_after <= maximum and right_after <= maximum:
+            scenes[boundary] = ShotPlan(**{**left.as_dict(), "end_time": cut})
+            scenes[boundary + 1] = ShotPlan(**{**right.as_dict(), "start_time": cut})
 
 
 def _slots(duration: float, roi_count: int) -> int:
@@ -192,11 +196,29 @@ def plan_shots(
             used.add(candidate.asset_id)
             if candidate.features.visual_signature:
                 signatures.add(candidate.features.visual_signature)
+        tags = visual_scoring.narration_tags(span.text)
+        timings = getattr(span, "word_timings", []) or []
+        word_count = len(timings)
+        active_duration = (
+            max(0.1, float(timings[-1].get("end", 0.0)) - float(timings[0].get("start", 0.0)))
+            if timings else duration
+        )
+        word_rate = word_count / active_duration
+        # Dense action gets a faster editorial rhythm; reflective/dialogue beats
+        # keep longer holds because the camera itself remains alive.
+        span_max = max_seconds
+        if tags & {"action", "attack", "explosion"} and word_rate >= 1.8:
+            span_max = min(span_max, 2.25)
+        event_times = _event_times(span)
         max_slots = max(1, int(duration // min_seconds))
         slots = min(
             6,
             max_slots,
-            max(math.ceil(duration / max_seconds), min(len(rois), max_slots)),
+            max(
+                math.ceil(duration / span_max),
+                min(len(rois), max_slots),
+                min(len(event_times) + 1, max_slots),
+            ),
         ) if duration else 0
         if not slots:
             continue
@@ -242,7 +264,9 @@ def plan_shots(
                 )
             )
             order += 1
-        _anticipate_event(scenes, first_index, len(scenes) - 1, _event_time(span), min_seconds)
+        _anticipate_events(
+            scenes, first_index, len(scenes) - 1, event_times, min_seconds, span_max
+        )
         if candidate:
             previous_order = candidate.order_index
         if first_index > 0 and scenes:
