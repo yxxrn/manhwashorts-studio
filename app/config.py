@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     app_name: str = "ManhwaShorts Studio"
-    version: str = "1.6.3"
+    version: str = "1.6.4"
     environment: str = Field(default="local", description="local | staging | production")
     debug: bool = True
     # Registration stays open for local development, closed on the private

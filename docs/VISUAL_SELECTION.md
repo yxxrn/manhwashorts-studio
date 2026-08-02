@@ -192,3 +192,29 @@ victory   → slow pull-out
 
 The existing panel scorer is unchanged. This layer only sequences its selected
 panel and ROI outputs.
+
+## Director Layer
+
+The complete editorial pipeline is now:
+
+```text
+Panels → Story Analysis → Director → Shot Sequencer → Camera Planner → Renderer
+```
+
+`app.services.director` runs before camera planning. It splits narration spans
+around timed dramatic words and assigns each story beat:
+
+```text
+kind             emotion       visual timing
+approach         anticipation  visual_before
+suspense         tension       visual_before
+reveal           surprise      visual_sync
+attack           urgency       visual_sync
+impact/explosion shock/chaos    visual_sync
+victory          triumph       visual_after
+```
+
+The Director owns beat boundaries, emotion, composition preference, and whether
+visuals lead, sync, or follow narration. `shot_director` consumes these beat
+decisions and retains camera-memory/diversity rules. `camera_planner` only
+validates and executes the approved curve; it makes no editorial choice.

@@ -87,6 +87,8 @@ _CURVES: dict[str, tuple[str, ...]] = {
     "attack": ("punch_zoom", "micro_shake", "pan_diagonal"),
     "explosion": ("impact_shake", "micro_shake", "punch_zoom"),
     "victory": ("dramatic_zoom_out", "slow_push_in", "pan_vertical"),
+    "approach": ("pan_horizontal", "slow_push_in", "focus_shift"),
+    "suspense": ("slow_push_in", "pan_horizontal", "focus_shift"),
     "neutral": (
         "slow_push_in", "pan_horizontal", "pan_vertical", "pan_diagonal",
         "slow_pull_out", "focus_shift", "orbit",
@@ -281,9 +283,14 @@ def plan_shots(
         tags = visual_scoring.narration_tags(span.text)
         timings = getattr(span, "word_timings", []) or []
         word_count = len(timings)
-        active_duration = (
-            max(0.1, float(timings[-1].get("end", 0.0)) - float(timings[0].get("start", 0.0)))
-            if timings else duration
+        active_duration = max(
+            0.1,
+            (
+                float(timings[-1].get("end", 0.0))
+                - float(timings[0].get("start", 0.0))
+            )
+            if timings
+            else duration,
         )
         word_rate = word_count / active_duration
         # Dense action gets a faster editorial rhythm; reflective/dialogue beats
@@ -331,7 +338,9 @@ def plan_shots(
             roi = rois[roi_cursor]
             next_roi = rois[(roi_cursor + 1) % len(rois)] if len(rois) > 1 else roi
             roi_cursor += 1
-            camera_intent = _camera_intent(span.text)
+            # Director-owned intent/timing wins; legacy AudioSpan callers still
+            # use the deterministic compatibility classifier.
+            camera_intent = getattr(span, "camera_intent", None) or _camera_intent(span.text)
             camera_curve = _directed_curve(
                 camera_intent, order, recent_curves,
                 roi.x, roi.y, next_roi.x, next_roi.y,
@@ -348,7 +357,10 @@ def plan_shots(
                     focus_end_x=next_roi.x, focus_end_y=next_roi.y,
                     effect=camera_curve, camera_intent=camera_intent,
                     camera_curve=camera_curve,
-                    narration_timing=_narration_timing(span.text),
+                    narration_timing=(
+                        getattr(span, "visual_timing", None)
+                        or _narration_timing(span.text)
+                    ),
                     transition=(
                         "none" if order == 0
                         else ("cut" if candidate and scenes[-1].asset_id == candidate.asset_id else "fade")

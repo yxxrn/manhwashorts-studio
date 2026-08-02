@@ -38,6 +38,7 @@ from app.models import (
     TimelineScene,
 )
 from app.services import analysis as analysis_svc
+from app.services import director as director_svc
 from app.services import quality as quality_svc
 from app.services import resolver as resolver_svc
 from app.services import script as script_svc
@@ -555,7 +556,10 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
     db.flush()
 
     scored = visual_scoring.analyze_assets(images, storage.read_bytes)
-    planned = visual_scoring.plan_content_aware_scenes(spans, scored)
+    # Director decides story beats and visual timing first. The Shot Sequencer
+    # then turns those beats into ROI shots; panel scoring remains unchanged.
+    directed_beats = director_svc.analyze_story(spans)
+    planned = visual_scoring.plan_content_aware_scenes(directed_beats, scored)
     specs = [
         timeline_svc.SceneSpec(
             order_index=shot["order_index"],

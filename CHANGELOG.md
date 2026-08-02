@@ -14,6 +14,15 @@ Notable changes per release. Dates are ISO 8601.
 - Shot Director now persists ROI labels, end focal points, camera intent, narration
   lead/follow timing, and camera curves; Camera Planner only executes curves.
 
+## [1.6.4] — 2026-08-02
+
+- Added the Director Layer before Shot Sequencer and Camera Planner.
+- Added story-beat timing: visual-before, visual-sync, and visual-after.
+- Added emotion-driven beat intents for approach, suspense, dialogue, reveal,
+  attack, impact, explosion, and victory.
+- Added Director regression tests and real-case validation: 18 shots, 12 source
+  panels, 4 emotional intents, and 8 camera curves.
+
 ## [1.6.3] — 2026-08-02
 
 - Added the Shot Sequencer: one selected panel can now produce multiple
@@ -641,6 +650,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.6.4]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.4
 [1.6.3]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.3
 [1.6.2]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.2
 [1.6.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.1
