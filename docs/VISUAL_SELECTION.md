@@ -97,6 +97,10 @@ Camera Planner. It does not inspect pixels or add a vision dependency. It answer
 - whether visuals lead, sync, or follow narration,
 - whether the next dramatic beat should lead by a short anticipation cut.
 
+When stored word timings identify a dramatic trigger (`attack`, `reveal`,
+`explosion`, or `victory`), the Director moves the nearest internal ROI cut to a
+short lead before that word. Without timings it retains the safe beat-level plan.
+
 `app.services.camera_planner` executes the selected curve. It has no editorial
 fallback: unsupported curves fail fast instead of silently changing the director's
 choice.

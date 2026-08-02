@@ -213,3 +213,29 @@ def test_shot_director_switches_panel_only_after_roi_exhaustion():
     assert [shot.asset_id for shot in shots[:2]] == ["first", "first"]
     assert shots[2].asset_id == "second"
     assert shots[2].transition == "fade"
+
+
+def test_shot_director_leads_timed_event_with_visual_cut():
+    class Span:
+        section = "conflict"
+        start_time = 0.0
+        end_time = 6.0
+        text = "He waits, then attacks the monster."
+        word_timings = [
+            {"word": "He", "start": 0.0, "end": 1.0},
+            {"word": "waits", "start": 1.0, "end": 2.0},
+            {"word": "then", "start": 2.0, "end": 2.5},
+            {"word": "attacks", "start": 3.6, "end": 4.2},
+            {"word": "the", "start": 4.2, "end": 4.5},
+            {"word": "monster", "start": 4.5, "end": 5.2},
+        ]
+
+    candidate = PanelCandidate(
+        "panel", 0,
+        VisualFeatures(action_pose=1.0, focal_points=((0.2, 0.2), (0.8, 0.8))),
+        6.0,
+    )
+    shots = plan_shots([Span()], [candidate])
+    assert len(shots) == 2
+    assert shots[0].end_time < 3.6
+    assert shots[0].end_time >= 1.25

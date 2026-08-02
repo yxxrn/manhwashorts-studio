@@ -8,6 +8,7 @@ Camera Planner only validates and translates that approved curve for rendering.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -101,6 +102,47 @@ def _camera_curve(intent: str, index: int, recent: list[str]) -> str:
         if curve not in recent[-2:]:
             return curve
     return options[index % len(options)]
+
+
+_EVENT_WORDS = {
+    "action": {"attack", "attacked", "attacks", "strike", "struck", "hit", "serang", "menyerang", "memukul"},
+    "reveal": {"reveal", "finally", "appears", "awakens", "muncul", "akhirnya", "ternyata"},
+    "explosion": {"explosion", "explode", "blast", "ledakan", "meledak"},
+    "victory": {"victory", "wins", "won", "triumph", "menang", "kemenangan"},
+}
+
+
+def _event_time(span: object) -> float | None:
+    """Find a timed dramatic word inside a narration span."""
+    tags = visual_scoring.narration_tags(span.text)
+    words = getattr(span, "word_timings", []) or []
+    for timing in words:
+        token = re.sub(r"[^a-z]", "", str(timing.get("word", "")).lower())
+        if any(token in _EVENT_WORDS[tag] for tag in tags if tag in _EVENT_WORDS):
+            return float(timing.get("start", 0.0))
+    return None
+
+
+def _anticipate_event(
+    scenes: list[ShotPlan], first: int, last: int,
+    event_time: float | None, minimum: float,
+) -> None:
+    """Move the nearest internal cut just before a timed dramatic word."""
+    if event_time is None or last <= first:
+        return
+    boundary = min(
+        range(first, last),
+        key=lambda index: abs(scenes[index].end_time - event_time),
+    )
+    left, right = scenes[boundary], scenes[boundary + 1]
+    left_duration = left.end_time - left.start_time
+    target = event_time - min(_ANTICIPATION, left_duration * 0.18)
+    lower = left.start_time + minimum
+    upper = right.end_time - minimum
+    cut = round(max(lower, min(target, upper)), 3)
+    if lower <= cut <= upper:
+        scenes[boundary] = ShotPlan(**{**left.as_dict(), "end_time": cut})
+        scenes[boundary + 1] = ShotPlan(**{**right.as_dict(), "start_time": cut})
 
 
 def _slots(duration: float, roi_count: int) -> int:
@@ -199,6 +241,7 @@ def plan_shots(
                 )
             )
             order += 1
+        _anticipate_event(scenes, first_index, len(scenes) - 1, _event_time(span), min_seconds)
         if candidate:
             previous_order = candidate.order_index
         if first_index > 0 and scenes:
