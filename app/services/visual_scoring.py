@@ -324,9 +324,12 @@ def planned_focus(candidate: PanelCandidate | None, shot_index: int = 0) -> tupl
 
 def plan_content_aware_scenes(spans: Iterable[object], candidates: list[PanelCandidate], min_scene_seconds: float = 2.0, max_scene_seconds: float = 6.0) -> list[dict]:
     """Plan directed shots; panel scoring remains the candidate provider."""
+    from app.services.camera_planner import apply_camera_plans
     from app.services.shot_director import plan_shots
 
-    return [shot.as_dict() for shot in plan_shots(list(spans), candidates, min_scene_seconds, max_scene_seconds)]
+    return apply_camera_plans(
+        plan_shots(list(spans), candidates, min_scene_seconds, max_scene_seconds)
+    )
 
 
 def score_breakdown(candidate: PanelCandidate) -> dict[str, float | str]:

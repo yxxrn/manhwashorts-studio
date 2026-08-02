@@ -1,8 +1,14 @@
 # Content-aware panel selection
 
-ManhwaShorts no longer assigns panels by `order_index` alone. The timeline stage
-runs each detected image through `app.services.visual_scoring` before selecting
-shots.
+ManhwaShorts no longer assigns panels by `order_index` alone. The visual pipeline
+is explicitly layered:
+
+```text
+Panels → ROI Detection → Shot Director → Camera Planner → Renderer
+```
+
+Panel analysis provides evidence. ROI Detection ranks regions. The Shot Director
+owns editorial decisions. Camera Planner executes approved camera curves only.
 
 ## Score model
 
@@ -64,24 +70,29 @@ local vision encoder.
  fallback   -> alternating kenburns/pan/push
 ```
 
-`planned_focus()` chooses the strongest detected focal region. Multiple focal
-regions can therefore produce multiple shots from one panel before switching to
-the next asset. `plan_content_aware_scenes()` now delegates shot scheduling to the
-Shot Director, which ranks those ROIs, interpolates between them, splits long beats
-into 1.25–3 second shots, anticipates dramatic beats, and suppresses repeated
-camera curves. The persisted plan carries `roi_label`, `focus_end_x/y`, and
-`camera_curve` so render and future editor tooling remain independent.
+`app.services.roi_detection` ranks the strongest detected focal regions. Multiple
+regions can produce multiple shots from one panel before the Shot Director switches
+panels. `plan_content_aware_scenes()` delegates editorial scheduling to the Shot
+Director, which decides ROI order, 1.25–3 second durations, cut points, panel
+switches, anticipation, visual lead/follow timing, and camera intent/curve. The
+persisted plan carries `roi_label`, `focus_end_x/y`, `camera_intent`,
+`narration_timing`, and `camera_curve`.
 
 ## Shot Director
 
-`app.services.shot_director` is the editorial layer between panel selection and
-FFmpeg. It does not detect panels or add a vision dependency. It answers:
+`app.services.shot_director` is the editorial layer between ROI Detection and the
+Camera Planner. It does not inspect pixels or add a vision dependency. It answers:
 
 - which ROI leads each shot (`face`, `weapon`, `opponent`, `effect`, `detail`),
 - whether the same panel should continue while another ROI is available,
-- which action-specific curve fits the narration (`slow_push_in`, `focus_shift`,
+- which camera intent/curve fits the narration (`slow_push_in`, `focus_shift`,
   `punch_zoom`, `impact_shake`, `dramatic_zoom_out`, `orbit`),
+- whether visuals lead, sync, or follow narration,
 - whether the next dramatic beat should lead by a short anticipation cut.
+
+`app.services.camera_planner` executes the selected curve. It has no editorial
+fallback: unsupported curves fail fast instead of silently changing the director's
+choice.
 
 The renderer interpolates the start and end ROI using smoothstep crop coordinates;
 integer-pixel rounding stays in place to avoid shimmer. Every shot remains an

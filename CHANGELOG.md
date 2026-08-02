@@ -10,7 +10,9 @@ Notable changes per release. Dates are ISO 8601.
 - Added semantic camera curves for dialogue, thinking, reveal, action/attack,
   explosion, and victory shots; the existing Indonesian default and production voice
   settings remain unchanged.
-- Persisted ROI labels, end focal points, and camera curves on timeline scenes.
+- Split visual direction into `roi_detection` → `shot_director` → `camera_planner`.
+- Shot Director now persists ROI labels, end focal points, camera intent, narration
+  lead/follow timing, and camera curves; Camera Planner only executes curves.
 
 ## [1.6.1] — 2026-08-01
 

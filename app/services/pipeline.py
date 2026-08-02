@@ -560,6 +560,8 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             focus_end_y=shot.get("focus_end_y", shot["focus_y"]),
             roi_label=shot.get("roi_label", ""),
             camera_curve=shot.get("camera_curve", shot["effect"]),
+            camera_intent=shot.get("camera_intent", "neutral"),
+            narration_timing=shot.get("narration_timing", "narration_lead"),
             effect=shot["effect"],
             transition="fade" if shot["order_index"] else "none",
         )
@@ -580,6 +582,8 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             focus_end_y=spec.focus_end_y,
             roi_label=spec.roi_label,
             camera_curve=spec.camera_curve,
+            camera_intent=spec.camera_intent,
+            narration_timing=spec.narration_timing,
             effect=spec.effect,
             transition=spec.transition,
         )

@@ -33,6 +33,8 @@ class SceneSpec:
     focus_end_y: float = 0.4
     roi_label: str = ""
     camera_curve: str = "slow_push_in"
+    camera_intent: str = "neutral"
+    narration_timing: str = "narration_lead"
     effect: str = "kenburns_in"
     overlay_text: str = ""
     transition: str = "fade"

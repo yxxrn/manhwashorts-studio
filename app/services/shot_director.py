@@ -1,9 +1,8 @@
-"""Human-editor-style shot planning.
+"""Editorial shot planning between ROI detection and camera execution.
 
-Panel scoring answers *which* image is useful. The Shot Director answers *how*
-to stage it: ROI order, shot length, camera curve, diversity, and anticipation.
-It deliberately consumes ``PanelCandidate`` rather than inspecting pixels, so
-ROI/camera scheduling can evolve independently from panel detection.
+Panel scoring answers *which* image is useful. The Shot Director decides ROI order,
+shot length, cuts, anticipation, narration timing, and camera intent/curve. The
+Camera Planner only validates and translates that approved curve for rendering.
 """
 
 from __future__ import annotations
@@ -13,17 +12,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.services import visual_scoring
+from app.services.roi_detection import ROI, rank_rois
 from app.services.visual_scoring import PanelCandidate
-
-
-@dataclass(frozen=True)
-class ROI:
-    """A ranked visual target inside one panel."""
-
-    label: str
-    x: float
-    y: float
-    priority: float
 
 
 @dataclass(frozen=True)
@@ -41,7 +31,9 @@ class ShotPlan:
     focus_end_x: float
     focus_end_y: float
     effect: str
+    camera_intent: str
     camera_curve: str
+    narration_timing: str
     transition: str
     visual_score: float = 0.0
     semantic_score: float = 0.0
@@ -56,70 +48,58 @@ _MAX_SHOT = 3.0
 _ANTICIPATION = 0.28
 
 
-def _clip(value: float) -> float:
-    return max(0.05, min(0.95, float(value)))
-
-
-def rank_rois(candidate: PanelCandidate | None, narration: str = "") -> tuple[ROI, ...]:
-    """Turn existing focal points/features into ranked editorial targets.
-
-    This is not a second detector. It labels the focal regions already exposed by
-    visual scoring, keeping the Shot Director independent from CV/OCR tooling.
-    """
-    if candidate is None:
-        return (ROI("composition", 0.5, 0.4, 0.1),)
-    f = candidate.features
-    tags = visual_scoring.narration_tags(narration)
-    labels: list[tuple[str, float]] = []
-    if f.face_visibility or "dialogue" in tags or "thinking" in tags:
-        labels.append(("face", f.face_visibility + f.facial_expression + 0.2))
-    if f.weapons or "weapon" in tags:
-        labels.append(("weapon", f.weapons + 0.2))
-    if f.monsters or "monster" in tags:
-        labels.append(("opponent", f.monsters + 0.2))
-    if f.visual_effects or "explosion" in tags:
-        labels.append(("effect", f.visual_effects + f.impact_frame + 0.1))
-    labels.append(("detail", f.object_density + f.dramatic_composition * 0.5))
-    labels.sort(key=lambda item: item[1], reverse=True)
-    labels = labels or [("composition", 0.1)]
-
-    points = tuple(candidate.features.focal_points) or ((0.5, 0.4),)
-    rois: list[ROI] = []
-    for index, (x, y) in enumerate(points):
-        label, base = labels[index % len(labels)]
-        # Slightly discount fallback labels; each point remains usable.
-        rois.append(ROI(label if index < len(labels) else f"{label}_{index + 1}", _clip(x), _clip(y), base - index * 0.03))
-    return tuple(rois)
-
-
-def _camera_options(narration: str, index: int) -> tuple[str, ...]:
+def _camera_intent(narration: str) -> str:
+    """Choose editorial intent; curve selection belongs to camera_planner."""
     tags = visual_scoring.narration_tags(narration)
     if "explosion" in tags:
-        return ("impact_shake", "micro_shake", "punch_zoom")
-    if "attack" in tags or "action" in tags:
-        return ("punch_zoom", "micro_shake", "pan_diagonal", "focus_shift")
+        return "explosion"
+    if "attack" in tags:
+        return "attack"
+    if "action" in tags:
+        return "action"
     if "victory" in tags:
-        return ("dramatic_zoom_out", "slow_push_in", "pan_vertical")
+        return "victory"
     if "reveal" in tags:
-        return ("push_in", "focus_shift", "slow_push_in", "pan_vertical")
+        return "reveal"
     if "thinking" in tags:
-        return ("pan_horizontal", "focus_shift", "pan_diagonal")
+        return "thinking"
     if "dialogue" in tags:
-        return ("slow_push_in", "pan_horizontal", "focus_shift")
-    return (
+        return "dialogue"
+    return "neutral"
+
+
+def _narration_timing(narration: str) -> str:
+    """Decide whether visuals lead, sync, or follow narration."""
+    tags = visual_scoring.narration_tags(narration)
+    if tags & {"action", "attack", "explosion", "reveal", "victory"}:
+        return "visual_lead"
+    if tags & {"dialogue", "thinking"}:
+        return "sync"
+    return "narration_lead"
+
+
+_CURVES: dict[str, tuple[str, ...]] = {
+    "dialogue": ("slow_push_in", "pan_horizontal", "focus_shift"),
+    "thinking": ("pan_horizontal", "focus_shift", "pan_diagonal"),
+    "reveal": ("push_in", "focus_shift", "slow_push_in", "pan_vertical"),
+    "action": ("punch_zoom", "micro_shake", "pan_diagonal", "focus_shift"),
+    "attack": ("punch_zoom", "micro_shake", "pan_diagonal"),
+    "explosion": ("impact_shake", "micro_shake", "punch_zoom"),
+    "victory": ("dramatic_zoom_out", "slow_push_in", "pan_vertical"),
+    "neutral": (
         "slow_push_in", "pan_horizontal", "pan_vertical", "pan_diagonal",
         "slow_pull_out", "focus_shift", "orbit",
-    )
+    ),
+}
 
 
-def _choose_effect(narration: str, index: int, recent: list[str]) -> str:
-    options = _camera_options(narration, index)
-    tags = visual_scoring.narration_tags(narration)
-    start = 0 if tags else index % len(options)
+def _camera_curve(intent: str, index: int, recent: list[str]) -> str:
+    """Make the editorial curve decision, including diversity."""
+    options = _CURVES[intent]
     for offset in range(len(options)):
-        effect = options[(start + offset) % len(options)]
-        if effect not in recent[-2:]:
-            return effect
+        curve = options[(index + offset) % len(options)]
+        if curve not in recent[-2:]:
+            return curve
     return options[index % len(options)]
 
 
@@ -151,7 +131,7 @@ def plan_shots(
     min_seconds = max(1.0, min(float(min_scene_seconds), max_seconds - 0.05))
     scenes: list[ShotPlan] = []
     boundaries: list[tuple[int, int, int]] = []
-    recent_effects: list[str] = []
+    recent_curves: list[str] = []
     used: set[str] = set()
     signatures: set[str] = set()
     previous_order: int | None = None
@@ -179,8 +159,9 @@ def plan_shots(
             end = span.start_time + (slot + 1) * slot_duration
             roi = rois[slot % len(rois)]
             next_roi = rois[(slot + 1) % len(rois)] if len(rois) > 1 else roi
-            effect = _choose_effect(span.text, order, recent_effects)
-            recent_effects.append(effect)
+            camera_intent = _camera_intent(span.text)
+            camera_curve = _camera_curve(camera_intent, order, recent_curves)
+            recent_curves.append(camera_curve)
             scenes.append(
                 ShotPlan(
                     order_index=order, section=span.section,
@@ -189,7 +170,9 @@ def plan_shots(
                     roi_label=roi.label,
                     focus_x=roi.x, focus_y=roi.y,
                     focus_end_x=next_roi.x, focus_end_y=next_roi.y,
-                    effect=effect, camera_curve=effect,
+                    effect=camera_curve, camera_intent=camera_intent,
+                    camera_curve=camera_curve,
+                    narration_timing=_narration_timing(span.text),
                     transition="none" if order == 0 else ("cut" if candidate and scenes[-1].asset_id == candidate.asset_id else "fade"),
                     visual_score=candidate.visual_score if candidate else 0.0,
                     semantic_score=candidate.semantic_score if candidate else 0.0,

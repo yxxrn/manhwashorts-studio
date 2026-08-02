@@ -291,6 +291,8 @@ class TimelineScene(Base, TimestampMixin):
     focus_end_y: Mapped[float] = mapped_column(Float, default=0.4)
     roi_label: Mapped[str] = mapped_column(String(40), default="")
     camera_curve: Mapped[str] = mapped_column(String(40), default="")
+    camera_intent: Mapped[str] = mapped_column(String(20), default="neutral")
+    narration_timing: Mapped[str] = mapped_column(String(20), default="narration_lead")
     effect: Mapped[str] = mapped_column(String(40), default="kenburns_in")
     overlay_text: Mapped[str] = mapped_column(Text, default="")
     transition: Mapped[str] = mapped_column(String(40), default="fade")

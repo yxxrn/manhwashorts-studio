@@ -33,8 +33,8 @@ How the pieces fit together, and why they are arranged this way.
 │ app/services                                    │
 │   pipeline.py    orchestration + audit          │
 │   ingest  analysis  script  tts                 │
-│   timeline  shot_director  render  quality      │
-│                         policy                  │
+│   timeline  roi_detection  shot_director        │
+│   camera_planner  render  quality  policy       │
 │   publish  youtube  storage                     │
 ├─────────────────────────────────────────────────┤
 │ app/models.py    SQLAlchemy · 15 tables         │
@@ -85,6 +85,19 @@ falls back to rules on any error rather than failing the request.
 `ByokAnalyzer` does the same through a user-supplied key (see BYOK below). Both
 share `parse_llm_json`, which length-caps every field and validates every enum:
 a model reply is untrusted input and a malformed one must not reach the database.
+
+### Visual direction
+
+```text
+panels → visual scoring → roi_detection → shot_director → camera_planner → render
+```
+
+`visual_scoring` detects panel signals and focal points. `roi_detection` ranks
+those regions. `shot_director` owns editorial decisions: ROI order, shot length,
+ROI changes, panel switches, anticipation, narration timing, and camera intent.
+`camera_planner` only validates the chosen camera curve and translates it into
+renderer fields. It never chooses a panel, ROI, duration, cut, or lead/follow
+relationship.
 
 ## BYOK: bring your own key
 

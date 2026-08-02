@@ -1,5 +1,7 @@
 from PIL import Image, ImageDraw
 
+from app.services.camera_planner import execute_camera_plan
+from app.services.roi_detection import rank_rois
 from app.services.shot_director import plan_shots
 from app.services.visual_scoring import (
     PanelCandidate,
@@ -133,4 +135,23 @@ def test_shot_director_anticipates_next_dramatic_beat():
     shots = plan_shots([Setup(), Reveal()], [candidate])
     assert shots[0].end_time < 3.0
     assert shots[1].start_time == shots[0].end_time
-    assert shots[1].effect == "push_in"
+    assert shots[1].camera_intent == "reveal"
+    assert shots[1].camera_curve in {"push_in", "focus_shift", "slow_push_in", "pan_vertical"}
+
+
+def test_layers_keep_editorial_decisions_out_of_camera_planner():
+    class Span:
+        section = "conflict"
+        start_time = 0.0
+        end_time = 3.0
+        text = "The warrior attacked."
+
+    candidate = _candidate("p", 0, 4.0, action=1.0)
+    rois = rank_rois(candidate, Span.text)
+    shots = plan_shots([Span()], [candidate])
+    executed = execute_camera_plan(shots[0].order_index, shots[0].camera_curve)
+    assert rois
+    assert shots[0].camera_intent == "attack"
+    assert shots[0].narration_timing == "visual_lead"
+    assert executed.effect == shots[0].camera_curve
+    assert executed.camera_curve == shots[0].camera_curve
