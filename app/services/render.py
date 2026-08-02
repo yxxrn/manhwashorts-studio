@@ -316,6 +316,36 @@ def render_scene_clip(
     return dest
 
 
+def join_scene_clips(
+    clips: list[Path], scenes: list[SceneInput], dest: Path, fps: int,
+    encoder: encoders.Selection | None = None, preview: bool = False,
+) -> Path:
+    """Join directed clips without black-frame transition flashes.
+
+    Editorial transitions remain persisted on each scene. The CPU-safe renderer
+    uses exact hard joins here: the camera move and ROI change provide the cut,
+    while a future compositor can add true overlapping dissolves without changing
+    the Shot Director contract. Exact duration matters more than a fake fade.
+    """
+    if not clips or len(clips) != len(scenes):
+        raise RenderError("scene clips and scene plan do not match", code="join_mismatch")
+    selection = encoder or encoders.select()
+    concat_list = dest.with_suffix(".concat.txt")
+    concat_list.write_text(
+        "".join(f"file '{clip.as_posix()}'\n" for clip in clips), encoding="utf-8"
+    )
+    try:
+        _run(
+            [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "concat", "-safe", "0", "-i", str(concat_list),
+             "-an", *encoders.video_args(selection, preview=preview), str(dest)],
+            timeout=900, step="concat",
+        )
+    finally:
+        concat_list.unlink(missing_ok=True)
+    return dest
+
+
 # --- subtitles -------------------------------------------------------------
 
 
@@ -470,22 +500,8 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         report(5 + int(45 * (i + 1) / len(request.scenes)), f"scene {i + 1}/{len(request.scenes)}")
 
     report(55, "joining scenes")
-    concat_list = work / "clips.txt"
-    concat_list.write_text(
-        "".join(f"file '{c.as_posix()}'\n" for c in clips),
-        encoding="utf-8",
-    )
     silent = work / "silent.mp4"
-    _run(
-        [
-            settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", str(concat_list),
-            "-c", "copy",
-            str(silent),
-        ],
-        timeout=600,
-        step="concat",
-    )
+    join_scene_clips(clips, request.scenes, silent, fps, selection, request.preview)
 
     report(65, "burning subtitles")
     video_stage = silent
