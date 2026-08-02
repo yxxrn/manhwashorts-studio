@@ -308,6 +308,24 @@ def test_word_timings_are_monotonic():
         assert a["end"] <= b["start"] + 1e-6
 
 
+def test_english_is_the_default_render_language_and_voice():
+    from app.constants import DEFAULT_ENGLISH_SPEED, DEFAULT_ENGLISH_VOICE_ID
+    from app.schemas import ProjectCreate, VoiceRequest
+
+    project = ProjectCreate(title="default")
+    assert project.language == "en"
+    assert project.voice_id == DEFAULT_ENGLISH_VOICE_ID
+    assert VoiceRequest().speed == DEFAULT_ENGLISH_SPEED
+
+
+def test_indonesian_remains_explicit_opt_in():
+    from app.schemas import ProjectCreate
+
+    project = ProjectCreate(title="id", language="id", voice_id="id")
+    assert project.language == "id"
+    assert project.voice_id == "id"
+
+
 def test_scenes_cover_audio_including_gaps():
     """Regression: gaps between beats must be absorbed or audio gets clipped."""
     from app.services.timeline import plan_scenes

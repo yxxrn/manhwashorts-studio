@@ -18,7 +18,13 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.constants import JobStatus, ProjectStatus, ScriptSection
+from app.constants import (
+    DEFAULT_ENGLISH_SPEED,
+    DEFAULT_ENGLISH_VOICE_ID,
+    JobStatus,
+    ProjectStatus,
+    ScriptSection,
+)
 from app.models import (
     AudioSegment,
     AuditLog,
@@ -394,7 +400,7 @@ def generate_voiceover(
     db: Session,
     project_id: str,
     *,
-    speed: float = 0.90,
+    speed: float = DEFAULT_ENGLISH_SPEED,
     provider_name: str | None = None,
     actor_id: str = "",
 ) -> list[AudioSegment]:
@@ -428,15 +434,18 @@ def generate_voiceover(
     if not prepared:
         raise PipelineError("script has no spoken text")
 
+    requested_voice_id = (
+        project.voice_id if project.language == "id" else DEFAULT_ENGLISH_VOICE_ID
+    )
     try:
         if isinstance(provider, tts_svc.HttpProvider):
             clips = provider.synthesize_sections(
-                [spoken for _, _, spoken in prepared], work, project.voice_id, speed
+                [spoken for _, _, spoken in prepared], work, requested_voice_id, speed
             )
         else:
             clips = [
                 provider.synthesize(
-                    spoken, work / f"{index:02d}_{section['section']}.wav", project.voice_id, speed
+                    spoken, work / f"{index:02d}_{section['section']}.wav", requested_voice_id, speed
                 )
                 for index, section, spoken in prepared
             ]
@@ -452,7 +461,7 @@ def generate_voiceover(
             section=section["section"],
             order_index=index,
             text=text,
-            voice_id=project.voice_id,
+            voice_id=requested_voice_id,
             provider=clip.provider,
             storage_key=stored.storage_key,
             duration=clip.duration,

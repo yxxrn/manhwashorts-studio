@@ -262,7 +262,7 @@ class HttpProvider:
                 "response_format": settings.tts_http_response_format,
                 "speed": max(0.25, min(4.0, speed)),
                 # Explicit project voice choice; never infer from image content.
-                "language": "id" if voice_id.startswith("id") else "en",
+                "language": "id" if voice_id.startswith("id") else settings.tts_http_language,
                 "instruct": settings.tts_http_instruct,
                 "num_step": settings.tts_http_num_step,
                 "guidance_scale": settings.tts_http_guidance_scale,
@@ -303,7 +303,7 @@ class HttpProvider:
 
         if not texts or not all(text.strip() for text in texts):
             raise TTSError("cannot synthesize empty sections")
-        language = "id" if voice_id.startswith("id") else "en"
+        language = "id" if voice_id.startswith("id") else settings.tts_http_language
         headers = {"Content-Type": "application/json"}
         if settings.tts_http_key:
             headers["Authorization"] = f"Bearer {settings.tts_http_key.get_secret_value()}"

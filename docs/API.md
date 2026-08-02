@@ -231,11 +231,11 @@ Logout clears the cookie. The other two return the current user / workspace.
   "manhwa_title": "Peringkat Terakhir",
   "chapter": "12",
   "content_type": "chapter_recap",
-  "language": "id",
+  "language": "en",
   "spoiler_level": "medium",
   "narration_style": "dramatic",
   "target_duration": 60,
-  "voice_id": "id",
+  "voice_id": "the-explainer-american",
   "cta_text": "Komentar di bawah.",
   "banned_words": [],
   "pronunciations": {"Rian": "Ri-an"}

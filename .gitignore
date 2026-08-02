@@ -25,6 +25,7 @@ token.json
 # Application data (user material, renders, database)
 data/
 !data/.gitkeep
+artifacts/
 
 # Test scratch runs (disk-backed; /tmp is too small for real renders)
 data/test_runs/

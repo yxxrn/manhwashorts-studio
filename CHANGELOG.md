@@ -14,6 +14,14 @@ Notable changes per release. Dates are ISO 8601.
 - Shot Director now persists ROI labels, end focal points, camera intent, narration
   lead/follow timing, and camera curves; Camera Planner only executes curves.
 
+## [1.6.2] — 2026-08-02
+
+- Made new projects default to English narration and The Explainer no. 4.
+- Locked all English renders to `the-explainer-american`; Indonesian remains an
+  explicit `language: "id"` opt-in.
+- Set the default narration speed to `0.90` and corrected the shared-reference
+  OmniVoice path to use the configured English language.
+
 ## [1.6.1] — 2026-08-01
 
 - Added optional OpenCV and Tesseract-backed face/OCR signals to the visual
@@ -622,6 +630,7 @@ material you have the right to use.
 - Lazy SQLAlchemy relationships are cached per session, so rows written earlier in
   the same transaction were invisible to later pipeline stages.
 
+[1.6.2]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.2
 [1.6.1]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.1
 [1.6.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.6.0
 [1.5.10]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.5.10

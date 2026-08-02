@@ -54,11 +54,11 @@ class ProjectCreate(BaseModel):
     manhwa_title: str = Field(default="", max_length=200)
     chapter: str = Field(default="", max_length=60)
     content_type: ContentType = ContentType.CHAPTER_RECAP
-    language: Literal["en", "id"] = "id"
+    language: Literal["en", "id"] = "en"
     spoiler_level: SpoilerLevel = SpoilerLevel.MEDIUM
     narration_style: NarrationStyle = NarrationStyle.DRAMATIC
     target_duration: int = Field(default=60, ge=10, le=60)
-    voice_id: str = Field(default="id", max_length=80)
+    voice_id: str = Field(default="the-explainer-american", max_length=80)
     series_name: str = Field(default="", max_length=200)
     cta_text: str = Field(default="", max_length=500)
     banned_words: list[str] = Field(default_factory=list)
@@ -223,7 +223,7 @@ class ScriptOut(BaseModel):
 
 
 class VoiceRequest(BaseModel):
-    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    speed: float = Field(default=0.90, ge=0.5, le=2.0)
     provider: str | None = None
 
 

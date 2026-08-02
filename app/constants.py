@@ -133,6 +133,11 @@ class ScriptSection(StrEnum):
     CTA = "cta"
 
 
+# Production narrator profile selected by the user: The Explainer no. 4.
+DEFAULT_ENGLISH_VOICE_ID = "the-explainer-american"
+DEFAULT_ENGLISH_SPEED = 0.90
+
+
 #: Default timing envelope (seconds) for a 60s Short.
 SECTION_BUDGET: dict[ScriptSection, tuple[float, float]] = {
     ScriptSection.HOOK: (0.0, 3.0),
