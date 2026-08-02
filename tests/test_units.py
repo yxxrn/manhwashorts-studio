@@ -419,6 +419,43 @@ def test_join_scene_clips_preserves_duration_with_editorial_fade(tmp_path):
     assert probe(output)["duration"] == pytest.approx(4.0, abs=0.05)
 
 
+def test_editorial_fade_contains_real_intermediate_frames(tmp_path):
+    """A fade boundary must mix outgoing and incoming panels, not flash black."""
+    import subprocess
+
+    from PIL import Image, ImageStat
+
+    from app.services import encoders
+    from app.services.render import SceneInput, join_scene_clips, render_scene_clip
+
+    encoder = encoders.select("cpu")
+    clips = []
+    scenes = []
+    for index, colour in enumerate(("red", "blue")):
+        image = tmp_path / f"fade_panel{index}.jpg"
+        clip = tmp_path / f"fade_clip{index}.mp4"
+        Image.new("RGB", (800, 1200), colour).save(image)
+        scene = SceneInput(
+            image, index * 2.0, (index + 1) * 2.0,
+            camera_curve="static", transition="none" if index == 0 else "fade",
+        )
+        render_scene_clip(scene, image, clip, 360, 640, 30, encoder=encoder)
+        clips.append(clip)
+        scenes.append(scene)
+
+    output = tmp_path / "fade_joined.mp4"
+    join_scene_clips(clips, scenes, output, 30, encoder)
+    frame = tmp_path / "fade_frame.png"
+    subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", "1.94",
+         "-i", str(output), "-frames:v", "1", str(frame)],
+        check=True,
+    )
+    mean = ImageStat.Stat(Image.open(frame).convert("RGB")).mean
+    assert 10 < mean[0] < 245
+    assert 10 < mean[2] < 245
+
+
 def test_ass_subtitle_stays_in_safe_area():
     from app.services.render import build_ass
     from app.services.timeline import CueSpec

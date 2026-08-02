@@ -122,6 +122,10 @@ Transition policy matters: a `fade` applies a strong continuity penalty to the
 incoming ROI; a hard `cut` keeps salience-first ordering and may make a larger
 compositional jump when the beat calls for impact.
 
+The renderer's fade compositor is regression-tested at the frame level: a sample
+inside the boundary must contain both outgoing and incoming color energy, while
+the joined clip retains the exact planned duration.
+
 `app.services.camera_planner` executes the selected curve. It has no editorial
 fallback: unsupported curves fail fast instead of silently changing the director's
 choice.
