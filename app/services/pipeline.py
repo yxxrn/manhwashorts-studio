@@ -563,7 +563,7 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             camera_intent=shot.get("camera_intent", "neutral"),
             narration_timing=shot.get("narration_timing", "narration_lead"),
             effect=shot["effect"],
-            transition="fade" if shot["order_index"] else "none",
+            transition=shot.get("transition", "fade" if shot["order_index"] else "none"),
         )
         for shot in planned
     ]
@@ -846,6 +846,7 @@ def build_render_request(db: Session, job: RenderJob):
                 focus_end_y=scene.focus_end_y,
                 camera_curve=scene.camera_curve,
                 effect=scene.effect,
+                transition=scene.transition,
                 overlay_text=scene.overlay_text,
             )
         )

@@ -106,6 +106,10 @@ integer-pixel rounding stays in place to avoid shimmer. Every shot remains an
 ordinary `TimelineScene`, so manual edits and the existing quality gate continue
 to work.
 
+Shot Director emits hard cuts between ROIs on the same panel. A panel change emits
+`fade`; the renderer applies only the requested transition instead of fading every
+clip, avoiding slideshow-like black flashes on ordinary ROI cuts.
+
 This is deliberately a deterministic editorial ceiling. A future director can
 replace ROI ranking or scheduling without changing `VisualFeatures`, the DB scene
 contract, or FFmpeg.

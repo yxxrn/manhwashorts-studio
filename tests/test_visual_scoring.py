@@ -155,3 +155,61 @@ def test_layers_keep_editorial_decisions_out_of_camera_planner():
     assert shots[0].narration_timing == "visual_lead"
     assert executed.effect == shots[0].camera_curve
     assert executed.camera_curve == shots[0].camera_curve
+
+
+def test_shot_director_uses_cuts_inside_one_panel_and_fades_between_panels():
+    class LongSpan:
+        section = "conflict"
+        start_time = 0.0
+        end_time = 8.0
+        text = "The warrior attacked, then the monster appeared."
+
+    first = _candidate("first", 0, 5.0, action=1.0)
+    second = PanelCandidate(
+        "second", 1,
+        VisualFeatures(monsters=1.0, focal_points=((0.8, 0.7),)),
+        5.0,
+    )
+    same_panel = plan_shots([LongSpan()], [first])
+    assert same_panel[0].transition == "none"
+    assert all(shot.transition == "cut" for shot in same_panel[1:])
+
+    class Setup:
+        section = "setup"
+        start_time = 0.0
+        end_time = 3.0
+        text = "He waits."
+
+    class Reveal:
+        section = "twist"
+        start_time = 3.0
+        end_time = 6.0
+        text = "The monster appears."
+
+    changed_panel = plan_shots([Setup(), Reveal()], [first, second])
+    assert changed_panel[0].asset_id != changed_panel[-1].asset_id
+    assert changed_panel[-1].transition == "fade"
+
+
+def test_shot_director_switches_panel_only_after_roi_exhaustion():
+    class Span:
+        section = "conflict"
+        start_time = 0.0
+        end_time = 9.0
+        text = "The battle continues."
+
+    first = PanelCandidate(
+        "first", 0,
+        VisualFeatures(action_pose=1.0, focal_points=((0.2, 0.2), (0.4, 0.4))),
+        6.0,
+    )
+    second = PanelCandidate(
+        "second", 1,
+        VisualFeatures(monsters=1.0, focal_points=((0.8, 0.8),)),
+        5.0,
+    )
+    shots = plan_shots([Span()], [first, second])
+    assert len(shots) == 3
+    assert [shot.asset_id for shot in shots[:2]] == ["first", "first"]
+    assert shots[2].asset_id == "second"
+    assert shots[2].transition == "fade"

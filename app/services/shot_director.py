@@ -144,6 +144,11 @@ def plan_shots(
         duration = max(0.0, block_end - span.start_time)
         candidate = _candidate_for(candidates, span.text, previous_order, used, signatures)
         rois = rank_rois(candidate, span.text)
+        roi_cursor = 0
+        if candidate:
+            used.add(candidate.asset_id)
+            if candidate.features.visual_signature:
+                signatures.add(candidate.features.visual_signature)
         max_slots = max(1, int(duration // min_seconds))
         slots = min(
             6,
@@ -155,10 +160,22 @@ def plan_shots(
         slot_duration = duration / slots
         first_index = len(scenes)
         for slot in range(slots):
+            # Stay on one panel until every meaningful ROI has been shown. Only
+            # then ask panel selection for the next image.
+            if roi_cursor >= len(rois):
+                previous_order = candidate.order_index if candidate else previous_order
+                candidate = _candidate_for(candidates, span.text, previous_order, used, signatures)
+                rois = rank_rois(candidate, span.text)
+                roi_cursor = 0
+                if candidate:
+                    used.add(candidate.asset_id)
+                    if candidate.features.visual_signature:
+                        signatures.add(candidate.features.visual_signature)
             start = span.start_time + slot * slot_duration
             end = span.start_time + (slot + 1) * slot_duration
-            roi = rois[slot % len(rois)]
-            next_roi = rois[(slot + 1) % len(rois)] if len(rois) > 1 else roi
+            roi = rois[roi_cursor]
+            next_roi = rois[(roi_cursor + 1) % len(rois)] if len(rois) > 1 else roi
+            roi_cursor += 1
             camera_intent = _camera_intent(span.text)
             camera_curve = _camera_curve(camera_intent, order, recent_curves)
             recent_curves.append(camera_curve)
@@ -173,7 +190,10 @@ def plan_shots(
                     effect=camera_curve, camera_intent=camera_intent,
                     camera_curve=camera_curve,
                     narration_timing=_narration_timing(span.text),
-                    transition="none" if order == 0 else ("cut" if candidate and scenes[-1].asset_id == candidate.asset_id else "fade"),
+                    transition=(
+                        "none" if order == 0
+                        else ("cut" if candidate and scenes[-1].asset_id == candidate.asset_id else "fade")
+                    ),
                     visual_score=candidate.visual_score if candidate else 0.0,
                     semantic_score=candidate.semantic_score if candidate else 0.0,
                 )
@@ -181,9 +201,6 @@ def plan_shots(
             order += 1
         if candidate:
             previous_order = candidate.order_index
-            used.add(candidate.asset_id)
-            if candidate.features.visual_signature:
-                signatures.add(candidate.features.visual_signature)
         if first_index > 0 and scenes:
             boundaries.append((first_index - 1, first_index, span_index))
 

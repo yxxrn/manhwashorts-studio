@@ -53,6 +53,7 @@ class SceneInput:
     focus_end_y: float = 0.4
     camera_curve: str = "slow_push_in"
     effect: str = "kenburns_in"
+    transition: str = "cut"
     overlay_text: str = ""
 
     @property
@@ -283,10 +284,12 @@ def render_scene_clip(
     )
     vf = f"{motion},format=yuv420p"
 
-    # Short fade in/out on every clip smooths the joins.
-    fade = min(0.25, duration / 4)
-    if fade > 0.05:
-        vf += f",fade=t=in:st=0:d={fade:.2f},fade=t=out:st={duration - fade:.2f}:d={fade:.2f}"
+    # The Shot Director owns transition intent. Do not fade every clip: that
+    # creates a black flash between ROI cuts and makes the edit feel mechanical.
+    if scene.transition == "fade":
+        fade = min(0.18, duration / 4)
+        if fade > 0.05:
+            vf += f",fade=t=in:st=0:d={fade:.2f}"
 
     # VAAPI encodes from GPU surfaces, so the chain must end with an upload.
     vf = encoders.apply_filter_suffix(selection, vf)
