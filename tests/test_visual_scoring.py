@@ -298,3 +298,29 @@ def test_pacing_profile_allows_reflective_beats_more_room():
     shots = plan_shots([Span()], [candidate])
     assert len(shots) == 3
     assert max(shot.end_time - shot.start_time for shot in shots) <= 3.0
+
+
+def test_hold_release_choreography_shapes_reveal_and_action():
+    class Reveal:
+        section = "twist"
+        start_time = 0.0
+        end_time = 6.0
+        text = "The dragon finally appears."
+        word_timings = []
+
+    class Action:
+        section = "conflict"
+        start_time = 0.0
+        end_time = 6.0
+        text = "He attacks the monster."
+        word_timings = []
+
+    candidate = PanelCandidate(
+        "panel", 0,
+        VisualFeatures(action_pose=1.0, monsters=1.0, focal_points=((0.2, 0.2), (0.8, 0.8))),
+        6.0,
+    )
+    reveal = plan_shots([Reveal()], [candidate])
+    action = plan_shots([Action()], [candidate])
+    assert reveal[0].end_time - reveal[0].start_time > reveal[-1].end_time - reveal[-1].start_time
+    assert action[0].end_time - action[0].start_time > action[-1].end_time - action[-1].start_time

@@ -117,6 +117,22 @@ def _pacing_max(section: str, tags: frozenset[str], dense: bool, default: float)
     return min(default, 2.75)
 
 
+def _slot_weights(slots: int, section: str, tags: frozenset[str]) -> list[float]:
+    """Shape hold/release rhythm while preserving the span's exact duration."""
+    weights = [1.0] * slots
+    if slots < 2:
+        return weights
+    if tags & {"reveal", "victory"} or section == "twist":
+        weights[0] = 1.15  # suspense hold before the reveal lands
+        weights[-1] = 0.85
+    elif tags & {"action", "attack", "explosion"}:
+        weights[0] = 0.9
+        weights[-1] = 0.82  # release after impact; do not linger
+    elif tags & {"dialogue", "thinking"}:
+        weights[-1] = 1.08
+    return weights
+
+
 _EVENT_WORDS = {
     "action": {"attack", "attacked", "attacks", "strike", "struck", "hit", "serang", "menyerang", "memukul", "merampas", "menebas", "bertarung"},
     "reveal": {"reveal", "finally", "appears", "awakens", "muncul", "akhirnya", "ternyata", "datang", "hadir"},
@@ -153,8 +169,8 @@ def _anticipate_events(
         left, right = scenes[boundary], scenes[boundary + 1]
         left_duration = left.end_time - left.start_time
         target = event_time - min(_ANTICIPATION, left_duration * 0.18)
-        lower = left.start_time + minimum
-        upper = right.end_time - minimum
+        lower = max(left.start_time + minimum, right.end_time - maximum)
+        upper = min(right.end_time - minimum, left.start_time + maximum)
         cut = round(max(lower, min(target, upper)), 3)
         left_after = cut - left.start_time
         right_after = right.end_time - cut
@@ -224,18 +240,23 @@ def plan_shots(
         event_times = _event_times(span)
         slot_cap = 10 if span_max < max_seconds else 6
         max_slots = max(1, int(duration // min_seconds))
+        rhythm_slots = math.ceil(duration / span_max)
+        if dense_action and rhythm_slots > 1:
+            rhythm_slots += 1  # leave room for a release beat after impact
         slots = min(
             slot_cap,
             max_slots,
             max(
-                math.ceil(duration / span_max),
+                rhythm_slots,
                 min(len(rois), max_slots),
-                min(len(event_times) + 1, max_slots),
+                min(len(event_times) + 2, max_slots),
             ),
         ) if duration else 0
         if not slots:
             continue
-        slot_duration = duration / slots
+        weights = _slot_weights(slots, span.section, tags)
+        weight_total = sum(weights)
+        slot_durations = [duration * weight / weight_total for weight in weights]
         first_index = len(scenes)
         for slot in range(slots):
             # Stay on one panel until every meaningful ROI has been shown. Only
@@ -249,8 +270,8 @@ def plan_shots(
                     used.add(candidate.asset_id)
                     if candidate.features.visual_signature:
                         signatures.add(candidate.features.visual_signature)
-            start = span.start_time + slot * slot_duration
-            end = span.start_time + (slot + 1) * slot_duration
+            start = span.start_time + sum(slot_durations[:slot])
+            end = start + slot_durations[slot]
             roi = rois[roi_cursor]
             next_roi = rois[(roi_cursor + 1) % len(rois)] if len(rois) > 1 else roi
             roi_cursor += 1
