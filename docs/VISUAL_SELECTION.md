@@ -57,18 +57,25 @@ runs; missing optional tooling never blocks a render. This keeps the UpCloud CPU
 path dependency-light. The feature schema is the adapter boundary for a future
 local vision encoder.
 
-## Camera planning
+## Camera execution
 
-`camera_effect()` maps narration tags to shot behavior:
+The Shot Director chooses `camera_intent` and `camera_curve`. `camera_planner` only
+validates that curve and passes it to the renderer:
 
 ```text
- dialogue   -> kenburns_in
- thinking   -> pan_left
- reveal     -> push_up
- action     -> punch_zoom
- explosion  -> shake_zoom
- fallback   -> alternating kenburns/pan/push
+ dialogue   -> slow_push_in / pan_horizontal / focus_shift
+ thinking   -> pan_horizontal / focus_shift / pan_diagonal
+ reveal     -> push_in / focus_shift
+ action     -> punch_zoom / micro_shake / pan_diagonal
+ explosion  -> impact_shake / micro_shake
+ victory    -> dramatic_zoom_out / slow_push_in
 ```
+
+The renderer executes the approved curve using smooth ROI interpolation. It does
+not select a different curve when the selected one is valid.
+
+`camera_effect()` remains a compatibility helper for older callers; new timeline
+planning goes through Shot Director → Camera Planner.
 
 `app.services.roi_detection` ranks the strongest detected focal regions. Multiple
 regions can produce multiple shots from one panel before the Shot Director switches
