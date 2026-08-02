@@ -111,8 +111,8 @@ def test_shot_director_exhausts_rois_and_diversifies_motion():
         8.0,
     )
     shots = plan_shots([Span()], [candidate])
-    assert len(shots) == 3
-    assert [shot.roi_label for shot in shots] == ["face", "opponent", "detail"]
+    assert len(shots) == 4
+    assert [shot.roi_label for shot in shots[:3]] == ["face", "opponent", "detail"]
     assert len({shot.effect for shot in shots}) == 3
     assert shots[0].asset_id == shots[1].asset_id == shots[2].asset_id
     assert shots[0].focus_end_x == shots[1].focus_x
@@ -135,8 +135,8 @@ def test_shot_director_anticipates_next_dramatic_beat():
     shots = plan_shots([Setup(), Reveal()], [candidate])
     assert shots[0].end_time < 3.0
     assert shots[1].start_time == shots[0].end_time
-    assert shots[1].camera_intent == "reveal"
-    assert shots[1].camera_curve in {"push_in", "focus_shift", "slow_push_in", "pan_vertical"}
+    reveal = next(shot for shot in shots if shot.camera_intent == "reveal")
+    assert reveal.camera_curve in {"push_in", "focus_shift", "slow_push_in", "pan_vertical"}
 
 
 def test_layers_keep_editorial_decisions_out_of_camera_planner():
@@ -188,7 +188,8 @@ def test_shot_director_uses_cuts_inside_one_panel_and_fades_between_panels():
 
     changed_panel = plan_shots([Setup(), Reveal()], [first, second])
     assert changed_panel[0].asset_id != changed_panel[-1].asset_id
-    assert changed_panel[-1].transition == "fade"
+    second_panel = next(shot for shot in changed_panel if shot.asset_id == "second")
+    assert second_panel.transition == "fade"
 
 
 def test_shot_director_switches_panel_only_after_roi_exhaustion():
@@ -209,7 +210,7 @@ def test_shot_director_switches_panel_only_after_roi_exhaustion():
         5.0,
     )
     shots = plan_shots([Span()], [first, second])
-    assert len(shots) == 3
+    assert len(shots) == 4
     assert [shot.asset_id for shot in shots[:2]] == ["first", "first"]
     assert shots[2].asset_id == "second"
     assert shots[2].transition == "fade"
@@ -236,7 +237,7 @@ def test_shot_director_leads_timed_event_with_visual_cut():
         6.0,
     )
     shots = plan_shots([Span()], [candidate])
-    assert len(shots) == 2
+    assert len(shots) == 3
     assert shots[0].end_time < 3.6
     assert shots[0].end_time >= 1.25
 
@@ -283,3 +284,17 @@ def test_dense_action_uses_faster_editorial_pacing():
     shots = plan_shots([Span()], [candidate])
     assert len(shots) >= 4
     assert max(shot.end_time - shot.start_time for shot in shots) <= 2.25
+
+
+def test_pacing_profile_allows_reflective_beats_more_room():
+    class Span:
+        section = "thinking"
+        start_time = 0.0
+        end_time = 8.0
+        text = "He thinks about the choice."
+        word_timings = []
+
+    candidate = _candidate("panel", 0, 4.0, face=1.0)
+    shots = plan_shots([Span()], [candidate])
+    assert len(shots) == 3
+    assert max(shot.end_time - shot.start_time for shot in shots) <= 3.0

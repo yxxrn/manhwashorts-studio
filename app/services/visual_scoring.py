@@ -78,7 +78,7 @@ class PanelCandidate:
 
 
 _ACTION = {"attack", "attacked", "attacks", "hit", "struck", "strike", "fight", "fought", "run", "jump", "fall", "battle", "chase", "serang", "menyerang", "memukul", "merampas", "menebas", "bertarung", "berlari", "melompat", "jatuh", "kejar", "mengejar"}
-_REVEAL = {"reveal", "finally", "opened", "awakens", "appears", "discovers", "ternyata", "akhirnya", "muncul", "terbuka", "bangkit", "menemukan"}
+_REVEAL = {"reveal", "finally", "opened", "awakens", "appears", "appeared", "discovers", "ternyata", "akhirnya", "muncul", "terbuka", "bangkit", "menemukan"}
 _EXPLOSION = {"explosion", "explode", "blast", "fire", "destroy", "impact", "ledakan", "meledak", "hancur", "menghancurkan", "dampak"}
 _THINKING = {"think", "thinks", "remember", "wonder", "realize", "considers", "berpikir", "teringat", "bertanya", "menyadari", "mempertimbangkan"}
 _WEAPON = {"sword", "axe", "blade", "weapon", "bow", "spear", "gun", "pedang", "kapak", "bilah", "senjata", "busur", "tombak", "pistol"}

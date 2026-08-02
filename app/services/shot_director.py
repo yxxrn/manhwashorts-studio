@@ -104,6 +104,19 @@ def _camera_curve(intent: str, index: int, recent: list[str]) -> str:
     return options[index % len(options)]
 
 
+def _pacing_max(section: str, tags: frozenset[str], dense: bool, default: float) -> float:
+    """Choose an editorial hold ceiling by beat, not one global split size."""
+    if tags & {"action", "attack", "explosion"}:
+        return 2.25 if dense else min(default, 2.5)
+    if tags & {"thinking", "dialogue"} or section == "cta":
+        return default
+    if section == "hook":
+        return min(default, 2.6)
+    if tags & {"reveal", "victory"} or section == "twist":
+        return min(default, 2.5)
+    return min(default, 2.75)
+
+
 _EVENT_WORDS = {
     "action": {"attack", "attacked", "attacks", "strike", "struck", "hit", "serang", "menyerang", "memukul", "merampas", "menebas", "bertarung"},
     "reveal": {"reveal", "finally", "appears", "awakens", "muncul", "akhirnya", "ternyata", "datang", "hadir"},
@@ -206,9 +219,8 @@ def plan_shots(
         word_rate = word_count / active_duration
         # Dense action gets a faster editorial rhythm; reflective/dialogue beats
         # keep longer holds because the camera itself remains alive.
-        span_max = max_seconds
-        if tags & {"action", "attack", "explosion"} and word_rate >= 1.8:
-            span_max = min(span_max, 2.25)
+        dense_action = bool(tags & {"action", "attack", "explosion"}) and word_rate >= 1.8
+        span_max = _pacing_max(span.section, tags, dense_action, max_seconds)
         event_times = _event_times(span)
         slot_cap = 10 if span_max < max_seconds else 6
         max_slots = max(1, int(duration // min_seconds))

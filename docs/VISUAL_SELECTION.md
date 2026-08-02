@@ -101,6 +101,11 @@ When stored word timings identify a dramatic trigger (`attack`, `reveal`,
 `explosion`, or `victory`), the Director moves the nearest internal ROI cut to a
 short lead before that word. Without timings it retains the safe beat-level plan.
 
+Pacing profiles now vary the hold ceiling by beat: dense action/conflict caps shots
+at 2.25s, hook/reveal/twist stays tight, while thinking/dialogue/CTA may hold up to
+the configured 3s ceiling because camera motion remains active. This prevents both
+the uniform-grid feel and over-cutting reflective narration.
+
 `app.services.camera_planner` executes the selected curve. It has no editorial
 fallback: unsupported curves fail fast instead of silently changing the director's
 choice.
