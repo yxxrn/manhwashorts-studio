@@ -168,6 +168,8 @@ Locked sections survive regeneration, which is what makes the review loop usable
 One clip per beat. `EspeakProvider` normalises loudness with `loudnorm` so
 concatenated segments do not jump in volume.
 
+Production uses `HttpProvider` against private OmniVoice when `MS_TTS_PROVIDER=http`. The OpenAI-compatible payload carries explicit language, model, voice, seed, instruct, diffusion steps, and guidance scale. Section synthesis keeps one shared narrator reference, retries transient `503` responses, applies FFmpeg mastering, and fails loudly rather than silently downgrading to espeak. See [`OMNIVOICE.md`](OMNIVOICE.md).
+
 `estimate_word_timings()` distributes the measured clip duration across words
 weighted by character length, with extra weight for trailing punctuation. That is
 accurate enough for karaoke-style captions without a forced aligner.

@@ -24,6 +24,18 @@ them first:
 .venv/bin/python -c "from app.services.render import check_environment; print(check_environment() or 'OK')"
 ```
 
+### OmniVoice production check
+
+OmniVoice is normally a private UpCloud service:
+
+```bash
+systemctl is-active omnivoice.service
+curl -sS http://127.0.0.1:3900/health
+curl -sS http://127.0.0.1:8000/api/health
+```
+
+The app must report `tts_provider: http` before a render can be called an OmniVoice render. `tts_provider: espeak` means offline fallback. Configuration, payload, retry behaviour, and shared-reference synthesis are in [`OMNIVOICE.md`](OMNIVOICE.md).
+
 ### With a separate render worker
 
 Rendering runs inline in a background task by default. To move it off the web

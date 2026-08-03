@@ -269,6 +269,7 @@ Being direct about what this does not do:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the pipeline fits together
 - [docs/BYOK.md](docs/BYOK.md) — bring your own key: setup and security model
+- [docs/OMNIVOICE.md](docs/OMNIVOICE.md) — OmniVoice HTTP TTS deployment and verification
 - [docs/GPU.md](docs/GPU.md) — CPU/GPU encoding, requirements, troubleshooting
 - [docs/UI.md](docs/UI.md) — design language, contrast table, UX decisions
 - [docs/AGENT.md](docs/AGENT.md) — driving the whole pipeline from an AI agent
