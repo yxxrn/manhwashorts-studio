@@ -55,7 +55,7 @@ The endpoint returns audio bytes. The app writes them to scratch, applies the co
 
 ## Shared narrator reference
 
-Section synthesis uses one initial OmniVoice clip as the shared narrator reference. Later sections reuse the same deterministic seed and instruct settings. HTTP `503` responses retry using `Retry-After`, capped by the implementation. A failed configured TTS request raises an error; it does not silently replace OmniVoice with espeak.
+The current Google service runs voice design mode by default. For voice cloning, set `OMNIVOICE_REF_AUDIO` to an audio reference you are authorized to use and `OMNIVOICE_REF_TEXT` to its exact transcript; the service creates one official `VoiceClonePrompt` at startup and reuses it for every request. Later sections reuse the same deterministic seed and instruct settings. HTTP `503` responses retry using `Retry-After`, capped by the implementation. A failed configured TTS request raises an error; it does not silently replace OmniVoice with espeak.
 
 ## Audio and subtitle path
 
@@ -86,6 +86,18 @@ Documented UpCloud deployment:
 - installation: `/opt/OmniVoice-Studio`
 - bind: loopback port `3900`
 - application: `/opt/manhwashorts`
+
+Google worker deployment:
+
+```bash
+cp deploy/omnivoice.service ~/.config/systemd/user/omnivoice.service
+systemctl --user daemon-reload
+systemctl --user enable --now omnivoice.service
+loginctl enable-linger "$USER"
+curl -sS http://127.0.0.1:3900/health
+```
+
+The Google test deployment uses `~/omnivoice-official/.venv312`, Python 3.12, PyTorch CPU, and model `k2-fsa/OmniVoice`. Python 3.14 is unsupported by the available PyTorch wheels. The unit binds loopback only and processes one synthesis request at a time.
 
 If the endpoint is unreachable, report the blocker. A Google test may use local espeak only when explicitly labelled as fallback; it does not validate OmniVoice quality.
 
