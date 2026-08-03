@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import resource
 import secrets
-import subprocess
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -918,18 +917,7 @@ def build_render_request(db: Session, job: RenderJob):
         )
     voice_path = work / "voice_master.wav"
     tts_svc.concat_audio(clip_paths, voice_path, gap=0.18)
-    # Keep a valid 60–90s editorial deliverable when narration lands just under
-    # the lower bound; preserve the final visual as a deliberate cliffhanger hold.
     audio_duration = tts_svc.probe_duration(voice_path)
-    if 0 < audio_duration < 60.0:
-        padded = voice_path.with_name("voice_master_padded.wav")
-        subprocess.run(
-            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(voice_path),
-             "-af", "apad,atrim=duration=60.5", str(padded)],
-            check=True, capture_output=True, timeout=180,
-        )
-        padded.replace(voice_path)
-        audio_duration = tts_svc.probe_duration(voice_path)
 
     scene_inputs: list = []
     profile = job.render_profile or "Auto"
