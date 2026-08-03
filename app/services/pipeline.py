@@ -297,6 +297,7 @@ def generate_script(
     draft = script_svc.get_generator().generate(
         result,
         style=project.narration_style,
+        language=project.language,
         target_seconds=float(project.target_duration),
         spoiler_level=project.spoiler_level,
         manhwa_title=project.manhwa_title,

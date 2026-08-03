@@ -43,10 +43,10 @@ class SpeechClip:
 
 # espeak-ng voice names keyed by our language codes.
 VOICE_CATALOG: dict[str, dict[str, str]] = {
+    "en": {"label": "American English (espeak)", "espeak": "en-us"},
+    "en-gb": {"label": "British English (espeak)", "espeak": "en-gb"},
     "id": {"label": "Indonesian (espeak)", "espeak": "id"},
     "id-male": {"label": "Indonesian, lower pitch", "espeak": "id"},
-    "en": {"label": "English US (espeak)", "espeak": "en-us"},
-    "en-gb": {"label": "English UK (espeak)", "espeak": "en-gb"},
     "ko": {"label": "Korean (espeak)", "espeak": "ko"},
 }
 
@@ -128,7 +128,7 @@ class EspeakProvider:
         return shutil.which(settings.espeak_bin) is not None
 
     def synthesize(
-        self, text: str, out_path: Path, voice_id: str = "id", speed: float = 1.0
+        self, text: str, out_path: Path, voice_id: str = "en", speed: float = 1.0
     ) -> SpeechClip:
         if not text.strip():
             raise TTSError("cannot synthesize empty text")
@@ -138,7 +138,7 @@ class EspeakProvider:
                 "sudo apt-get install espeak-ng"
             )
 
-        voice = VOICE_CATALOG.get(voice_id, VOICE_CATALOG["id"])["espeak"]
+        voice = VOICE_CATALOG.get(voice_id, VOICE_CATALOG["en"])["espeak"]
         # espeak's default 175 wpm; scale by the requested speed.
         wpm = max(80, min(400, int(175 * speed)))
         pitch = 30 if voice_id.endswith("-male") else 50
@@ -206,7 +206,7 @@ class NullProvider:
         return shutil.which(settings.ffmpeg_bin) is not None
 
     def synthesize(
-        self, text: str, out_path: Path, voice_id: str = "id", speed: float = 1.0
+        self, text: str, out_path: Path, voice_id: str = "en", speed: float = 1.0
     ) -> SpeechClip:
         from app.services.script import estimate_duration
 
@@ -243,7 +243,7 @@ class HttpProvider:
         return bool(settings.tts_http_url)
 
     def synthesize(
-        self, text: str, out_path: Path, voice_id: str = "id", speed: float = 1.0
+        self, text: str, out_path: Path, voice_id: str = "en", speed: float = 1.0
     ) -> SpeechClip:
         import httpx
 
@@ -431,7 +431,7 @@ class ByokProvider:
         return bool(self._api_key and self._model)
 
     def synthesize(
-        self, text: str, out_path: Path, voice_id: str = "id", speed: float = 1.0
+        self, text: str, out_path: Path, voice_id: str = "en", speed: float = 1.0
     ) -> SpeechClip:
         from app.services.providers import ProviderError
 

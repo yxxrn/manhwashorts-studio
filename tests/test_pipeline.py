@@ -72,6 +72,7 @@ def _seed_project(db, recap_text: str, panel_count: int = 4) -> str:
         manhwa_title="Judul Uji",
         chapter="7",
         target_duration=60,
+        language="id",
         voice_id="id",
         cta_text="Komentar di bawah kalau kamu punya teori.",
     )

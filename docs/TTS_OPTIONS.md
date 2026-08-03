@@ -3,6 +3,14 @@
 Voice-over remains optional. OmniVoice is an external experiment only: not a
 ManhwaShorts dependency, provider default, or production gate.
 
+## Project language rule
+
+Every new render defaults to **English text** and **American English voice-over**.
+The default voice profile is `the-explainer-american`; offline TTS uses `en-us`.
+Indonesian remains an explicit per-project opt-in (`language: "id"`), never an
+inferred or global default. Paid TTS must receive `en-US` plus the locked project
+voice/settings.
+
 ## Recommendation
 
 **First candidate: ElevenLabs.** Indonesian supported. Stable voice IDs,
@@ -44,7 +52,7 @@ eligibility-dependent. More setup; good operational stability.
 5. Record provider, model, voice ID, settings hash, and generation timestamp in
    render metadata.
 6. Never silently switch provider after a paid provider fails. Stop narration.
-7. Test five Indonesian lines: hook, dialogue, action, emotion, CTA.
+7. Test five lines in the selected project language; default test language is American English.
 8. Use only self-recorded or explicitly authorized reference audio for cloning.
 
 ## Current implementation
@@ -111,8 +119,8 @@ Checked: 2026-08-04. Models, pricing, preview status, and terms can change.
 
 ## Next step
 
-Compare ElevenLabs versus Gemini TTS with identical five-line Indonesian
-samples. Select one. Then add only the smallest adapter, one integration test,
+Compare ElevenLabs versus Gemini TTS with identical five-line American English
+samples first; test Indonesian only when explicitly opting into `language: "id"`. Select one. Then add only the smallest adapter, one integration test,
 one cached rights-safe fixture, and one real audio smoke test.
 
 No provider is selected yet. Keep `MS_TTS_PROVIDER=espeak` for tests.

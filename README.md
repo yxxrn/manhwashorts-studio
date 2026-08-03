@@ -77,6 +77,8 @@ no third-party artwork.
 
 Copy `.env.example` to `.env`. All values are optional; the defaults run offline.
 
+**Project rule:** new renders default to English text and American English voice-over (`en-US`; `the-explainer-american`). Indonesian requires explicit project opt-in.
+
 The settings that change behaviour most:
 
 | Variable | Default | Effect |

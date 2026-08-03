@@ -318,6 +318,16 @@ def test_english_is_the_default_render_language_and_voice():
     assert VoiceRequest().speed == DEFAULT_ENGLISH_SPEED
 
 
+def test_american_english_is_the_default_tts_contract():
+    from app.config import Settings
+    from app.services.tts import VOICE_CATALOG
+
+    settings = Settings()
+    assert settings.tts_http_language == "en-US"
+    assert "American English" in settings.tts_http_instruct
+    assert VOICE_CATALOG["en"]["espeak"] == "en-us"
+
+
 def test_indonesian_remains_explicit_opt_in():
     from app.schemas import ProjectCreate
 

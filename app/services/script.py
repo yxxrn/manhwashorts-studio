@@ -251,6 +251,34 @@ def _ensure_stop(text: str) -> str:
 
 _HOOK_TEMPLATES: dict[str, list[str]] = {
     NarrationStyle.DRAMATIC: [
+        "Everyone thought {who} would {fail}. They were wrong.",
+        "This is why nobody took {who} seriously—until today.",
+        "One decision in {chapter} changes everything for {who}.",
+    ],
+    NarrationStyle.MYSTERIOUS: [
+        "Something in {chapter} was never meant to be seen by {who}.",
+        "Nobody knows what really happened to {who}.",
+        "The secret hidden in {chapter} is finally revealed.",
+    ],
+    NarrationStyle.CASUAL: [
+        "Okay, {chapter} takes a turn nobody saw coming.",
+        "So {who} finally does what we have been waiting for.",
+        "If you missed {chapter}, here is what happened.",
+    ],
+    NarrationStyle.FAST: [
+        "{chapter} in sixty seconds. Let us begin.",
+        "Three shocking things happen in {chapter}. Number three is brutal.",
+        "Here is the fast version of {chapter}.",
+    ],
+    NarrationStyle.INFORMATIVE: [
+        "In {chapter}, the story moves in an unexpected direction.",
+        "Here is the key recap of {chapter}.",
+        "{chapter} finally answers a question left hanging.",
+    ],
+}
+
+_ID_HOOK_TEMPLATES = {
+    NarrationStyle.DRAMATIC: [
         "Semua orang mengira {who} akan {fail}. Mereka salah besar.",
         "Ini alasan {who} tidak pernah dianggap serius, sampai hari ini.",
         "Satu keputusan di {chapter} mengubah segalanya untuk {who}.",
@@ -277,9 +305,15 @@ _HOOK_TEMPLATES: dict[str, list[str]] = {
     ],
 }
 
-_FAIL_PHRASES = ["gagal", "kalah", "menyerah", "tersingkir"]
+_FAIL_PHRASES = ["fail", "lose", "give up", "be eliminated"]
+_ID_FAIL_PHRASES = ["gagal", "kalah", "menyerah", "tersingkir"]
 
 _CTA_TEMPLATES = [
+    "What do you think happens next? Tell us in the comments.",
+    "Whose side are you on? Comment below.",
+    "Follow for the next chapter recap.",
+]
+_ID_CTA_TEMPLATES = [
     "Menurutmu apa yang terjadi selanjutnya? Tulis di komentar.",
     "Kamu tim siapa di bab ini? Komentar di bawah.",
     "Follow biar tidak ketinggalan rangkuman bab berikutnya.",
@@ -308,16 +342,19 @@ def build_hooks(
     chapter: str,
     count: int = 3,
     seed: int | None = None,
+    language: str = "en",
 ) -> list[str]:
     """Generate hook variants. Deterministic when ``seed`` is provided."""
     rng = random.Random(seed)
-    templates = list(_HOOK_TEMPLATES.get(NarrationStyle(style), _HOOK_TEMPLATES[NarrationStyle.DRAMATIC]))
+    catalog = _ID_HOOK_TEMPLATES if language == "id" else _HOOK_TEMPLATES
+    templates = list(catalog.get(NarrationStyle(style), catalog[NarrationStyle.DRAMATIC]))
     rng.shuffle(templates)
     who = _protagonist(analysis)
     chapter_label = _chapter_label(manhwa_title, chapter)
+    fail_phrases = _ID_FAIL_PHRASES if language == "id" else _FAIL_PHRASES
     hooks: list[str] = []
     for tpl in templates:
-        hook = tpl.format(who=who, chapter=chapter_label, fail=rng.choice(_FAIL_PHRASES))
+        hook = tpl.format(who=who, chapter=chapter_label, fail=rng.choice(fail_phrases))
         hooks.append(_shorten(hook, 16))
         if len(hooks) >= max(1, count):
             break
@@ -337,6 +374,7 @@ class RulesScriptGenerator:
         analysis: AnalysisResult,
         *,
         style: str = NarrationStyle.DRAMATIC,
+        language: str = "en",
         target_seconds: float = 60.0,
         spoiler_level: str = SpoilerLevel.MEDIUM,
         manhwa_title: str = "",
@@ -350,7 +388,7 @@ class RulesScriptGenerator:
         rng = random.Random(seed)
         draft = ScriptDraft(generator=self.name)
         draft.hook_options = build_hooks(
-            analysis, style, manhwa_title, chapter, hook_count, seed=seed
+            analysis, style, manhwa_title, chapter, hook_count, seed=seed, language=language
         )
 
         events = analysis.events
@@ -371,7 +409,7 @@ class RulesScriptGenerator:
             plain_events or events,
             budget_for(ScriptSection.SETUP.value, target_seconds),
             style,
-            fallback=f"{_protagonist(analysis)} menghadapi situasi yang berubah drastis.",
+            fallback=(f"{_protagonist(analysis)} faces a rapidly changing situation." if language != "id" else f"{_protagonist(analysis)} menghadapi situasi yang berubah drastis."),
         )
 
         # CONFLICT: prefer conflict-tagged events, then any event not already used.
@@ -385,7 +423,7 @@ class RulesScriptGenerator:
             budget_for(ScriptSection.CONFLICT.value, target_seconds),
             style,
             fallback=summarise_clause(analysis.main_conflict)
-            or "Tekanan meningkat dan pilihan yang tersisa semakin sempit.",
+            or ("Pressure rises as the remaining choices disappear." if language != "id" else "Tekanan meningkat dan pilihan yang tersisa semakin sempit."),
         )
 
         # TWIST: summarised like the other beats so it stays commentary.
@@ -395,7 +433,7 @@ class RulesScriptGenerator:
             twist_source = twist_pool[0].text
         twist_text = summarise_clause(twist_source, max_words=18) if twist_source else ""
         if not twist_text:
-            twist_text = "Bab ini ditutup dengan pertanyaan yang belum terjawab."
+            twist_text = ("This chapter ends with one question still unanswered." if language != "id" else "Bab ini ditutup dengan pertanyaan yang belum terjawab.")
             draft.warnings.append(
                 {
                     "code": "script.twist_missing",
@@ -406,7 +444,7 @@ class RulesScriptGenerator:
             )
 
         # CTA
-        cta = cta_text.strip() or rng.choice(_CTA_TEMPLATES)
+        cta = cta_text.strip() or rng.choice(_ID_CTA_TEMPLATES if language == "id" else _CTA_TEMPLATES)
 
         raw = {
             ScriptSection.HOOK: (hook_text, cited()),

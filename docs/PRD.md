@@ -93,8 +93,7 @@ status produksi dan analitik.
 ### FR-01 — Manajemen proyek
 
 Buat, gandakan, arsipkan, hapus proyek. Judul manhwa dan nomor chapter. Format:
-ringkasan chapter, profil karakter, fakta menarik, teori, cliffhanger. Bahasa,
-target durasi (default 60s), tingkat spoiler (minimal/sedang/penuh), penanda seri.
+ringkasan chapter, profil karakter, fakta menarik, teori, cliffhanger. Bahasa default English, voice default American English; Indonesian is explicit opt-in. Target durasi (default 60s), tingkat spoiler (minimal/sedang/penuh), penanda seri.
 
 **Acceptance:** status `Draft`/`Generating`/`Review`/`Rendering`/`Ready`/
 `Scheduled`/`Published`/`Failed`; draft tersimpan otomatis; proyek dapat

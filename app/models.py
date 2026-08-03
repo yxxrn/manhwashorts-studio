@@ -24,6 +24,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.constants import (
+    DEFAULT_ENGLISH_VOICE_ID,
+    DEFAULT_PROJECT_LANGUAGE,
     AssetType,
     ContentType,
     CredentialStatus,
@@ -99,7 +101,7 @@ class Project(Base, TimestampMixin):
     manhwa_title: Mapped[str] = mapped_column(String(200), default="")
     chapter: Mapped[str] = mapped_column(String(60), default="")
     content_type: Mapped[str] = mapped_column(String(40), default=ContentType.CHAPTER_RECAP)
-    language: Mapped[str] = mapped_column(String(10), default="en")
+    language: Mapped[str] = mapped_column(String(10), default=DEFAULT_PROJECT_LANGUAGE)
     spoiler_level: Mapped[str] = mapped_column(String(20), default=SpoilerLevel.MEDIUM)
     narration_style: Mapped[str] = mapped_column(String(20), default=NarrationStyle.DRAMATIC)
     target_duration: Mapped[int] = mapped_column(Integer, default=75)
@@ -109,7 +111,7 @@ class Project(Base, TimestampMixin):
     cta_text: Mapped[str] = mapped_column(Text, default="")
     banned_words: Mapped[list[str]] = mapped_column(JSON, default=list)
     pronunciations: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
-    voice_id: Mapped[str] = mapped_column(String(80), default="the-explainer-american")
+    voice_id: Mapped[str] = mapped_column(String(80), default=DEFAULT_ENGLISH_VOICE_ID)
     template: Mapped[str] = mapped_column(String(60), default="classic")
 
     error_message: Mapped[str] = mapped_column(Text, default="")

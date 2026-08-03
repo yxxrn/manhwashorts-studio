@@ -156,6 +156,7 @@ def test_agent_can_drive_the_whole_pipeline_over_rest(
             "manhwa_title": "Menara",
             "chapter": "9",
             "target_duration": 40,
+            "language": "id",  # fixture text is Indonesian; explicit opt-in
         },
     ).json()
     pid = project["id"]

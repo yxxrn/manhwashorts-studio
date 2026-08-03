@@ -94,9 +94,9 @@ class Settings(BaseSettings):
     tts_http_protocol: str = "legacy"
     tts_http_model: str = "tts-1"
     tts_http_response_format: str = "wav"
-    tts_http_instruct: str = ""
-    tts_http_language: str = "en"
-    tts_http_voice: str = "default"
+    tts_http_instruct: str = "American English narrator, clear, natural, consistent timbre"
+    tts_http_language: str = "en-US"
+    tts_http_voice: str = "the-explainer-american"
     tts_http_seed: int = 42
     tts_http_num_step: int = 32
     tts_http_guidance_scale: float = 1.8

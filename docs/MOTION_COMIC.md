@@ -37,6 +37,7 @@ Constraints:
 - Deterministic output for identical input + seed.
 - Audio is master clock.
 - Default narration: English, The Explainer no. 4, speed 0.90.
+- Project language rule: English text + American English voice by default; Indonesian requires explicit opt-in.
 - Output: 1080x1920, 30 FPS, H.264, AAC.
 - Target duration: 60–90s; ideal 70–85s; absolute max 90s.
 

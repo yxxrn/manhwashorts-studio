@@ -8,6 +8,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.constants import (
+    DEFAULT_ENGLISH_VOICE_ID,
+    DEFAULT_PROJECT_LANGUAGE,
     ContentType,
     CredentialKind,
     LicenseType,
@@ -54,12 +56,12 @@ class ProjectCreate(BaseModel):
     manhwa_title: str = Field(default="", max_length=200)
     chapter: str = Field(default="", max_length=60)
     content_type: ContentType = ContentType.CHAPTER_RECAP
-    language: Literal["en", "id"] = "en"
+    language: Literal["en", "id"] = DEFAULT_PROJECT_LANGUAGE
     spoiler_level: SpoilerLevel = SpoilerLevel.MEDIUM
     narration_style: NarrationStyle = NarrationStyle.DRAMATIC
     # Legacy short projects may still be opened; production QC rejects <60s.
     target_duration: int = Field(default=75, ge=10, le=90)
-    voice_id: str = Field(default="the-explainer-american", max_length=80)
+    voice_id: str = Field(default=DEFAULT_ENGLISH_VOICE_ID, max_length=80)
     series_name: str = Field(default="", max_length=200)
     cta_text: str = Field(default="", max_length=500)
     banned_words: list[str] = Field(default_factory=list)

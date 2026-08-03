@@ -302,7 +302,7 @@ $('project-form').addEventListener('submit', async (event) => {
     target_duration: Number($('p-duration').value) || 60,
     narration_style: $('p-style').value,
     spoiler_level: $('p-spoiler').value,
-    voice_id: $('p-voice').value || 'id',
+    voice_id: $('p-voice').value || 'en',
     cta_text: $('p-cta').value.trim(),
   };
   try {

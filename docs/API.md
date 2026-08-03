@@ -47,7 +47,7 @@ subtitle font, an FFmpeg build without `zoompan` or `libass`).
 ### `GET /api/voices`
 
 ```json
-{"provider": "espeak", "voices": [{"id": "id", "label": "Indonesian (espeak)"}]}
+{"provider": "espeak", "voices": [{"id": "en", "label": "American English (espeak)"}, {"id": "id", "label": "Indonesian (espeak)"}]}
 ```
 
 ### `GET /api/encoders`

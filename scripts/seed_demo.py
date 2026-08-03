@@ -37,30 +37,29 @@ from app.services import ingest, pipeline, storage  # noqa: E402
 DEMO_EMAIL = "demo@manhwashorts.local"
 DEMO_PASSWORD = "demo12345"
 
-RECAP = """Bab ini dibuka dengan Rian, pemburu peringkat E yang namanya jarang
-disebut siapa pun di asosiasi. Selama tiga tahun dia hanya mendapat misi sisa
-di pinggiran kota, membersihkan gerbang kecil yang bahkan tidak dianggap
-berbahaya.
+RECAP = """Chapter 12 opens with Rian, an E-rank hunter whose name is barely known
+inside the association. For three years, he has been assigned leftover missions
+on the outskirts of the city, clearing gates nobody considers dangerous.
 
-Ketika sebuah gerbang tak terdaftar muncul di bawah stasiun tua, tim peringkat A
-menolak masuk karena bayarannya terlalu kecil. Rian menerima misi itu sendirian.
-Di dalam, struktur dungeon tidak cocok dengan catatan asosiasi mana pun.
+When an unregistered gate appears beneath an abandoned station, an A-rank team
+refuses to enter because the reward is too small. Rian accepts the mission alone.
+Inside, the dungeon layout matches no record in the association archives.
 
-Rian terpisah dari jalur keluar ketika lantai runtuh. Di ruang paling bawah dia
-menemukan papan bercahaya yang hanya bisa dilihat olehnya. Papan itu memberi satu
-syarat: selesaikan latihan harian, atau dipindahkan ke zona hukuman.
+Rian loses the exit route when the floor collapses. In the lowest chamber, he
+finds a glowing panel only he can see. It gives him one condition: complete a
+daily trial, or be sent to a punishment zone.
 
-Latihan hari pertama hampir membunuhnya. Dia harus bertahan melawan tiga monster
-sekaligus tanpa senjata, dan setiap luka terasa nyata. Rian gagal di percobaan
-pertama dan langsung merasakan apa arti zona hukuman.
+The first trial nearly kills him. He must survive three monsters without a weapon,
+and every wound feels real. Rian fails on his first attempt and learns exactly
+what the punishment zone means.
 
-Ternyata setiap kegagalan tidak menghapus kemajuannya. Papan itu menyimpan
-hasilnya dan menaikkan batas kekuatan Rian sedikit demi sedikit, sesuatu yang
-menurut catatan asosiasi tidak mungkin terjadi pada pemburu peringkat E.
+But every failure preserves his progress. The panel raises Rian's power limit a
+little at a time, something the association's records say should be impossible
+for an E-rank hunter.
 
-Di akhir bab, Sera, ketua tim peringkat A yang sebelumnya menolak misi itu,
-berdiri di depan gerbang yang sudah tertutup. Dia membaca laporan bahwa hanya
-satu orang masuk, dan tidak ada yang keluar."""
+At the end of the chapter, Sera, the A-rank team leader who rejected the mission,
+stands before the sealed gate. Her report says one person entered—and nobody came
+out."""
 
 
 def seed(db) -> Project:
@@ -96,12 +95,12 @@ def seed(db) -> Project:
         manhwa_title="Peringkat Terakhir",
         chapter="12",
         content_type=ContentType.CHAPTER_RECAP,
-        language="id",
+        language="en",
         spoiler_level=SpoilerLevel.MEDIUM,
         narration_style=NarrationStyle.DRAMATIC,
         target_duration=60,
-        voice_id="id",
-        cta_text="Menurutmu Sera akan jadi sekutu atau musuh? Komentar di bawah.",
+        voice_id="the-explainer-american",
+        cta_text="Will Sera become an ally or an enemy? Tell us in the comments.",
     )
     db.add(project)
     db.flush()

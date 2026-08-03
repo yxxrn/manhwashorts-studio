@@ -7,6 +7,8 @@ occasional manual review, not as a required step.
 The intended split: **you send panels and a recap to your agent, the agent does
 the rest.**
 
+Default render contract: English text + American English voice-over (`en-US`). Pass `language: "id"` explicitly for Indonesian.
+
 ## Base URL
 
 | Caller | URL | Notes |

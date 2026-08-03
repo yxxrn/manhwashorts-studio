@@ -4,6 +4,8 @@ Notable changes per release. Dates are ISO 8601.
 
 ## Unreleased — Complete motion-comic pipeline
 
+- Set the project default to English narration with American English voice; Indonesian remains explicit opt-in.
+
 - Persisted source-family metadata, dramatic word events, impact locks, and
   audio-driven anticipation cuts.
 - Added deterministic local effects with low/medium/high intensity, per-effect
@@ -19,8 +21,7 @@ Notable changes per release. Dates are ISO 8601.
 - Long narration beats now split into directed 1.25–3 second shots, with ROI-to-ROI
   camera interpolation, motion diversity, and short anticipation cuts for dramatic beats.
 - Added semantic camera curves for dialogue, thinking, reveal, action/attack,
-  explosion, and victory shots; the existing Indonesian default and production voice
-  settings remain unchanged.
+  explosion, and victory shots; the English text and American English voice defaults remain enforced.
 - Split visual direction into `roi_detection` → `shot_director` → `camera_planner`.
 - Shot Director now persists ROI labels, end focal points, camera intent, narration
   lead/follow timing, and camera curves; Camera Planner only executes curves.

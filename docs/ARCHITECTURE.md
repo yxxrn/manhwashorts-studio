@@ -167,6 +167,8 @@ Locked sections survive regeneration, which is what makes the review loop usable
 
 ### 4. Voice-over (`services/tts.py`)
 
+Project default: English narration with an American English voice (`en-US`). Indonesian is an explicit project-level opt-in only.
+
 One clip per beat. The default is offline espeak-ng; verified BYOK credentials
 can select a stable cloud voice without changing the render pipeline.
 
