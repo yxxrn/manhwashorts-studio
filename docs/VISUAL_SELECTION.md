@@ -53,7 +53,7 @@ uses lightweight narration tags (`action`, `reveal`, `explosion`, `thinking`,
 `weapon`, `monster`, `dialogue`) to align panel content with the spoken beat.
 
 OCR and OpenCV face detection are optional. Pillow edge/texture analysis always
-runs; missing optional tooling never blocks a render. This keeps the UpCloud CPU
+runs; missing optional tooling never blocks a render. This keeps the CPU execution host
 path dependency-light. The feature schema is the adapter boundary for a future
 local vision encoder.
 

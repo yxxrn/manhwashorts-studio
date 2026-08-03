@@ -1,7 +1,8 @@
 # TTS options
 
-Voice-over remains optional. OmniVoice is an external experiment only: not a
-ManhwaShorts dependency, provider default, or production gate.
+Voice-over remains optional. The product default is American English (`en-US`).
+OmniVoice is an external experiment only: not a ManhwaShorts dependency, provider
+default, or production gate.
 
 ## Project language rule
 
