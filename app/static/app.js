@@ -53,7 +53,43 @@ async function withBusy(button, label, fn) {
   }
 }
 
-/* ---------- helpers ---------- */
+async function loadQCOverrides() {
+  const list = $('qc-override-history');
+  if (!list) return;
+  clear(list);
+  const events = await api(`/api/projects/${state.projectId}/quality/overrides`);
+  if (!events.length) {
+    list.appendChild(el('p', 'hint', 'Belum ada override.'));
+    return;
+  }
+  events.forEach((event) => {
+    const item = el('div', 'item');
+    item.appendChild(el('div', 'item-title', `${event.quality_code} · ${event.actor_id || 'unknown actor'}`));
+    item.appendChild(el('div', 'item-meta', `${event.created_at} · ${event.before_passed} → ${event.after_passed}`));
+    item.appendChild(el('div', 'item-meta', event.reason));
+    list.appendChild(item);
+  });
+}
+
+async function loadQCHistory() {
+  const list = $('qc-history');
+  if (!list) return;
+  clear(list);
+  const snapshots = await api(`/api/projects/${state.projectId}/quality/history`);
+  if (!snapshots.length) {
+    list.appendChild(el('p', 'hint', 'Belum ada snapshot QC.'));
+    return;
+  }
+  snapshots.forEach((snapshot) => {
+    const item = el('div', 'item');
+    const summary = snapshot.report && snapshot.report.summary ? snapshot.report.summary : {};
+    item.appendChild(el('div', 'item-title', `${snapshot.passed ? 'LULUS' : 'GAGAL'} · ${snapshot.created_at}`));
+    item.appendChild(el('div', 'item-meta', `errors: ${summary.errors || 0} · warnings: ${summary.warnings || 0}`));
+    list.appendChild(item);
+  });
+}
+
+/* ---------- quality ---------- */
 
 function $(id) { return document.getElementById(id); }
 
@@ -288,6 +324,8 @@ async function loadProjectDetail() {
     loadScript(),
     loadTimeline(),
     loadQuality(),
+    loadQCOverrides(),
+    loadQCHistory(),
   ]);
   $('srt-link').href = `/api/projects/${state.projectId}/subtitles.srt`;
   await Promise.all([
@@ -555,7 +593,8 @@ async function loadTimeline() {
       const main = el('div', 'item-main');
       main.appendChild(el('div', 'item-title', `#${scene.order_index + 1} ${scene.section}`));
       main.appendChild(el('div', 'item-meta',
-        `${scene.start_time.toFixed(2)}s → ${scene.end_time.toFixed(2)}s · efek ${scene.effect}` +
+        `${scene.start_time.toFixed(2)}s → ${scene.end_time.toFixed(2)}s · motion ${scene.motion_mode || scene.effect}` +
+        ` · ROI ${scene.roi_label || 'wide'} · ${scene.motion_reason || 'director-selected'}` +
         (scene.asset_id ? '' : ' · TANPA GAMBAR')));
       item.appendChild(main);
       list.appendChild(item);
@@ -608,7 +647,7 @@ function renderQuality(summary) {
           await api(`/api/projects/${state.projectId}/quality/override`,
             { method: 'POST', body: { code: check.code, reason: reason.trim() } });
           toast('Warning diterima dan dicatat.', 'ok');
-          await loadQuality();
+          await Promise.all([loadQuality(), loadQCOverrides()]);
         } catch (err) { toast(err.message, 'error'); }
       });
       row.appendChild(document.createTextNode(' '));
@@ -684,8 +723,9 @@ async function startRender(kind) {
   button.disabled = true;
   try {
     const encoder = $('render-encoder').value || 'auto';
+    const profile = $('render-profile')?.value || 'Balanced';
     const job = await api(`/api/projects/${state.projectId}/render`, {
-      method: 'POST', body: { kind, encoder },
+      method: 'POST', body: { kind, encoder, profile },
     });
     toast(`Render ${kind} masuk antrean.`, 'ok');
     $('render-progress').hidden = false;
@@ -1282,6 +1322,7 @@ async function loadRenderHistory() {
       const main = el('div', 'item-main');
       main.appendChild(el('div', 'item-title', `${job.kind} · percobaan ${job.attempt}`));
       const bits = [job.status];
+      if (job.render_profile) bits.push(`profile ${job.render_profile}`);
       if (job.duration) bits.push(fmt(job.duration));
       if (job.encoder) bits.push(job.encoder_hardware ? `GPU ${job.encoder}` : `CPU ${job.encoder}`);
       if (job.encoder_fell_back) bits.push('fallback ke CPU');

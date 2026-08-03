@@ -277,6 +277,16 @@ retrying never re-renders.
 `available=False` for analytics rather than a row of zeros that would look like
 real data.
 
+## Deployment boundary
+
+UpCloud is the execution host. The local checkout is an orchestrator and test source only. Database, source assets, TTS, FFmpeg, scratch files, and outputs belong under `/opt/manhwashorts` on UpCloud. Do not run production renders against local `data/`.
+
+The local checkout currently contains historical generated data from earlier runs; this is not required by the runtime architecture and is scheduled for cleanup after a verified backup decision.
+
+## Motion-comic implementation status
+
+The ordered implementation plan, active contracts, verified sample, benchmark, and remaining work live in [`MOTION_COMIC.md`](MOTION_COMIC.md). Resume point: **Stage 8 — Documentation and release gate**.
+
 ## Data model
 
 15 tables. The chain that matters:

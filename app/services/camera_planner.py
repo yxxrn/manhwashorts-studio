@@ -13,7 +13,7 @@ from typing import Any
 
 _SUPPORTED_CURVES = frozenset(
     {
-        "slow_push_in", "pan_horizontal", "pan_vertical", "pan_diagonal",
+        "static", "slow_push_in", "pan_horizontal", "pan_vertical", "pan_diagonal",
         "slow_pull_out", "focus_shift", "orbit", "push_in", "punch_zoom",
         "micro_shake", "impact_shake", "dramatic_zoom_out",
     }

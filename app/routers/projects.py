@@ -10,6 +10,7 @@ from app.deps import CurrentUser, CurrentWorkspace, DbSession, OwnedProject
 from app.models import Project, SourceAsset
 from app.routing import CommitRoute
 from app.schemas import (
+    AssetFamilyUpdate,
     AssetOut,
     AssetRightsUpdate,
     MessageOut,
@@ -136,6 +137,8 @@ def duplicate_project(project: OwnedProject, db: DbSession, user: CurrentUser) -
                 rights_status=asset.rights_status,
                 attribution=asset.attribution,
                 order_index=asset.order_index,
+                source_family=asset.source_family,
+                source_family_manual=asset.source_family_manual,
             )
         )
     audit(db, "project.duplicate", "project", clone.id, user.id, source=project.id)
@@ -204,6 +207,7 @@ def add_text_asset(
         attribution=rights.attribution,
         rights_status=rights.status,
         order_index=len(project_assets(db, project.id)),
+        source_family=ingest.derive_source_family(result.original_filename),
     )
     db.add(asset)
     audit(db, "asset.add_text", "asset", asset.id, user.id, rights=asset.rights_status)
@@ -287,6 +291,7 @@ async def upload_assets(
                 attribution=rights.attribution,
                 rights_status=rights.status,
                 order_index=next_index,
+                source_family=result.source_family,
             )
             next_index += 1
             db.add(asset)
@@ -326,6 +331,24 @@ def update_rights(
         db, "asset.rights_update", "asset", asset.id, user.id,
         rights_status=asset.rights_status,
     )
+    db.flush()
+    return asset
+
+
+@router.patch("/{project_id}/assets/{asset_id}/family", response_model=AssetOut)
+def update_source_family(
+    asset_id: str,
+    payload: AssetFamilyUpdate,
+    project: OwnedProject,
+    db: DbSession,
+    user: CurrentUser,
+) -> SourceAsset:
+    asset = db.get(SourceAsset, asset_id)
+    if asset is None or asset.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Asset not found.")
+    asset.source_family = payload.source_family.strip()
+    asset.source_family_manual = True
+    audit(db, "asset.source_family_update", "asset", asset.id, user.id, source_family=asset.source_family)
     db.flush()
     return asset
 

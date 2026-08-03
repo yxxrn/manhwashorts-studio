@@ -190,6 +190,35 @@ def test_ingest_keeps_a_normal_panel_as_one_asset():
     assert assets[0].original_filename == "panel.jpg"
 
 
+def test_sliced_panels_keep_one_persisted_source_family():
+    from app.services import ingest
+
+    assets = ingest.ingest_image_parts("proj-strip", "chapter/page01.jpg", _jpeg(720, 4372))
+    assert {asset.source_family for asset in assets} == {"chapter/page01"}
+
+
+def test_source_family_override_is_exposed_by_asset_route(client, declared_rights):
+    assert client.post(
+        "/api/auth/register",
+        json={"email": "family@example.com", "password": "familypass1234"},
+    ).status_code == 201
+    project = client.post("/api/projects", json={"title": "Family"}).json()
+    response = client.post(
+        f"/api/projects/{project['id']}/assets/upload",
+        files={"files": ("panel.jpg", _jpeg(900, 1200), "image/jpeg")},
+        data=declared_rights,
+    )
+    assert response.status_code == 201, response.text
+    asset = response.json()[0]
+    updated = client.patch(
+        f"/api/projects/{project['id']}/assets/{asset['id']}/family",
+        json={"source_family": "manual/page-a"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["source_family"] == "manual/page-a"
+    assert updated.json()["source_family_manual"] is True
+
+
 def test_ingest_parts_still_rejects_a_fake_image():
     """Slicing must never bypass content verification."""
     from app.services import ingest

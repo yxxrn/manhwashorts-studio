@@ -102,8 +102,22 @@ def test_render_job_encoder_fields_read_by_the_ui_exist():
     from app.schemas import RenderJobOut
 
     for field in ["encoder", "encoder_requested", "encoder_hardware",
-                  "encoder_fell_back", "encoder_reason", "attempt", "kind", "status"]:
+                  "encoder_fell_back", "encoder_reason", "render_profile",
+                  "attempt", "kind", "status"]:
         assert field in RenderJobOut.model_fields
+
+
+def test_motion_and_audit_visibility_contract():
+    from app.schemas import SceneOut
+
+    for field in ["motion_mode", "motion_reason", "roi_label", "camera_curve"]:
+        assert field in SceneOut.model_fields
+    assert "/quality/overrides" in JS
+    assert "loadQCOverrides" in JS
+    assert "/quality/history" in JS
+    assert "loadQCHistory" in JS
+    assert "profile ${job.render_profile}" in JS
+    assert "body: { kind, encoder, profile }" in JS
 
 
 def test_publication_fields_read_by_the_ui_exist():

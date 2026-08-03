@@ -76,6 +76,7 @@ class PanelCandidate:
     features: VisualFeatures
     visual_score: float
     semantic_score: float = 0.0
+    source_family: str = ""
 
 
 _ACTION = {"attack", "attacked", "attacks", "hit", "struck", "strike", "fight", "fought", "run", "jump", "fall", "battle", "chase", "serang", "menyerang", "memukul", "merampas", "menebas", "bertarung", "berlari", "melompat", "jatuh", "kejar", "mengejar"}
@@ -189,7 +190,7 @@ def _visual_signature(image: Image.Image) -> str:
     return "".join("1" if pixel >= average else "0" for pixel in pixels)
 
 
-def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0) -> PanelCandidate:
+def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0, source_family: str = "") -> PanelCandidate:
     """Extract content features from one image and calculate its visual score."""
     with Image.open(io.BytesIO(data)) as source:
         image = source.convert("RGB")
@@ -243,11 +244,15 @@ def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0) -> Pane
         )
     )
     penalty = WEIGHTS.empty * empty + WEIGHTS.scenery * scenery + WEIGHTS.transition * transition
-    return PanelCandidate(asset_id, order_index, features, round(max(0.0, positive - penalty), 3))
+    family = source_family or f"legacy-strip-{max(0, order_index) // 8}"
+    return PanelCandidate(asset_id, order_index, features, round(max(0.0, positive - penalty), 3), source_family=family)
 
 
 def analyze_assets(assets: Iterable[object], read: Callable[[str], bytes]) -> list[PanelCandidate]:
-    return [analyze_panel(read(asset.storage_key), asset.id, asset.order_index) for asset in assets]
+    return [
+        analyze_panel(read(asset.storage_key), asset.id, asset.order_index, getattr(asset, "source_family", ""))
+        for asset in assets
+    ]
 
 
 def semantic_score(candidate: PanelCandidate, narration: str) -> float:
@@ -292,7 +297,7 @@ def select_panel(candidates: list[PanelCandidate], narration: str, previous_orde
         if candidate.features.visual_signature and candidate.features.visual_signature in used_signatures:
             repeat_penalty += WEIGHTS.repeated * 0.75
         value = candidate.visual_score + semantic + WEIGHTS.continuity * continuity - repeat_penalty
-        ranked.append((value, PanelCandidate(candidate.asset_id, candidate.order_index, candidate.features, candidate.visual_score, semantic)))
+        ranked.append((value, PanelCandidate(candidate.asset_id, candidate.order_index, candidate.features, candidate.visual_score, semantic, candidate.source_family)))
     ranked.sort(key=lambda item: item[0], reverse=True)
     best = ranked[0][1]
     if previous_order is not None:

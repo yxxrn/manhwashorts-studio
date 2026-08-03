@@ -14,8 +14,12 @@ Stage order:
 from __future__ import annotations
 
 import json
+import resource
+import secrets
+import subprocess
+import time
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -32,6 +36,8 @@ from app.models import (
     AudioSegment,
     AuditLog,
     Project,
+    QCHistorySnapshot,
+    QCOverrideEvent,
     QualityCheck,
     RenderJob,
     ScriptVersion,
@@ -42,11 +48,11 @@ from app.models import (
 )
 from app.services import analysis as analysis_svc
 from app.services import director as director_svc
+from app.services import editorial_timing, storage, visual_scoring
 from app.services import policy as policy_svc
 from app.services import quality as quality_svc
 from app.services import resolver as resolver_svc
 from app.services import script as script_svc
-from app.services import storage, visual_scoring
 from app.services import timeline as timeline_svc
 from app.services import tts as tts_svc
 
@@ -471,6 +477,7 @@ def generate_voiceover(
             storage_key=stored.storage_key,
             duration=clip.duration,
             word_timings=clip.word_timings,
+            dramatic_events=editorial_timing.dramatic_events(clip.word_timings, project.language),
         )
         db.add(segment)
         created.append(segment)
@@ -523,6 +530,14 @@ def spans_from_segments(segments: list[AudioSegment]) -> list[timeline_svc.Audio
             }
             for t in (s.word_timings or [])
         ]
+        events = [
+            {
+                **event,
+                "start": round(float(event.get("start", 0.0)) + s.start_time, 3),
+                "end": round(float(event.get("end", 0.0)) + s.start_time, 3),
+            }
+            for event in (s.dramatic_events or [])
+        ]
         spans.append(
             timeline_svc.AudioSpan(
                 section=s.section,
@@ -530,6 +545,8 @@ def spans_from_segments(segments: list[AudioSegment]) -> list[timeline_svc.Audio
                 start_time=s.start_time,
                 end_time=s.end_time,
                 word_timings=shifted,
+                dramatic_events=events,
+                impact_lock=any(event.get("impact_lock") for event in events),
             )
         )
     return spans
@@ -577,15 +594,20 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             start_time=shot["start_time"],
             end_time=shot["end_time"],
             asset_id=shot["asset_id"],
+            source_family=shot.get("source_family", ""),
             focus_x=shot["focus_x"],
             focus_y=shot["focus_y"],
             focus_end_x=shot.get("focus_end_x", shot["focus_x"]),
             focus_end_y=shot.get("focus_end_y", shot["focus_y"]),
             roi_label=shot.get("roi_label", ""),
             camera_curve=shot.get("camera_curve", shot["effect"]),
+            motion_mode=shot.get("motion_mode", "hold"),
+            motion_intensity=shot.get("motion_intensity", "low"),
+            motion_reason=shot.get("motion_reason", ""),
             camera_intent=shot.get("camera_intent", "neutral"),
             narration_timing=shot.get("narration_timing", "narration_lead"),
             effect=shot["effect"],
+            disabled_effects=shot.get("disabled_effects", []),
             overlay_text=shot.get("overlay_text", ""),
             transition=shot.get("transition", "fade" if shot["order_index"] else "none"),
         )
@@ -596,6 +618,7 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
         scene = TimelineScene(
             project_id=project_id,
             asset_id=spec.asset_id,
+            source_family=spec.source_family,
             order_index=spec.order_index,
             section=spec.section,
             start_time=spec.start_time,
@@ -606,9 +629,13 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             focus_end_y=spec.focus_end_y,
             roi_label=spec.roi_label,
             camera_curve=spec.camera_curve,
+            motion_mode=spec.motion_mode,
+            motion_intensity=spec.motion_intensity,
+            motion_reason=spec.motion_reason,
             camera_intent=spec.camera_intent,
             narration_timing=spec.narration_timing,
             effect=spec.effect,
+            disabled_effects=spec.disabled_effects,
             transition=spec.transition,
         )
         db.add(scene)
@@ -704,6 +731,14 @@ def run_quality_checks(
         )
 
     summary = quality_svc.summarise(results)
+    db.add(
+        QCHistorySnapshot(
+            project_id=project_id,
+            render_job_id=job.id if job else None,
+            passed=not any(result.blocking for result in results),
+            report={"checks": [asdict(result) for result in results], "summary": summary},
+        )
+    )
     audit(db, "quality.run", "project", project_id, actor_id, **summary)
     db.flush()
     return results
@@ -716,6 +751,26 @@ def project_quality_checks(db: Session, project_id: str) -> list[QualityCheck]:
             select(QualityCheck)
             .where(QualityCheck.project_id == project_id)
             .order_by(QualityCheck.severity, QualityCheck.code)
+        )
+    )
+
+
+def project_qc_overrides(db: Session, project_id: str) -> list[QCOverrideEvent]:
+    return list(
+        db.scalars(
+            select(QCOverrideEvent)
+            .where(QCOverrideEvent.project_id == project_id)
+            .order_by(QCOverrideEvent.created_at)
+        )
+    )
+
+
+def project_qc_history(db: Session, project_id: str) -> list[QCHistorySnapshot]:
+    return list(
+        db.scalars(
+            select(QCHistorySnapshot)
+            .where(QCHistorySnapshot.project_id == project_id)
+            .order_by(QCHistorySnapshot.created_at)
         )
     )
 
@@ -738,6 +793,16 @@ def override_warning(
     check.override_reason = reason.strip()
     check.overridden_by = actor_id
     check.passed = True
+    db.add(
+        QCOverrideEvent(
+            project_id=project_id,
+            quality_code=code,
+            actor_id=actor_id,
+            reason=reason.strip(),
+            before_passed=False,
+            after_passed=True,
+        )
+    )
     audit(db, "quality.override", "project", project_id, actor_id, code=code, reason=reason.strip())
     db.flush()
     return check
@@ -752,6 +817,7 @@ def enqueue_render(
     kind: str = "final",
     actor_id: str = "",
     encoder: str = "auto",
+    profile: str = "Auto",
 ) -> RenderJob:
     """Queue a render. Final renders require passing quality checks.
 
@@ -768,6 +834,8 @@ def enqueue_render(
     from app.services import encoders as encoders_svc
 
     requested = (encoder or "auto").strip().lower()
+    if profile not in {"Auto", "Calm", "Balanced", "Dynamic", "No motion"}:
+        raise PipelineError("unknown render profile")
     if requested != "auto":
         try:
             encoders_svc.get_spec(requested)
@@ -793,6 +861,7 @@ def enqueue_render(
         status=JobStatus.QUEUED,
         stage="queued",
         encoder_requested=requested,
+        render_profile=profile,
     )
     db.add(job)
     project.status = ProjectStatus.RENDERING
@@ -849,9 +918,32 @@ def build_render_request(db: Session, job: RenderJob):
         )
     voice_path = work / "voice_master.wav"
     tts_svc.concat_audio(clip_paths, voice_path, gap=0.18)
+    # Keep a valid 60–90s editorial deliverable when narration lands just under
+    # the lower bound; preserve the final visual as a deliberate cliffhanger hold.
+    audio_duration = tts_svc.probe_duration(voice_path)
+    if 0 < audio_duration < 60.0:
+        padded = voice_path.with_name("voice_master_padded.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(voice_path),
+             "-af", "apad,atrim=duration=60.5", str(padded)],
+            check=True, capture_output=True, timeout=180,
+        )
+        padded.replace(voice_path)
+        audio_duration = tts_svc.probe_duration(voice_path)
 
     scene_inputs: list = []
-    for scene in scenes:
+    profile = job.render_profile or "Auto"
+    for index, scene in enumerate(scenes):
+        end_time = scene.end_time
+        if index == len(scenes) - 1:
+            end_time = max(end_time, audio_duration)
+        start_time = scene.start_time
+        motion_mode = scene.motion_mode
+        camera_curve = scene.camera_curve
+        if profile == "No motion" or profile == "Calm" and scene.camera_intent not in {"impact", "explosion"}:
+            motion_mode, camera_curve = "hold", "static"
+        elif profile == "Dynamic" and scene.camera_intent in {"action", "attack"}:
+            motion_mode = "guided_pan" if scene.motion_mode == "hold" else scene.motion_mode
         image_path: Path | None = None
         if scene.asset_id:
             asset = db.get(SourceAsset, scene.asset_id)
@@ -860,14 +952,18 @@ def build_render_request(db: Session, job: RenderJob):
         scene_inputs.append(
             render_svc.SceneInput(
                 image_path=image_path,
-                start_time=scene.start_time,
-                end_time=scene.end_time,
+                start_time=start_time,
+                end_time=end_time,
                 focus_x=scene.focus_x,
                 focus_y=scene.focus_y,
                 focus_end_x=scene.focus_end_x,
                 focus_end_y=scene.focus_end_y,
-                camera_curve=scene.camera_curve,
+                camera_curve=camera_curve,
+                motion_mode=motion_mode,
+                motion_intensity=scene.motion_intensity,
+                motion_reason=scene.motion_reason,
                 effect=scene.effect,
+                disabled_effects=scene.disabled_effects,
                 transition=scene.transition,
                 overlay_text=scene.overlay_text,
             )
@@ -894,35 +990,37 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
     if job is None:
         raise PipelineError(f"render job {job_id} not found")
 
-    # Claim the job so an inline background task and a standalone worker cannot
-    # render the same id twice. Anything not still queued has been taken.
-    if job.status != JobStatus.QUEUED:
+    # Claim atomically so API and standalone worker cannot double-render.
+    if not claim_render_job(db, job_id):
         return job
 
     project = get_project(db, job.project_id)
-    job.status = JobStatus.RUNNING
-    job.started_at = _now()
-    job.progress = 0
-    job.error_code = ""
-    job.error_message = ""
-    db.flush()
-    db.commit()
 
     def progress(pct: int, stage: str) -> None:
         job.progress = max(0, min(100, int(pct)))
         job.stage = stage[:80]
+        job.heartbeat_at = _now()
+        job.lease_until = job.heartbeat_at + timedelta(seconds=1800)
         db.flush()
         db.commit()
 
+    started_wall = time.monotonic()
+    started_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     try:
         request = build_render_request(db, job)
         result = render_svc.render_video(request, progress=progress)
     except (render_svc.RenderError, PipelineError, tts_svc.TTSError) as exc:
+        scratch = storage.workspace_dir(job.project_id, "render")
+        if scratch.exists():
+            import shutil
+            shutil.rmtree(scratch, ignore_errors=True)
         job.status = JobStatus.FAILED
         job.completed_at = _now()
         job.error_code = getattr(exc, "code", "pipeline_error")
         job.error_message = str(exc)[:1000]
         job.log_tail = getattr(exc, "log_tail", "")[:4000]
+        job.render_wall_seconds = round(time.monotonic() - started_wall, 3)
+        job.peak_rss_bytes = max(0, int((resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - started_rss) * 1024))
         project.status = ProjectStatus.FAILED
         project.error_message = str(exc)[:1000]
         audit(db, "render.failed", "render_job", job.id, error=job.error_code)
@@ -945,14 +1043,24 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
     job.encoder_hardware = result.encoder_hardware
     job.encoder_fell_back = result.encoder_fell_back
     job.encoder_reason = result.encoder_reason[:1000]
+    job.render_wall_seconds = round(time.monotonic() - started_wall, 3)
+    job.peak_rss_bytes = max(0, int((resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - started_rss) * 1024))
+    job.scratch_bytes = result.scratch_bytes
     from app.services import editorial_qc
 
     scenes = project_scenes(db, job.project_id)
     cues = cue_specs(project_cues(db, job.project_id))
     assets = project_assets(db, job.project_id)
     source_findings = policy_svc.check_source_cleanliness(assets)
-    rights_confidence = 5 if all(asset.is_publishable for asset in assets) else 0
-    source_cleanliness = 5 if not source_findings else 0
+    test_only = any(
+        "NOT_FOR_PUBLICATION" in (asset.original_filename or "").upper()
+        or "NOT_FOR_PUBLICATION" in (asset.source_name or "").upper()
+        for asset in assets
+    )
+    rights_confidence = 0 if test_only else (5 if all(asset.is_publishable for asset in assets) else 0)
+    source_cleanliness = 0 if test_only or source_findings else 5
+    if test_only and not any(getattr(f, "code", "") == "source.test_only" for f in source_findings):
+        source_findings.append(policy_svc.PolicyFinding("source.test_only", policy_svc.CheckSeverity.ERROR, "NOT_FOR_PUBLICATION source is test-only."))
     qc = editorial_qc.build_report(
         scenes=scenes,
         cues=cues,
@@ -971,11 +1079,14 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
             {
                 "order_index": s.order_index,
                 "asset_id": s.asset_id,
+                "source_family": s.source_family,
                 "roi_label": s.roi_label,
                 "start_time": s.start_time,
                 "end_time": s.end_time,
                 "camera_intent": s.camera_intent,
                 "camera_curve": s.camera_curve,
+                "motion_mode": s.motion_mode,
+                "motion_reason": s.motion_reason,
             }
             for s in scenes
         ], indent=2), encoding="utf-8"
@@ -998,10 +1109,10 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
         }, indent=2), encoding="utf-8"
     )
     audit(db, "editorial.qc", "render_job", job.id, qc=qc.as_dict())
-    project.status = ProjectStatus.READY
-    project.error_message = ""
+    project.status = ProjectStatus.READY if qc.qc_pass else ProjectStatus.REVIEW
+    project.error_message = "" if qc.qc_pass else "; ".join(qc.failures)
     audit(
-        db, "render.succeeded", "render_job", job.id,
+        db, "render.succeeded" if qc.qc_pass else "render.qc_blocked", "render_job", job.id,
         duration=result.duration, size=result.size_bytes,
         encoder=result.encoder, gpu=result.encoder_hardware,
         encoder_fell_back=result.encoder_fell_back,
@@ -1044,6 +1155,47 @@ def next_queued_job(db: Session) -> RenderJob | None:
         .order_by(RenderJob.created_at)
         .limit(1)
     ).first()
+
+
+def claim_render_job(db: Session, job_id: str, lease_seconds: int = 1800) -> bool:
+    """Claim a queued job or reclaim an expired running lease."""
+    now = _now()
+    job = db.get(RenderJob, job_id)
+    if job is None:
+        return False
+    reclaimable = job.status == JobStatus.RUNNING and job.lease_until and job.lease_until < now
+    if job.status != JobStatus.QUEUED and not reclaimable:
+        return False
+    job.status = JobStatus.RUNNING
+    job.started_at = job.started_at or now
+    job.heartbeat_at = now
+    job.lease_until = now + timedelta(seconds=lease_seconds)
+    job.lease_token = secrets.token_hex(16)
+    job.progress = 0
+    job.error_code = ""
+    job.error_message = ""
+    db.flush()
+    db.commit()
+    return True
+
+
+def recover_stale_jobs(db: Session) -> int:
+    """Requeue expired workers, retaining the audit trail."""
+    now = _now()
+    stale = list(db.scalars(select(RenderJob).where(
+        RenderJob.status == JobStatus.RUNNING,
+        RenderJob.lease_until.is_not(None),
+        RenderJob.lease_until < now,
+    )))
+    for job in stale:
+        job.status = JobStatus.QUEUED
+        job.stage = "recovered stale lease"
+        job.lease_token = ""
+        job.lease_until = None
+        job.heartbeat_at = None
+        job.attempt += 1
+    db.flush()
+    return len(stale)
 
 
 # --- convenience: full draft ----------------------------------------------

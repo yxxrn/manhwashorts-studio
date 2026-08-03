@@ -503,6 +503,15 @@ def test_ass_uses_karaoke_word_highlight():
     ass = build_ass([CueSpec(0, "This is a test", 0.0, 2.0)], 1080, 1920, "Anton")
     assert "Style: Caption,Anton" in ass
     assert ass.count("Dialogue:") == 4
+
+
+def test_ass_keeps_full_phrase_visible_while_highlighting_active_word():
+    from app.services.render import build_ass
+    from app.services.timeline import CueSpec
+
+    ass = build_ass([CueSpec(0, "THIS IS A TEST", 0.0, 2.0)], 1080, 1920)
+    assert "THIS" in ass and "IS" in ass and "A" in ass and "TEST" in ass
+    assert ass.count("\\c&H0000FFFF&") == 4
     assert "\\c&H0000FFFF&" in ass
     assert "THIS" in ass and "TEST" in ass
 

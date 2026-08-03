@@ -149,11 +149,17 @@ class AssetOut(BaseModel):
     rights_status: str
     attribution: str
     order_index: int
+    source_family: str
+    source_family_manual: bool
     created_at: datetime
 
 
 class AssetRightsUpdate(RightsIn):
     pass
+
+
+class AssetFamilyUpdate(BaseModel):
+    source_family: str = Field(min_length=1, max_length=255)
 
 
 # --- analysis / script -----------------------------------------------------
@@ -240,6 +246,8 @@ class AudioSegmentOut(BaseModel):
     duration: float
     start_time: float
     end_time: float
+    word_timings: list[dict]
+    dramatic_events: list[dict]
     user_uploaded: bool
 
 
@@ -258,10 +266,15 @@ class SceneOut(BaseModel):
     focus_end_x: float
     focus_end_y: float
     roi_label: str
+    source_family: str
+    motion_mode: str
+    motion_intensity: str
+    motion_reason: str
     camera_curve: str
     camera_intent: str
     narration_timing: str
     effect: str
+    disabled_effects: list[str]
     overlay_text: str
     transition: str
 
@@ -277,6 +290,8 @@ class SceneUpdate(BaseModel):
     camera_intent: str | None = Field(default=None, max_length=20)
     narration_timing: str | None = Field(default=None, max_length=20)
     effect: str | None = Field(default=None, max_length=40)
+    motion_intensity: str | None = Field(default=None, max_length=20)
+    disabled_effects: list[str] | None = Field(default=None, max_length=12)
     overlay_text: str | None = Field(default=None, max_length=500)
     transition: str | None = Field(default=None, max_length=40)
     start_time: float | None = Field(default=None, ge=0.0)
@@ -315,6 +330,30 @@ class QualityCheckOut(BaseModel):
     overridden_by: str
 
 
+class QCOverrideEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    project_id: str
+    quality_code: str
+    actor_id: str
+    reason: str
+    before_passed: bool
+    after_passed: bool
+    created_at: datetime
+
+
+class QCHistorySnapshotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    project_id: str
+    render_job_id: str | None
+    passed: bool
+    report: dict
+    created_at: datetime
+
+
 class QualitySummaryOut(BaseModel):
     total: int
     errors: int
@@ -338,6 +377,7 @@ class RenderRequestIn(BaseModel):
         default="auto",
         pattern="^(auto|cpu|nvenc|qsv|vaapi|videotoolbox)$",
     )
+    profile: str = Field(default="Auto", pattern="^(Auto|Calm|Balanced|Dynamic|No motion)$")
 
 
 class RenderJobOut(BaseModel):
@@ -367,6 +407,10 @@ class RenderJobOut(BaseModel):
     encoder_hardware: bool = False
     encoder_fell_back: bool = False
     encoder_reason: str = ""
+    render_profile: str = ""
+    render_wall_seconds: float = 0.0
+    peak_rss_bytes: int = 0
+    scratch_bytes: int = 0
 
 
 class DraftOut(BaseModel):

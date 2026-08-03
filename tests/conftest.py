@@ -19,6 +19,19 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Set before collection: app settings/engine may initialize during imports.
+TEST_RUN_DIR = ROOT / "data" / "test_runs" / f"pid{os.getpid()}"
+os.environ["MS_TEST_MODE"] = "1"
+os.environ["MS_DATA_DIR"] = str(TEST_RUN_DIR)
+os.environ["MS_STORAGE_DIR"] = str(TEST_RUN_DIR / "storage")
+os.environ["MS_OUTPUT_DIR"] = str(TEST_RUN_DIR / "output")
+os.environ["MS_TMP_DIR"] = str(TEST_RUN_DIR / "tmp")
+os.environ["MS_DATABASE_URL"] = f"sqlite:///{TEST_RUN_DIR / 'test.db'}"
+os.environ["MS_TTS_PROVIDER"] = "null"
+os.environ["MS_SECRET_KEY"] = "test-secret-key-not-for-production-use"
+os.environ["MS_ENVIRONMENT"] = "local"
+os.environ["MS_YOUTUBE_ENABLED"] = "false"
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_environment() -> Iterator[None]:
@@ -29,7 +42,7 @@ def _isolate_environment() -> Iterator[None]:
     exhausted it, producing confusing "Disk quota exceeded" failures. A
     disk-backed directory inside the repo avoids that, and is removed afterwards.
     """
-    data_dir = ROOT / "data" / "test_runs" / f"pid{os.getpid()}"
+    data_dir = TEST_RUN_DIR
     if data_dir.exists():
         shutil.rmtree(data_dir, ignore_errors=True)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -63,9 +76,10 @@ def app_settings(_isolate_environment):
 @pytest.fixture()
 def db(app_settings):
     """A fresh database per test."""
-    from app.db import Base, SessionLocal, engine
+    from app import models  # noqa: F401
+    from app.db import Base, SessionLocal, engine, safe_drop_all
 
-    Base.metadata.drop_all(bind=engine)
+    safe_drop_all(Base.metadata, engine)
     Base.metadata.create_all(bind=engine)
     session = SessionLocal()
     try:
@@ -80,10 +94,10 @@ def client(app_settings):
     """TestClient with a clean database."""
     from fastapi.testclient import TestClient
 
-    from app.db import Base, engine
+    from app.db import Base, engine, safe_drop_all
     from app.main import app
 
-    Base.metadata.drop_all(bind=engine)
+    safe_drop_all(Base.metadata, engine)
     Base.metadata.create_all(bind=engine)
     with TestClient(app) as test_client:
         yield test_client

@@ -2,6 +2,17 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+## Unreleased — Complete motion-comic pipeline
+
+- Persisted source-family metadata, dramatic word events, impact locks, and
+  audio-driven anticipation cuts.
+- Added deterministic local effects with low/medium/high intensity, per-effect
+  disable flags, split-focus/panel-stack validation, and safe fallbacks.
+- Added append-only QC snapshots, black-frame/drift blocking, QC history API/UI,
+  worker lease recovery, failed-scratch cleanup, and render resource metrics.
+- Added release verification coverage for timing, effects, FFmpeg playback,
+  H.264/AAC output, and worker recovery.
+
 ## Unreleased — Shot Director
 
 - Added a modular Shot Director between panel selection and FFmpeg rendering.

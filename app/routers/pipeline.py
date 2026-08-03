@@ -16,6 +16,7 @@ from app.constants import JobStatus
 from app.deps import CurrentUser, DbSession, OwnedProject
 from app.models import (
     AudioSegment,
+    QCOverrideEvent,
     QualityCheck,
     RenderJob,
     ScriptVersion,
@@ -32,6 +33,8 @@ from app.schemas import (
     CueUpdate,
     DraftOut,
     OverrideRequest,
+    QCHistorySnapshotOut,
+    QCOverrideEventOut,
     QualityCheckOut,
     QualitySummaryOut,
     RenderJobOut,
@@ -313,6 +316,16 @@ def override_check(
     return _guard(pl.override_warning, db, project.id, payload.code, payload.reason, user.id)
 
 
+@router.get("/quality/overrides", response_model=list[QCOverrideEventOut])
+def get_quality_overrides(project: OwnedProject, db: DbSession) -> list[QCOverrideEvent]:
+    return pl.project_qc_overrides(db, project.id)
+
+
+@router.get("/quality/history", response_model=list[QCHistorySnapshotOut])
+def get_quality_history(project: OwnedProject, db: DbSession) -> list:
+    return pl.project_qc_history(db, project.id)
+
+
 # --- render (FR-09) -------------------------------------------------------
 
 
@@ -324,7 +337,7 @@ def enqueue_render(
     user: CurrentUser,
     background: BackgroundTasks,
 ) -> RenderJob:
-    job = _guard(pl.enqueue_render, db, project.id, payload.kind, user.id, payload.encoder)
+    job = _guard(pl.enqueue_render, db, project.id, payload.kind, user.id, payload.encoder, payload.profile)
     job_id = job.id
     db.commit()
 

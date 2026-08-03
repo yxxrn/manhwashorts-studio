@@ -22,8 +22,9 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from random import Random
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from app.config import settings
 from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
@@ -52,7 +53,11 @@ class SceneInput:
     focus_end_x: float = 0.5
     focus_end_y: float = 0.4
     camera_curve: str = "slow_push_in"
+    motion_mode: str = "hold"
+    motion_intensity: str = "low"
+    motion_reason: str = ""
     effect: str = "kenburns_in"
+    disabled_effects: list[str] = field(default_factory=list)
     transition: str = "cut"
     overlay_text: str = ""
 
@@ -97,6 +102,7 @@ class RenderResult:
     #: Set when a requested GPU was unavailable and we fell back.
     encoder_fell_back: bool = False
     encoder_reason: str = ""
+    scratch_bytes: int = 0
 
 
 def _run(cmd: list[str], timeout: int = 900, step: str = "ffmpeg") -> str:
@@ -192,6 +198,39 @@ def crop_to_vertical(
     return dest
 
 
+def editorial_frame(
+    src: Path, dest: Path, width: int, height: int,
+    focus_x: float, focus_y: float, end_x: float, end_y: float, mode: str,
+) -> Path:
+    """Build deterministic CPU compositing without altering panel geometry."""
+    if mode not in {"split_focus", "panel_stack"}:
+        return crop_to_vertical(src, dest, width, height, focus_x, focus_y)
+    W, H = round(width * 1.15), round(height * 1.15)
+    with Image.open(src) as original:
+        image = original.convert("RGB")
+        bg = ImageOps.fit(image, (W, H), centering=(focus_x, focus_y)).filter(ImageFilter.GaussianBlur(14))
+        bg = ImageEnhance.Brightness(bg).enhance(0.42)
+        canvas = bg.copy()
+        border = max(4, W // 180)
+        if mode == "split_focus":
+            half = (W - border) // 2
+            left = ImageOps.fit(image, (half, H), centering=(focus_x, focus_y))
+            right = ImageOps.fit(image, (half, H), centering=(end_x, end_y))
+            canvas.paste(left, (0, 0))
+            canvas.paste(right, (half + border, 0))
+            ImageOps.expand(left, border=border, fill="white")
+        else:
+            main_h = int(H * 0.72)
+            detail_h = H - main_h - border
+            main = ImageOps.fit(image, (W, main_h), centering=(focus_x, focus_y))
+            detail = ImageOps.fit(image, (W, detail_h), centering=(end_x, end_y))
+            canvas.paste(main, (0, 0))
+            canvas.paste(detail, (0, main_h + border))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(dest, "JPEG", quality=94)
+    return dest
+
+
 def placeholder_image(dest: Path, width: int, height: int, text: str = "") -> Path:
     """Solid dark frame used when a scene has no image."""
     from PIL import ImageDraw
@@ -249,11 +288,79 @@ def _motion_filter(
         z = f"(1.10+0.025*sin(2*PI*{progress}))"
         fx = f"({fx}+0.02*sin(2*PI*{progress}))"
         fy = f"({fy}+0.015*cos(2*PI*{progress}))"
+    elif effect == "atmospheric":
+        z = "1.06"
+    elif effect == "static_emphasis":
+        z = "1.02"
     else:
         return static
     x = f"trunc((iw-iw/{z})*{fx})*2"
     y = f"trunc((ih-ih/{z})*{fy})*2"
     return f"crop=w='iw/{z}':h='ih/{z}':x='{x}':y='{y}',scale={width}:{height}:flags=lanczos"
+
+
+def _procedural_effect(mode: str, intensity: str) -> str:
+    """Small deterministic accents; never injects content into the panel."""
+    if mode == "atmospheric":
+        return "eq=saturation=0.78:contrast=1.04,vignette=PI/5"
+    if mode == "impact":
+        contrast = {"low": 1.06, "medium": 1.12, "high": 1.18}.get(intensity, 1.12)
+        return f"eq=contrast={contrast}:brightness=0.025"
+    if mode == "static_emphasis":
+        return "vignette=PI/8"
+    return "null"
+
+
+_LOCAL_EFFECTS = {
+    "atmospheric": ("smoke_fog", "rain"),
+    "impact": ("glow", "flash", "embers"),
+    "guided_pan": ("speed_lines", "dust"),
+    "panel_stack": ("speed_lines", "dust"),
+}
+
+
+def local_effects(mode: str, disabled: list[str] | None = None) -> tuple[str, ...]:
+    disabled_set = {str(item).strip().lower() for item in (disabled or [])}
+    return tuple(effect for effect in _LOCAL_EFFECTS.get(mode, ()) if effect not in disabled_set)
+
+
+def apply_local_effects(image: Image.Image, effects: tuple[str, ...], intensity: str = "low", seed: int = 42) -> Image.Image:
+    """Deterministic edge-safe accents; source panel geometry stays unchanged."""
+    if not effects:
+        return image
+    from PIL import ImageDraw
+
+    out = image.convert("RGBA").copy()
+    draw = ImageDraw.Draw(out, "RGBA")
+    rng = Random(seed)
+    alpha = {"low": 28, "medium": 48, "high": 72}.get(intensity, 28)
+    width, height = out.size
+    margin_x, margin_y = max(8, width // 12), max(8, height // 12)
+    count = {"low": 10, "medium": 18, "high": 28}.get(intensity, 10)
+    if "speed_lines" in effects:
+        for _ in range(count):
+            y = rng.randint(margin_y, max(margin_y, height - margin_y))
+            draw.line((0, y, margin_x, max(0, y - rng.randint(8, 40))), fill=(255, 255, 255, alpha), width=2)
+    if "dust" in effects or "embers" in effects:
+        colour = (220, 180, 120, alpha) if "embers" in effects else (190, 190, 190, alpha)
+        for _ in range(count):
+            x = rng.choice([rng.randint(0, margin_x), rng.randint(width - margin_x, width - 1)])
+            y = rng.randint(margin_y, max(margin_y, height - margin_y * 2))
+            radius = rng.randint(2, 6)
+            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=colour)
+    if "smoke_fog" in effects:
+        draw.ellipse((0, height // 3, margin_x * 2, height // 2), fill=(220, 220, 220, alpha // 2))
+    if "rain" in effects:
+        for _ in range(count):
+            x, y = rng.randint(0, width - 1), rng.randint(margin_y, max(margin_y, height - margin_y * 2))
+            draw.line((x, y, x - 4, y + 18), fill=(170, 200, 235, alpha), width=1)
+    if "glow" in effects:
+        glow = Image.new("RGBA", out.size, (255, 220, 120, alpha // 2))
+        out = Image.alpha_composite(out, glow)
+    if "flash" in effects:
+        flash = Image.new("RGBA", out.size, (255, 245, 220, alpha // 2))
+        out = Image.alpha_composite(out, flash)
+    return out.convert("RGB")
 
 
 def render_scene_clip(
@@ -282,7 +389,7 @@ def render_scene_clip(
         if settings.motion_enabled
         else f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
     )
-    vf = f"{motion},format=yuv420p"
+    vf = f"{motion},{_procedural_effect(scene.motion_mode, scene.motion_intensity)},format=yuv420p"
 
     # The Shot Director owns transition intent. Do not fade every clip: that
     # creates a black flash between ROI cuts and makes the edit feel mechanical.
@@ -391,7 +498,19 @@ def join_scene_clips(
         "-filter_complex", filter_graph, "-map", "[joined_exact]", "-an",
         *encoders.video_args(selection, preview=preview), str(dest),
     ]
-    _run(cmd, timeout=900, step="concat")
+    try:
+        _run(cmd, timeout=900, step="concat")
+    except RenderError:
+        # Safe fallback: preserve every frame with hard cuts when an xfade graph
+        # cannot be built for a particular clip combination.
+        manifest = dest.with_suffix(".concat.txt")
+        manifest.write_text("\n".join(f"file '{clip}'" for clip in clips) + "\n", encoding="utf-8")
+        _run(
+            [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "concat", "-safe", "0", "-i", str(manifest),
+             "-c", "copy", "-movflags", "+faststart", str(dest)],
+            timeout=900, step="concat_fallback",
+        )
     return dest
 
 
@@ -467,8 +586,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             for line in wrapped_words:
                 parts: list[str] = []
                 for word in line.split():
-                    if word_index == index:
-                        parts.append(f"{{\\c&H0000FFFF&}}{_ass_escape(word)}")
+                    colour = "\\c&H0000FFFF&" if word_index == index else "\\c&H00FFFFFF&"
+                    parts.append(f"{{{colour}}}{_ass_escape(word)}")
                     word_index += 1
                 if parts:
                     rendered.append(" ".join(parts) + "{\\c&H00FFFFFF&}")
@@ -524,12 +643,23 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
 
     report(5, "preparing images")
     clips: list[Path] = []
+    prepared_cache: dict[tuple, Path] = {}
     for i, scene in enumerate(request.scenes):
         prepared = work / f"img{i:03d}.jpg"
-        if scene.image_path and Path(scene.image_path).is_file():
+        cache_key = (
+            str(scene.image_path), round(scene.focus_x, 3), round(scene.focus_y, 3),
+            scene.motion_mode, scene.motion_intensity, tuple(sorted(scene.disabled_effects)),
+            width, height,
+        )
+        cached = prepared_cache.get(cache_key)
+        if cached and cached.is_file():
+            shutil.copyfile(cached, prepared)
+        elif scene.image_path and Path(scene.image_path).is_file():
             try:
-                crop_to_vertical(
-                    Path(scene.image_path), prepared, width, height, scene.focus_x, scene.focus_y
+                editorial_frame(
+                    Path(scene.image_path), prepared, width, height,
+                    scene.focus_x, scene.focus_y, scene.focus_end_x, scene.focus_end_y,
+                    scene.motion_mode,
                 )
             except Exception as exc:
                 raise RenderError(
@@ -539,6 +669,17 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 ) from exc
         else:
             placeholder_image(prepared, width, height, scene.overlay_text or "no image")
+        effects = local_effects(scene.motion_mode, scene.disabled_effects)
+        if effects:
+            with Image.open(prepared) as prepared_image:
+                effected = apply_local_effects(
+                    prepared_image,
+                    effects,
+                    scene.motion_intensity,
+                    seed=42 + i,
+                )
+                effected.save(prepared, "JPEG", quality=94)
+        prepared_cache[cache_key] = prepared
 
         clip = work / f"clip{i:03d}.mp4"
         render_scene_clip(
@@ -588,6 +729,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     tmp_out = work / "muxed.mp4"
 
     if request.audio_path and Path(request.audio_path).is_file():
+        master_duration = probe(video_stage)["duration"]
         cmd = [
             settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(video_stage),
@@ -599,15 +741,19 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             cmd += [
                 "-filter_complex",
                 f"[2:a]volume={request.music_gain_db}dB[bg];"
-                f"[1:a][bg]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+                f"[1:a][bg]amix=inputs=2:duration=first:dropout_transition=2,"
+                f"apad,atrim=duration={master_duration:.6f}[aout]",
                 "-map", "0:v", "-map", "[aout]",
             ]
         else:
-            cmd += ["-map", "0:v", "-map", "1:a"]
+            cmd += [
+                "-filter_complex", f"[1:a]apad,atrim=duration={master_duration:.6f}[aout]",
+                "-map", "0:v", "-map", "[aout]",
+            ]
         cmd += [
+            "-t", f"{master_duration:.6f}",
             "-c:v", "copy",
             "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-            "-shortest",
             "-movflags", "+faststart",
             str(tmp_out),
         ]
@@ -654,6 +800,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     checksum = hashlib.sha256(output.read_bytes()).hexdigest()
     report(100, "done")
 
+    scratch_bytes = sum(path.stat().st_size for path in work.rglob("*") if path.is_file())
     # Free the scratch space; the artifacts we need are already copied out.
     shutil.rmtree(work, ignore_errors=True)
 
@@ -671,6 +818,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         encoder_hardware=selection.hardware,
         encoder_fell_back=selection.fell_back,
         encoder_reason=selection.reason,
+        scratch_bytes=scratch_bytes,
     )
 
 

@@ -27,15 +27,20 @@ class SceneSpec:
     start_time: float
     end_time: float
     asset_id: str | None = None
+    source_family: str = ""
     focus_x: float = 0.5
     focus_y: float = 0.4
     focus_end_x: float = 0.5
     focus_end_y: float = 0.4
     roi_label: str = ""
     camera_curve: str = "slow_push_in"
+    motion_mode: str = "hold"
+    motion_intensity: str = "low"
+    motion_reason: str = ""
     camera_intent: str = "neutral"
     narration_timing: str = "narration_lead"
     effect: str = "kenburns_in"
+    disabled_effects: list[str] = field(default_factory=list)
     overlay_text: str = ""
     transition: str = "fade"
 
@@ -87,6 +92,8 @@ class AudioSpan:
     start_time: float
     end_time: float
     word_timings: list[dict] = field(default_factory=list)
+    dramatic_events: list[dict] = field(default_factory=list)
+    impact_lock: bool = False
 
     @property
     def duration(self) -> float:

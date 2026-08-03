@@ -17,7 +17,7 @@ from app.constants import (
     CheckSeverity,
 )
 from app.models import Project, RenderJob, ScriptVersion, SourceAsset
-from app.services import policy
+from app.services import editorial_timing, policy
 from app.services.timeline import CueSpec, validate_cues
 
 
@@ -151,6 +151,21 @@ def check_subtitles(cues: list[CueSpec]) -> list[CheckResult]:
     return results
 
 
+def check_narration_language(script: ScriptVersion | None, language: str) -> list[CheckResult]:
+    """Fail mixed English/Indonesian narration at the publication boundary."""
+    if script is None:
+        return []
+    finding = editorial_timing.language_consistency(script.plain_text, language)
+    if finding["passed"]:
+        return [_pass("narration.language_consistent", f"Narration language: {language}.")]
+    return [_fail(
+        "narration.unintended_code_switch",
+        CheckSeverity.ERROR,
+        f"Narration marked {language} contains words from the other supported language.",
+        finding,
+    )]
+
+
 def check_duration(duration: float, target: float) -> list[CheckResult]:
     """Shorts must stay within the platform ceiling."""
     results: list[CheckResult] = []
@@ -272,6 +287,7 @@ def run_all(
         )
 
     results += check_script_approved(script)
+    results += check_narration_language(script, project.language)
     results += check_audio(audio_segments)
     results += check_scenes(scenes, assets)
     results += check_subtitles(cues)

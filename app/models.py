@@ -179,6 +179,8 @@ class SourceAsset(Base, TimestampMixin):
     attribution: Mapped[str] = mapped_column(Text, default="")
 
     order_index: Mapped[int] = mapped_column(Integer, default=0)
+    source_family: Mapped[str] = mapped_column(String(255), default="")
+    source_family_manual: Mapped[bool] = mapped_column(Boolean, default=False)
 
     project: Mapped[Project] = relationship(back_populates="assets")
 
@@ -263,6 +265,8 @@ class AudioSegment(Base, TimestampMixin):
     end_time: Mapped[float] = mapped_column(Float, default=0.0)
     # word timings: [{word, start, end}]
     word_timings: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    # dramatic events: [{word, tag, start, end, impact_lock}]
+    dramatic_events: Mapped[list[dict]] = mapped_column(JSON, default=list)
     user_uploaded: Mapped[bool] = mapped_column(Boolean, default=False)
 
     script_version: Mapped[ScriptVersion] = relationship(back_populates="audio_segments")
@@ -290,10 +294,15 @@ class TimelineScene(Base, TimestampMixin):
     focus_end_x: Mapped[float] = mapped_column(Float, default=0.5)
     focus_end_y: Mapped[float] = mapped_column(Float, default=0.4)
     roi_label: Mapped[str] = mapped_column(String(40), default="")
+    source_family: Mapped[str] = mapped_column(String(255), default="")
     camera_curve: Mapped[str] = mapped_column(String(40), default="")
+    motion_mode: Mapped[str] = mapped_column(String(40), default="hold")
+    motion_intensity: Mapped[str] = mapped_column(String(20), default="low")
+    motion_reason: Mapped[str] = mapped_column(Text, default="")
     camera_intent: Mapped[str] = mapped_column(String(20), default="neutral")
     narration_timing: Mapped[str] = mapped_column(String(20), default="narration_lead")
     effect: Mapped[str] = mapped_column(String(40), default="kenburns_in")
+    disabled_effects: Mapped[list[str]] = mapped_column(JSON, default=list)
     overlay_text: Mapped[str] = mapped_column(Text, default="")
     transition: Mapped[str] = mapped_column(String(40), default="fade")
 
@@ -338,6 +347,38 @@ class QualityCheck(Base, TimestampMixin):
     overridden_by: Mapped[str] = mapped_column(String(32), default="")
 
 
+class QCHistorySnapshot(Base, TimestampMixin):
+    """Append-only QC report snapshot for render/review provenance."""
+
+    __tablename__ = "qc_history_snapshots"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    render_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("render_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    report: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class QCOverrideEvent(Base, TimestampMixin):
+    """Append-only record of a human quality-warning override."""
+
+    __tablename__ = "qc_override_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    quality_code: Mapped[str] = mapped_column(String(80))
+    actor_id: Mapped[str] = mapped_column(String(32), default="")
+    reason: Mapped[str] = mapped_column(Text)
+    before_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    after_passed: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class RenderJob(Base, TimestampMixin):
     """Async render or preview job (FR-09)."""
 
@@ -371,8 +412,15 @@ class RenderJob(Base, TimestampMixin):
     encoder_hardware: Mapped[bool] = mapped_column(Boolean, default=False)
     encoder_fell_back: Mapped[bool] = mapped_column(Boolean, default=False)
     encoder_reason: Mapped[str] = mapped_column(Text, default="")
+    render_profile: Mapped[str] = mapped_column(String(20), default="auto")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str] = mapped_column(String(64), default="")
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    render_wall_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    peak_rss_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    scratch_bytes: Mapped[int] = mapped_column(Integer, default=0)
 
     project: Mapped[Project] = relationship(back_populates="render_jobs")
 

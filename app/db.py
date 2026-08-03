@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -89,3 +90,50 @@ def init_db() -> None:
 
     settings.ensure_dirs()
     Base.metadata.create_all(bind=engine)
+    if engine.url.get_backend_name() == "sqlite":
+        with engine.begin() as connection:
+            columns = {
+                row[1] for row in connection.exec_driver_sql("PRAGMA table_info(timeline_scenes)")
+            }
+            if "motion_mode" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE timeline_scenes ADD COLUMN motion_mode VARCHAR(40) NOT NULL DEFAULT 'hold'"
+                )
+            if "motion_reason" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE timeline_scenes ADD COLUMN motion_reason TEXT NOT NULL DEFAULT ''"
+                )
+            if "source_family" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE timeline_scenes ADD COLUMN source_family VARCHAR(255) NOT NULL DEFAULT ''"
+                )
+            asset_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(source_assets)")}
+            for name, definition in {
+                "source_family": "VARCHAR(255) NOT NULL DEFAULT ''",
+                "source_family_manual": "BOOLEAN NOT NULL DEFAULT 0",
+            }.items():
+                if name not in asset_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE source_assets ADD COLUMN {name} {definition}")
+            job_columns = {
+                row[1] for row in connection.exec_driver_sql("PRAGMA table_info(render_jobs)")
+            }
+            for name, definition in {
+                "lease_token": "VARCHAR(64) NOT NULL DEFAULT ''",
+                "lease_until": "DATETIME",
+                "heartbeat_at": "DATETIME",
+                "render_profile": "VARCHAR(20) NOT NULL DEFAULT 'auto'",
+            }.items():
+                if name not in job_columns:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE render_jobs ADD COLUMN {name} {definition}"
+                    )
+
+
+def safe_drop_all(metadata, bind: Engine) -> None:
+    """Allow destructive schema resets only inside an explicit test DB."""
+    if os.environ.get("MS_TEST_MODE") != "1":
+        raise RuntimeError("drop_all is disabled outside MS_TEST_MODE=1")
+    url = str(bind.url)
+    if bind.url.get_backend_name() != "sqlite" or "/data/test_runs/" not in url:
+        raise RuntimeError(f"refusing destructive reset of non-test database: {url}")
+    metadata.drop_all(bind=bind)

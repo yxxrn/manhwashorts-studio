@@ -62,6 +62,21 @@ class IngestedAsset:
     extracted_text: str = ""
     width: int = 0
     height: int = 0
+    source_family: str = ""
+
+
+_SLICE_SUFFIX = re.compile(r"(?:[_-]p?\d+)$", re.IGNORECASE)
+
+
+def derive_source_family(filename: str) -> str:
+    """Stable logical family for an uploaded page and its sliced panels."""
+    value = str(filename or "").replace("\\", "/").strip("/")
+    if not value:
+        return "unknown"
+    path = Path(value)
+    stem = _SLICE_SUFFIX.sub("", path.stem) or path.stem or "unknown"
+    parent = "/".join(part for part in path.parts[:-1] if part not in {"", "."})
+    return f"{parent}/{stem}" if parent else stem
 
 
 # --- text extraction -------------------------------------------------------
@@ -212,6 +227,7 @@ def ingest_image(project_id: str, filename: str, data: bytes) -> IngestedAsset:
         checksum=obj.checksum,
         width=width,
         height=height,
+        source_family=derive_source_family(filename),
     )
 
 
@@ -260,6 +276,7 @@ def ingest_image_parts(project_id: str, filename: str, data: bytes) -> list[Inge
                 checksum=obj.checksum,
                 width=width,
                 height=height,
+                source_family=derive_source_family(filename),
             )
         )
     return assets

@@ -1,6 +1,26 @@
 from app.services.editorial_qc import build_report
 
 
+def test_media_integrity_rejects_drift_and_black_frames(tmp_path):
+    import subprocess
+
+    path = tmp_path / "broken.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "color=c=black:s=64x64:r=30:d=1",
+            "-f", "lavfi", "-i", "sine=frequency=440:d=0.5",
+            "-c:v", "libx264", "-c:a", "aac", str(path),
+        ],
+        check=True,
+    )
+    report = build_report(scenes=[], cues=[], duration=1.0, job_path=path)
+    assert report.audio_video_drift > 0.1
+    assert report.black_frame_duration > 0.4
+    assert "audio_video_drift_over_one_frame" in report.failures
+    assert "unintended_black_frame" in report.failures
+
+
 def test_qc_report_matches_required_contract():
     class Shot:
         asset_id = "p"

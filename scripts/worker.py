@@ -47,8 +47,11 @@ def _handle_signal(signum, _frame) -> None:
 
 
 def claim_and_run() -> bool:
-    """Render one queued job. Returns True if work was done."""
+    """Recover stale jobs, then render one queued job."""
     with session_scope() as db:
+        recovered = pl.recover_stale_jobs(db)
+        if recovered:
+            logger.warning("recovered %d stale render job(s)", recovered)
         job = pl.next_queued_job(db)
         if job is None:
             return False

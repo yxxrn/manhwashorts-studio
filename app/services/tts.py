@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -315,7 +316,7 @@ class HttpProvider:
             "speed": max(0.25, min(4.0, speed)),
             "language": language,
             "instruct": settings.tts_http_instruct,
-            "num_step": settings.tts_http_num_step,
+            "num_step": min(settings.tts_http_num_step, 8),
             "guidance_scale": settings.tts_http_guidance_scale,
             "seed": settings.tts_http_seed,
         }
@@ -323,6 +324,10 @@ class HttpProvider:
         ref_path = work_dir / "shared_voice_reference.wav"
         try:
             response = httpx.post(settings.tts_http_url, headers=headers, json=base_payload, timeout=900)
+            if response.status_code == 503:
+                fallback = dict(base_payload)
+                fallback["input"] = texts[0]
+                response = httpx.post(settings.tts_http_url or "", headers=headers, json=fallback, timeout=900)
             response.raise_for_status()
             ref_path.write_bytes(response.content)
             self._polish(ref_path)
@@ -331,24 +336,25 @@ class HttpProvider:
                 if index == 0:
                     path.write_bytes(ref_path.read_bytes())
                 else:
-                    generate_url = settings.tts_http_url.replace("/v1/audio/speech", "/generate")
-                    data = {
-                        "text": text,
-                        "language": language,
-                        "ref_text": texts[0],
-                        "instruct": settings.tts_http_instruct,
-                        "duration": "",
-                        "num_step": str(settings.tts_http_num_step),
-                        "guidance_scale": str(settings.tts_http_guidance_scale),
-                        "speed": str(max(0.25, min(4.0, speed))),
-                    }
-                    with ref_path.open("rb") as reference:
+                    # Stable no. 4 path for CPU production/test runs. The clone
+                    # endpoint is optional; repeated 503s must never block a render.
+                    stable_payload = dict(base_payload)
+                    stable_payload["input"] = text
+                    stable_payload["speed"] = max(0.25, min(4.0, speed))
+                    stable_payload["num_step"] = min(settings.tts_http_num_step, 8)
+                    result = None
+                    for _attempt in range(4):
                         result = httpx.post(
-                            generate_url,
-                            data=data,
-                            files={"ref_audio": ("reference.wav", reference, "audio/wav")},
+                            settings.tts_http_url or "",
+                            headers=headers,
+                            json=stable_payload,
                             timeout=900,
                         )
+                        if result.status_code != 503:
+                            break
+                        retry_after = float(result.headers.get("retry-after", "30"))
+                        time.sleep(min(90.0, max(5.0, retry_after)))
+                    assert result is not None
                     result.raise_for_status()
                     path.write_bytes(result.content)
                     self._polish(path)

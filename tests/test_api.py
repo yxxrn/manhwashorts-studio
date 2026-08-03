@@ -515,6 +515,18 @@ def test_warning_override_is_recorded(auth_client, recap_text, declared_rights, 
     assert response.json()["passed"] is True
 
 
+def test_qc_history_endpoint_is_append_only(auth_client, recap_text, declared_rights, panel_bytes):
+    project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
+    auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    assert auth_client.post(f"/api/projects/{project_id}/quality").status_code == 200
+    assert auth_client.post(f"/api/projects/{project_id}/quality").status_code == 200
+    history = auth_client.get(f"/api/projects/{project_id}/quality/history")
+    assert history.status_code == 200
+    snapshots = history.json()
+    assert len(snapshots) == 2
+    assert snapshots[0]["id"] != snapshots[1]["id"]
+
+
 def test_override_requires_meaningful_reason(auth_client, recap_text, declared_rights, panel_bytes):
     project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
     auth_client.post(f"/api/projects/{project_id}/draft?seed=42")

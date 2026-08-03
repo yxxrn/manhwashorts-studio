@@ -127,12 +127,29 @@ def audit_sequence(shots: Iterable[object]) -> list[str]:
     items = list(shots)
     issues: list[str] = []
     for left, right in zip(items, items[1:], strict=False):
-        if getattr(left, "roi_label", "") == getattr(right, "roi_label", "") and getattr(left, "asset_id", None) == getattr(right, "asset_id", None):
+        same_frame = (
+            getattr(left, "asset_id", None) == getattr(right, "asset_id", None)
+            and abs(float(getattr(left, "focus_x", 0)) - float(getattr(right, "focus_x", 0))) < 0.08
+            and abs(float(getattr(left, "focus_y", 0)) - float(getattr(right, "focus_y", 0))) < 0.08
+        )
+        if same_frame:
             issues.append("repeated_roi")
-    for first, second, third in zip(items, items[1:], items[2:], strict=False):
-        if getattr(first, "camera_curve", "") == getattr(second, "camera_curve", "") == getattr(third, "camera_curve", ""):
+        same_static_frame = same_frame and (
+            getattr(left, "camera_curve", "") == getattr(right, "camera_curve", "") == "static"
+        )
+        if same_static_frame:
+            issues.append("repeated_static")
+    purposeful = [item for item in items if getattr(item, "camera_curve", "") != "static"]
+    if items and len(purposeful) / len(items) > 0.8:
+        issues.append("restless_camera")
+    motion = [getattr(item, "camera_curve", "") for item in items if getattr(item, "camera_curve", "") != "static"]
+    for first, second, third in zip(motion, motion[1:], motion[2:], strict=False):
+        if first == second == third:
             issues.append("repeated_camera_curve")
-    if items and max(float(getattr(item, "end_time", 0)) - float(getattr(item, "start_time", 0)) for item in items) > 3.0:
+    for first, second, third in zip(items, items[1:], items[2:], strict=False):
+        if getattr(first, "asset_id", None) == getattr(second, "asset_id", None) == getattr(third, "asset_id", None):
+            issues.append("asset_cooldown_exception")
+    if items and max(float(getattr(item, "end_time", 0)) - float(getattr(item, "start_time", 0)) for item in items) > 2.8:
         issues.append("long_hold")
     return sorted(set(issues))
 

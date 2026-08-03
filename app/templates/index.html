@@ -361,6 +361,15 @@
           <label for="render-encoder" class="inline">Encoder
             <select id="render-encoder"></select>
           </label>
+          <label for="render-profile" class="inline">Profile
+            <select id="render-profile">
+              <option>Auto</option>
+              <option>Calm</option>
+              <option selected>Balanced</option>
+              <option>Dynamic</option>
+              <option>No motion</option>
+            </select>
+          </label>
           <button type="button" id="render-btn" class="btn">Render final</button>
           <button type="button" id="preview-btn" class="btn secondary">Render preview</button>
         </div>
@@ -372,6 +381,14 @@
           <summary>Riwayat render</summary>
           <div id="render-history" class="list small long"></div>
         </details>
+      </section>
+
+      <section class="card step-7" aria-labelledby="audit-heading">
+        <h2 id="audit-heading">Riwayat override QC</h2>
+        <p class="hint">Log append-only. Tidak dapat dihapus dari UI.</p>
+        <div id="qc-override-history" class="list small long"></div>
+        <h3>Snapshot QC</h3>
+        <div id="qc-history" class="list small long"></div>
       </section>
 
       <!-- STEP 8: publish -->

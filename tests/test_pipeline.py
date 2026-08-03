@@ -155,6 +155,19 @@ def test_draft_pipeline_produces_consistent_timeline(db, recap_text):
     assert all(c.end_time > c.start_time for c in cues)
 
 
+def test_short_audio_padding_extends_last_scene_to_sixty_seconds(db, recap_text):
+    from app.services import pipeline as pl
+
+    project_id = _seed_project(db, recap_text)
+    pl.generate_draft(db, project_id, seed=42)
+    script = pl.current_script(db, project_id)
+    pl.approve_script(db, script.id, actor_id="test")
+    job = pl.enqueue_render(db, project_id, "preview", actor_id="test")
+    request = pl.build_render_request(db, job)
+    assert request.audio_path is not None
+    assert request.scenes[-1].end_time >= 60.0
+
+
 def test_scenes_reference_only_declared_assets(db, recap_text):
     from app.services import pipeline as pl
 
