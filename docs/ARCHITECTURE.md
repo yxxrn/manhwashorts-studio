@@ -109,6 +109,8 @@ Three modules, each with one job:
 | `services/credentials.py` | Encrypts, stores, and retrieves keys. No HTTP, no vendor knowledge. |
 | `services/resolver.py` | Decides which provider a stage uses, and reports why. |
 
+See [`TTS_OPTIONS.md`](TTS_OPTIONS.md) for current voice-provider research and the selection gate.
+
 **Why adapters are keyed on shape.** Most vendors speak the OpenAI wire format,
 so `OpenAICompatibleLLM` is parameterised by base URL and covers nine of them.
 Anthropic (`x-api-key` + `/messages`) and Google (key as query param +
@@ -165,10 +167,15 @@ Locked sections survive regeneration, which is what makes the review loop usable
 
 ### 4. Voice-over (`services/tts.py`)
 
-One clip per beat. `EspeakProvider` normalises loudness with `loudnorm` so
-concatenated segments do not jump in volume.
+One clip per beat. The default is offline espeak-ng; verified BYOK credentials
+can select a stable cloud voice without changing the render pipeline.
 
-Production uses `HttpProvider` against private OmniVoice when `MS_TTS_PROVIDER=http`. The OpenAI-compatible payload carries explicit language, model, voice, seed, instruct, diffusion steps, and guidance scale. Section synthesis keeps one shared narrator reference, retries transient `503` responses, applies FFmpeg mastering, and fails loudly rather than silently downgrading to espeak. See [`OMNIVOICE.md`](OMNIVOICE.md).
+`OpenAI Speech`, `ElevenLabs`, and custom OpenAI-compatible endpoints are
+adapters, not project-specific engines. The selected provider, model, voice ID,
+and settings are part of the render decision and must remain locked for a
+consistent narrator.
+
+Production voice selection uses BYOK (`docs/BYOK.md`) or a generic HTTP endpoint configured through `MS_TTS_HTTP_*`. A configured paid provider fails loudly rather than silently downgrading to espeak. Keep one provider/model/voice ID and fixed voice settings for every beat; see [`TTS_OPTIONS.md`](TTS_OPTIONS.md).
 
 `estimate_word_timings()` distributes the measured clip duration across words
 weighted by character length, with extra weight for trailing punctuation. That is

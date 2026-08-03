@@ -299,7 +299,7 @@ class HttpProvider:
     def synthesize_sections(
         self, texts: list[str], work_dir: Path, voice_id: str = "en", speed: float = 1.0
     ) -> list[SpeechClip]:
-        """Generate against one shared reference, preserving the proven no. 4 voice."""
+        """Generate sections with one locked provider voice configuration."""
         import httpx
 
         if not texts or not all(text.strip() for text in texts):
@@ -336,8 +336,8 @@ class HttpProvider:
                 if index == 0:
                     path.write_bytes(ref_path.read_bytes())
                 else:
-                    # Stable no. 4 path for CPU production/test runs. The clone
-                    # endpoint is optional; repeated 503s must never block a render.
+                    # Reuse the same provider settings for every section. A
+                    # transient 503 must not silently switch voices or providers.
                     stable_payload = dict(base_payload)
                     stable_payload["input"] = text
                     stable_payload["speed"] = max(0.25, min(4.0, speed))

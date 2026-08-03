@@ -89,19 +89,18 @@ class Settings(BaseSettings):
     )
     subtitle_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     subtitle_font_name: str = "Anton"
-    # "legacy" accepts the original {text, format} local API; "openai" sends
-    # {input, response_format} to OmniVoice's /v1/audio/speech endpoint.
+    # "legacy" accepts the original {text, format} endpoint; "openai" sends
+    # {input, response_format} to a generic OpenAI-compatible speech endpoint.
     tts_http_protocol: str = "legacy"
-    tts_http_model: str = "omnivoice"
+    tts_http_model: str = "tts-1"
     tts_http_response_format: str = "wav"
-    tts_http_instruct: str = "male, young adult, moderate pitch, american accent"
+    tts_http_instruct: str = ""
     tts_http_language: str = "en"
     tts_http_voice: str = "default"
     tts_http_seed: int = 42
     tts_http_num_step: int = 32
     tts_http_guidance_scale: float = 1.8
-    # Preset audio polish applied after OmniVoice returns a valid clip.
-    # "expressive" = the selected no. 4 mastering profile.
+    # Preset audio polish applied after an HTTP provider returns a valid clip.
     tts_http_audio_filter: str = "expressive"
     # Deterministic crop motion is on by default; unlike zoompan it updates at
     # the output frame rate and rounds crop coordinates to whole pixels.

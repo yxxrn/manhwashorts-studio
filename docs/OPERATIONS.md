@@ -24,17 +24,16 @@ them first:
 .venv/bin/python -c "from app.services.render import check_environment; print(check_environment() or 'OK')"
 ```
 
-### OmniVoice production check
+### TTS provider check
 
-OmniVoice is normally a private UpCloud service:
+Before a paid render, inspect the active provider:
 
 ```bash
-systemctl is-active omnivoice.service
-curl -sS http://127.0.0.1:3900/health
+curl -sS http://127.0.0.1:8000/api/credentials/active
 curl -sS http://127.0.0.1:8000/api/health
 ```
 
-The app must report `tts_provider: http` before a render can be called an OmniVoice render. `tts_provider: espeak` means offline fallback. Configuration, payload, retry behaviour, and shared-reference synthesis are in [`OMNIVOICE.md`](OMNIVOICE.md).
+The UI/API must show the intended BYOK provider, model, and voice. `tts_provider: espeak` means offline fallback. Keep provider, model, voice ID, language, speed, and voice controls fixed across all beats; see [`BYOK.md`](BYOK.md) and [`TTS_OPTIONS.md`](TTS_OPTIONS.md).
 
 ### With a separate render worker
 
