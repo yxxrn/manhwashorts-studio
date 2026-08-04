@@ -60,11 +60,11 @@ def plan_motion(
     elif "thinking" in tags:
         mode, intensity, reason = "slow_push", "low", "thinking beat"
     elif "dialogue" in tags:
-        mode, intensity, reason = "hold", "low", "dialogue clarity"
+        mode, intensity, reason = "slow_push", "low", "dialogue clarity with living frame"
     elif "approach" in tags:
         mode, intensity, reason = "guided_pan", "low", "approach direction"
     else:
-        mode, intensity, reason = "static_emphasis", "low", "new information hold"
+        mode, intensity, reason = "slow_push", "low", "new information receives continuous internal motion"
     return MotionPlan(mode, intensity, reason, local_seed).validate()
 
 

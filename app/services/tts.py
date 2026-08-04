@@ -14,6 +14,8 @@ subtitles without requiring a forced aligner.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -39,6 +41,12 @@ class SpeechClip:
     voice_id: str
     provider: str
     word_timings: list[dict] = field(default_factory=list)
+    voice_profile: dict = field(default_factory=dict)
+
+    @property
+    def voice_profile_hash(self) -> str:
+        payload = json.dumps(self.voice_profile or {"provider": self.provider, "voice_id": self.voice_id}, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode()).hexdigest()
 
 
 # espeak-ng voice names keyed by our language codes.
@@ -49,6 +57,17 @@ VOICE_CATALOG: dict[str, dict[str, str]] = {
     "id-male": {"label": "Indonesian, lower pitch", "espeak": "id"},
     "ko": {"label": "Korean (espeak)", "espeak": "ko"},
 }
+
+
+def voice_profile_for(provider: str, voice_id: str, *, language: str = "en-US", model: str = "", speed: float = 1.0, sample_rate: int = 48000, channels: int = 2, **extra) -> dict:
+    """Canonical immutable identity for every clip in a render job."""
+    profile = {
+        "provider": provider, "model": model, "voice_id": voice_id,
+        "language": language, "speed": round(float(speed), 4),
+        "sample_rate": int(sample_rate), "channels": int(channels),
+        **{key: value for key, value in extra.items() if value not in (None, "")},
+    }
+    return profile
 
 
 def probe_duration(path: Path) -> float:
@@ -194,6 +213,7 @@ class EspeakProvider:
             voice_id=voice_id,
             provider=self.name,
             word_timings=estimate_word_timings(text, duration),
+            voice_profile=voice_profile_for(self.name, voice_id, language=("id" if voice_id.startswith("id") else "en-US"), model="", speed=speed, sample_rate=48000, channels=2),
         )
 
 
@@ -231,6 +251,7 @@ class NullProvider:
             voice_id=voice_id,
             provider=self.name,
             word_timings=estimate_word_timings(text, duration),
+            voice_profile=voice_profile_for(self.name, voice_id, language=("id" if voice_id.startswith("id") else "en-US"), model="", speed=speed, sample_rate=48000, channels=2),
         )
 
 
@@ -294,6 +315,7 @@ class HttpProvider:
             voice_id=voice_id,
             provider=self.name,
             word_timings=estimate_word_timings(text, duration),
+            voice_profile=voice_profile_for(self.name, voice_id, language=("id" if voice_id.startswith("id") else "en-US"), speed=speed, sample_rate=24000, channels=1),
         )
 
     def synthesize_sections(
@@ -359,7 +381,7 @@ class HttpProvider:
                     path.write_bytes(result.content)
                     self._polish(path)
                 duration = probe_duration(path)
-                clips.append(SpeechClip(path, text, duration, voice_id, self.name, estimate_word_timings(text, duration)))
+                clips.append(SpeechClip(path, text, duration, voice_id, self.name, estimate_word_timings(text, duration), voice_profile_for(self.name, voice_id, language=language, model=settings.tts_http_model, speed=speed, sample_rate=24000, channels=1, instruct=settings.tts_http_instruct, seed=settings.tts_http_seed)))
             return clips
         except Exception as exc:
             raise TTSError(f"shared-reference TTS failed: {type(exc).__name__}: {exc}") from exc
@@ -461,6 +483,7 @@ class ByokProvider:
             voice_id=voice or voice_id,
             provider=self.name,
             word_timings=estimate_word_timings(text, duration),
+            voice_profile=voice_profile_for(self.name, voice or voice_id, language="en-US", model=self._model, speed=speed),
         )
 
 
@@ -474,9 +497,12 @@ _PROVIDERS: dict[str, type] = {
 def get_provider(name: str | None = None) -> TTSProvider:
     """Return the configured provider, falling back to null if unavailable."""
     key = (name or settings.tts_provider or "espeak").lower()
-    provider = _PROVIDERS.get(key, EspeakProvider)()
+    provider_cls = _PROVIDERS.get(key)
+    if provider_cls is None:
+        raise TTSError(f"unknown TTS provider: {key}")
+    provider = provider_cls()
     if not provider.available() and key != "null":
-        return NullProvider()
+        raise TTSError(f"TTS provider unavailable: {key}")
     return provider
 
 

@@ -87,8 +87,8 @@ class Settings(BaseSettings):
         default="auto",
         description="auto | cpu | nvenc | qsv | vaapi | videotoolbox",
     )
-    subtitle_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    subtitle_font_name: str = "Anton"
+    subtitle_font: str = str(BASE_DIR / "assets" / "fonts" / "BarberChop.otf")
+    subtitle_font_name: str = "BarberChop"
     # "legacy" accepts the original {text, format} endpoint; "openai" sends
     # {input, response_format} to a generic OpenAI-compatible speech endpoint.
     tts_http_protocol: str = "legacy"

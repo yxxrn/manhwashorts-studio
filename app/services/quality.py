@@ -7,6 +7,7 @@ only gate the publish endpoint trusts.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -60,6 +61,144 @@ def check_script_approved(script: ScriptVersion | None) -> list[CheckResult]:
             )
         ]
     return [_pass("script.approved", f"Script v{script.version} approved.")]
+
+
+def check_voice_profile(segments: list) -> list[CheckResult]:
+    """One immutable provider/model/voice/format contract per render."""
+    if not segments:
+        return []
+    hashes = {str(getattr(segment, "voice_profile_hash", "")) for segment in segments}
+    profiles = [getattr(segment, "voice_profile", {}) or {} for segment in segments]
+    if "" in hashes or len(hashes) != 1:
+        return [_fail(
+            "voice.profile_changed", CheckSeverity.ERROR,
+            "Voice profile hash changed or is missing between narration chunks.",
+            {"profile_hashes": sorted(hashes)},
+        )]
+    identities = {
+        tuple(profile.get(key, "") for key in ("provider", "model", "voice_id", "language", "speed"))
+        for profile in profiles
+    }
+    formats = {
+        (profile.get("sample_rate", 0), profile.get("channels", 0))
+        for profile in profiles
+    }
+    results: list[CheckResult] = []
+    if len(identities) != 1:
+        results.append(_fail(
+            "voice.identity_changed", CheckSeverity.ERROR,
+            "Provider, model, voice, language, or speed changed between chunks.",
+            {"identities": [list(identity) for identity in sorted(identities)]},
+        ))
+    if len(formats) != 1:
+        results.append(_fail(
+            "voice.format_changed", CheckSeverity.ERROR,
+            "Sample rate or channel layout changed between narration chunks.",
+            {"formats": [list(value) for value in sorted(formats)]},
+        ))
+    for left, right in zip(segments, segments[1:], strict=False):
+        gap = round(float(right.start_time) - float(left.end_time), 3)
+        if gap < -0.01 or gap > 0.5:
+            results.append(_fail(
+                "voice.chunk_boundary_invalid", CheckSeverity.ERROR,
+                "Narration chunks contain an excessive gap or overlap.",
+                {"gap": gap, "left": left.id, "right": right.id},
+            ))
+            break
+    return results or [_pass("voice.profile_locked", "One immutable voice profile covers every chunk.")]
+
+
+def check_editorial_warnings(script: ScriptVersion | None) -> list[CheckResult]:
+    if script is None:
+        return []
+    return [
+        _fail(item.get("code", "editorial.validation"), CheckSeverity.ERROR, item.get("message", "Editorial validation failed."), item)
+        for item in (script.warnings or [])
+        if item.get("severity") == "error"
+    ]
+
+
+def check_panel_alignment(scenes: list) -> list[CheckResult]:
+    """Generated scenes carry alignment evidence; legacy/manual rows stay compatible."""
+    audited = [
+        scene for scene in scenes
+        if getattr(scene, "asset_id", None) and getattr(scene, "alignment_reasons", None)
+        and "no_candidate" not in getattr(scene, "alignment_reasons", [])
+    ]
+    if not audited:
+        return []
+    weak = [scene for scene in audited if float(getattr(scene, "alignment_score", 0.0)) < 0.15]
+    rejected = [scene for scene in audited if getattr(scene, "visual_signature", "") == "" and getattr(scene, "asset_id", None)]
+    results: list[CheckResult] = []
+    if weak:
+        results.append(_fail(
+            "panel.alignment_below_threshold", CheckSeverity.ERROR,
+            f"{len(weak)} scene(s) have insufficient panel-to-narration alignment.",
+            {"scene_ids": [scene.id for scene in weak[:20]]},
+        ))
+    if rejected:
+        results.append(_fail(
+            "panel.debug_metadata_missing", CheckSeverity.ERROR,
+            "Selected panels lack perceptual metadata required for repetition and gutter QC.",
+        ))
+    return results or [_pass("panel.alignment_ok", f"{len(audited)} scene selections carry alignment evidence.")]
+
+
+def check_repetition_and_motion(scenes: list) -> list[CheckResult]:
+    """Block dominant backgrounds, A-B-A-B loops, and unexplained static runs."""
+    if not scenes:
+        return []
+    durations = [max(0.0, float(scene.end_time) - float(scene.start_time)) for scene in scenes]
+    total = sum(durations)
+    signatures = [getattr(scene, "visual_signature", "") or getattr(scene, "asset_id", "") for scene in scenes]
+    results: list[CheckResult] = []
+    if total > 0:
+        dominance: dict[str, float] = {}
+        for signature, duration in zip(signatures, durations, strict=True):
+            if signature:
+                dominance[signature] = dominance.get(signature, 0.0) + duration
+        dominant = max(dominance.values(), default=0.0) / total
+        if dominant > 0.35 and len(dominance) > 1:
+            results.append(_fail(
+                "visual.dominant_background_over_35pct", CheckSeverity.ERROR,
+                f"One perceptual background occupies {dominant:.0%} of the timeline.",
+                {"dominant_ratio": round(dominant, 3)},
+            ))
+    for index in range(len(signatures) - 3):
+        window = signatures[index:index + 4]
+        if window[0] and window[0] == window[2] and window[1] and window[1] == window[3] and window[0] != window[1]:
+            results.append(_fail(
+                "visual.alternating_pattern", CheckSeverity.ERROR,
+                "A-B-A-B panel repetition has no documented editorial reason.",
+                {"start_scene": index, "signatures": window},
+            ))
+            break
+    static_duration = sum(duration for scene, duration in zip(scenes, durations, strict=True) if getattr(scene, "motion_mode", "hold") in {"hold", "static_emphasis"})
+    if total and static_duration / total > 0.55 and len(set(signatures)) > 1:
+        results.append(_fail(
+            "visual.static_ratio_over_55pct", CheckSeverity.ERROR,
+            f"Static/intentional-hold scenes occupy {static_duration / total:.0%} of the timeline.",
+            {"static_ratio": round(static_duration / total, 3)},
+        ))
+    return results or [_pass("visual.repetition_ok", "No dominant-background or A-B-A-B repetition detected.")]
+
+
+def check_render_qc_artifact(job: RenderJob | None) -> list[CheckResult]:
+    """The post-render editorial report is a real publish gate, not decoration."""
+    if job is None or not job.output_key:
+        return []
+    report_path = Path(job.output_key).parent / "final.qc.json"
+    if not report_path.is_file():
+        return [_fail("qc.report_missing", CheckSeverity.ERROR, "Final QC report is missing; publication is blocked.")]
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [_fail("qc.report_unreadable", CheckSeverity.ERROR, f"Final QC report cannot be read: {exc}")]
+    failures = list(report.get("failures", []))
+    if failures or report.get("publish_allowed") is not True:
+        reason = ", ".join(failures) or "publish_allowed=false"
+        return [_fail("qc.editorial_hard_gate", CheckSeverity.ERROR, f"Editorial QC report blocks publication: {reason}.", {"failures": failures})]
+    return [_pass("qc.editorial_hard_gate", "Editorial QC report allows publication.")]
 
 
 def check_audio(segments: list) -> list[CheckResult]:
@@ -287,9 +426,13 @@ def run_all(
         )
 
     results += check_script_approved(script)
+    results += check_editorial_warnings(script)
+    results += check_voice_profile(audio_segments)
     results += check_narration_language(script, project.language)
     results += check_audio(audio_segments)
     results += check_scenes(scenes, assets)
+    results += check_panel_alignment(scenes)
+    results += check_repetition_and_motion(scenes)
     results += check_subtitles(cues)
 
     effective_duration = duration if duration is not None else (job.duration if job else 0.0)
@@ -297,6 +440,7 @@ def run_all(
         results += check_duration(effective_duration, float(project.target_duration))
     if job:
         results += check_output(job)
+        results += check_render_qc_artifact(job)
 
     return results
 

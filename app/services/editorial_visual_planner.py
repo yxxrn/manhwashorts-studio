@@ -37,6 +37,10 @@ def plan(spans: Iterable[object], candidates: list[object]) -> list[dict]:
         shot["motion_intensity"] = motion.intensity
         shot["motion_reason"] = motion.reason
         shot["camera_curve"] = curve_for[motion.mode]
+        shot.setdefault("alignment_score", 0.0)
+        shot.setdefault("alignment_reasons", [])
+        shot.setdefault("rejected_candidates", [])
+        shot.setdefault("visual_signature", "")
         shot.setdefault("editorial_audit", [])
         text = beat.text.lower() if beat else ""
         if any(token in text for token in ("because", "therefore", "which means", "the reason", "this explains")):

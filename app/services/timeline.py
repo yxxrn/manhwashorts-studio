@@ -43,6 +43,10 @@ class SceneSpec:
     disabled_effects: list[str] = field(default_factory=list)
     overlay_text: str = ""
     transition: str = "fade"
+    alignment_score: float = 0.0
+    alignment_reasons: list[str] = field(default_factory=list)
+    rejected_candidates: list[dict] = field(default_factory=list)
+    visual_signature: str = ""
 
     @property
     def duration(self) -> float:
@@ -220,6 +224,21 @@ def redistribute(scenes: list[SceneSpec], total_duration: float) -> list[SceneSp
 
 # --- subtitles -------------------------------------------------------------
 
+_PUNCTUATION_ONLY = re.compile(r"^[\W_]+$", re.UNICODE)
+
+def normalize_display_text(text: str) -> str:
+    """Caption text: no terminal period, no punctuation-only cue."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    value = re.sub(r"\s+([,;:!?])", r"\1", value)
+    value = re.sub(r"[.]\s*$", "", value).strip()
+    return "" if not value or _PUNCTUATION_ONLY.fullmatch(value) else value
+
+
+def spoken_tokens(text: str) -> list[str]:
+    """Words eligible for karaoke; punctuation remains attached to words."""
+    return [token for token in re.findall(r"\S+", str(text or "")) if not _PUNCTUATION_ONLY.fullmatch(token)]
+
+
 
 def wrap_caption(text: str, max_chars: int = MAX_SUBTITLE_CHARS_PER_LINE) -> list[str]:
     """Greedy wrap into short lines that read well on a phone."""
@@ -271,7 +290,7 @@ def build_cues(
                 cues.append(
                     CueSpec(
                         order_index=order,
-                        text=chunk,
+                        text=normalize_display_text(chunk),
                         start_time=round(span.start_time + i * slice_len, 3),
                         end_time=round(span.start_time + (i + 1) * slice_len, 3),
                     )
@@ -286,7 +305,7 @@ def build_cues(
                 cues.append(
                     CueSpec(
                         order_index=order,
-                        text=" ".join(t["word"] for t in current),
+                        text=normalize_display_text(" ".join(t["word"] for t in current)),
                         start_time=current[0]["start"],
                         end_time=current[-1]["end"],
                     )
@@ -299,7 +318,7 @@ def build_cues(
             cues.append(
                 CueSpec(
                     order_index=order,
-                    text=" ".join(t["word"] for t in current),
+                    text=normalize_display_text(" ".join(t["word"] for t in current)),
                     start_time=current[0]["start"],
                     end_time=current[-1]["end"],
                 )
@@ -365,7 +384,12 @@ def validate_cues(cues: list[CueSpec], max_chars: int, max_lines: int) -> list[d
     """Warn about cues that break the readability rules."""
     warnings: list[dict] = []
     for cue in cues:
-        lines = wrap_caption(cue.text, max_chars)
+        if not normalize_display_text(cue.text):
+            warnings.append({"code": "subtitle.punctuation_only", "severity": "error", "message": f"Cue {cue.order_index + 1} contains no speakable words."})
+            continue
+        if re.search(r"(?:^|\s)[.,:;]+(?:\s|$)", cue.text):
+            warnings.append({"code": "subtitle.standalone_punctuation", "severity": "error", "message": f"Cue {cue.order_index + 1} contains standalone punctuation."})
+        lines = wrap_caption(normalize_display_text(cue.text), max_chars)
         if len(lines) > max_lines:
             warnings.append(
                 {

@@ -68,6 +68,9 @@ Fixtures are synthetic and test-only. Do not publish their output.
 
 ## Configuration
 
+Default subtitle font: `assets/fonts/BarberChop.otf`. Override with `MS_SUBTITLE_FONT`.
+
+
 All settings are optional. Important defaults:
 
 | Variable | Default | Purpose |

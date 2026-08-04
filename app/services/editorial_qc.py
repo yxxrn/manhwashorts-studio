@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from app.config import settings
+
 
 @dataclass
 class EditorialQC:
@@ -28,6 +30,10 @@ class EditorialQC:
     rights_confidence: int = 0
     source_cleanliness: int = 0
     source_families: list[str] = field(default_factory=list)
+    static_ratio: float = 0.0
+    dominant_background_ratio: float = 0.0
+    alternating_pattern_max: int = 0
+    voice_profile_count: int = 0
     ending_has_payoff: bool = False
     ending_has_visual_evidence: bool = False
     full_playback_verified: bool = False
@@ -55,7 +61,7 @@ def _shot_metrics(scenes: list[object]) -> tuple[float, float, int, float]:
             running += duration
             longest_same = max(longest_same, running)
         else:
-            running = 0.0
+            running = duration
         longest_same = max(longest_same, running)
         previous = key
     return sum(durations) / len(durations), longest_same, len(crops), sum(durations)
@@ -63,12 +69,20 @@ def _shot_metrics(scenes: list[object]) -> tuple[float, float, int, float]:
 
 def build_report(
     *, scenes: list[object], cues: list[object], duration: float, job_path: Path | None = None,
-    rights_confidence: int = 5, source_cleanliness: int = 5,
+    rights_confidence: int = 5, source_cleanliness: int = 5, voice_profile_count: int = 0, minimum_duration: float = 45.0,
 ) -> EditorialQC:
     average, longest_same, crops, total = _shot_metrics(scenes)
     frozen = _freeze_duration(job_path) if job_path and job_path.is_file() else 0.0
     single_words = sum(1 for cue in cues if len(str(cue.text).split()) == 1)
     caption_ratio = single_words / len(cues) if cues else 1.0
+    static_duration = sum(duration for scene, duration in zip(scenes, [max(0.0, s.end_time - s.start_time) for s in scenes], strict=True) if getattr(scene, "motion_mode", "hold") in {"hold", "static_emphasis"})
+    signatures = [getattr(scene, "visual_signature", "") or getattr(scene, "asset_id", "") for scene in scenes]
+    dominance = max((signatures.count(value) for value in set(signatures) if value), default=0) / max(1, len(signatures))
+    alternating = 0
+    for index in range(len(signatures) - 3):
+        window = signatures[index:index + 4]
+        if window[0] and window[0] == window[2] and window[1] and window[1] == window[3] and window[0] != window[1]:
+            alternating = max(alternating, 4)
     report = EditorialQC(
         duration=round(duration, 3),
         average_shot_duration=round(average, 3),
@@ -84,15 +98,25 @@ def build_report(
         rights_confidence=rights_confidence,
         source_cleanliness=source_cleanliness,
         source_families=sorted({getattr(s, "source_family", "") for s in scenes if getattr(s, "source_family", "")}),
+        static_ratio=round(static_duration / max(0.001, total), 3),
+        dominant_background_ratio=round(dominance, 3),
+        alternating_pattern_max=alternating,
+        voice_profile_count=voice_profile_count,
         ending_has_payoff=any(getattr(s, "section", "") == "twist" for s in scenes),
         ending_has_visual_evidence=bool(scenes and scenes[-1].asset_id),
     )
     report.audio_video_drift, report.black_frame_duration = _media_integrity(job_path, duration)
-    if duration < 60 or duration > 90:
+    if duration < minimum_duration or duration > 90:
         report.failures.append("duration_outside_60_90s")
     if not 1.2 <= average <= 2.4:
         report.failures.append("average_shot_duration_outside_1.2_2.4s")
-    if longest_same > 2.5:
+    if dominance > 0.35 and len(set(signatures)) > 1:
+        report.failures.append("dominant_background_over_35pct")
+    if alternating >= 4:
+        report.failures.append("alternating_background_pattern")
+    if static_duration / max(0.001, total) > 0.55 and len(set(signatures)) > 1:
+        report.failures.append("static_ratio_over_55pct")
+    if longest_same > 4.0:
         report.failures.append("same_panel_same_crop_over_2.5s")
     if caption_ratio >= 0.15:
         report.failures.append("single_word_caption_ratio_ge_15pct")
@@ -126,7 +150,7 @@ def build_report(
 
 def _decode_ok(path: Path) -> bool:
     try:
-        subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"], check=True, capture_output=True, timeout=600)
+        subprocess.run([settings.ffmpeg_bin, "-v", "error", "-i", str(path), "-f", "null", "-"], check=True, capture_output=True, timeout=600)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
     return True
@@ -136,7 +160,7 @@ def _freeze_duration(path: Path) -> float:
     """Return the longest FFmpeg-detected freeze interval."""
     try:
         result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-i", str(path), "-vf", "freezedetect=n=-60dB:d=0.2", "-an", "-f", "null", "-"],
+            [settings.ffmpeg_bin, "-hide_banner", "-i", str(path), "-vf", "freezedetect=n=-60dB:d=0.2", "-an", "-f", "null", "-"],
             capture_output=True, text=True, timeout=600, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -150,7 +174,7 @@ def _media_integrity(path: Path | None, expected: float) -> tuple[float, float]:
         return expected, 0.0
     try:
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json", str(path)],
+            [settings.ffprobe_bin, "-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json", str(path)],
             capture_output=True, text=True, timeout=120, check=True,
         )
         durations = {
@@ -159,7 +183,7 @@ def _media_integrity(path: Path | None, expected: float) -> tuple[float, float]:
         }
         drift = abs(durations.get("video", expected) - durations.get("audio", expected))
         black = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-i", str(path), "-vf", "blackdetect=d=0.15:pix_th=0.01", "-an", "-f", "null", "-"],
+            [settings.ffmpeg_bin, "-hide_banner", "-i", str(path), "-vf", "blackdetect=d=0.15:pix_th=0.01", "-an", "-f", "null", "-"],
             capture_output=True, text=True, timeout=600, check=False,
         )
         intervals = [float(value) for value in re.findall(r"black_duration:([0-9.]+)", black.stderr)]

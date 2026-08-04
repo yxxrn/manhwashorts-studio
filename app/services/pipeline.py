@@ -109,7 +109,7 @@ def text_sources(assets: list[SourceAsset]) -> list[tuple[int, str]]:
 def image_assets(assets: list[SourceAsset]) -> list[SourceAsset]:
     from app.constants import AssetType
 
-    return [a for a in assets if a.type == AssetType.IMAGE]
+    return [a for a in assets if a.type == AssetType.IMAGE and getattr(a, "panel_decision", "accept") != "reject"]
 
 
 # --- stage: analyse --------------------------------------------------------
@@ -319,6 +319,7 @@ def generate_script(
         word_count=draft.word_count,
         warnings=draft.warnings,
         generator=draft.generator,
+        editorial_metadata=draft.editorial,
     )
     db.add(script_row)
     project.status = ProjectStatus.REVIEW
@@ -353,6 +354,8 @@ def update_script(
                 "section": name,
                 "text": text,
                 "locked": bool(section.get("locked", False)),
+                "editorial_role": str(section.get("editorial_role", "")),
+                "evidence": list(section.get("evidence", []) or []),
                 "estimated_duration": script_svc.estimate_duration(
                     text, project.narration_style
                 ),
@@ -372,8 +375,9 @@ def update_script(
         sections=[script_svc.Section(**s) for s in cleaned],
         estimated_duration=script.estimated_duration,
         word_count=script.word_count,
+        editorial={"structure": [item.get("editorial_role", "") for item in cleaned], "evidence": [evidence for item in cleaned for evidence in item.get("evidence", [])]},
     )
-    script.warnings = script_svc.check_script(draft, float(project.target_duration))
+    script.warnings = script_svc.check_script(draft, float(project.target_duration), project.language)
 
     # Any edit invalidates a previous approval.
     script.approved_at = None
@@ -425,6 +429,11 @@ def generate_voiceover(
     provider, tts_decision = resolver_svc.resolve_tts(
         db, project.workspace_id, override=provider_name
     )
+    if provider.name != "null" and not provider.available():
+        raise PipelineError(f"selected voice provider is unavailable: {provider.name}; no fallback voice is allowed")
+    editorial_errors = [warning for warning in (script.warnings or []) if warning.get("severity") == "error"]
+    if editorial_errors:
+        raise PipelineError("editorial validation failed before TTS: " + "; ".join(item.get("message", item.get("code", "")) for item in editorial_errors[:4]))
     work = storage.workspace_dir(project_id, "audio")
 
     # Remove old segments and their files so storage does not grow unbounded.
@@ -464,16 +473,25 @@ def generate_voiceover(
         raise PipelineError(f"voice-over failed: {exc}") from exc
 
     created: list[AudioSegment] = []
-    for (index, section, _), clip in zip(prepared, clips, strict=True):
+    profile_hashes = {clip.voice_profile_hash for clip in clips}
+    if len(profile_hashes) != 1:
+        raise PipelineError("voice profile changed between chunks; refusing mixed narrator output")
+    profile_hash = next(iter(profile_hashes))
+    for (index, section, spoken), clip in zip(prepared, clips, strict=True):
         text = (section.get("text") or "").strip()
+        display_text = timeline_svc.normalize_display_text(text)
         stored = storage.put_file(f"projects/{project_id}/audio", clip.path, clip.path.name)
         segment = AudioSegment(
             script_version_id=script.id,
             section=section["section"],
             order_index=index,
             text=text,
+            spoken_text=spoken,
+            display_text=display_text,
             voice_id=requested_voice_id,
             provider=clip.provider,
+            voice_profile_hash=profile_hash,
+            voice_profile=clip.voice_profile,
             storage_key=stored.storage_key,
             duration=clip.duration,
             word_timings=clip.word_timings,
@@ -541,7 +559,7 @@ def spans_from_segments(segments: list[AudioSegment]) -> list[timeline_svc.Audio
         spans.append(
             timeline_svc.AudioSpan(
                 section=s.section,
-                text=s.text,
+                text=getattr(s, "spoken_text", "") or s.text,
                 start_time=s.start_time,
                 end_time=s.end_time,
                 word_timings=shifted,
@@ -610,6 +628,10 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             disabled_effects=shot.get("disabled_effects", []),
             overlay_text=shot.get("overlay_text", ""),
             transition=shot.get("transition", "fade" if shot["order_index"] else "none"),
+            alignment_score=shot.get("alignment_score", 0.0),
+            alignment_reasons=shot.get("alignment_reasons", []),
+            rejected_candidates=shot.get("rejected_candidates", []),
+            visual_signature=shot.get("visual_signature", ""),
         )
         for shot in planned
     ]
@@ -637,6 +659,10 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             effect=spec.effect,
             disabled_effects=spec.disabled_effects,
             transition=spec.transition,
+            alignment_score=getattr(spec, "alignment_score", 0.0),
+            alignment_reasons=getattr(spec, "alignment_reasons", []),
+            rejected_candidates=getattr(spec, "rejected_candidates", []),
+            visual_signature=getattr(spec, "visual_signature", ""),
         )
         db.add(scene)
         scenes.append(scene)
@@ -921,6 +947,10 @@ def build_render_request(db: Session, job: RenderJob):
     audio_duration = tts_svc.probe_duration(voice_path)
 
     scene_inputs: list = []
+    music_path: Path | None = None
+    audio_assets = [asset for asset in project_assets(db, job.project_id) if asset.type in {"audio", "music"} and storage.exists(asset.storage_key)]
+    if audio_assets:
+        music_path = storage.path_for(audio_assets[0].storage_key)
     profile = job.render_profile or "Auto"
     for index, scene in enumerate(scenes):
         end_time = scene.end_time
@@ -967,6 +997,8 @@ def build_render_request(db: Session, job: RenderJob):
         output_path=storage.output_path(job.project_id, filename),
         preview=job.kind == "preview",
         title_text=project.title,
+        music_path=music_path,
+        music_gain_db=-24.0,
         encoder=job.encoder_requested or None,
     )
 
@@ -1057,6 +1089,7 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
         job_path=Path(result.output_path),
         rights_confidence=rights_confidence,
         source_cleanliness=source_cleanliness,
+        voice_profile_count=len({segment.voice_profile_hash for segment in audio_segments(db, current_script(db, job.project_id).id) if segment.voice_profile_hash}),
     )
     report_dir = Path(result.output_path).parent
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -1076,6 +1109,10 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
                 "camera_curve": s.camera_curve,
                 "motion_mode": s.motion_mode,
                 "motion_reason": s.motion_reason,
+                "alignment_score": s.alignment_score,
+                "alignment_reasons": s.alignment_reasons,
+                "rejected_candidates": s.rejected_candidates,
+                "visual_signature": s.visual_signature,
             }
             for s in scenes
         ], indent=2), encoding="utf-8"
@@ -1085,7 +1122,15 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
     )
     (report_dir / "panel_to_script_mapping.json").write_text(
         json.dumps([
-            {"shot": s.order_index, "panel": s.asset_id, "section": s.section, "roi": s.roi_label}
+            {
+                "shot": s.order_index,
+                "panel": s.asset_id,
+                "section": s.section,
+                "roi": s.roi_label,
+                "alignment_score": s.alignment_score,
+                "alignment_reasons": s.alignment_reasons,
+                "rejected_candidates": s.rejected_candidates,
+            }
             for s in scenes
         ], indent=2), encoding="utf-8"
     )
@@ -1097,6 +1142,44 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
             "publishable": not source_findings and rights_confidence == 5,
         }, indent=2), encoding="utf-8"
     )
+    (report_dir / "panel_catalog.json").write_text(
+        json.dumps([
+            {
+                "asset_id": asset.id,
+                "filename": asset.original_filename,
+                "source_family": asset.source_family,
+                "order_index": asset.order_index,
+                "bbox": asset.panel_bbox,
+                "quality": asset.panel_quality,
+                "decision": asset.panel_decision,
+            }
+            for asset in assets
+            if asset.type == "image"
+        ], indent=2), encoding="utf-8"
+    )
+    # Contact sheet is a review artifact, not a publish asset.
+    try:
+        from PIL import Image, ImageDraw
+        panel_assets = [asset for asset in assets if asset.type == "image" and asset.panel_decision != "reject"]
+        thumbs = []
+        for asset in panel_assets[:24]:
+            path = storage.path_for(asset.storage_key)
+            with Image.open(path) as image:
+                thumb = image.convert("RGB")
+                thumb.thumbnail((180, 260))
+                card = Image.new("RGB", (200, 300), "white")
+                card.paste(thumb, ((200 - thumb.width) // 2, 8))
+                ImageDraw.Draw(card).text((8, 275), f"{asset.order_index}: {asset.original_filename[:24]}", fill="black")
+                thumbs.append(card)
+        if thumbs:
+            columns = 4
+            rows = (len(thumbs) + columns - 1) // columns
+            sheet = Image.new("RGB", (columns * 200, rows * 300), "#d8d8d8")
+            for index, thumb in enumerate(thumbs):
+                sheet.paste(thumb, ((index % columns) * 200, (index // columns) * 300))
+            sheet.save(report_dir / "contact_sheet.jpg", quality=88)
+    except (OSError, ValueError):
+        pass
     audit(db, "editorial.qc", "render_job", job.id, qc=qc.as_dict())
     project.status = ProjectStatus.READY if qc.qc_pass else ProjectStatus.REVIEW
     project.error_message = "" if qc.qc_pass else "; ".join(qc.failures)

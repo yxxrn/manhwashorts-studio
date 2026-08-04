@@ -183,6 +183,9 @@ class SourceAsset(Base, TimestampMixin):
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     source_family: Mapped[str] = mapped_column(String(255), default="")
     source_family_manual: Mapped[bool] = mapped_column(Boolean, default=False)
+    panel_bbox: Mapped[dict] = mapped_column(JSON, default=dict)
+    panel_quality: Mapped[dict] = mapped_column(JSON, default=dict)
+    panel_decision: Mapped[str] = mapped_column(String(20), default="accept")
 
     project: Mapped[Project] = relationship(back_populates="assets")
 
@@ -233,6 +236,7 @@ class ScriptVersion(Base, TimestampMixin):
     word_count: Mapped[int] = mapped_column(Integer, default=0)
     warnings: Mapped[list[dict]] = mapped_column(JSON, default=list)
     generator: Mapped[str] = mapped_column(String(40), default="rules")
+    editorial_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
 
     approved_by: Mapped[str] = mapped_column(String(32), default="")
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -258,9 +262,14 @@ class AudioSegment(Base, TimestampMixin):
     )
     section: Mapped[str] = mapped_column(String(20), default="")
     order_index: Mapped[int] = mapped_column(Integer, default=0)
+    # spoken_text retains punctuation for prosody; display_text is caption-safe.
     text: Mapped[str] = mapped_column(Text, default="")
+    spoken_text: Mapped[str] = mapped_column(Text, default="")
+    display_text: Mapped[str] = mapped_column(Text, default="")
     voice_id: Mapped[str] = mapped_column(String(80), default="")
     provider: Mapped[str] = mapped_column(String(40), default="")
+    voice_profile_hash: Mapped[str] = mapped_column(String(64), default="")
+    voice_profile: Mapped[dict] = mapped_column(JSON, default=dict)
     storage_key: Mapped[str] = mapped_column(String(500), default="")
     duration: Mapped[float] = mapped_column(Float, default=0.0)
     start_time: Mapped[float] = mapped_column(Float, default=0.0)
@@ -307,6 +316,10 @@ class TimelineScene(Base, TimestampMixin):
     disabled_effects: Mapped[list[str]] = mapped_column(JSON, default=list)
     overlay_text: Mapped[str] = mapped_column(Text, default="")
     transition: Mapped[str] = mapped_column(String(40), default="fade")
+    alignment_score: Mapped[float] = mapped_column(Float, default=0.0)
+    alignment_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    rejected_candidates: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    visual_signature: Mapped[str] = mapped_column(String(128), default="")
 
     project: Mapped[Project] = relationship(back_populates="scenes")
     asset: Mapped[SourceAsset | None] = relationship()

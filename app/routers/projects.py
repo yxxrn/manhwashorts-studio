@@ -282,6 +282,7 @@ async def upload_assets(
                 extracted_text=result.extracted_text,
                 width=result.width,
                 height=result.height,
+                duration=result.audio_duration,
                 source_name=rights.source_name,
                 rights_owner=rights.rights_owner,
                 license_type=rights.license_type,
@@ -292,6 +293,9 @@ async def upload_assets(
                 rights_status=rights.status,
                 order_index=next_index,
                 source_family=result.source_family,
+                panel_bbox=result.panel_bbox or {},
+                panel_quality=result.panel_quality or {},
+                panel_decision=result.panel_decision,
             )
             next_index += 1
             db.add(asset)

@@ -31,6 +31,17 @@ class Section:
     locked: bool = False
     estimated_duration: float = 0.0
     citations: list[int] = field(default_factory=list)
+    editorial_role: str = ""
+    evidence: list[dict] = field(default_factory=list)
+
+    @property
+    def spoken_text(self) -> str:
+        return self.text.strip()
+
+    @property
+    def display_text(self) -> str:
+        from app.services.timeline import normalize_display_text
+        return normalize_display_text(self.text)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -45,6 +56,7 @@ class ScriptDraft:
     word_count: int = 0
     warnings: list[dict] = field(default_factory=list)
     generator: str = "rules"
+    editorial: dict = field(default_factory=dict)
 
     @property
     def plain_text(self) -> str:
@@ -59,6 +71,7 @@ class ScriptDraft:
             "word_count": self.word_count,
             "warnings": self.warnings,
             "generator": self.generator,
+            "editorial": self.editorial,
         }
 
 
@@ -139,6 +152,15 @@ _TAIL_CUT = re.compile(
 )
 
 
+def _tokens_for_language(text: str) -> str:
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    id_words = {"yang", "dan", "dengan", "untuk", "dari", "ini", "itu", "pada", "akan", "sudah", "karena", "kemudian", "akhirnya"}
+    en_words = {"the", "and", "with", "for", "from", "this", "that", "is", "was", "he", "she", "they", "we", "but", "when", "while", "every", "one", "person", "appears", "forcing", "only", "enters", "fails"}
+    if len(words & en_words) > len(words & id_words):
+        return "en"
+    return "id"
+
+
 def summarise_clause(sentence: str, max_words: int = 14) -> str:
     """Compress a source sentence into a terse recap line.
 
@@ -154,6 +176,13 @@ def summarise_clause(sentence: str, max_words: int = 14) -> str:
     text = _OPENERS.sub("", text)
     text = _TAIL_CUT.sub("", text)
     text = text.rstrip(" .,;:")
+
+    # Preserve English function words; dropping them creates translated-sounding
+    # fragments ("hunter weak system appears"). Indonesian keeps the compact
+    # legacy path for backwards compatibility.
+    lower_text = text.lower()
+    if _tokens_for_language(lower_text) == "en":
+        return _shorten(text, max_words).rstrip(".") + ("." if text else "")
 
     words = re.findall(r"[\w'-]+|[.,!?]", text)
     kept: list[str] = []
@@ -385,7 +414,6 @@ class RulesScriptGenerator:
         seed: int | None = None,
     ) -> ScriptDraft:
         locked = locked or {}
-        rng = random.Random(seed)
         draft = ScriptDraft(generator=self.name)
         draft.hook_options = build_hooks(
             analysis, style, manhwa_title, chapter, hook_count, seed=seed, language=language
@@ -443,8 +471,21 @@ class RulesScriptGenerator:
                 }
             )
 
+        # Editorial insight separates interpretation from event recap. It is
+        # deliberately framed as an inference, not as an invented fact.
+        insight_marker = "karena itu" if language == "id" else "which means"
+        if twist_text and insight_marker not in twist_text.lower():
+            if language == "id":
+                twist_text = f"{twist_text.rstrip('.!?')}. Karena itu, kegagalan ini justru menjadi petunjuk bahwa aturannya sedang berubah."
+            else:
+                twist_text = f"{twist_text.rstrip('.!?')}. Which means this failure may be the first clue that the rules are changing."
+
         # CTA
-        cta = cta_text.strip() or rng.choice(_ID_CTA_TEMPLATES if language == "id" else _CTA_TEMPLATES)
+        cta = cta_text.strip() or (
+            f"Menurutmu apa yang akan dilakukan {_protagonist(analysis)} selanjutnya? Tulis teorimu di komentar."
+            if language == "id"
+            else f"What will {_protagonist(analysis)} do next? Tell us your theory in the comments."
+        )
 
         raw = {
             ScriptSection.HOOK: (hook_text, cited()),
@@ -459,6 +500,8 @@ class RulesScriptGenerator:
                 kept = locked[section.value]
                 kept.locked = True
                 kept.estimated_duration = estimate_duration(kept.text, style)
+                kept.editorial_role = kept.editorial_role or section.value
+                kept.evidence = kept.evidence or ([{"claim": kept.text, "evidence_refs": [f"source_{ref}" for ref in kept.citations], "confidence": 0.7}] if kept.citations else [])
                 draft.sections.append(kept)
                 continue
 
@@ -466,6 +509,16 @@ class RulesScriptGenerator:
             text = _strip_spoiler(text, spoiler_level) if section != ScriptSection.CTA else text
             budget = budget_for(section.value, target_seconds)
             text = _trim_to_seconds(text.strip(), budget, style)
+            role = {
+                ScriptSection.HOOK.value: "hook",
+                ScriptSection.SETUP.value: "setup",
+                ScriptSection.CONFLICT.value: "escalation",
+                ScriptSection.TWIST.value: "editorial_insight",
+                ScriptSection.CTA.value: "payoff_open_loop",
+            }[section.value]
+            evidence = []
+            if citations:
+                evidence = [{"claim": text, "evidence_refs": [f"source_{ref}" for ref in citations], "confidence": 0.72}]
             draft.sections.append(
                 Section(
                     section=section.value,
@@ -473,16 +526,70 @@ class RulesScriptGenerator:
                     locked=False,
                     estimated_duration=estimate_duration(text, style),
                     citations=citations,
+                    editorial_role=role,
+                    evidence=evidence,
                 )
             )
 
+        draft.editorial = {
+            "structure": [s.editorial_role for s in draft.sections],
+            "evidence": [evidence for section in draft.sections for evidence in section.evidence],
+            "language": language,
+            "facts_vs_interpretation": {"fact_sections": ["setup", "conflict"], "interpretation_sections": ["twist"]},
+        }
         draft.estimated_duration = round(sum(s.estimated_duration for s in draft.sections), 2)
         draft.word_count = word_count(draft.plain_text)
-        draft.warnings.extend(check_script(draft, target_seconds))
+        draft.warnings.extend(check_script(draft, target_seconds, language))
         return draft
 
 
-def check_script(draft: ScriptDraft, target_seconds: float) -> list[dict]:
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part.strip()]
+
+
+def validate_editorial(draft: ScriptDraft, language: str = "en") -> list[dict]:
+    """Validate story value before TTS; deterministic, conservative, auditable."""
+    findings: list[dict] = []
+    sections = {section.section: section for section in draft.sections}
+    required = ("hook", "setup", "conflict", "twist", "cta")
+    for name in required:
+        if not sections.get(name) or not sections[name].spoken_text:
+            findings.append({"code": f"editorial.missing_{name}", "severity": "error", "message": f"Missing editorial section: {name}."})
+    if not sections:
+        return findings
+    all_text = " ".join(section.spoken_text for section in draft.sections)
+    sentences = _sentences(all_text)
+    if any(len(re.findall(r"\b[\w'-]+\b", sentence)) < 3 for sentence in sentences):
+        findings.append({"code": "editorial.sentence_fragment", "severity": "error", "message": "Narration contains a sentence fragment."})
+    normalized = [re.sub(r"[^a-z0-9]+", " ", sentence.lower()).strip() for sentence in sentences]
+    if len(normalized) != len(set(normalized)):
+        findings.append({"code": "editorial.repeated_sentence", "severity": "error", "message": "Narration repeats a sentence."})
+    words = re.findall(r"\b[\w'-]+\b", all_text.lower())
+    if len(words) >= 12:
+        trigrams = [" ".join(words[i:i + 3]) for i in range(len(words) - 2)]
+        if len(trigrams) != len(set(trigrams)):
+            findings.append({"code": "editorial.repeated_phrase", "severity": "error", "message": "Narration repeats a three-word phrase."})
+    from app.services.editorial_timing import language_consistency
+    language_finding = language_consistency(all_text, language)
+    if not language_finding["passed"]:
+        findings.append({"code": "editorial.code_switch", "severity": "error", "message": "Narration switches language unexpectedly.", "detail": language_finding})
+    insight = sections.get("twist", Section("twist", "")).spoken_text.lower()
+    insight_words = ("because", "which means", "the reason", "this explains", "consequence", "not just", "why", "karena", "artinya", "alasan", "bukan sekadar")
+    if not any(marker in insight for marker in insight_words):
+        findings.append({"code": "editorial.insight_missing", "severity": "error", "message": "Editorial insight/interpretation is missing from the twist beat."})
+    if sections.get("hook") and sections["hook"].spoken_text.lower() == sections.get("setup", Section("setup", "")).spoken_text.lower():
+        findings.append({"code": "editorial.hook_repeats_setup", "severity": "error", "message": "Hook repeats setup instead of creating a question or contradiction."})
+    cta = sections.get("cta", Section("cta", "")).spoken_text.lower()
+    context_words = set(re.findall(r"\b[\w'-]+\b", " ".join(item.spoken_text for item in draft.sections if item.section != "cta").lower()))
+    if not (set(re.findall(r"\b[\w'-]+\b", cta)) & context_words):
+        findings.append({"code": "editorial.cta_context_missing", "severity": "error", "message": "CTA has no vocabulary tied to the story conflict."})
+    if not any(section.evidence for section in draft.sections if section.section in {"setup", "conflict", "twist"}):
+        findings.append({"code": "editorial.evidence_missing", "severity": "error", "message": "Editorial sections have no auditable evidence references."})
+    return findings
+
+
+def check_script(draft: ScriptDraft, target_seconds: float, language: str = "en") -> list[dict]:
     """Non-policy script warnings: length, repetition, empty beats."""
     warnings: list[dict] = []
 
@@ -532,6 +639,7 @@ def check_script(draft: ScriptDraft, target_seconds: float) -> list[dict]:
                     }
                 )
             seen.setdefault(key, s.section)
+    warnings.extend(validate_editorial(draft, language))
     return warnings
 
 

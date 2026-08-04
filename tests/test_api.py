@@ -97,6 +97,8 @@ def _make_project(client, **overrides) -> str:
         "manhwa_title": "Judul Uji",
         "chapter": "1",
         "target_duration": 60,
+        "language": "id",
+        "voice_id": "id",
     }
     payload.update(overrides)
     response = client.post("/api/projects", json=payload)

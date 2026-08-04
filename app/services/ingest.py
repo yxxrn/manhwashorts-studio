@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import io
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageFilter, UnidentifiedImageError
 
 from app.config import settings
 from app.constants import AssetType, LicenseType, RightsStatus
@@ -63,6 +64,10 @@ class IngestedAsset:
     width: int = 0
     height: int = 0
     source_family: str = ""
+    panel_bbox: dict = None
+    panel_quality: dict = None
+    panel_decision: str = "accept"
+    audio_duration: float = 0.0
 
 
 _SLICE_SUFFIX = re.compile(r"(?:[_-]p?\d+)$", re.IGNORECASE)
@@ -74,7 +79,7 @@ def derive_source_family(filename: str) -> str:
     if not value:
         return "unknown"
     path = Path(value)
-    stem = _SLICE_SUFFIX.sub("", path.stem) or path.stem or "unknown"
+    stem = (_SLICE_SUFFIX.sub("", path.stem).rstrip("_-") or path.stem or "unknown")
     parent = "/".join(part for part in path.parts[:-1] if part not in {"", "."})
     return f"{parent}/{stem}" if parent else stem
 
@@ -154,6 +159,28 @@ def _check_size(data: bytes) -> None:
         )
 
 
+def _panel_quality(data: bytes) -> dict:
+    """Cheap CPU-only panel quality metadata; rejects blank connector strips."""
+    with Image.open(io.BytesIO(data)) as image:
+        gray = image.convert("L").resize((96, 96), Image.Resampling.BILINEAR)
+        pixels = list(gray.getdata())
+        blank = sum(pixel >= 245 or pixel <= 10 for pixel in pixels) / max(1, len(pixels))
+        edges = gray.filter(ImageFilter.FIND_EDGES)
+        edge_density = sum(pixel > 35 for pixel in edges.getdata()) / max(1, len(pixels))
+        width, height = image.size
+    decision = "reject" if blank >= 0.94 or (edge_density < 0.008 and blank >= 0.82) else "accept"
+    return {
+        "bbox": {"x": 0, "y": 0, "width": width, "height": height},
+        "content_coverage": round(1.0 - blank, 4),
+        "blank_ratio": round(blank, 4),
+        "edge_density": round(edge_density, 4),
+        "aspect_ratio": round(width / max(1, height), 4),
+        "ocr_regions": [],
+        "decision": decision,
+        "reason": "blank/gutter-like candidate" if decision == "reject" else "content-bearing panel",
+    }
+
+
 def _sniff_image(data: bytes) -> tuple[str, int, int]:
     """Verify the bytes really are an image and return (mime, w, h).
 
@@ -214,10 +241,42 @@ def ingest_document(project_id: str, filename: str, mime_type: str, data: bytes)
     )
 
 
+def ingest_audio(project_id: str, filename: str, mime_type: str, data: bytes) -> IngestedAsset:
+    """Store a user-provided ambience/music asset after media validation."""
+    _check_size(data)
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".wav", ".mp3", ".ogg", ".m4a", ".flac"}:
+        raise IngestError("unsupported audio format; use WAV, MP3, OGG, M4A, or FLAC")
+    obj = storage.put_bytes(f"projects/{project_id}/audio-assets", filename, data)
+    duration = 0.0
+    try:
+        result = subprocess.run(
+            [settings.ffprobe_bin, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(storage.path_for(obj.storage_key))],
+            capture_output=True, text=True, timeout=60, check=True,
+        )
+        duration = float(result.stdout.strip() or 0.0)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
+        storage.delete(obj.storage_key)
+        raise IngestError(f"audio validation failed: {type(exc).__name__}") from exc
+    if duration <= 0.1:
+        storage.delete(obj.storage_key)
+        raise IngestError("audio has no usable duration")
+    return IngestedAsset(
+        type=AssetType.MUSIC,
+        original_filename=filename,
+        mime_type=mime_type or "audio/wav",
+        storage_key=obj.storage_key,
+        size_bytes=obj.size_bytes,
+        checksum=obj.checksum,
+        audio_duration=round(duration, 3),
+    )
+
+
 def ingest_image(project_id: str, filename: str, data: bytes) -> IngestedAsset:
     _check_size(data)
     mime, width, height = _sniff_image(data)
     obj = storage.put_bytes(f"projects/{project_id}/images", filename, data)
+    quality = _panel_quality(data)
     return IngestedAsset(
         type=AssetType.IMAGE,
         original_filename=filename,
@@ -228,6 +287,7 @@ def ingest_image(project_id: str, filename: str, data: bytes) -> IngestedAsset:
         width=width,
         height=height,
         source_family=derive_source_family(filename),
+        panel_bbox=quality["bbox"], panel_quality=quality, panel_decision=quality["decision"],
     )
 
 
@@ -266,6 +326,8 @@ def ingest_image_parts(project_id: str, filename: str, data: bytes) -> list[Inge
         part_name = f"{stem}_p{number:02d}{suffix}"
         mime, width, height = _sniff_image(piece.data)
         obj = storage.put_bytes(f"projects/{project_id}/images", part_name, piece.data)
+        quality = _panel_quality(piece.data)
+        quality["bbox"] = {"x": 0, "y": piece.top, "width": width, "height": height}
         assets.append(
             IngestedAsset(
                 type=AssetType.IMAGE,
@@ -277,6 +339,10 @@ def ingest_image_parts(project_id: str, filename: str, data: bytes) -> list[Inge
                 width=width,
                 height=height,
                 source_family=derive_source_family(filename),
+                panel_bbox=quality["bbox"],
+                panel_quality=quality,
+                panel_decision=quality["decision"],
+                audio_duration=0.0,
             )
         )
     return assets
@@ -284,6 +350,10 @@ def ingest_image_parts(project_id: str, filename: str, data: bytes) -> list[Inge
 
 def _is_image(suffix: str, mime_type: str) -> bool:
     return suffix in {".jpg", ".jpeg", ".png", ".webp"} or mime_type.startswith("image/")
+
+
+def _is_audio(suffix: str, mime_type: str) -> bool:
+    return suffix in {".wav", ".mp3", ".ogg", ".m4a", ".flac"} or mime_type.startswith("audio/")
 
 
 def _is_document(suffix: str, mime_type: str) -> bool:
@@ -294,7 +364,7 @@ def _is_document(suffix: str, mime_type: str) -> bool:
 
 def _unsupported(filename: str) -> IngestError:
     return IngestError(
-        f"unsupported file type: {filename}. Accepted: JPG, PNG, WebP, TXT, MD, PDF, DOCX"
+        f"unsupported file type: {filename}. Accepted: JPG, PNG, WebP, WAV, MP3, OGG, M4A, FLAC, TXT, MD, PDF, DOCX"
     )
 
 
@@ -307,6 +377,8 @@ def ingest_upload(project_id: str, filename: str, mime_type: str, data: bytes) -
     suffix = Path(filename).suffix.lower()
     if _is_image(suffix, mime_type):
         return ingest_image(project_id, filename, data)
+    if _is_audio(suffix, mime_type):
+        return ingest_audio(project_id, filename, mime_type, data)
     if _is_document(suffix, mime_type):
         return ingest_document(project_id, filename, mime_type, data)
     raise _unsupported(filename)
@@ -324,6 +396,8 @@ def ingest_upload_parts(
     suffix = Path(filename).suffix.lower()
     if _is_image(suffix, mime_type):
         return ingest_image_parts(project_id, filename, data)
+    if _is_audio(suffix, mime_type):
+        return [ingest_audio(project_id, filename, mime_type, data)]
     if _is_document(suffix, mime_type):
         return [ingest_document(project_id, filename, mime_type, data)]
     raise _unsupported(filename)

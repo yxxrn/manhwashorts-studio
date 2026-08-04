@@ -704,9 +704,11 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         burned = work / "burned.mp4"
         # libass draws on CPU frames, so the hardware upload (if any) has to come
         # after the subtitles filter rather than before it.
-        burn_vf = encoders.apply_filter_suffix(
-            selection, f"subtitles='{_escape_filter_path(ass_path)}'"
-        )
+        subtitle_filter = f"subtitles='{_escape_filter_path(ass_path)}'"
+        font_path = Path(settings.subtitle_font)
+        if font_path.is_file():
+            subtitle_filter += f":fontsdir='{_escape_filter_path(font_path.parent)}'"
+        burn_vf = encoders.apply_filter_suffix(selection, subtitle_filter)
         _run(
             [
                 settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",

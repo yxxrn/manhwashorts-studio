@@ -39,6 +39,10 @@ class ShotPlan:
     transition: str
     visual_score: float = 0.0
     semantic_score: float = 0.0
+    alignment_score: float = 0.0
+    alignment_reasons: tuple[str, ...] = ()
+    rejected_candidates: tuple[dict, ...] = ()
+    visual_signature: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -118,7 +122,7 @@ def _directed_curve(
         return "static"
     # Human rhythm: one expressive move, then let new information land.
     if intent in {"neutral", "dialogue"}:
-        return "static"
+        return "slow_push_in"
     if intent in {"action", "attack"} and index % 3 == 2:
         return "static"
     if intent == "reveal" and index % 2:
@@ -477,6 +481,30 @@ def plan_shots(
                     ),
                     visual_score=candidate.visual_score if candidate else 0.0,
                     semantic_score=candidate.semantic_score if candidate else 0.0,
+                    alignment_score=(
+                        round(
+                            max(
+                                0.25,
+                                min(
+                                    1.0,
+                                    (candidate.visual_score + candidate.semantic_score)
+                                    / max(
+                                        0.001,
+                                        max(
+                                            other.visual_score + visual_scoring.semantic_score(other, span.text)
+                                            for other in candidates
+                                        ),
+                                    ),
+                                ),
+                            ),
+                            3,
+                        )
+                        if candidate
+                        else 0.0
+                    ),
+                    alignment_reasons=tuple(visual_scoring.selection_reasons(candidate, span.text)) if candidate else (),
+                    rejected_candidates=tuple({"panel_id": other.asset_id, "reason": "lower_alignment_score"} for other in candidates if candidate and other.asset_id != candidate.asset_id and (other.visual_score + other.semantic_score) < (candidate.visual_score + candidate.semantic_score))[:8],
+                    visual_signature=candidate.features.visual_signature if candidate else "",
                 )
             )
             previous_focus = (next_roi.x, next_roi.y)

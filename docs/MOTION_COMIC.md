@@ -79,7 +79,7 @@ Persisted artifacts:
 
 ```text
 final.qc.json · shot_list.json · subtitle_list.json
-panel_to_script_mapping.json · source_rights_report.json · checksum
+panel_to_script_mapping.json · panel_catalog.json · contact_sheet.jpg · source_rights_report.json · checksum
 ```
 
 Blocking checks include:

@@ -315,7 +315,9 @@ def test_publish_dry_run_writes_receipt_and_no_fabricated_stats(db, recap_text):
     from app.services import pipeline as pl
     from app.services import publish as publish_svc
 
-    project_id = _seed_project(db, recap_text)
+    # Use a larger visual fixture so the new same-panel hard gate is exercised
+    # by a production-shaped timeline rather than a four-panel compatibility set.
+    project_id = _seed_project(db, recap_text, panel_count=8)
     pl.generate_draft(db, project_id, seed=42)
     script = pl.current_script(db, project_id)
     pl.approve_script(db, script.id, actor_id="test")

@@ -114,6 +114,39 @@ def init_db() -> None:
             }.items():
                 if name not in asset_columns:
                     connection.exec_driver_sql(f"ALTER TABLE source_assets ADD COLUMN {name} {definition}")
+            scene_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(timeline_scenes)")}
+            for name, definition in {
+                "alignment_score": "FLOAT NOT NULL DEFAULT 0",
+                "alignment_reasons": "JSON NOT NULL DEFAULT '[]'",
+                "rejected_candidates": "JSON NOT NULL DEFAULT '[]'",
+                "visual_signature": "VARCHAR(128) NOT NULL DEFAULT ''",
+            }.items():
+                if name not in scene_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE timeline_scenes ADD COLUMN {name} {definition}")
+
+            asset_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(source_assets)")}
+            for name, definition in {
+                "panel_bbox": "JSON NOT NULL DEFAULT '{}'",
+                "panel_quality": "JSON NOT NULL DEFAULT '{}'",
+                "panel_decision": "VARCHAR(20) NOT NULL DEFAULT 'accept'",
+            }.items():
+                if name not in asset_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE source_assets ADD COLUMN {name} {definition}")
+
+            script_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(script_versions)")}
+            if "editorial_metadata" not in script_columns:
+                connection.exec_driver_sql("ALTER TABLE script_versions ADD COLUMN editorial_metadata JSON NOT NULL DEFAULT '{}'")
+
+            audio_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(audio_segments)")}
+            for name, definition in {
+                "spoken_text": "TEXT NOT NULL DEFAULT ''",
+                "display_text": "TEXT NOT NULL DEFAULT ''",
+                "voice_profile_hash": "VARCHAR(64) NOT NULL DEFAULT ''",
+                "voice_profile": "JSON NOT NULL DEFAULT '{}'",
+            }.items():
+                if name not in audio_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE audio_segments ADD COLUMN {name} {definition}")
+
             job_columns = {
                 row[1] for row in connection.exec_driver_sql("PRAGMA table_info(render_jobs)")
             }

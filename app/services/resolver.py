@@ -173,13 +173,9 @@ def resolve_tts(
         try:
             api_key = cred_svc.reveal_secret(row)
         except cred_svc.CredentialError as exc:
-            fallback = Resolution(
-                source="local",
-                provider="espeak",
-                label="espeak-ng",
-                reason=f"stored {row.label} key could not be read ({exc}); used espeak",
-            )
-            return tts_svc.get_provider("espeak"), fallback
+            raise tts_svc.TTSError(
+                f"stored {row.label} voice credential could not be read; no fallback voice is allowed"
+            ) from exc
 
         cred_svc.mark_used(db, row)
         provider = tts_svc.ByokProvider(

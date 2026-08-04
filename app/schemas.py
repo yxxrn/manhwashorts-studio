@@ -145,6 +145,7 @@ class AssetOut(BaseModel):
     checksum: str
     width: int
     height: int
+    duration: float = 0.0
     source_name: str
     rights_owner: str
     license_type: str
@@ -153,6 +154,9 @@ class AssetOut(BaseModel):
     order_index: int
     source_family: str
     source_family_manual: bool
+    panel_bbox: dict = Field(default_factory=dict)
+    panel_quality: dict = Field(default_factory=dict)
+    panel_decision: str = "accept"
     created_at: datetime
 
 
@@ -224,6 +228,7 @@ class ScriptOut(BaseModel):
     word_count: int
     warnings: list[dict]
     generator: str
+    editorial_metadata: dict = Field(default_factory=dict)
     approved_by: str
     approved_at: datetime | None
 
@@ -243,8 +248,12 @@ class AudioSegmentOut(BaseModel):
     section: str
     order_index: int
     text: str
+    spoken_text: str = ""
+    display_text: str = ""
     voice_id: str
     provider: str
+    voice_profile_hash: str = ""
+    voice_profile: dict = Field(default_factory=dict)
     duration: float
     start_time: float
     end_time: float

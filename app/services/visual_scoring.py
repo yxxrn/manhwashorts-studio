@@ -307,6 +307,20 @@ def select_panel(candidates: list[PanelCandidate], narration: str, previous_orde
     return best
 
 
+def selection_reasons(candidate: PanelCandidate, narration: str) -> list[str]:
+    """Deterministic reason codes explaining why a panel fits a beat."""
+    tags = narration_tags(narration)
+    reasons = [f"source_order:{candidate.order_index}", f"visual_score:{candidate.visual_score:.3f}"]
+    if candidate.source_family:
+        reasons.append(f"source_family:{candidate.source_family}")
+    for tag, value in (("action", candidate.features.action_pose), ("face", candidate.features.face_visibility), ("weapon", candidate.features.weapons), ("monster", candidate.features.monsters), ("effect", candidate.features.visual_effects), ("reveal", candidate.features.close_up)):
+        if tag in tags and value > 0.15:
+            reasons.append(f"{tag}_match:{value:.3f}")
+    if candidate.features.ocr_text:
+        reasons.append("ocr_text_available")
+    return reasons
+
+
 def camera_effect(narration: str, index: int) -> str:
     tags = narration_tags(narration)
     if "explosion" in tags:
@@ -370,7 +384,7 @@ def tune_weights(**changes: float) -> PanelScoreWeights:
     return PanelScoreWeights(**values)
 
 
-__all__ = ["PanelCandidate", "PanelScoreWeights", "VisualFeatures", "analyze_assets", "analyze_panel", "camera_effect", "diversity_penalty", "narration_tags", "planned_focus", "plan_content_aware_scenes", "score_breakdown", "select_panel", "tune_weights"]
+__all__ = ["PanelCandidate", "PanelScoreWeights", "VisualFeatures", "analyze_assets", "analyze_panel", "camera_effect", "diversity_penalty", "narration_tags", "planned_focus", "plan_content_aware_scenes", "score_breakdown", "select_panel", "selection_reasons", "tune_weights"]
 
 # ponytail: heuristic CV ceiling; upgrade to a local vision encoder when GPU
 # inference is available, preserving this feature schema as the adapter boundary.
