@@ -35,6 +35,7 @@ Create these interfaces before wiring callers. Keep field names stable across pe
 
     from dataclasses import dataclass
     from typing import Any, Literal, Mapping, Protocol, Sequence
+    from sqlalchemy.orm import Session
 
     @dataclass(frozen=True)
     class SourceAssetInput:
@@ -87,9 +88,9 @@ Create these interfaces before wiring callers. Keep field names stable across pe
 
 PanelRegion observations and evidence references use persisted IDs, never image filenames or transient list positions.
 
-## Task 1: Establish failing lineage and no-sampling tests
+### Task 1: Establish failing lineage and no-sampling tests
 
-Files:
+**Files:**
 - Add tests/test_vision_coverage.py.
 - Add tests/fixtures/vision_coverage.py.
 - Do not change production code until the red assertions are observed.
@@ -110,9 +111,9 @@ Files:
     git diff --cached --check
     git commit -m "test: define complete vision coverage lineage"
 
-## Task 2: Add the focused persistence boundary and migration
+### Task 2: Add the focused persistence boundary and migration
 
-Files:
+**Files:**
 - Modify app/models.py.
 - Add alembic/versions/b7c4d8e91f20_add_vision_coverage_boundary.py.
 - Add tests/test_vision_migration.py.
@@ -145,9 +146,9 @@ Extend SourceAsset with original_checksum, original_width, original_height, sour
     git diff --cached --check
     git commit -m "feat: persist vision coverage lineage"
 
-## Task 3: Implement deterministic source-space segmentation and reconciliation
+### Task 3: Implement deterministic source-space segmentation and reconciliation
 
-Files:
+**Files:**
 - Add app/services/segmentation.py.
 - Modify app/services/strips.py to return lineage metadata without discarding original bounds.
 - Modify app/services/ingest.py to persist parent checksum, dimensions, and source bounds for derived assets.
@@ -240,9 +241,9 @@ Implement these public records and functions:
     git diff --cached --check
     git commit -m "feat: map every source region before vision"
 
-## Task 4: Add the vision adapter and explicit capability failures
+### Task 4: Add the vision adapter and explicit capability failures
 
-Files:
+**Files:**
 - Add app/services/vision_adapter.py.
 - Add tests/mock_provider.py.
 - Add tests/test_vision_adapter.py.
@@ -280,9 +281,9 @@ Implement:
     git diff --cached --check
     git commit -m "feat: add fail-closed vision adapter"
 
-## Task 5: Add the versioned analyzer instruction contract
+### Task 5: Add the versioned analyzer instruction contract
 
-Files:
+**Files:**
 - Add app/prompts/vision_first_story_analyzer_v1.txt.
 - Add app/services/analyzer_contract.py.
 - Add tests/test_analyzer_contract.py.
@@ -329,9 +330,9 @@ The prompt resource is the exact persisted instruction input. It must require:
     git diff --cached --check
     git commit -m "feat: version the vision story instruction contract"
 
-## Task 6: Refactor resolver to expose only vision-first capability
+### Task 6: Refactor resolver to expose only vision-first capability
 
-Files:
+**Files:**
 - Modify app/services/resolver.py.
 - Add tests/test_resolver_vision.py.
 - Preserve existing TTS resolution for Plan 2.
@@ -357,9 +358,9 @@ Files:
     git diff --cached --check
     git commit -m "feat: resolve vision capability without fallback"
 
-## Task 7: Make analysis consume complete ordered vision evidence
+### Task 7: Make analysis consume complete ordered vision evidence
 
-Files:
+**Files:**
 - Modify app/services/pipeline.py.
 - Add tests/test_vision_pipeline.py.
 - Add tests/test_story_evidence.py.
@@ -441,9 +442,9 @@ Required signatures:
     git diff --cached --check
     git commit -m "feat: run analysis from reconciled vision evidence"
 
-## Task 8: Gate scripts and expose auditable analysis status
+### Task 8: Gate scripts and expose auditable analysis status
 
-Files:
+**Files:**
 - Modify the script-generation boundary in app/services/pipeline.py.
 - Modify app/routers/pipeline.py and app/schemas.py.
 - Add tests/test_script_evidence_gate.py.
@@ -487,7 +488,7 @@ Required behavior:
     git diff --cached --check
     git commit -m "feat: gate scripts on auditable vision evidence"
 
-## Task 9: Verify Plan 1 and stop for review
+### Task 9: Verify Plan 1 and stop for review
 
 - [ ] Run the complete focused suite:
 

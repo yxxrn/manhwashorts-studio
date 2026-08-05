@@ -22,18 +22,20 @@
 ## Dependencies and Ownership
 
 - Plan 1 must be reviewed and green first. Plan 2 consumes StoryAnalysis state, script passages, and evidence IDs but does not alter their meaning.
-- Plan 2 owns app/services/timeline.py, app/services/tts.py call-site changes only, app/services/voice_auditions.py, app/services/voice_profiles.py, the VoiceProfile model addition after Plan 1s model commit, one VoiceProfile migration, related API schema/router/UI hooks, and subtitle/voice tests.
+- Plan 2 owns app/services/timeline.py, app/services/tts.py call-site changes only, app/services/voice_auditions.py, app/services/voice_profiles.py, the VoiceProfile model addition after Plan 1's model commit, one VoiceProfile migration, related API schema/router/UI hooks, and subtitle/voice tests.
 - Plan 3 owns motion files and cannot be changed by Plan 2.
 - Plan 4 owns final cross-subsystem gate orchestration and rollout docs. It calls the profile gate exposed here.
 - The sequential model ownership boundary is explicit: Plan 1 finishes its StoryAnalysis and PanelRegion migration first; Plan 2 then extends app/models.py with VoiceProfile in its own commit.
 
 ## Stable Interfaces
 
-Implement these interfaces before wiring all callers.
+Implement these interfaces before wiring all callers. VoiceProfile is defined by Task 3; this import becomes valid after the Task 3 migration is applied.
 
     from dataclasses import dataclass
     from pathlib import Path
     from typing import Mapping, Sequence
+    from sqlalchemy.orm import Session
+    from app.models import VoiceProfile
 
     @dataclass(frozen=True)
     class TimedWord:
@@ -96,15 +98,18 @@ Implement these interfaces before wiring all callers.
 
 The profile gate returns a stable machine-readable reason such as voice_profile_missing or voice_profile_invalidated.
 
-## Task 1: Define failing Unicode and timing tests
+### Task 1: Define failing Unicode and timing tests
 
-Files:
+**Files:**
 - Add tests/test_subtitle_unicode.py.
 - Add tests/test_subtitle_timing_map.py.
 - Extend existing subtitle/timeline fixtures only with small source-controlled data.
 
 - [ ] Add examples for commas, curly quotes, contractions, em dashes, hyphens, Unicode ellipsis, and non-ASCII punctuation.
-- [ ] Assert this transformation exactly: spoken text He said, Well-knowndont panic. produces display text He said Wellknown dont panic.
+- [ ] Keep separate Unicode delimiter tests using Python escapes: em dash \u2014 and curly quotes \u201c and \u201d.
+- [ ] Assert this transformation exactly:
+  spoken: He said, "Well-known - don't panic."
+  display: He said Wellknown dont panic
 - [ ] Assert punctuation removal uses unicodedata.category(character).startswith("P") for all Unicode punctuation categories, not a small ASCII replacement list.
 - [ ] Assert each display word maps to one source word index and keeps the original start/end timing. A deleted punctuation character must never shift a word boundary.
 - [ ] Assert TTS payload tests retain the original punctuation while subtitle payload tests receive display_text.
@@ -120,9 +125,9 @@ Files:
     git diff --cached --check
     git commit -m "test: define punctuation-free subtitle contract"
 
-## Task 2: Implement spoken/display text separation through timeline and export
+### Task 2: Implement spoken/display text separation through timeline and export
 
-Files:
+**Files:**
 - Modify app/services/timeline.py.
 - Modify the subtitle assembly path in app/services/render.py.
 - Modify the current SRT/ASS/export schema path identified by existing imports.
@@ -179,10 +184,10 @@ Use a single transform at the timeline boundary:
     git diff --cached --check
     git commit -m "feat: separate spoken and display subtitle text"
 
-## Task 3: Persist immutable workspace-scoped VoiceProfile
+### Task 3: Persist immutable workspace-scoped VoiceProfile
 
-Files:
-- After Plan 1s model commit, modify app/models.py to add VoiceProfile.
+**Files:**
+- After Plan 1's model commit, modify app/models.py to add VoiceProfile.
 - Add alembic/versions/c8d2f1a4b7e9_add_voice_profiles.py.
 - Add app/services/voice_profiles.py.
 - Add tests/test_voice_profile_persistence.py and tests/test_voice_profile_migration.py.
@@ -241,9 +246,9 @@ The immutable content hash covers canonical candidate ID, provider type, voice I
     git diff --cached --check
     git commit -m "feat: persist immutable voice profiles"
 
-## Task 4: Build the four-audition lifecycle through OmniVoice
+### Task 4: Build the four-audition lifecycle through OmniVoice
 
-Files:
+**Files:**
 - Add app/services/voice_auditions.py.
 - Add tests/test_voice_auditions.py.
 - Add tests/test_voice_audition_manifest.py.
@@ -310,9 +315,9 @@ Required service boundary:
     git diff --cached --check
     git commit -m "feat: add reusable voice audition lifecycle"
 
-## Task 5: Enforce selection, reuse, invalidation, and final-render blocking
+### Task 5: Enforce selection, reuse, invalidation, and final-render blocking
 
-Files:
+**Files:**
 - Modify app/services/voice_profiles.py.
 - Modify the final-render preflight boundary in app/services/render.py or the existing render gate module.
 - Add tests/test_voice_profile_gate.py.
@@ -357,7 +362,7 @@ Implement:
     git diff --cached --check
     git commit -m "feat: block final render without selected voice"
 
-## Task 6: Verify Plan 2 and stop for user voice choice
+### Task 6: Verify Plan 2 and stop for user voice choice
 
 - [ ] Run the focused subtitle and voice suite:
 

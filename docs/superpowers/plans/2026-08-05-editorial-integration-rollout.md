@@ -4,14 +4,14 @@
 
 **Goal:** Integrate the approved vision, subtitle/voice, motion, render-QC, and rights gates into one auditable editorial workflow with explicit state, feature flags, review stop points, and a safe rollback path.
 
-**Architecture:** Consume the stable contracts from Plans 13. Add one cross-subsystem gate evaluator, expose status through the existing API/UI, keep legacy behavior available only as an explicitly named workflow, and treat rights/source as the final hard blocker. Use p0-real3 only as rights-blocked review material; never claim publication success without a rights-cleared source report.
+**Architecture:** Consume the stable contracts from Plans 1-3. Add one cross-subsystem gate evaluator, expose status through the existing API/UI, keep legacy behavior available only as an explicitly named workflow, and treat rights/source as the final hard blocker. Use p0-real3 only as rights-blocked review material; never claim publication success without a rights-cleared source report.
 
 **Tech Stack:** Existing app/config.py, app/services/pipeline.py, app/services/render.py gate boundaries, existing API routers/schemas/templates/static assets, pytest, slow FFmpeg tests, Ruff, compileall, and the current documentation set.
 
 ## Global Constraints
 
 - Implement docs/superpowers/specs/2026-08-05-vision-first-editorial-story-engine-design.md and the approved plans in their stated order. Do not add alternative architecture or automatic fallback.
-- Plan 1 must be green and reviewed before Plan 2; Plan 2 must reach explicit voice selection before final render; Plan 3 must reach motion contact-sheet/video review before this plans final integration.
+- Plan 1 must be green and reviewed before Plan 2; Plan 2 must reach explicit voice selection before final render; Plan 3 must reach motion contact-sheet/video review before this plan's final integration.
 - Gate order is segmentation -> source-space reconciliation -> vision capability/observation -> evidence/story reconciliation -> script approval -> selected voice profile -> timeline/subtitle -> motion plan/QC -> render profile/QC -> rights/source. A failed earlier gate blocks later work.
 - A preview or review artifact can exist when the rights gate fails, but publish_allowed remains false and the rights failure stays visible. A rights-blocked artifact is not a publication proof.
 - The current p0-real3 source is rights-blocked test material only. Generated MP4, audio, contact sheets, manifests, databases, WAL files, sidecars, user data, credentials, and temporary files remain untracked runtime outputs.
@@ -76,9 +76,9 @@ Add app/services/editorial_gates.py with these stable records and functions.
 
 The evaluator must return the first blocking gate in order plus all already-known blocking reasons. require_final_render_ready raises the existing validation error type with machine-readable codes and never invokes FFmpeg when a prerequisite is blocked.
 
-## Task 1: Define failing ordered-gate and rights tests
+### Task 1: Define failing ordered-gate and rights tests
 
-Files:
+**Files:**
 - Add tests/test_editorial_gates.py.
 - Add tests/test_editorial_gate_order.py.
 - Add tests/test_rights_gate_preservation.py.
@@ -100,11 +100,11 @@ Files:
     git diff --cached --check
     git commit -m "test: define ordered editorial gate contract"
 
-## Task 2: Implement the cross-subsystem gate evaluator
+### Task 2: Implement the cross-subsystem gate evaluator
 
-Files:
+**Files:**
 - Add app/services/editorial_gates.py.
-- Modify the final preflight caller in app/services/pipeline.py or the existing render gate module only after Plans 13 are committed.
+- Modify the final preflight caller in app/services/pipeline.py or the existing render gate module only after Plans 1-3 are committed.
 - Add tests/test_editorial_gate_integration.py.
 
 - [ ] Run the red command from Task 1 and inspect the current pipeline/render preflight call path before changing it.
@@ -126,10 +126,10 @@ Files:
     git diff --cached --check
     git commit -m "feat: integrate ordered editorial gates"
 
-## Task 3: Add explicit flags, shadow review, and no-fallback configuration
+### Task 3: Add explicit flags, shadow review, and no-fallback configuration
 
-Files:
-- Modify app/config.py using the projects existing settings pattern.
+**Files:**
+- Modify app/config.py using the project's existing settings pattern.
 - Add tests/test_editorial_flags.py.
 - Add tests/test_legacy_workflow_boundary.py.
 
@@ -167,9 +167,9 @@ Use these named settings with safe defaults:
     git diff --cached --check
     git commit -m "feat: make editorial rollout flags explicit"
 
-## Task 4: Expose auditable status through API and UI
+### Task 4: Expose auditable status through API and UI
 
-Files:
+**Files:**
 - Modify the existing pipeline/status router and schema files.
 - Modify app/templates/index.html.
 - Modify app/static/app.js and app/static/app.css.
@@ -200,9 +200,9 @@ project_id, state, each gate state, blocking_reasons, counts for source assets/p
     git diff --cached --check
     git commit -m "feat: expose editorial gate status"
 
-## Task 5: Add the isolated p0-real3 artifact audit
+### Task 5: Add the isolated p0-real3 artifact audit
 
-Files:
+**Files:**
 - Add tests/test_editorial_artifact_audit.py.
 - Add a source-controlled audit helper only if the existing test architecture needs one.
 - Do not add p0-real3 media or runtime outputs to Git.
@@ -239,9 +239,9 @@ coverage map and manifest, evidence graph, continuity ledger, story spine, claim
     git diff --cached --check
     git commit -m "test: audit editorial review artifacts"
 
-## Task 6: Update rollout documentation and verification matrix
+### Task 6: Update rollout documentation and verification matrix
 
-Files:
+**Files:**
 - Modify docs/STATUS.md.
 - Modify docs/P0_EDITORIAL.md.
 - Modify docs/RELEASE_RUNBOOK.md.
@@ -271,7 +271,7 @@ Files:
     git diff --cached --check
     git commit -m "docs: record editorial integration rollout"
 
-## Task 7: Final integration verification and stop before push
+### Task 7: Final integration verification and stop before push
 
 - [ ] Run the focused integration suite:
 
@@ -279,7 +279,7 @@ Files:
     PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_editorial_gates.py tests/test_editorial_gate_order.py tests/test_rights_gate_preservation.py tests/test_editorial_gate_integration.py tests/test_editorial_flags.py tests/test_legacy_workflow_boundary.py tests/test_editorial_status_api.py tests/test_editorial_status_ui.py tests/test_editorial_artifact_audit.py -q
 
   Expected GREEN: ordered gates, flags, status, UI, artifact lineage, rights preservation, and no-fallback tests pass.
-- [ ] Run the Plan 13 focused suites from their stop points, then the full verification matrix. Do not skip slow FFmpeg tests when the environment is available.
+- [ ] Run the Plans 1-3 focused suites from their stop points, then the full verification matrix. Do not skip slow FFmpeg tests when the environment is available.
 - [ ] Run a controlled no-provider integration test using the expanded local mock configuration disabled. Expected result: state BLOCKED, reason vision_capability_missing, no generated story claims, no final render, and no publish permission.
 - [ ] If a verified vision provider is configured later, run the real workflow only with a rights-cleared source. If p0-real3 is used, the expected final QC failure list includes source_gate_failed and publish_allowed is false.
 - [ ] Audit the Git allowlist before staging:

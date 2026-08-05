@@ -31,7 +31,7 @@
 Add these records and functions in app/services/motion_qc.py.
 
     from dataclasses import dataclass
-    from typing import Literal, Sequence
+    from typing import Literal, Mapping, Sequence
 
     @dataclass(frozen=True)
     class MotionSample:
@@ -81,9 +81,9 @@ Add these records and functions in app/services/motion_qc.py.
 
 Use integer frame indexes in reports and stable sorted violation order.
 
-## Task 1: Define failing even-pixel crop tests
+### Task 1: Define failing even-pixel crop tests
 
-Files:
+**Files:**
 - Add tests/test_motion_quantization.py.
 - Extend current render fixtures only with small source-controlled values.
 - Do not change production code before the red assertions.
@@ -103,9 +103,9 @@ Files:
     git diff --cached --check
     git commit -m "test: define even crop quantization contract"
 
-## Task 2: Correct crop math and reject legacy oscillation modes
+### Task 2: Correct crop math and reject legacy oscillation modes
 
-Files:
+**Files:**
 - Modify app/services/render.py crop helpers.
 - Modify app/services/motion_director.py plan validation/filter construction.
 - Add tests/test_motion_legacy_modes.py.
@@ -145,9 +145,9 @@ Implement the quantizer with explicit bounds:
     git diff --cached --check
     git commit -m "feat: stabilize crop and remove camera oscillation"
 
-## Task 3: Add deterministic motion telemetry and blocking QC
+### Task 3: Add deterministic motion telemetry and blocking QC
 
-Files:
+**Files:**
 - Add app/services/motion_qc.py.
 - Modify motion telemetry construction in app/services/motion_director.py.
 - Wire the result into app/services/editorial_qc.py, app/services/quality.py, and the render sidecar path.
@@ -184,9 +184,9 @@ Files:
     git diff --cached --check
     git commit -m "feat: add blocking motion telemetry QC"
 
-## Task 4: Add the real-FFmpeg line-art shimmer and jitter regression
+### Task 4: Add the real-FFmpeg line-art shimmer and jitter regression
 
-Files:
+**Files:**
 - Add a small source-controlled generator under tests/fixtures/motion_line_art.py or use the project’s existing synthetic fixture helper.
 - Add tests/test_motion_ffmpeg.py marked slow.
 - Do not commit generated MP4, PNG, audio, or sidecar output.
@@ -212,7 +212,7 @@ Files:
     git diff --cached --check
     git commit -m "test: cover real ffmpeg motion stability"
 
-## Task 5: Verify Plan 3 and stop for visual review
+### Task 5: Verify Plan 3 and stop for visual review
 
 - [ ] Run focused tests:
 
