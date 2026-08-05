@@ -8,6 +8,7 @@ dataclass so tuning does not touch the planner.
 from __future__ import annotations
 
 import io
+import math
 import re
 import subprocess
 from collections.abc import Callable, Iterable
@@ -40,10 +41,18 @@ class PanelScoreWeights:
     empty: float = 2.2
     scenery: float = 1.8
     transition: float = 2.0
+    speech_balloon: float = 2.0
+    ui_overlay: float = 1.4
+    blank_dominance: float = 2.2
     repeated: float = 1.6
 
 
 WEIGHTS = PanelScoreWeights()
+
+
+def asset_use_cap(shot_count: int) -> int:
+    """Return the deterministic per-asset reuse ceiling for a shot list."""
+    return max(2, int(math.floor(max(0, shot_count) * 0.12)))
 
 
 @dataclass(frozen=True)
@@ -62,6 +71,9 @@ class VisualFeatures:
     empty_background: float = 0.0
     scenery_only: float = 0.0
     transition: float = 0.0
+    speech_balloon_dominance: float = 0.0
+    ui_overlay_dominance: float = 0.0
+    blank_dominance: float = 0.0
     ocr_text: str = ""
     semantic_tags: frozenset[str] = frozenset()
     focal_points: tuple[tuple[float, float], ...] = ((0.5, 0.4),)
@@ -183,6 +195,42 @@ def _focal_points(image: Image.Image) -> tuple[tuple[float, float], ...]:
     return tuple((x, y) for _, x, y in cells[:3]) or ((0.5, 0.4),)
 
 
+def _layout_dominance(image: Image.Image) -> tuple[float, float, float]:
+    """Estimate speech-balloon, UI, and blank dominance without OCR."""
+    small = image.convert("RGB").resize((96, 96), Image.Resampling.BILINEAR)
+    pixels = _pixels(small)
+    total = max(1, len(pixels))
+    bright_ratio = sum(
+        1 for pixel in pixels
+        if isinstance(pixel, tuple) and min(pixel) >= 238
+    ) / total
+    gray = small.convert("L")
+    edge_density, _, _ = _edge_features(small)
+    band_height = max(4, gray.height // 8)
+    top = gray.crop((0, 0, gray.width, band_height))
+    bottom = gray.crop((0, gray.height - band_height, gray.width, gray.height))
+    top_variance = min(1.0, ImageStat.Stat(top).var[0] / (255.0 * 255.0))
+    bottom_variance = min(1.0, ImageStat.Stat(bottom).var[0] / (255.0 * 255.0))
+    border_brightness = (
+        ImageStat.Stat(top).mean[0] + ImageStat.Stat(bottom).mean[0]
+    ) / (2.0 * 255.0)
+    speech_balloon = _clip(
+        max(0.0, bright_ratio - 0.22) * 1.7
+        + edge_density * 0.35
+        + (1.0 - min(1.0, (top_variance + bottom_variance) / 2.0)) * 0.15
+    )
+    ui_overlay = _clip(
+        (1.0 - min(1.0, (top_variance + bottom_variance) / 2.0)) * 0.55
+        + border_brightness * 0.25
+        + max(0.0, bright_ratio - 0.65) * 0.4
+    )
+    blank_dominance = _clip(
+        max(0.0, bright_ratio - 0.8) * 2.0
+        + (1.0 - edge_density) * 0.35
+    )
+    return speech_balloon, ui_overlay, blank_dominance
+
+
 def _visual_signature(image: Image.Image) -> str:
     """Coarse perceptual signature for repeated-panel suppression."""
     pixels = _pixels(image.convert("L").resize((8, 8), Image.Resampling.BILINEAR))
@@ -200,6 +248,7 @@ def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0, source_
     mean = ImageStat.Stat(gray).mean[0] / 255.0
     variance = min(1.0, ImageStat.Stat(gray).var[0] / (255.0 * 255.0))
     edge_density, motion, texture = _edge_features(image)
+    speech_balloon, ui_overlay, blank_dominance = _layout_dominance(image)
     face, expression, face_points = _face_stats(image)
     text = _ocr(image)
     tags = _tokens(text)
@@ -243,7 +292,14 @@ def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0, source_
             (WEIGHTS.object_density, edge_density),
         )
     )
-    penalty = WEIGHTS.empty * empty + WEIGHTS.scenery * scenery + WEIGHTS.transition * transition
+    penalty = (
+        WEIGHTS.empty * empty
+        + WEIGHTS.scenery * scenery
+        + WEIGHTS.transition * transition
+        + WEIGHTS.speech_balloon * speech_balloon
+        + WEIGHTS.ui_overlay * ui_overlay
+        + WEIGHTS.blank_dominance * blank_dominance
+    )
     family = source_family or f"legacy-strip-{max(0, order_index) // 8}"
     return PanelCandidate(asset_id, order_index, features, round(max(0.0, positive - penalty), 3), source_family=family)
 
@@ -276,27 +332,50 @@ def semantic_score(candidate: PanelCandidate, narration: str) -> float:
     return round(score, 3)
 
 
-def select_panel(candidates: list[PanelCandidate], narration: str, previous_order: int | None = None, used_ids: set[str] | None = None, used_signatures: set[str] | None = None, nearby: int = 6) -> PanelCandidate | None:
+def select_panel(
+    candidates: list[PanelCandidate], narration: str, previous_order: int | None = None,
+    used_ids: set[str] | None = None, used_signatures: set[str] | None = None,
+    nearby: int = 6, usage_counts: dict[str, int] | None = None,
+    max_asset_uses: int | None = None,
+ ) -> PanelCandidate | None:
     """Choose engagement first; continuity is only a small tie-breaker."""
     if not candidates:
         return None
     used_ids = used_ids or set()
     used_signatures = used_signatures or set()
+    usage_counts = dict(usage_counts or {})
+    eligible = [
+        candidate for candidate in candidates
+        if max_asset_uses is None or usage_counts.get(candidate.asset_id, 0) < max_asset_uses
+    ]
+    pool = eligible or candidates
     ranked: list[tuple[float, PanelCandidate]] = []
-    for candidate in candidates:
+    for candidate in pool:
         semantic = semantic_score(candidate, narration)
         distance = abs(candidate.order_index - previous_order) if previous_order is not None else 0
         continuity = max(0.0, 1.0 - distance / max(1, nearby))
+        chronology_penalty = 0.0
+        chronology_bonus = 0.0
+        if previous_order is not None:
+            if candidate.order_index < previous_order:
+                chronology_penalty = min(2.0, (previous_order - candidate.order_index) * 0.25)
+            else:
+                chronology_bonus = min(0.18, (candidate.order_index - previous_order) * 0.03)
         repeat_penalty = WEIGHTS.repeated * (
             1.0 if candidate.asset_id in used_ids else 0.0
         )
         # Reuse is allowed when the pool is exhausted, not when a fresh panel
         # exists. This prevents a high-scoring frame from dominating every beat.
-        if candidate.asset_id in used_ids and len(used_ids) < len(candidates):
+        if candidate.asset_id in used_ids and len(used_ids) < len(pool):
             repeat_penalty += max(WEIGHTS.repeated * 2.5, candidate.visual_score * 0.45)
         if candidate.features.visual_signature and candidate.features.visual_signature in used_signatures:
             repeat_penalty += WEIGHTS.repeated * 0.75
-        value = candidate.visual_score + semantic + WEIGHTS.continuity * continuity - repeat_penalty
+        if max_asset_uses is not None and usage_counts.get(candidate.asset_id, 0) >= max_asset_uses:
+            repeat_penalty += max(WEIGHTS.repeated * 4.0, candidate.visual_score * 0.8)
+        value = (
+            candidate.visual_score + semantic + WEIGHTS.continuity * continuity + chronology_bonus
+            - repeat_penalty - chronology_penalty
+        )
         ranked.append((value, PanelCandidate(candidate.asset_id, candidate.order_index, candidate.features, candidate.visual_score, semantic, candidate.source_family)))
     ranked.sort(key=lambda item: item[0], reverse=True)
     best = ranked[0][1]
@@ -307,17 +386,50 @@ def select_panel(candidates: list[PanelCandidate], narration: str, previous_orde
     return best
 
 
-def selection_reasons(candidate: PanelCandidate, narration: str) -> list[str]:
-    """Deterministic reason codes explaining why a panel fits a beat."""
+def selection_reasons(
+    candidate: PanelCandidate,
+    narration: str,
+    previous_order: int | None = None,
+    previous_source_family: str | None = None,
+) -> list[str]:
+    """Deterministic, auditable reasons for panel choice and progression."""
     tags = narration_tags(narration)
     reasons = [f"source_order:{candidate.order_index}", f"visual_score:{candidate.visual_score:.3f}"]
+    if previous_order is None:
+        reasons.append("chronology:initial")
+    elif candidate.order_index >= previous_order:
+        reasons.append("chronology:forward")
+    else:
+        reasons.append("chronology:backtrack")
     if candidate.source_family:
         reasons.append(f"source_family:{candidate.source_family}")
-    for tag, value in (("action", candidate.features.action_pose), ("face", candidate.features.face_visibility), ("weapon", candidate.features.weapons), ("monster", candidate.features.monsters), ("effect", candidate.features.visual_effects), ("reveal", candidate.features.close_up)):
+        if previous_source_family is None:
+            reasons.append("source_family_progression:initial")
+        elif candidate.source_family == previous_source_family:
+            reasons.append("source_family_progression:repeat")
+        else:
+            reasons.append("source_family_progression:advance")
+    for tag, value in (
+        ("action", candidate.features.action_pose),
+        ("face", candidate.features.face_visibility),
+        ("weapon", candidate.features.weapons),
+        ("monster", candidate.features.monsters),
+        ("effect", candidate.features.visual_effects),
+        ("reveal", candidate.features.close_up),
+    ):
         if tag in tags and value > 0.15:
             reasons.append(f"{tag}_match:{value:.3f}")
+    for code, value in (
+        ("speech_balloon_dominance", candidate.features.speech_balloon_dominance),
+        ("ui_overlay_dominance", candidate.features.ui_overlay_dominance),
+        ("blank_dominance", candidate.features.blank_dominance),
+    ):
+        if value > 0.2:
+            reasons.append(f"penalty:{code}:{value:.3f}")
     if candidate.features.ocr_text:
         reasons.append("ocr_text_available")
+    else:
+        reasons.append("ocr_not_required")
     return reasons
 
 
@@ -364,6 +476,9 @@ def score_breakdown(candidate: PanelCandidate) -> dict[str, float | str]:
         "close_up": round(f.close_up, 3), "composition": round(f.dramatic_composition, 3),
         "object_density": round(f.object_density, 3), "empty_penalty": round(f.empty_background, 3),
         "scenery_penalty": round(f.scenery_only, 3), "transition_penalty": round(f.transition, 3),
+        "speech_balloon_penalty": round(f.speech_balloon_dominance, 3),
+        "ui_overlay_penalty": round(f.ui_overlay_dominance, 3),
+        "blank_dominance_penalty": round(f.blank_dominance, 3),
         "ocr": f.ocr_text,
     }
 
@@ -384,7 +499,7 @@ def tune_weights(**changes: float) -> PanelScoreWeights:
     return PanelScoreWeights(**values)
 
 
-__all__ = ["PanelCandidate", "PanelScoreWeights", "VisualFeatures", "analyze_assets", "analyze_panel", "camera_effect", "diversity_penalty", "narration_tags", "planned_focus", "plan_content_aware_scenes", "score_breakdown", "select_panel", "selection_reasons", "tune_weights"]
+__all__ = ["PanelCandidate", "PanelScoreWeights", "VisualFeatures", "analyze_assets", "analyze_panel", "asset_use_cap", "camera_effect", "diversity_penalty", "narration_tags", "planned_focus", "plan_content_aware_scenes", "score_breakdown", "select_panel", "selection_reasons", "tune_weights"]
 
 # ponytail: heuristic CV ceiling; upgrade to a local vision encoder when GPU
 # inference is available, preserving this feature schema as the adapter boundary.

@@ -8,6 +8,7 @@ only gate the publish endpoint trusts.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from app.constants import (
     CheckSeverity,
 )
 from app.models import Project, RenderJob, ScriptVersion, SourceAsset
-from app.services import editorial_timing, policy
+from app.services import editorial_timing, policy, visual_scoring
 from app.services.timeline import CueSpec, validate_cues
 
 
@@ -152,6 +153,28 @@ def check_repetition_and_motion(scenes: list) -> list[CheckResult]:
     total = sum(durations)
     signatures = [getattr(scene, "visual_signature", "") or getattr(scene, "asset_id", "") for scene in scenes]
     results: list[CheckResult] = []
+    asset_counts = Counter(
+        getattr(scene, "asset_id", "")
+        for scene in scenes
+        if getattr(scene, "asset_id", "")
+    )
+    if asset_counts:
+        reuse_cap = visual_scoring.asset_use_cap(len(scenes))
+        over_cap = {
+            asset_id: count
+            for asset_id, count in asset_counts.items()
+            if count > reuse_cap
+        }
+        if len(asset_counts) > 1 and over_cap:
+            results.append(_fail(
+                "visual.asset_reuse_cap", CheckSeverity.ERROR,
+                f"Asset reuse exceeds the {reuse_cap}-shot cap for {len(over_cap)} asset(s).",
+                {
+                    "cap": reuse_cap,
+                    "shot_count": len(scenes),
+                    "asset_counts": dict(sorted(over_cap.items())),
+                },
+            ))
     if total > 0:
         dominance: dict[str, float] = {}
         for signature, duration in zip(signatures, durations, strict=True):

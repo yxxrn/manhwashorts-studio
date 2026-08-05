@@ -229,7 +229,7 @@ def test_shot_director_switches_panel_only_after_roi_exhaustion():
     assert len(shots) == 4
     assert [shot.asset_id for shot in shots[:2]] == ["first", "first"]
     assert shots[2].asset_id == "second"
-    assert shots[2].transition == "fade"
+    assert shots[2].transition == "cut"
 
 
 def test_shot_director_leads_timed_event_with_visual_cut():

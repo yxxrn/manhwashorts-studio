@@ -24,6 +24,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.constants import (
     DEFAULT_ENGLISH_SPEED,
     DEFAULT_ENGLISH_VOICE_ID,
@@ -667,7 +668,7 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
         db.add(scene)
         scenes.append(scene)
 
-    for cue in timeline_svc.build_cues(spans):
+    for cue in timeline_svc.build_cues(spans, media_duration=max((span.end_time for span in spans), default=0.0)):
         db.add(
             SubtitleCue(
                 project_id=project_id,
@@ -946,9 +947,39 @@ def build_render_request(db: Session, job: RenderJob):
     tts_svc.concat_audio(clip_paths, voice_path, gap=0.18)
     audio_duration = tts_svc.probe_duration(voice_path)
 
+    # Each scene clip is rendered as a rounded number of 30fps frames. Clamp
+    # subtitles to that actual joined-media duration, not only the audio probe;
+    # otherwise a final partial frame can leave a cue past the MP4 end.
+    scene_end_times = [scene.end_time for scene in scenes]
+    scene_end_times[-1] = max(scene_end_times[-1], audio_duration)
+    rendered_frames = sum(
+        max(
+            1,
+            int(
+                round(
+                    max(0.1, round(end_time - scene.start_time, 3))
+                    * settings.video_fps
+                )
+            ),
+        )
+        for scene, end_time in zip(scenes, scene_end_times, strict=True)
+    )
+    media_duration = round(
+        min(audio_duration, rendered_frames / settings.video_fps), 3
+    )
+
+    persisted_cues = project_cues(db, job.project_id)
+    cues = cue_specs(persisted_cues)
+    for persisted, cue in zip(persisted_cues, cues, strict=True):
+        cue.start_time = round(min(max(0.0, cue.start_time), media_duration), 3)
+        cue.end_time = round(min(max(cue.start_time, cue.end_time), media_duration), 3)
+        persisted.start_time = cue.start_time
+        persisted.end_time = cue.end_time
+    db.flush()
+
     scene_inputs: list = []
     music_path: Path | None = None
-    audio_assets = [asset for asset in project_assets(db, job.project_id) if asset.type in {"audio", "music"} and storage.exists(asset.storage_key)]
+    audio_assets = [asset for asset in project_assets(db, job.project_id) if asset.type in {"audio", "music"} and asset.is_publishable and storage.exists(asset.storage_key)]
     if audio_assets:
         music_path = storage.path_for(audio_assets[0].storage_key)
     profile = job.render_profile or "Auto"
@@ -993,7 +1024,7 @@ def build_render_request(db: Session, job: RenderJob):
         project_id=job.project_id,
         scenes=scene_inputs,
         audio_path=voice_path,
-        cues=cue_specs(project_cues(db, job.project_id)),
+        cues=cues,
         output_path=storage.output_path(job.project_id, filename),
         preview=job.kind == "preview",
         title_text=project.title,
@@ -1090,6 +1121,7 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
         rights_confidence=rights_confidence,
         source_cleanliness=source_cleanliness,
         voice_profile_count=len({segment.voice_profile_hash for segment in audio_segments(db, current_script(db, job.project_id).id) if segment.voice_profile_hash}),
+        preview=job.kind == "preview",
     )
     report_dir = Path(result.output_path).parent
     report_dir.mkdir(parents=True, exist_ok=True)

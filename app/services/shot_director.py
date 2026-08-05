@@ -164,7 +164,7 @@ def _pacing_max(section: str, tags: frozenset[str], dense: bool, default: float)
     if section == "hook":
         return min(default, 2.6)
     if tags & {"reveal", "victory"} or section == "twist":
-        return min(default, 2.5)
+        return min(default, 2.65)
     return min(default, 2.75)
 
 
@@ -272,19 +272,22 @@ def _slots(duration: float, roi_count: int) -> int:
 def _candidate_for(
     candidates: list[PanelCandidate], text: str, previous_order: int | None,
     used: set[str], signatures: set[str],
+    usage_counts: dict[str, int], max_asset_uses: int,
 ) -> PanelCandidate | None:
     return visual_scoring.select_panel(
         candidates, text, previous_order=previous_order, used_ids=used, used_signatures=signatures,
+        usage_counts=usage_counts, max_asset_uses=max_asset_uses,
     )
 
 
 def _cooldown_candidate(
     candidates: list[PanelCandidate], text: str, current: PanelCandidate | None,
     previous_order: int | None, used: set[str], signatures: set[str],
+    usage_counts: dict[str, int], max_asset_uses: int,
 ) -> PanelCandidate | None:
     """Prefer a new asset after two shots; fallback only when no alternative exists."""
     if current is None:
-        return _candidate_for(candidates, text, previous_order, used, signatures)
+        return _candidate_for(candidates, text, previous_order, used, signatures, usage_counts, max_asset_uses)
     alternatives = [candidate for candidate in candidates if candidate.asset_id != current.asset_id]
     family_alternatives = [
         candidate for candidate in alternatives
@@ -295,6 +298,7 @@ def _cooldown_candidate(
         selected = visual_scoring.select_panel(
             alternatives, text, previous_order=previous_order,
             used_ids=used, used_signatures=signatures,
+            usage_counts=usage_counts, max_asset_uses=max_asset_uses,
         )
         if selected is not None:
             return selected
@@ -316,6 +320,11 @@ def plan_shots(
     recent_curves: list[str] = []
     used: set[str] = set()
     signatures: set[str] = set()
+    usage_counts: dict[str, int] = {}
+    timeline_start = min(float(span.start_time) for span in spans)
+    timeline_end = max(float(span.end_time) for span in spans)
+    estimated_shots = max(1, math.ceil(max(0.0, timeline_end - timeline_start) / _MAX_SHOT))
+    max_asset_uses = visual_scoring.asset_use_cap(estimated_shots)
     previous_order: int | None = None
     previous_focus: tuple[float, float] | None = None
     previous_asset_id: str | None = None
@@ -328,7 +337,7 @@ def plan_shots(
         block_end = max(span.end_time, next_start)
         duration = max(0.0, block_end - span.start_time)
         previous_asset_id = scenes[-1].asset_id if scenes else None
-        candidate = _candidate_for(candidates, span.text, previous_order, used, signatures)
+        candidate = _candidate_for(candidates, span.text, previous_order, used, signatures, usage_counts, max_asset_uses)
         rois = _purposeful_rois(rank_rois(candidate, span.text))
         if previous_focus and candidate and candidate.asset_id != previous_asset_id:
             rois = _continuity_order(rois, *previous_focus, "fade")
@@ -377,15 +386,28 @@ def plan_shots(
         ) if duration else 0
         if not slots:
             continue
+        if duration <= max_seconds or (
+            max_seconds == _MAX_SHOT and 3.0 < duration <= 3.3
+        ):
+            slots = 1
+
         weights = _slot_weights(slots, span.section, tags)
         weight_total = sum(weights)
         slot_durations = [duration * weight / weight_total for weight in weights]
         first_index = len(scenes)
         for slot in range(slots):
-            if slot >= 2 and candidate and scenes and scenes[-1].asset_id == candidate.asset_id:
+            if candidate and (
+                usage_counts.get(candidate.asset_id, 0) >= max_asset_uses
+                or (
+                    slot >= 2
+                    and scenes
+                    and scenes[-1].asset_id == candidate.asset_id
+                )
+            ):
                 previous_order = candidate.order_index
                 cooled = _cooldown_candidate(
                     candidates, span.text, candidate, previous_order, used, signatures,
+                    usage_counts, max_asset_uses,
                 )
                 if cooled is not candidate:
                     candidate = cooled
@@ -397,10 +419,10 @@ def plan_shots(
                     pass
             # Stay on one panel until every meaningful ROI has been shown. Only
             # then ask panel selection for the next image.
-            if roi_cursor >= len(rois):
+            if roi_cursor >= len(rois) and slot < slots - 1:
                 previous_order = candidate.order_index if candidate else previous_order
                 previous_asset_id = candidate.asset_id if candidate else previous_asset_id
-                candidate = _candidate_for(candidates, span.text, previous_order, used, signatures)
+                candidate = _candidate_for(candidates, span.text, previous_order, used, signatures, usage_counts, max_asset_uses)
                 rois = _purposeful_rois(rank_rois(candidate, span.text))
                 if candidate and candidate.asset_id == previous_asset_id and len(rois) == 1:
                     roi = rois[0]
@@ -424,10 +446,40 @@ def plan_shots(
                     used.add(candidate.asset_id)
                     if candidate.features.visual_signature:
                         signatures.add(candidate.features.visual_signature)
+            if len(scenes) >= 3 and candidate:
+                left, middle, right = scenes[-3], scenes[-2], scenes[-1]
+                if (
+                    left.asset_id
+                    and left.asset_id == right.asset_id
+                    and middle.asset_id
+                    and middle.asset_id != left.asset_id
+                    and candidate.asset_id == middle.asset_id
+                ):
+                    alternatives = [
+                        panel for panel in candidates
+                        if panel.asset_id not in {left.asset_id, middle.asset_id}
+                    ]
+                    replacement = visual_scoring.select_panel(
+                        alternatives,
+                        span.text,
+                        previous_order=previous_order,
+                        used_ids=used,
+                        used_signatures=signatures,
+                        usage_counts=usage_counts,
+                        max_asset_uses=max_asset_uses,
+                    )
+                    if replacement is not None and replacement.asset_id != candidate.asset_id:
+                        candidate = replacement
+                        rois = _purposeful_rois(rank_rois(candidate, span.text))
+                        roi_cursor = 0
+                        used.add(candidate.asset_id)
+                        if candidate.features.visual_signature:
+                            signatures.add(candidate.features.visual_signature)
             start = span.start_time + sum(slot_durations[:slot])
             end = start + slot_durations[slot]
-            roi = rois[roi_cursor]
-            next_roi = rois[(roi_cursor + 1) % len(rois)] if len(rois) > 1 else roi
+            roi_index = roi_cursor % len(rois)
+            roi = rois[roi_index]
+            next_roi = rois[(roi_index + 1) % len(rois)] if len(rois) > 1 else roi
             if span.section == "cta":
                 cta_rois = (
                     ROI("cta_safe_left", 0.32, 0.48, 0.2),
@@ -457,6 +509,15 @@ def plan_shots(
                 previous_vector,
             )
             recent_curves.append(camera_curve)
+            previous_panel_order = next(
+                (
+                    panel.order_index
+                    for panel in candidates
+                    if scenes and panel.asset_id == scenes[-1].asset_id
+                ),
+                None,
+            )
+            previous_source_family = scenes[-1].source_family if scenes else None
             scenes.append(
                 ShotPlan(
                     order_index=order, section=span.section,
@@ -475,7 +536,8 @@ def plan_shots(
                     transition=(
                         "none" if order == 0 else (
                             "cut"
-                            if candidate and scenes[-1].asset_id == candidate.asset_id
+                            if camera_intent in {"action", "attack", "explosion", "impact"}
+                            or (candidate and scenes[-1].asset_id == candidate.asset_id)
                             else "fade"
                         )
                     ),
@@ -502,11 +564,22 @@ def plan_shots(
                         if candidate
                         else 0.0
                     ),
-                    alignment_reasons=tuple(visual_scoring.selection_reasons(candidate, span.text)) if candidate else (),
+                    alignment_reasons=(
+                        tuple(
+                            visual_scoring.selection_reasons(
+                                candidate, span.text,
+                                previous_order=previous_panel_order,
+                                previous_source_family=previous_source_family,
+                            )
+                        )
+                        if candidate else ()
+                    ),
                     rejected_candidates=tuple({"panel_id": other.asset_id, "reason": "lower_alignment_score"} for other in candidates if candidate and other.asset_id != candidate.asset_id and (other.visual_score + other.semantic_score) < (candidate.visual_score + candidate.semantic_score))[:8],
                     visual_signature=candidate.features.visual_signature if candidate else "",
                 )
             )
+            if candidate and candidate.asset_id:
+                usage_counts[candidate.asset_id] = usage_counts.get(candidate.asset_id, 0) + 1
             previous_focus = (next_roi.x, next_roi.y)
             vector = (next_roi.x - roi.x, next_roi.y - roi.y)
             if max(abs(vector[0]), abs(vector[1])) >= 0.12:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import cache
 
 from app.constants import (
     MAX_SUBTITLE_CHARS_PER_LINE,
@@ -226,6 +227,42 @@ def redistribute(scenes: list[SceneSpec], total_duration: float) -> list[SceneSp
 
 _PUNCTUATION_ONLY = re.compile(r"^[\W_]+$", re.UNICODE)
 
+_CAPTION_MIN_WORDS = 4
+_CAPTION_MAX_WORDS = 7
+# Function words that usually need a following lexical word at a caption boundary.
+_DANGLING_WORDS = frozenset({
+    # Articles and determiners.
+    "a", "an", "the", "this", "that", "these", "those", "some", "any",
+    "each", "every", "either", "neither", "another", "all", "both", "few",
+    "many", "more", "most", "much", "my", "your", "his", "her", "its",
+    "our", "their",
+    # Prepositions.
+    "of", "to", "in", "on", "at", "for", "from", "by", "with", "as",
+    "into", "onto", "over", "under", "about", "against", "among", "around",
+    "behind", "between", "during", "except", "through", "toward", "towards",
+    "upon", "without",
+    # Coordinating and subordinating conjunctions.
+    "and", "or", "but", "nor", "yet", "so", "if", "when", "while",
+    "because", "although", "though", "unless", "until", "whether", "than",
+    # Negation, auxiliaries and modal verbs.
+    "am", "is", "are", "was", "were", "be", "been", "being", "do", "does",
+    "did", "have", "has", "had", "can", "could", "may", "might", "must",
+    "shall", "should", "will", "would", "not",
+    # Personal and relative pronouns.
+    "i", "me", "you", "he", "him", "she", "it", "we", "us", "they",
+    "them", "who", "whom", "which", "whose", "what",
+})
+
+
+def is_caption_boundary(word: str) -> bool:
+    """Return whether a function word should not close a caption when avoidable."""
+    normalized = re.sub(r"[^a-z'-]+$", "", str(word).lower())
+    return normalized in _DANGLING_WORDS
+
+
+def _is_dangling(word: str) -> bool:
+    return is_caption_boundary(word)
+
 def normalize_display_text(text: str) -> str:
     """Caption text: no terminal period, no punctuation-only cue."""
     value = re.sub(r"\s+", " ", str(text or "")).strip()
@@ -257,82 +294,271 @@ def wrap_caption(text: str, max_chars: int = MAX_SUBTITLE_CHARS_PER_LINE) -> lis
     return lines
 
 
+def _caption_fits(text: str, max_chars: int, max_lines: int) -> bool:
+    return len(wrap_caption(text, max_chars)) <= max_lines
+
+
+def _rebalance_groups(
+    groups: list[list[str]], max_chars: int, max_lines: int,
+) -> list[list[str]]:
+    """Keep groups in the 4-7 word range when the source permits it."""
+    groups = [group for group in groups if group]
+    index = 0
+    while index < len(groups) - 1:
+        current = groups[index]
+        following = groups[index + 1]
+        if len(current) < _CAPTION_MIN_WORDS:
+            combined = current + following
+            if (
+                len(combined) <= _CAPTION_MAX_WORDS
+                and _caption_fits(" ".join(combined), max_chars, max_lines)
+            ):
+                groups[index:index + 2] = [combined]
+                continue
+            needed = _CAPTION_MIN_WORDS - len(current)
+            if len(following) - needed >= _CAPTION_MIN_WORDS:
+                current_candidate = current + following[:needed]
+                following_candidate = following[needed:]
+                if (
+                    _caption_fits(" ".join(current_candidate), max_chars, max_lines)
+                    and _caption_fits(" ".join(following_candidate), max_chars, max_lines)
+                ):
+                    groups[index:index + 2] = [current_candidate, following_candidate]
+        index += 1
+
+    if len(groups) > 1 and len(groups[-1]) < _CAPTION_MIN_WORDS:
+        previous = groups[-2]
+        final = groups[-1]
+        combined = previous + final
+        if (
+            len(combined) <= _CAPTION_MAX_WORDS
+            and _caption_fits(" ".join(combined), max_chars, max_lines)
+        ):
+            groups[-2:] = [combined]
+        else:
+            needed = _CAPTION_MIN_WORDS - len(final)
+            if len(previous) - needed >= _CAPTION_MIN_WORDS:
+                previous_candidate = previous[:-needed]
+                final_candidate = previous[-needed:] + final
+                if (
+                    _caption_fits(" ".join(previous_candidate), max_chars, max_lines)
+                    and _caption_fits(" ".join(final_candidate), max_chars, max_lines)
+                ):
+                    groups[-2:] = [previous_candidate, final_candidate]
+
+    # Shift a function word when it would leave a semantic boundary dangling,
+    # provided both resulting groups remain readable.
+    for index in range(len(groups) - 1):
+        current, following = groups[index], groups[index + 1]
+        if not current:
+            continue
+        last = re.sub(r"[^a-z'-]+$", "", current[-1].lower())
+        if last not in _DANGLING_WORDS:
+            continue
+        max_take = min(_CAPTION_MAX_WORDS - len(current), len(following) - _CAPTION_MIN_WORDS)
+        for take in range(1, max_take + 1):
+            candidate = current + following[:take]
+            candidate_last = re.sub(r"[^a-z'-]+$", "", candidate[-1].lower())
+            if (
+                candidate_last not in _DANGLING_WORDS
+                and _caption_fits(" ".join(candidate), max_chars, max_lines)
+                and _caption_fits(" ".join(following[take:]), max_chars, max_lines)
+            ):
+                groups[index] = candidate
+                groups[index + 1] = following[take:]
+                break
+    return groups
+
+
+def _greedy_groups(
+    words: list[str], max_chars: int, max_lines: int,
+) -> list[list[str]]:
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for word in words:
+        candidate = " ".join([*current, word])
+        if current and (
+            len(current) >= _CAPTION_MAX_WORDS
+            or not _caption_fits(candidate, max_chars, max_lines)
+        ):
+            groups.append(current)
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        groups.append(current)
+    return _rebalance_groups(groups, max_chars, max_lines)
+
+
+def _caption_boundary_score(word: str) -> int:
+    if re.search(r"[.!?][\"')\]]*$", str(word).strip()):
+        return 4
+    if re.search(r"[,;:][\"')\]]*$", str(word).strip()):
+        return 1
+    return 0
+
+
+def _optimal_groups(
+    words: list[str], max_chars: int, max_lines: int,
+) -> list[list[str]]:
+    """Partition words while avoiding function-word endings and favoring clauses."""
+    if not words:
+        return []
+    if len(words) < _CAPTION_MIN_WORDS:
+        return [words]
+
+    target_groups = max(1, round(len(words) / 6.25))
+
+    @cache
+    def options(start: int) -> dict[int, tuple[int, float, tuple[tuple[str, ...], ...]]]:
+        if start == len(words):
+            return {0: (0, 0.0, ())}
+        result: dict[int, tuple[int, float, tuple[tuple[str, ...], ...]]] = {}
+        for end in range(
+            start + _CAPTION_MIN_WORDS,
+            min(len(words), start + _CAPTION_MAX_WORDS) + 1,
+        ):
+            group = words[start:end]
+            if not _caption_fits(" ".join(group), max_chars, max_lines):
+                continue
+            for tail_count, (tail_bad, tail_score, tail_path) in options(end).items():
+                count = tail_count + 1
+                candidate = (
+                    tail_bad + int(is_caption_boundary(group[-1])),
+                    tail_score
+                    + _caption_boundary_score(group[-1])
+                    - abs(len(group) - 6) * 0.1,
+                    (tuple(group), *tail_path),
+                )
+                previous = result.get(count)
+                if previous is None or (
+                    candidate[0] < previous[0]
+                    or candidate[0] == previous[0] and candidate[1] > previous[1]
+                ):
+                    result[count] = candidate
+        return result
+
+    solutions = options(0)
+    if not solutions:
+        return _greedy_groups(words, max_chars, max_lines)
+    _, (_, _, path) = min(
+        solutions.items(),
+        key=lambda item: (item[1][0], abs(item[0] - target_groups), -item[1][1]),
+    )
+    return [list(group) for group in path]
+
+
+def _group_words(
+    words: list[str], max_chars: int, max_lines: int,
+) -> list[list[str]]:
+    return _optimal_groups(words, max_chars, max_lines)
+
+
+def _group_timings(
+    timings: list[dict], max_chars: int, max_lines: int,
+) -> list[list[dict]]:
+    groups = _group_words(
+        [str(timing.get("word", "")) for timing in timings],
+        max_chars,
+        max_lines,
+    )
+    result: list[list[dict]] = []
+    cursor = 0
+    for group in groups:
+        result.append(timings[cursor:cursor + len(group)])
+        cursor += len(group)
+    return result
+
+
+def _rebalance_cues(
+    cues: list[CueSpec], max_chars: int, max_lines: int,
+) -> list[CueSpec]:
+    """Repair short boundary cues that occur when spans meet."""
+    index = 0
+    while index < len(cues) - 1:
+        left, right = cues[index], cues[index + 1]
+        left_words = str(left.text).split()
+        right_words = str(right.text).split()
+        if len(left_words) < _CAPTION_MIN_WORDS:
+            combined = left_words + right_words
+            if (
+                len(combined) <= _CAPTION_MAX_WORDS
+                and _caption_fits(" ".join(combined), max_chars, max_lines)
+            ):
+                left.text = normalize_display_text(" ".join(combined))
+                left.end_time = right.end_time
+                cues.pop(index + 1)
+                continue
+        index += 1
+    if len(cues) > 1 and len(str(cues[-1].text).split()) < _CAPTION_MIN_WORDS:
+        left, right = cues[-2], cues[-1]
+        left_words, right_words = str(left.text).split(), str(right.text).split()
+        combined = left_words + right_words
+        if (
+            len(combined) <= _CAPTION_MAX_WORDS
+            and _caption_fits(" ".join(combined), max_chars, max_lines)
+        ):
+            left.text = normalize_display_text(" ".join(combined))
+            left.end_time = right.end_time
+            cues.pop()
+    for index, cue in enumerate(cues):
+        cue.order_index = index
+    return cues
+
+
 def build_cues(
     spans: list[AudioSpan],
     max_chars: int = MAX_SUBTITLE_CHARS_PER_LINE,
     max_lines: int = MAX_SUBTITLE_LINES,
     min_cue_seconds: float = 0.45,
+    media_duration: float | None = None,
 ) -> list[CueSpec]:
-    """Chunk narration into cues timed from real word timings.
-
-    Falls back to proportional splitting when a provider returns no timings.
-    """
+    """Chunk narration into readable 4-7 word cues timed from narration."""
     cues: list[CueSpec] = []
     order = 0
-
-    def fits(text: str) -> bool:
-        """True if ``text`` wraps within the line limit.
-
-        Checking the real wrap is necessary: a 56-character string can still
-        need three 28-character lines once words break unevenly.
-        """
-        return len(wrap_caption(text, max_chars)) <= max_lines
 
     for span in spans:
         timings = span.word_timings
         if not timings:
-            # No word data: split text evenly across the span.
             chunks = _chunk_text(span.text, max_chars, max_lines)
             if not chunks:
                 continue
             slice_len = span.duration / len(chunks)
-            for i, chunk in enumerate(chunks):
+            for index, chunk in enumerate(chunks):
                 cues.append(
                     CueSpec(
                         order_index=order,
                         text=normalize_display_text(chunk),
-                        start_time=round(span.start_time + i * slice_len, 3),
-                        end_time=round(span.start_time + (i + 1) * slice_len, 3),
+                        start_time=round(span.start_time + index * slice_len, 3),
+                        end_time=round(span.start_time + (index + 1) * slice_len, 3),
                     )
                 )
                 order += 1
             continue
 
-        current: list[dict] = []
-        for timing in timings:
-            candidate = " ".join([*(t["word"] for t in current), timing["word"]])
-            if current and (len(current) >= 6 or not fits(candidate)):
-                cues.append(
-                    CueSpec(
-                        order_index=order,
-                        text=normalize_display_text(" ".join(t["word"] for t in current)),
-                        start_time=current[0]["start"],
-                        end_time=current[-1]["end"],
-                    )
-                )
-                order += 1
-                current = [timing]
-            else:
-                current.append(timing)
-        if current:
+        for group in _group_timings(timings, max_chars, max_lines):
+            if not group:
+                continue
             cues.append(
                 CueSpec(
                     order_index=order,
-                    text=normalize_display_text(" ".join(t["word"] for t in current)),
-                    start_time=current[0]["start"],
-                    end_time=current[-1]["end"],
+                    text=normalize_display_text(" ".join(str(t["word"]) for t in group)),
+                    start_time=float(group[0]["start"]),
+                    end_time=float(group[-1]["end"]),
                 )
             )
             order += 1
 
-    # Enforce a readable minimum, without overlapping the next cue. The
-    # max() guard matters: if the next cue already starts earlier than this
-    # one ends, naively clamping to it would produce a negative duration.
-    for i, cue in enumerate(cues):
+    cues = _rebalance_cues(cues, max_chars, max_lines)
+    for index, cue in enumerate(cues):
         if cue.duration < min_cue_seconds:
             wanted = cue.start_time + min_cue_seconds
-            limit = cues[i + 1].start_time if i + 1 < len(cues) else wanted
-            cue.end_time = round(max(cue.end_time, min(wanted, limit)), 3)
+            limit = cues[index + 1].start_time if index + 1 < len(cues) else wanted
+            cue.end_time = max(cue.end_time, min(wanted, limit))
+        if media_duration is not None:
+            cue.end_time = min(cue.end_time, media_duration)
+        cue.start_time = max(0.0, min(cue.start_time, media_duration if media_duration is not None else cue.start_time))
+        cue.end_time = round(max(cue.start_time, cue.end_time), 3)
     return cues
 
 
@@ -341,21 +567,9 @@ def _chunk_text(
     max_chars: int = MAX_SUBTITLE_CHARS_PER_LINE,
     max_lines: int = MAX_SUBTITLE_LINES,
 ) -> list[str]:
-    """Split text into chunks that each wrap within ``max_lines`` lines."""
+    """Split text into readable 4-7 word chunks."""
     words = re.findall(r"\S+", text)
-    chunks: list[str] = []
-    current = ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if current and len(wrap_caption(candidate, max_chars)) > max_lines:
-            chunks.append(current)
-            current = word
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return chunks
-
+    return [" ".join(group) for group in _group_words(words, max_chars, max_lines)]
 
 def _srt_timestamp(seconds: float) -> str:
     seconds = max(0.0, seconds)
@@ -380,21 +594,46 @@ def to_srt(cues: list[CueSpec], max_chars: int = MAX_SUBTITLE_CHARS_PER_LINE) ->
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
-def validate_cues(cues: list[CueSpec], max_chars: int, max_lines: int) -> list[dict]:
-    """Warn about cues that break the readability rules."""
+def validate_cues(
+    cues: list[CueSpec],
+    max_chars: int,
+    max_lines: int,
+    media_duration: float | None = None,
+) -> list[dict]:
+    """Warn about cues that break the readability and timing rules."""
     warnings: list[dict] = []
+
     for cue in cues:
-        if not normalize_display_text(cue.text):
+        normalized = normalize_display_text(cue.text)
+        words = normalized.split()
+        if not normalized:
             warnings.append({"code": "subtitle.punctuation_only", "severity": "error", "message": f"Cue {cue.order_index + 1} contains no speakable words."})
             continue
         if re.search(r"(?:^|\s)[.,:;]+(?:\s|$)", cue.text):
             warnings.append({"code": "subtitle.standalone_punctuation", "severity": "error", "message": f"Cue {cue.order_index + 1} contains standalone punctuation."})
-        lines = wrap_caption(normalize_display_text(cue.text), max_chars)
+        if len(words) < _CAPTION_MIN_WORDS or len(words) > _CAPTION_MAX_WORDS:
+            warnings.append(
+                {
+                    "code": "subtitle.word_group_outside_4_7",
+                    "severity": "warning",
+                    "message": f"Cue {cue.order_index + 1} has {len(words)} words; expected 4-7.",
+                }
+            )
+        last_word = re.sub(r"[^a-z'-]+$", "", words[-1].lower())
+        if is_caption_boundary(last_word):
+            warnings.append(
+                {
+                    "code": "subtitle.dangling_boundary",
+                    "severity": "error",
+                    "message": f"Cue {cue.order_index + 1} ends with dangling word '{words[-1]}'.",
+                }
+            )
+        lines = wrap_caption(normalized, max_chars)
         if len(lines) > max_lines:
             warnings.append(
                 {
                     "code": "subtitle.too_many_lines",
-                    "severity": "warning",
+                    "severity": "error",
                     "message": f"Cue {cue.order_index + 1} needs {len(lines)} lines "
                     f"(limit {max_lines}): '{cue.text[:40]}...'",
                 }
@@ -408,6 +647,22 @@ def validate_cues(cues: list[CueSpec], max_chars: int, max_lines: int) -> list[d
                     f"{cue.duration:.2f}s, too fast to read.",
                 }
             )
+        if media_duration is not None and cue.end_time > media_duration + 0.01:
+            warnings.append(
+                {
+                    "code": "subtitle.after_media",
+                    "severity": "error",
+                    "message": f"Cue {cue.order_index + 1} ends after media duration.",
+                }
+            )
+    if cues and len(str(cues[-1].text).split()) == 1:
+        warnings.append(
+            {
+                "code": "subtitle.final_one_word",
+                "severity": "error",
+                "message": "The final cue contains one word.",
+            }
+        )
     for a, b in zip(cues, cues[1:], strict=False):
         if b.start_time < a.end_time - 0.01:
             warnings.append(

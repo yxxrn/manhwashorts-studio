@@ -34,6 +34,18 @@ def _seed(seed: int, index: int, text: str) -> int:
     return int.from_bytes(hashlib.sha256(raw).digest()[:4], "big")
 
 
+def _choose_mode(options: list[str], previous: list[str], local_seed: int) -> str:
+    """Choose a deterministic option while avoiding the recent mode history."""
+    return next(
+        (
+            options[(local_seed + offset) % len(options)]
+            for offset in range(len(options))
+            if options[(local_seed + offset) % len(options)] not in previous
+        ),
+        options[local_seed % len(options)],
+    )
+
+
 def plan_motion(
     *, section: str, narration_tags: Iterable[str], roi_label: str = "",
     duration: float = 1.5, history: Iterable[str] = (), seed: int = 42,
@@ -50,21 +62,26 @@ def plan_motion(
     elif ("attack" in tags or "action" in tags) and roi_label in {"weapon", "magic_effect", "effect"}:
         mode, intensity, reason = "panel_stack", "medium", "action object needs wide context plus detail"
     elif "attack" in tags or "action" in tags:
-        options = ["guided_pan", "impact", "hold"]
-        mode = next((options[(local_seed + n) % len(options)] for n in range(len(options)) if options[(local_seed + n) % len(options)] not in previous), "hold")
-        intensity, reason = ("medium", "attack tag and subject ROI") if mode != "hold" else ("low", "action release beat")
+        mode = _choose_mode(["guided_pan", "focus_shift", "slow_pull", "atmospheric"], previous, local_seed)
+        intensity, reason = "medium", "action subject receives a deterministic directional move"
     elif "reveal" in tags or section in {"twist", "cliffhanger"}:
-        mode, intensity, reason = ("panel_reveal", "medium", "reveal needs hold then reveal")
+        mode = _choose_mode(["panel_reveal", "focus_shift", "slow_pull", "atmospheric"], previous, local_seed)
+        intensity, reason = "medium", "reveal receives a deterministic reveal-to-detail progression"
     elif "victory" in tags:
-        mode, intensity, reason = "slow_pull", "low", "victory release"
+        mode = _choose_mode(["slow_pull", "atmospheric", "focus_shift"], previous, local_seed)
+        intensity, reason = "low", "victory release with a deterministic mode variation"
     elif "thinking" in tags:
-        mode, intensity, reason = "slow_push", "low", "thinking beat"
+        mode = _choose_mode(["slow_push", "focus_shift", "guided_pan"], previous, local_seed)
+        intensity, reason = "low", "thinking beat with a deterministic reading vector"
     elif "dialogue" in tags:
-        mode, intensity, reason = "slow_push", "low", "dialogue clarity with living frame"
+        mode = _choose_mode(["slow_push", "guided_pan", "focus_shift", "atmospheric"], previous, local_seed)
+        intensity, reason = "low", "dialogue clarity with deterministic living-frame variation"
     elif "approach" in tags:
-        mode, intensity, reason = "guided_pan", "low", "approach direction"
+        mode = _choose_mode(["guided_pan", "slow_push", "focus_shift"], previous, local_seed)
+        intensity, reason = "low", "approach direction with deterministic mode variation"
     else:
-        mode, intensity, reason = "slow_push", "low", "new information receives continuous internal motion"
+        mode = _choose_mode(["slow_push", "slow_pull", "guided_pan", "focus_shift", "atmospheric"], previous, local_seed)
+        intensity, reason = "low", "new information receives deterministic internal motion variation"
     return MotionPlan(mode, intensity, reason, local_seed).validate()
 
 

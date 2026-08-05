@@ -31,6 +31,9 @@ from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
 from app.services import encoders
 from app.services.timeline import CueSpec, wrap_caption
 
+_SECTION_TRANSITION_MIN = 0.12
+_SECTION_TRANSITION_MAX = 0.18
+
 
 class RenderError(RuntimeError):
     """Raised when a render step fails. Message is safe to show the user."""
@@ -394,7 +397,7 @@ def render_scene_clip(
     # The Shot Director owns transition intent. Do not fade every clip: that
     # creates a black flash between ROI cuts and makes the edit feel mechanical.
     if scene.transition == "fade":
-        fade = min(0.18, duration / 4)
+        fade = min(_SECTION_TRANSITION_MAX, max(_SECTION_TRANSITION_MIN, duration / 4))
         if fade > 0.05:
             vf += f",fade=t=in:st=0:d={fade:.2f}"
 
@@ -414,7 +417,7 @@ def render_scene_clip(
             "-vf", vf,
             "-r", str(fps),
             "-frames:v", str(frames),
-            *encoders.video_args(selection, preview=preview),
+            *encoders.video_args(selection, preview=preview, final=not preview),
             str(dest),
         ],
         timeout=600,
@@ -439,7 +442,7 @@ def join_scene_clips(
     durations = [scene.duration for scene in scenes]
     frame_counts = [max(1, int(round(duration * fps))) for duration in durations]
     transitions = [
-        min(max(1, int(round(0.18 * fps))), frame_counts[index], frame_counts[index + 1])
+        min(max(1, int(round(_SECTION_TRANSITION_MAX * fps))), frame_counts[index], frame_counts[index + 1])
         if index + 1 < len(scenes) and scenes[index + 1].transition == "fade"
         else 0
         for index in range(len(scenes))
@@ -496,7 +499,7 @@ def join_scene_clips(
         cmd += ["-i", str(clip)]
     cmd += [
         "-filter_complex", filter_graph, "-map", "[joined_exact]", "-an",
-        *encoders.video_args(selection, preview=preview), str(dest),
+        *encoders.video_args(selection, preview=preview, final=not preview), str(dest),
     ]
     try:
         _run(cmd, timeout=900, step="concat")
@@ -615,9 +618,13 @@ def _escape_filter_path(path: Path) -> str:
 
 def render_video(request: RenderRequest, progress=None) -> RenderResult:
     """Render a complete Short. ``progress(pct, stage)`` is called as it runs."""
-    width = request.width or settings.video_width
-    height = request.height or settings.video_height
-    fps = request.fps or settings.video_fps
+    if request.preview:
+        width = request.width or settings.video_width
+        height = request.height or settings.video_height
+        fps = request.fps or settings.video_fps
+    else:
+        # Final delivery is a fixed vertical contract; previews may stay small.
+        width, height, fps = settings.video_width, settings.video_height, settings.video_fps
 
     if width % 2 or height % 2:
         raise RenderError("video dimensions must be even for H.264", code="bad_dimensions")
@@ -715,7 +722,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 *encoders.input_args(selection),
                 "-i", str(silent),
                 "-vf", burn_vf,
-                *encoders.video_args(selection, preview=request.preview),
+                *encoders.video_args(selection, preview=request.preview, final=not request.preview),
                 str(burned),
             ],
             timeout=900,
@@ -732,6 +739,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
 
     if request.audio_path and Path(request.audio_path).is_file():
         master_duration = probe(video_stage)["duration"]
+        normalizer = "" if request.preview else ",loudnorm=I=-14:TP=-1.5:LRA=11"
         cmd = [
             settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(video_stage),
@@ -744,12 +752,12 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 "-filter_complex",
                 f"[2:a]volume={request.music_gain_db}dB[bg];"
                 f"[1:a][bg]amix=inputs=2:duration=first:dropout_transition=2,"
-                f"apad,atrim=duration={master_duration:.6f}[aout]",
+                f"apad,atrim=duration={master_duration:.6f}{normalizer}[aout]",
                 "-map", "0:v", "-map", "[aout]",
             ]
         else:
             cmd += [
-                "-filter_complex", f"[1:a]apad,atrim=duration={master_duration:.6f}[aout]",
+                "-filter_complex", f"[1:a]apad,atrim=duration={master_duration:.6f}{normalizer}[aout]",
                 "-map", "0:v", "-map", "[aout]",
             ]
         cmd += [

@@ -388,11 +388,14 @@ def select(requested: str | None = None) -> Selection:
     )
 
 
-def video_args(selection: Selection, *, preview: bool = False) -> list[str]:
+def video_args(
+    selection: Selection, *, preview: bool = False, final: bool = False,
+) -> list[str]:
     """Output flags for the chosen encoder.
 
-    Preview renders trade quality for speed: they exist to check timing and
-    captions, and nobody publishes them.
+    Preview renders trade quality for speed. Final output opts into the
+    publication-quality H.264 profile while the default CPU arguments remain
+    the v1.0 compatibility baseline used by callers and tests.
     """
     spec = selection.spec
     args = list(spec.output_args)
@@ -408,6 +411,17 @@ def video_args(selection: Selection, *, preview: bool = False) -> list[str]:
             args = ["-c:v", "h264_vaapi", "-qp", "30"]
         elif spec.key == VIDEOTOOLBOX.key:
             args = ["-c:v", "h264_videotoolbox", "-q:v", "40"]
+    elif final:
+        if spec.key == CPU.key:
+            args = ["-c:v", "libx264", "-preset", "slow", "-crf", "18", "-profile:v", "high"]
+        elif spec.key == NVENC.key:
+            args = ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "20", "-b:v", "0", "-profile:v", "high"]
+        elif spec.key == QSV.key:
+            args = ["-c:v", "h264_qsv", "-preset", "slow", "-global_quality", "20", "-profile:v", "high"]
+        elif spec.key == VAAPI.key:
+            args = ["-c:v", "h264_vaapi", "-qp", "20"]
+        elif spec.key == VIDEOTOOLBOX.key:
+            args = ["-c:v", "h264_videotoolbox", "-q:v", "50", "-profile:v", "high"]
 
     # VAAPI keeps frames in GPU memory, so -pix_fmt would fight the hwupload.
     if not spec.filter_suffix:

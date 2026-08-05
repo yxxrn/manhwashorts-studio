@@ -19,6 +19,10 @@
 5. Review QC history and any warning overrides. Every override needs an actor and reason.
 6. Queue a final render. Confirm actual encoder, fallback reason, wall time, RSS, and scratch size.
 7. Confirm `final.qc.json`, playback, duration, H.264/AAC, 1080x1920, and checksum.
+8. Confirm normal-motion diversity, action hard cuts, caption 4-7-word groups,
+   caption end times, -14 LUFS/-1.5 dBTP audio metrics, and the contact sheet.
+9. Confirm `source_rights_report.json` before any publication decision; a failed
+   rights/source gate keeps `publish_allowed` false.
 8. Publish only after explicit per-request confirmation. Private is the default.
 
 ## Recovery

@@ -17,6 +17,9 @@ Updated: 2026-08-04
 - CPU FFmpeg render: 1080×1920, 30 FPS, H.264/AAC.
 - Persisted QC report, immutable override history, render leases, stale-job
   recovery, resource metrics, and cleanup.
+- Phase 2 editorial gates: deterministic panel penalties and asset reuse caps,
+  chronology/source-family audit reasons, four-mode motion diversity, action
+  hard cuts, 0.12-0.18s section transitions, and readable caption groups.
 - Private-by-default publication gate with rights and approval checks.
 - BYOK encryption and provider discovery.
 - Full test, lint, compile, and real-FFmpeg validation on Google execution host.
@@ -47,5 +50,8 @@ A render is review-only until all are true:
 4. Playback, codecs, dimensions, duration, audio, subtitle pixels, drift, and
    black-frame checks pass.
 5. Publication is explicitly confirmed by the user.
+6. Final delivery uses 1080x1920 30fps H.264 High/yuv420p with final audio
+   normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
+7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
 Current state: **development / review-only**.
