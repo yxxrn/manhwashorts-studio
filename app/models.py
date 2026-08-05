@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -186,8 +187,19 @@ class SourceAsset(Base, TimestampMixin):
     panel_bbox: Mapped[dict] = mapped_column(JSON, default=dict)
     panel_quality: Mapped[dict] = mapped_column(JSON, default=dict)
     panel_decision: Mapped[str] = mapped_column(String(20), default="accept")
+    original_checksum: Mapped[str] = mapped_column(String(64), default="")
+    original_width: Mapped[int] = mapped_column(Integer, default=0)
+    original_height: Mapped[int] = mapped_column(Integer, default=0)
+    source_bounds_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    strip_order: Mapped[int] = mapped_column(Integer, default=0)
+    region_order: Mapped[int] = mapped_column(Integer, default=0)
+    trim_classification: Mapped[str] = mapped_column(String(40), default="unknown")
+    coverage_map_hash: Mapped[str] = mapped_column(String(64), default="")
 
     project: Mapped[Project] = relationship(back_populates="assets")
+    panel_regions: Mapped[list[PanelRegion]] = relationship(
+        back_populates="source_asset", passive_deletes=True
+    )
 
     @property
     def is_publishable(self) -> bool:
@@ -212,8 +224,87 @@ class StoryAnalysis(Base, TimestampMixin):
     pronunciation_candidates: Mapped[list[str]] = mapped_column(JSON, default=list)
     low_confidence_notes: Mapped[list[str]] = mapped_column(JSON, default=list)
     edited_by_user: Mapped[bool] = mapped_column(Boolean, default=False)
+    analysis_run_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )
+    state: Mapped[str | None] = mapped_column(String(30), nullable=True, default=None)
+    provider_type: Mapped[str | None] = mapped_column(
+        String(40), nullable=True, default=None
+    )
+    provider_name: Mapped[str | None] = mapped_column(
+        String(80), nullable=True, default=None
+    )
+    model_name: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
+    instruction_version: Mapped[str | None] = mapped_column(
+        String(40), nullable=True, default=None
+    )
+    instruction_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )
+    coverage_manifest_json: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+    continuity_ledger_json: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+    evidence_graph_json: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+    story_spine_json: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    blocking_reasons_json: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+    reconciliation_json: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )
 
     project: Mapped[Project] = relationship(back_populates="analyses")
+    panel_regions: Mapped[list[PanelRegion]] = relationship(
+        back_populates="story_analysis", cascade="all, delete-orphan"
+    )
+
+
+class PanelRegion(Base, TimestampMixin):
+    """A source-space region linked to one analysis and its evidence chain."""
+
+    __tablename__ = "panel_regions"
+    __table_args__ = (
+        Index(
+            "uq_panel_regions_analysis_source_order",
+            "story_analysis_id",
+            "source_order",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    story_analysis_id: Mapped[str] = mapped_column(
+        ForeignKey("story_analyses.id", ondelete="CASCADE")
+    )
+    source_asset_id: Mapped[str] = mapped_column(
+        ForeignKey("source_assets.id", ondelete="CASCADE"), index=True
+    )
+    source_asset_checksum: Mapped[str] = mapped_column(String(64), default="")
+    original_width: Mapped[int] = mapped_column(Integer, default=0)
+    original_height: Mapped[int] = mapped_column(Integer, default=0)
+    strip_region_id: Mapped[str] = mapped_column(String(80), default="")
+    panel_id: Mapped[str] = mapped_column(String(80), default="")
+    source_order: Mapped[int] = mapped_column(Integer, default=0)
+    bounds_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    region_class: Mapped[str] = mapped_column(
+        String(40), default="canonical_panel", index=True
+    )
+    segmentation_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    segmentation_version: Mapped[str] = mapped_column(String(40), default="")
+    coverage_map_hash: Mapped[str] = mapped_column(String(64), default="")
+    observation_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    chunk_index: Mapped[int] = mapped_column(Integer, default=0)
+    evidence_refs_json: Mapped[list] = mapped_column(JSON, default=list)
+
+    story_analysis: Mapped[StoryAnalysis] = relationship(back_populates="panel_regions")
+    source_asset: Mapped[SourceAsset] = relationship(
+        back_populates="panel_regions", passive_deletes=True
+    )
 
 
 class ScriptVersion(Base, TimestampMixin):
