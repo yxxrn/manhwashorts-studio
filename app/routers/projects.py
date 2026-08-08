@@ -296,6 +296,19 @@ async def upload_assets(
                 panel_bbox=result.panel_bbox or {},
                 panel_quality=result.panel_quality or {},
                 panel_decision=result.panel_decision,
+                original_checksum=result.original_checksum,
+                original_width=result.original_width,
+                original_height=result.original_height,
+                source_bounds_json={
+                    "x": result.source_bounds[0],
+                    "y": result.source_bounds[1],
+                    "width": result.source_bounds[2],
+                    "height": result.source_bounds[3],
+                },
+                strip_order=result.strip_order,
+                region_order=result.region_order,
+                trim_classification=result.trim_classification,
+                coverage_map_hash=result.coverage_map_hash,
             )
             next_index += 1
             db.add(asset)
