@@ -68,6 +68,14 @@ class IngestedAsset:
     panel_quality: dict = None
     panel_decision: str = "accept"
     audio_duration: float = 0.0
+    original_checksum: str = ""
+    original_width: int = 0
+    original_height: int = 0
+    source_bounds: tuple[int, int, int, int] = (0, 0, 0, 0)
+    strip_order: int = 0
+    region_order: int = 0
+    trim_classification: str = "unsliced"
+    coverage_map_hash: str = ""
 
 
 _SLICE_SUFFIX = re.compile(r"(?:[_-]p?\d+)$", re.IGNORECASE)
@@ -286,6 +294,14 @@ def ingest_image(project_id: str, filename: str, data: bytes) -> IngestedAsset:
         checksum=obj.checksum,
         width=width,
         height=height,
+        original_checksum=obj.checksum,
+        original_width=width,
+        original_height=height,
+        source_bounds=(0, 0, width, height),
+        strip_order=0,
+        region_order=0,
+        trim_classification="unsliced",
+        coverage_map_hash="",
         source_family=derive_source_family(filename),
         panel_bbox=quality["bbox"], panel_quality=quality, panel_decision=quality["decision"],
     )
@@ -343,6 +359,14 @@ def ingest_image_parts(project_id: str, filename: str, data: bytes) -> list[Inge
                 panel_quality=quality,
                 panel_decision=quality["decision"],
                 audio_duration=0.0,
+                original_checksum=piece.original_checksum,
+                original_width=piece.original_width or width,
+                original_height=piece.original_height or height,
+                source_bounds=piece.source_bounds or (0, piece.top, width, piece.bottom),
+                strip_order=piece.strip_order,
+                region_order=piece.region_order if piece.region_order >= 0 else number - 1,
+                trim_classification=piece.trim_classification,
+                coverage_map_hash=piece.coverage_map_hash,
             )
         )
     return assets

@@ -21,6 +21,7 @@ Pillow only, no new dependencies.
 
 from __future__ import annotations
 
+import hashlib
 import io
 from dataclasses import dataclass
 
@@ -56,6 +57,14 @@ class StripSlice:
     data: bytes
     #: True when the cut landed on a detected gutter rather than a plain split.
     snapped_to_gutter: bool
+    original_checksum: str = ""
+    original_width: int = 0
+    original_height: int = 0
+    source_bounds: tuple[int, int, int, int] = (0, 0, 0, 0)
+    strip_order: int = 0
+    region_order: int = 0
+    trim_classification: str = "unsliced"
+    coverage_map_hash: str = ""
 
     @property
     def height(self) -> int:
@@ -248,45 +257,121 @@ def plan_cuts(img: Image.Image) -> tuple[list[tuple[int, int]], list[bool]]:
     return spans, flags
 
 
-def slice_strip(data: bytes, *, quality: int = 92) -> list[StripSlice]:
-    """Split a tall strip into scene-sized pieces.
+def _normalise_spans(
+    spans: list[tuple[int, int]],
+    flags: list[bool],
+    height: int,
+) -> tuple[list[tuple[int, int]], list[bool]]:
+    # Make cuts a complete partition and merge, rather than drop, slivers.
+    raw: list[tuple[int, int, bool]] = []
+    for index, (top, bottom) in enumerate(spans):
+        if bottom <= 0 or top >= height or bottom <= top:
+            continue
+        raw.append((
+            max(0, top),
+            min(height, bottom),
+            bool(flags[index]) if index < len(flags) else False,
+        ))
+    if not raw:
+        return [(0, height)], [False]
+    raw.sort(key=lambda item: (item[0], item[1]))
+    boundaries = [0]
+    for _, bottom, _ in raw[:-1]:
+        if boundaries[-1] < bottom < height:
+            boundaries.append(bottom)
+    if boundaries[-1] != height:
+        boundaries.append(height)
+    normalised = [
+        (boundaries[index], boundaries[index + 1])
+        for index in range(len(boundaries) - 1)
+    ]
+    normalised_flags = [
+        raw[index][2] if index < len(raw) else False
+        for index in range(len(normalised))
+    ]
+    while len(normalised) > 1:
+        sliver_index = next(
+            (index for index, (top, bottom) in enumerate(normalised) if bottom - top < 200),
+            None,
+        )
+        if sliver_index is None:
+            break
+        if sliver_index == 0:
+            left_index, right_index = 0, 1
+        elif sliver_index == len(normalised) - 1:
+            left_index, right_index = sliver_index - 1, sliver_index
+        else:
+            left_height = normalised[sliver_index - 1][1] - normalised[sliver_index - 1][0]
+            right_height = normalised[sliver_index + 1][1] - normalised[sliver_index + 1][0]
+            if left_height >= right_height:
+                left_index, right_index = sliver_index - 1, sliver_index
+            else:
+                left_index, right_index = sliver_index, sliver_index + 1
+        merged = (normalised[left_index][0], normalised[right_index][1])
+        merged_flag = normalised_flags[left_index] or normalised_flags[right_index]
+        normalised[left_index:right_index + 1] = [merged]
+        normalised_flags[left_index:right_index + 1] = [merged_flag]
+    return normalised, normalised_flags
 
-    Returns a single slice holding the original bytes when the image is not tall
-    enough to benefit, so callers can treat both cases the same way.
-    """
+
+def slice_strip(data: bytes, *, quality: int = 92) -> list[StripSlice]:
+    """Split a strip while preserving complete original source lineage."""
     with Image.open(io.BytesIO(data)) as img:
         img.load()
         source = img.convert("RGB")
         width, height = source.size
+        original_checksum = hashlib.sha256(data).hexdigest()
+        full_bounds = (0, 0, width, height)
+
+        def full_slice() -> StripSlice:
+            return StripSlice(
+                index=0,
+                top=0,
+                bottom=height,
+                data=data,
+                snapped_to_gutter=False,
+                original_checksum=original_checksum,
+                original_width=width,
+                original_height=height,
+                source_bounds=full_bounds,
+                strip_order=0,
+                region_order=0,
+                trim_classification="unsliced",
+                coverage_map_hash="",
+            )
 
         if not settings.strip_slice_enabled:
-            return [StripSlice(0, 0, height, data, False)]
-
+            return [full_slice()]
         spans, flags = plan_cuts(source)
+        spans, flags = _normalise_spans(spans, flags, height)
         if len(spans) <= 1:
-            return [StripSlice(0, 0, height, data, False)]
+            return [full_slice()]
 
         pieces: list[StripSlice] = []
-        for (top, bottom), snapped in zip(spans, flags, strict=True):
-            # ingest rejects anything under 200px; skip a sliver rather than fail.
-            if bottom - top < 200:
-                continue
+        for index, ((top, bottom), snapped) in enumerate(zip(spans, flags, strict=True)):
             segment = source.crop((0, top, width, bottom))
             buffer = io.BytesIO()
             segment.save(buffer, "JPEG", quality=quality)
             pieces.append(
                 StripSlice(
-                    index=len(pieces),
+                    index=index,
                     top=top,
                     bottom=bottom,
                     data=buffer.getvalue(),
                     snapped_to_gutter=snapped,
+                    original_checksum=original_checksum,
+                    original_width=width,
+                    original_height=height,
+                    source_bounds=(0, top, width, bottom),
+                    strip_order=0,
+                    region_order=index,
+                    trim_classification=(
+                        "gutter_snapped" if snapped else "deterministic_split"
+                    ),
+                    coverage_map_hash="",
                 )
             )
-
-        if not pieces:
-            return [StripSlice(0, 0, height, data, False)]
-        return pieces
+        return pieces or [full_slice()]
 
 
 def describe(data: bytes) -> dict:
