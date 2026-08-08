@@ -96,13 +96,15 @@ def _secret_value(value: object) -> str:
 
 
 def _vision_base_url(provider: str, value: object) -> str:
-    candidate = value if isinstance(value, str) else None
-    try:
-        resolved = providers_svc.validate_base_url(candidate)
-    except Exception:
-        resolved = None
-    if resolved:
-        return resolved
+    if value is not None:
+        if not isinstance(value, str) or not value.strip():
+            if not isinstance(value, str):
+                return ""
+        else:
+            try:
+                return providers_svc.validate_base_url(value) or ""
+            except Exception:
+                return ""
 
     try:
         spec = providers_svc.get_spec(CredentialKind.LLM, provider)

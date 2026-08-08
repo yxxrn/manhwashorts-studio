@@ -223,3 +223,34 @@ def test_resolve_vision_uses_openai_compatible_environment_without_network(
     assert report.blocking_reason is None
     assert provider.capability() == report
     _assert_safe_report(report, env_key)
+
+
+def test_resolve_vision_rejects_invalid_explicit_endpoint_without_fallback(
+    db, workspace, monkeypatch
+):
+    resolve_vision = _resolve_vision()
+    _add_verified_credential(
+        db,
+        workspace,
+        provider="openai",
+        model="gpt-test",
+        base_url="ftp://unexpected.example/v1",
+    )
+    calls: list[str] = []
+
+    def record_reveal(_credential):
+        calls.append("reveal_secret")
+        return "sk-endpoint-test"
+
+    def record_mark_used(_db, _credential):
+        calls.append("mark_used")
+
+    monkeypatch.setattr(cred_svc, "reveal_secret", record_reveal)
+    monkeypatch.setattr(cred_svc, "mark_used", record_mark_used)
+
+    provider, report = resolve_vision(db, workspace.id)
+
+    assert provider is None
+    assert report.available is False
+    assert report.blocking_reason == "vision_capability_missing"
+    assert calls == []
