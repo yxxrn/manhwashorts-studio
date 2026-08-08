@@ -25,7 +25,13 @@ from app.config import settings
 from app.constants import CredentialKind
 from app.services import analysis as analysis_svc
 from app.services import credentials as cred_svc
+from app.services import providers as providers_svc
 from app.services import tts as tts_svc
+from app.services.vision_adapter import (
+    OpenAICompatibleVisionProvider,
+    VisionCapabilityReport,
+    VisionObservationProvider,
+)
 
 
 @dataclass
@@ -55,6 +61,165 @@ class Resolution:
             "credential_id": self.credential_id,
             "reason": self.reason,
         }
+
+
+_VISION_OPENAI_COMPATIBLE_PROVIDERS = frozenset(
+    {
+        "openai",
+        "openrouter",
+        "groq",
+        "deepseek",
+        "mistral",
+        "together",
+        "xai",
+        "custom_openai",
+    }
+)
+
+
+def _vision_model(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _secret_value(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        getter = getattr(value, "get_secret_value", None)
+        if callable(getter):
+            value = getter()
+    except Exception:
+        return ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _vision_base_url(provider: str, value: object) -> str:
+    candidate = value if isinstance(value, str) else None
+    try:
+        resolved = providers_svc.validate_base_url(candidate)
+    except Exception:
+        resolved = None
+    if resolved:
+        return resolved
+
+    try:
+        spec = providers_svc.get_spec(CredentialKind.LLM, provider)
+        return providers_svc.validate_base_url(spec.default_base_url) or ""
+    except Exception:
+        return ""
+
+
+def _vision_unavailable(
+    provider_type: str,
+    provider_name: str,
+    model: str | None,
+    blocking_reason: str,
+) -> tuple[None, VisionCapabilityReport]:
+    return None, VisionCapabilityReport(
+        provider_type=provider_type,
+        provider_name=provider_name,
+        model=model,
+        image_input=False,
+        structured_json=False,
+        available=False,
+        blocking_reason=blocking_reason,
+    )
+
+
+def _build_vision_provider(
+    provider: str,
+    model: str | None,
+    base_url: str,
+    api_key: str,
+) -> tuple[VisionObservationProvider | None, VisionCapabilityReport]:
+    if not model or not base_url or not api_key:
+        return _vision_unavailable(
+            "openai_compatible",
+            "openai_compatible",
+            model,
+            "vision_capability_missing",
+        )
+
+    adapter = OpenAICompatibleVisionProvider(
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+    )
+    report = adapter.capability()
+    if not report.available:
+        return None, report
+    return adapter, report
+
+
+def resolve_vision(
+    db: Session, workspace_id: str
+) -> tuple[VisionObservationProvider | None, VisionCapabilityReport]:
+    """Resolve a configured multimodal provider without a text fallback."""
+    row = cred_svc.active_credential(db, workspace_id, CredentialKind.LLM)
+    if row is not None:
+        provider = str(row.provider)
+        model = _vision_model(row.model)
+        if provider not in _VISION_OPENAI_COMPATIBLE_PROVIDERS:
+            return _vision_unavailable(
+                provider,
+                provider,
+                model,
+                "vision_provider_unsupported",
+            )
+
+        base_url = _vision_base_url(provider, row.base_url)
+        if not model or not base_url:
+            return _vision_unavailable(
+                "openai_compatible",
+                "openai_compatible",
+                model,
+                "vision_capability_missing",
+            )
+        try:
+            api_key = cred_svc.reveal_secret(row)
+        except Exception:
+            return _vision_unavailable(
+                "openai_compatible",
+                "openai_compatible",
+                model,
+                "vision_capability_missing",
+            )
+
+        adapter, report = _build_vision_provider(provider, model, base_url, api_key)
+        if adapter is None or not report.available:
+            return None, report
+        cred_svc.mark_used(db, row)
+        return adapter, report
+
+    configured_provider = str(settings.llm_provider or "").strip()
+    if configured_provider == "openai_compatible":
+        model = _vision_model(settings.llm_model)
+        base_url = _vision_base_url(
+            configured_provider,
+            settings.llm_base_url,
+        )
+        api_key = _secret_value(settings.llm_api_key)
+        return _build_vision_provider(
+            configured_provider,
+            model,
+            base_url,
+            api_key,
+        )
+    if configured_provider and configured_provider != "rules":
+        return _vision_unavailable(
+            configured_provider,
+            configured_provider,
+            _vision_model(settings.llm_model),
+            "vision_provider_unsupported",
+        )
+    return _vision_unavailable(
+        "rules",
+        "rules",
+        None,
+        "vision_capability_missing",
+    )
 
 
 def describe_llm(db: Session, workspace_id: str) -> Resolution:
