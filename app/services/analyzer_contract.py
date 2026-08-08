@@ -160,7 +160,7 @@ def _validate_observations(
         _nonempty_string(observation.get("coverage_map_hash"), "coverage_map_hash")
         _string_list(observation.get("visible_facts"), "visible_facts", allow_empty=False)
         _string_list(observation.get("dialogue_or_ocr"), "dialogue_or_ocr")
-        _string_list(observation.get("inferences"), "inferences", allow_empty=False)
+        _string_list(observation.get("inferences"), "inferences")
         _string_list(observation.get("uncertainties"), "uncertainties")
         refs = _panel_refs(observation.get("evidence_refs"), expected, "evidence_refs")
         if panel_id not in refs:
@@ -213,8 +213,8 @@ def _validate_continuity(value: Any, expected: tuple[str, ...]) -> None:
     )
     _require_fields(ledger, required, "continuity_ledger")
     chunks = ledger["chunks"]
-    if not isinstance(chunks, list) or len(chunks) < 2:
-        _fail("continuity requires sequential overlapping chunks")
+    if not isinstance(chunks, list) or not chunks:
+        _fail("continuity requires at least one chunk")
     chunk_ids: set[str] = set()
     seen_panel_ids: set[str] = set()
     chunk_panel_ids: list[list[str]] = []
@@ -256,8 +256,8 @@ def _validate_continuity(value: Any, expected: tuple[str, ...]) -> None:
         _panel_refs(entity["panel_ids"], expected, "entity panel_ids")
 
     motives = ledger["motives"]
-    if not isinstance(motives, list) or not motives:
-        _fail("continuity motives are required")
+    if not isinstance(motives, list):
+        _fail("continuity motives must be a list")
     for motive_value in motives:
         motive = _mapping(motive_value, "motive")
         _require_fields(motive, ("entity_id", "text", "evidence_panel_ids"), "motive")
@@ -267,8 +267,8 @@ def _validate_continuity(value: Any, expected: tuple[str, ...]) -> None:
         _panel_refs(motive["evidence_panel_ids"], expected, "motive evidence")
 
     state_changes = ledger["state_changes"]
-    if not isinstance(state_changes, list) or not state_changes:
-        _fail("continuity state_changes are required")
+    if not isinstance(state_changes, list):
+        _fail("continuity state_changes must be a list")
     for change_value in state_changes:
         change = _mapping(change_value, "state change")
         _require_fields(
@@ -283,8 +283,8 @@ def _validate_continuity(value: Any, expected: tuple[str, ...]) -> None:
         _panel_refs(change["evidence_panel_ids"], expected, "state change evidence")
 
     causal_links = ledger["causal_links"]
-    if not isinstance(causal_links, list) or not causal_links:
-        _fail("continuity causal_links are required")
+    if not isinstance(causal_links, list):
+        _fail("continuity causal_links must be a list")
     for link_value in causal_links:
         link = _mapping(link_value, "causal link")
         _require_fields(

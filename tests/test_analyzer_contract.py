@@ -504,6 +504,33 @@ def test_script_passages_require_linked_claim_and_panel_evidence(mutate):
     assert chapter == before
 
 
+def test_complete_one_chunk_chapter_is_valid():
+    module = _contract_module()
+    chapter = _chapter_one()
+    expected_panel_ids = ("panel-dock-1", "panel-dock-2", "panel-dock-3")
+    chapter["continuity_ledger"]["chunks"] = [
+        {"chunk_id": "chunk-dock-all", "panel_ids": list(expected_panel_ids)}
+    ]
+    _validate(module, chapter, expected_panel_ids=expected_panel_ids)
+
+
+def test_fact_only_observation_may_have_no_inference():
+    module = _contract_module()
+    chapter = _chapter_one()
+    chapter["observations"][0]["inferences"] = []
+    _validate(module, chapter)
+
+
+def test_empty_semantic_ledger_lists_are_valid_when_evidence_has_no_relation():
+    module = _contract_module()
+    chapter = _chapter_one()
+    ledger = chapter["continuity_ledger"]
+    ledger["motives"] = []
+    ledger["state_changes"] = []
+    ledger["causal_links"] = []
+    _validate(module, chapter)
+
+
 def test_coverage_and_overlapping_continuity_must_reconcile_before_script():
     module = _contract_module()
     chapter = _chapter_one()
