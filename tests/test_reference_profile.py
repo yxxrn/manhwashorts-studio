@@ -1,0 +1,201 @@
+import dataclasses
+import hashlib
+import importlib
+import json
+
+import pytest
+
+SPEC_CANONICAL_KEYS = (
+    "profile_id",
+    "version",
+    "duration_min_s",
+    "duration_max_s",
+    "shot_min",
+    "shot_max",
+    "hold_min_s",
+    "hold_max_s",
+    "emphasis_min_s",
+    "emphasis_max_s",
+    "hold_ratio_min",
+    "emphasis_ratio_max",
+    "mean_shot_min_s",
+    "mean_shot_max_s",
+    "hard_cut_ratio_min",
+    "transition_min_s",
+    "transition_max_s",
+    "normal_zoom_max",
+    "impact_zoom_max",
+    "caption_words_per_cue",
+    "caption_uppercase",
+    "caption_unicode_punctuation_allowed",
+    "caption_top_sentence_allowed",
+    "caption_safe_region",
+    "caption_anchor",
+    "caption_font_weight",
+    "caption_primary_color",
+    "caption_outline_color",
+    "caption_outline_pixels",
+    "caption_shadow_color",
+    "caption_shadow_alpha_max",
+    "caption_alignment",
+    "max_canonical_panel_uses",
+    "consecutive_panel_reuse_allowed",
+    "final_width",
+    "final_height",
+    "final_fps",
+    "final_codec",
+    "final_codec_profile",
+    "final_pixel_format",
+    "audio_lufs_target",
+    "audio_true_peak_max_db",
+    "unlicensed_music_sfx_allowed",
+)
+
+
+def _profile_module():
+    try:
+        return importlib.import_module("app.services.reference_profile")
+    except Exception as exc:
+        pytest.fail(
+            "reference profile import boundary is unavailable in the test body: "
+            f"{exc}"
+        )
+
+
+def test_reference_profile_has_the_complete_approved_contract():
+    module = _profile_module()
+    profile = module.REFERENCE_MATCHED_SHORTS_V1
+
+    assert profile.profile_id == "reference_matched_shorts_v1"
+    assert profile.version == "1.0.0"
+    expected_values = {
+        "duration_min_s": 38.0,
+        "duration_max_s": 50.0,
+        "shot_min": 28,
+        "shot_max": 36,
+        "hold_min_s": 0.9,
+        "hold_max_s": 1.5,
+        "emphasis_min_s": 1.6,
+        "emphasis_max_s": 2.2,
+        "hold_ratio_min": 0.85,
+        "emphasis_ratio_max": 0.15,
+        "mean_shot_min_s": 1.05,
+        "mean_shot_max_s": 1.65,
+        "hard_cut_ratio_min": 0.85,
+        "transition_min_s": 0.12,
+        "transition_max_s": 0.18,
+        "normal_zoom_max": 1.06,
+        "impact_zoom_max": 1.08,
+        "caption_words_per_cue": 1,
+        "caption_uppercase": True,
+        "caption_unicode_punctuation_allowed": False,
+        "caption_top_sentence_allowed": False,
+        "caption_safe_region": (0.15, 0.85, 0.50, 0.75),
+        "caption_anchor": (0.50, 0.64),
+        "caption_font_weight": "bold",
+        "caption_primary_color": "white",
+        "caption_outline_color": "black",
+        "caption_outline_pixels": 6,
+        "caption_shadow_color": "black",
+        "caption_shadow_alpha_max": 0.35,
+        "caption_alignment": 5,
+        "max_canonical_panel_uses": 2,
+        "consecutive_panel_reuse_allowed": False,
+        "final_width": 1080,
+        "final_height": 1920,
+        "final_fps": 30,
+        "final_codec": "h264",
+        "final_codec_profile": "High",
+        "final_pixel_format": "yuv420p",
+        "audio_lufs_target": -14.0,
+        "audio_true_peak_max_db": -1.5,
+        "unlicensed_music_sfx_allowed": False,
+    }
+    for field_name, expected in expected_values.items():
+        assert getattr(profile, field_name) == expected
+
+
+def test_reference_profile_is_frozen_and_canonical_json_has_one_key_per_field():
+    module = _profile_module()
+    profile = module.REFERENCE_MATCHED_SHORTS_V1
+    profile_fields = tuple(
+        field.name for field in dataclasses.fields(type(profile))
+    )
+
+    assert profile_fields == SPEC_CANONICAL_KEYS
+    assert dataclasses.is_dataclass(profile)
+    assert dataclasses.fields(type(profile))
+    assert type(profile).__dataclass_params__.frozen is True
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        profile.duration_min_s = 39.0
+
+    canonical = module.canonical_profile_json(profile)
+    expected_canonical = json.dumps(
+        dataclasses.asdict(profile),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert canonical == expected_canonical
+    pairs = json.loads(canonical, object_pairs_hook=list)
+    keys = [key for key, _value in pairs]
+    assert len(keys) == len(profile_fields)
+    assert len(set(keys)) == len(keys)
+    assert tuple(keys) == tuple(sorted(keys))
+    assert set(keys) == set(profile_fields)
+
+
+def test_reference_profile_hash_is_stable_and_sensitive_to_each_field_category():
+    module = _profile_module()
+    profile = module.REFERENCE_MATCHED_SHORTS_V1
+    canonical = module.canonical_profile_json(profile)
+    expected_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    assert module.profile_hash(profile) == expected_hash
+    assert module.profile_hash(profile) == module.profile_hash(profile)
+
+    changed_profiles = {
+        "caption": dataclasses.replace(
+            profile, caption_font_weight="semibold"
+        ),
+        "motion": dataclasses.replace(profile, normal_zoom_max=1.05),
+        "codec_audio": dataclasses.replace(
+            profile,
+            final_codec_profile="Main",
+            audio_lufs_target=-13.0,
+        ),
+        "reuse": dataclasses.replace(profile, max_canonical_panel_uses=1),
+    }
+    changed_hashes = {
+        category: module.profile_hash(changed)
+        for category, changed in changed_profiles.items()
+    }
+    assert all(value != expected_hash for value in changed_hashes.values())
+    assert len(set(changed_hashes.values())) == len(changed_hashes)
+
+
+def _resolve_legacy_selector(module, selector):
+    try:
+        resolved = module.resolve_reference_profile(selector)
+    except Exception as exc:
+        reason_code = getattr(exc, "reason_code", None) or getattr(exc, "code", None)
+        assert reason_code, (
+            "an explicit resolver error must expose a stable reason_code or code"
+        )
+        return ("error", type(exc).__name__, reason_code)
+    return ("value", resolved)
+
+
+def test_reference_profile_resolution_is_explicit_and_legacy_safe():
+    module = _profile_module()
+    profile = module.REFERENCE_MATCHED_SHORTS_V1
+
+    selected = module.resolve_reference_profile("reference_matched_shorts_v1")
+    assert selected.profile_id == profile.profile_id
+    assert module.profile_hash(selected) == module.profile_hash(profile)
+
+    for selector in (None, "", "default", "legacy", "unknown_profile"):
+        first = _resolve_legacy_selector(module, selector)
+        second = _resolve_legacy_selector(module, selector)
+        assert first == second
+        if first[0] == "value":
+            assert first[1] is None
