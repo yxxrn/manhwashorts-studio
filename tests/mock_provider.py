@@ -13,8 +13,10 @@ Run standalone with:  python tests/mock_provider.py --port 8931
 from __future__ import annotations
 
 import argparse
+import copy
 import io
 import json
+import threading
 import wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -41,6 +43,60 @@ ANALYSIS_JSON = {
     "pronunciation_candidates": ["Kaela"],
     "low_confidence_notes": [],
 }
+
+_VISION_LOCK = threading.Lock()
+_VISION_REQUESTS: list[dict] = []
+_VISION_RESPONSE_CONTENT: str | None = None
+
+
+def default_vision_response() -> list[dict]:
+    """Return deterministic observations for the multimodal adapter tests."""
+    return [
+        {
+            "panel_id": f"panel-{suffix}",
+            "visible_facts": [f"visible fact {suffix}"],
+            "dialogue_or_ocr": [],
+            "inferences": [],
+            "uncertainties": [],
+            "entities": [f"entity-{suffix}"],
+            "state_changes": [],
+            "causal_links": [],
+            "evidence_refs": [f"panel-{suffix}"],
+        }
+        for suffix in ("a", "b", "c")
+    ]
+
+
+def reset_vision_state() -> None:
+    """Clear captured multimodal requests and restore the default response."""
+    global _VISION_RESPONSE_CONTENT
+    with _VISION_LOCK:
+        _VISION_REQUESTS.clear()
+        _VISION_RESPONSE_CONTENT = None
+
+
+def set_vision_response_content(content: str | None) -> None:
+    """Override the next deterministic response body used by vision tests."""
+    global _VISION_RESPONSE_CONTENT
+    with _VISION_LOCK:
+        _VISION_RESPONSE_CONTENT = content
+
+
+def captured_vision_requests() -> list[dict]:
+    """Return a copy of multimodal request bodies without headers or secrets."""
+    with _VISION_LOCK:
+        return copy.deepcopy(_VISION_REQUESTS)
+
+
+def _is_vision_request(body: dict) -> bool:
+    for message in body.get("messages", []):
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "image_url"
+            for part in content
+        ):
+            return True
+    return False
 
 
 def _silent_wav(seconds: float = 1.5, rate: int = 24000) -> bytes:
@@ -96,6 +152,17 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw or b"{}")
             if body.get("model") not in MODELS:
                 self._json(400, {"error": {"message": f"unknown model {body.get('model')}"}})
+                return
+            if _is_vision_request(body):
+                with _VISION_LOCK:
+                    _VISION_REQUESTS.append(copy.deepcopy(body))
+                    content = _VISION_RESPONSE_CONTENT
+                if content is None:
+                    content = json.dumps(default_vision_response())
+                self._json(
+                    200,
+                    {"choices": [{"message": {"content": content}}]},
+                )
                 return
             self._json(
                 200,
