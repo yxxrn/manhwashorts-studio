@@ -230,6 +230,34 @@ def test_invalid_observations_fail_closed_without_inference(mock_provider_url):
         _assert_invalid_response(module, mock_provider_url, content)
 
 
+def _remove_required_and_add_foreign(response):
+    response[0].pop("entities")
+    response[0]["foreign_key"] = []
+
+
+def _add_unexpected_key(response):
+    response[0]["unexpected_key"] = []
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        pytest.param(
+            _remove_required_and_add_foreign,
+            id="missing-required-with-foreign-key",
+        ),
+        pytest.param(_add_unexpected_key, id="otherwise-valid-with-unexpected-key"),
+    ),
+)
+def test_observation_keys_must_match_exact_contract(mock_provider_url, mutate):
+    module = _vision_module()
+    import mock_provider
+
+    response = copy.deepcopy(mock_provider.default_vision_response())
+    mutate(response)
+    _assert_invalid_response(module, mock_provider_url, json.dumps(response))
+
+
 def test_response_order_is_deterministic_for_a_complete_request(mock_provider_url):
     module = _vision_module()
     import mock_provider

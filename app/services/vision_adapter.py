@@ -291,7 +291,7 @@ def _validate_observations(
             not isinstance(panel_id, str)
             or panel_id not in requested_set
             or panel_id in by_panel_id
-            or set(observation) < _REQUIRED_OBSERVATION_KEYS
+            or set(observation) != _REQUIRED_OBSERVATION_KEYS
             or any(
                 not isinstance(observation[key], list)
                 for key in observation
