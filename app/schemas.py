@@ -273,6 +273,38 @@ class VoiceRequest(BaseModel):
     provider: str | None = None
 
 
+class VoiceAuditionRequest(BaseModel):
+    voice_ids: list[str] = Field(min_length=4, max_length=4)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+    @field_validator("voice_ids")
+    @classmethod
+    def _validate_voice_ids(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value]
+        if any(not item for item in cleaned) or len(set(cleaned)) != 4:
+            raise ValueError("voice_ids must contain four unique nonempty values")
+        return cleaned
+
+
+class VoiceAuditionItemOut(BaseModel):
+    audition_id: str
+    checksum_prefix: str
+    index: int
+    voice_id: str
+    provider: str
+    provider_key: str
+    duration: float
+    represented_roles: list[str]
+    download_url: str
+
+
+class VoiceAuditionOut(BaseModel):
+    text: str
+    speed: float
+    represented_roles: list[str]
+    items: list[VoiceAuditionItemOut]
+
+
 class AudioSegmentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -19,6 +19,11 @@ Notable changes per release. Dates are ISO 8601.
 - Added evidence-gated script generation and explicit human approval: only the
   latest reconciled vision analysis can materialize five provider passages,
   with safe analysis status summaries and no public text/rules fallback.
+- Added four-voice neural auditions using one deterministic 45-65 word,
+  punctuation-preserving excerpt across all five editorial roles, isolated
+  content-addressed WAVs, safe project-scoped download URLs, and no espeak/null
+  fallback. No neural provider is configured on the current VPS, so no real
+  audition samples were rendered.
 ## Unreleased — Complete motion-comic pipeline
 
 - Set the project default to English narration with American English voice; Indonesian remains explicit opt-in.

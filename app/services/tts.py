@@ -457,8 +457,19 @@ class ByokProvider:
     ) -> SpeechClip:
         from app.services.providers import ProviderError
 
-        # For voice-keyed vendors (ElevenLabs) the stored model *is* the voice.
-        voice = self._voice or self._model
+        provider_key = self._provider.lower()
+        if provider_key in {"openai", "custom_openai"}:
+            # OpenAI-compatible APIs keep the selected TTS model separate from
+            # the timbre voice.  Never send the model identifier as ``voice``.
+            voice = voice_id or self._voice or "alloy"
+        elif provider_key == "elevenlabs":
+            # An explicit project choice wins; otherwise use the credential's
+            # stored voice selection.
+            voice = voice_id or self._voice
+        else:
+            voice = voice_id or self._voice or "default"
+        if not voice:
+            raise TTSError(f"{self.label} has no selected voice")
         try:
             self._adapter.synthesize(
                 api_key=self._api_key,

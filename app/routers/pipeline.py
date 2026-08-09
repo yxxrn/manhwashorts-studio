@@ -46,11 +46,14 @@ from app.schemas import (
     ScriptGenerateRequest,
     ScriptOut,
     ScriptUpdate,
+    VoiceAuditionOut,
+    VoiceAuditionRequest,
     VoiceRequest,
 )
 from app.services import pipeline as pl
 from app.services import quality as quality_svc
 from app.services import timeline as timeline_svc
+from app.services import voice_auditions as audition_svc
 
 router = APIRouter(
     prefix="/api/projects/{project_id}", tags=["pipeline"], route_class=CommitRoute
@@ -213,6 +216,38 @@ def list_voice(project: OwnedProject, db: DbSession) -> list[AudioSegment]:
     if script is None:
         return []
     return pl.audio_segments(db, script.id)
+
+
+@router.post("/voice/auditions", response_model=VoiceAuditionOut)
+def generate_voice_auditions(
+    payload: VoiceAuditionRequest,
+    project: OwnedProject,
+    db: DbSession,
+    user: CurrentUser,
+) -> dict:
+    return _guard(
+        audition_svc.generate_auditions,
+        db,
+        project.id,
+        payload.voice_ids,
+        payload.speed,
+        user.id,
+    )
+
+
+@router.get("/voice/auditions/{audition_id}.wav")
+def download_voice_audition(audition_id: str, project: OwnedProject):
+    try:
+        path = audition_svc.audition_path(project.id, audition_id)
+    except audition_svc.VoiceAuditionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Voice audition not found.")
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        filename=f"{project.id}_{audition_id[:16]}.wav",
+    )
 
 
 # --- timeline and subtitles (FR-06, FR-07) --------------------------------

@@ -30,6 +30,10 @@ Updated: 2026-08-09
 - Evidence-gated script materialization now requires the latest RECONCILED
   analysis, revalidates persisted panel/claim evidence, and records explicit
   human approval before SCRIPT_APPROVED.
+- Added the four-voice neural audition workflow: one deterministic,
+  punctuation-preserving 45-65 word excerpt covers all five roles, four
+  isolated content-addressed WAVs, safe project-scoped downloads, and no
+  fallback or automatic voice selection.
 - Analysis status exposes only safe state, provider, coverage, reconciliation,
   count, and blocking-code summaries; public analysis never falls back to text
   or rules when vision capability is unavailable.
@@ -47,7 +51,8 @@ Updated: 2026-08-09
 
 - A real, clean panel source with verified publication rights.
 - A configured multimodal vision credential/provider for a real chapter run.
-- Final commercial TTS provider selection.
+- An active neural BYOK TTS credential and real audition samples; the current
+  VPS has no configured neural HTTP provider, so no samples were rendered.
 - Production-ready public upload credentials and channel policy.
 - Scheduling UI, external queue, multi-channel workspaces, analytics, and full
   music/SFX workflow.
