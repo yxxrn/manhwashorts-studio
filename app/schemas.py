@@ -185,6 +185,30 @@ class AnalysisOut(BaseModel):
     pronunciation_candidates: list[str]
     low_confidence_notes: list[str]
     edited_by_user: bool
+    state: str | None = None
+    blocking_reasons: dict = Field(default_factory=dict)
+
+
+class AnalysisStatusOut(BaseModel):
+    state: str | None = None
+    run_id: str | None = None
+    provider_type: str | None = None
+    provider_name: str | None = None
+    model: str | None = None
+    instruction_version: str | None = None
+    instruction_sha256: str | None = None
+    coverage_map_version: str | None = None
+    coverage_map_hash: str | None = None
+    total_panels: int = 0
+    processed_panels: int = 0
+    source_content_coverage_ratio: float = 0.0
+    unresolved_material_area: int = 0
+    reconciliation_complete: bool = False
+    chain_reconciled: bool = False
+    claim_count: int = 0
+    passage_count: int = 0
+    blocking_codes: list[str] = Field(default_factory=list)
+    findings: list[dict] = Field(default_factory=list)
 
 
 class AnalysisUpdate(BaseModel):
@@ -208,11 +232,19 @@ class SectionIn(BaseModel):
     text: str = ""
     locked: bool = False
     citations: list[int] = Field(default_factory=list)
+    editorial_role: str = ""
+    claim_ids: list[str] = Field(default_factory=list)
+    evidence_panel_ids: list[str] = Field(default_factory=list)
+    evidence: list[dict] = Field(default_factory=list)
 
 
 class ScriptUpdate(BaseModel):
     sections: list[SectionIn]
     selected_hook: int | None = Field(default=None, ge=0)
+
+
+class ScriptApproveRequest(BaseModel):
+    editorial_review_confirmed: bool
 
 
 class ScriptOut(BaseModel):

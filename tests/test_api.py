@@ -285,11 +285,19 @@ def _project_with_material(client, recap_text, declared_rights, panel_bytes, pan
     return project_id
 
 
+def _seed_vision_analysis(project_id: str) -> None:
+    from test_vision_status_api import seed_reconciled_analysis_for_project_images
+
+    seed_reconciled_analysis_for_project_images(project_id)
+
+
 def test_analysis_requires_text(auth_client):
     project_id = _make_project(auth_client)
     response = auth_client.post(f"/api/projects/{project_id}/analysis")
-    assert response.status_code == 422
-    assert "text material" in response.json()["detail"].lower()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "BLOCKED"
+    assert "vision_capability_missing" in body["blocking_reasons"]["codes"]
 
 
 def test_analysis_and_manual_correction(auth_client, recap_text, declared_rights):
@@ -299,7 +307,8 @@ def test_analysis_and_manual_correction(auth_client, recap_text, declared_rights
         json={"text": recap_text, "rights": declared_rights},
     )
     analysis = auth_client.post(f"/api/projects/{project_id}/analysis").json()
-    assert any(c["name"] == "Rian" for c in analysis["characters"])
+    assert analysis["state"] == "BLOCKED"
+    assert "vision_capability_missing" in analysis["blocking_reasons"]["codes"]
 
     patched = auth_client.patch(
         f"/api/projects/{project_id}/analysis",
@@ -314,60 +323,98 @@ def test_draft_creates_script_voice_timeline(
     auth_client, recap_text, declared_rights, panel_bytes
 ):
     project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
+    _seed_vision_analysis(project_id)
     draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
     assert draft.status_code == 200, draft.text
     body = draft.json()
     assert body["script_version"] == 1
-    assert body["segments"] == 5
-    assert body["scenes"] > 0
-    assert body["cues"] > 0
-    assert body["audio_duration"] > 0
+    assert body["segments"] == 0
+    assert body["scenes"] == 0
+    assert body["cues"] == 0
+    assert body["audio_duration"] == 0.0
+
+    approved = auth_client.post(
+        f"/api/projects/{project_id}/script/approve",
+        json={"editorial_review_confirmed": True},
+    )
+    assert approved.status_code == 200, approved.text
+    voice = auth_client.post(f"/api/projects/{project_id}/voice", json={"speed": 1.0})
+    assert voice.status_code == 200, voice.text
+    assert voice.json()
+    scenes = auth_client.post(f"/api/projects/{project_id}/timeline")
+    assert scenes.status_code == 200, scenes.text
+    assert scenes.json()
+    assert auth_client.get(f"/api/projects/{project_id}/subtitles").json()
 
 
 def test_script_edit_resets_approval(auth_client, recap_text, declared_rights, panel_bytes):
     project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
-    auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
-
-    approved = auth_client.post(f"/api/projects/{project_id}/script/approve").json()
-    assert approved["approved_at"] is not None
+    _seed_vision_analysis(project_id)
+    draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    assert draft.status_code == 200, draft.text
+    approved = auth_client.post(
+        f"/api/projects/{project_id}/script/approve",
+        json={"editorial_review_confirmed": True},
+    )
+    assert approved.status_code == 200, approved.text
 
     script = auth_client.get(f"/api/projects/{project_id}/script").json()
     sections = [
         {
             "section": s["section"],
-            "text": s["text"] + " Tambahan.",
+            "text": s["text"] + " Additional detail.",
             "locked": False,
             "citations": s["citations"],
+            "editorial_role": s.get("editorial_role", ""),
+            "claim_ids": s.get("claim_ids", []),
+            "evidence_panel_ids": s.get("evidence_panel_ids", []),
+            "evidence": s.get("evidence", []),
         }
         for s in script["sections"]
     ]
     edited = auth_client.patch(
         f"/api/projects/{project_id}/script", json={"sections": sections}
     )
-    assert edited.status_code == 200
-    # Editing after approval must force a fresh review.
+    assert edited.status_code == 200, edited.text
     assert edited.json()["approved_at"] is None
 
 
 def test_empty_section_blocks_approval(auth_client, recap_text, declared_rights, panel_bytes):
     project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
-    auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    _seed_vision_analysis(project_id)
+    response = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    assert response.status_code == 200, response.text
     script = auth_client.get(f"/api/projects/{project_id}/script").json()
-
     sections = [
-        {"section": s["section"], "text": "" if s["section"] == "twist" else s["text"],
-         "locked": False, "citations": s["citations"]}
+        {
+            "section": s["section"],
+            "text": "" if s["section"] == "twist" else s["text"],
+            "locked": False,
+            "citations": s["citations"],
+            "editorial_role": s.get("editorial_role", ""),
+            "claim_ids": s.get("claim_ids", []),
+            "evidence_panel_ids": s.get("evidence_panel_ids", []),
+            "evidence": s.get("evidence", []),
+        }
         for s in script["sections"]
     ]
-    auth_client.patch(f"/api/projects/{project_id}/script", json={"sections": sections})
-    response = auth_client.post(f"/api/projects/{project_id}/script/approve")
+    edited = auth_client.patch(
+        f"/api/projects/{project_id}/script", json={"sections": sections}
+    )
+    assert edited.status_code == 200, edited.text
+    response = auth_client.post(
+        f"/api/projects/{project_id}/script/approve",
+        json={"editorial_review_confirmed": True},
+    )
     assert response.status_code == 422
-    assert "empty" in response.json()["detail"].lower()
+    assert "text" in response.json()["detail"].lower()
 
 
 def test_unknown_script_section_rejected(auth_client, recap_text, declared_rights, panel_bytes):
     project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
-    auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    _seed_vision_analysis(project_id)
+    draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    assert draft.status_code == 200, draft.text
     response = auth_client.patch(
         f"/api/projects/{project_id}/script",
         json={"sections": [{"section": "not_a_section", "text": "x"}]},
@@ -375,28 +422,40 @@ def test_unknown_script_section_rejected(auth_client, recap_text, declared_right
     assert response.status_code == 422
 
 
-def test_regenerate_keeps_locked_section(auth_client, recap_text, declared_rights, panel_bytes):
+def test_regenerate_requires_reconciled_evidence_after_edit(
+    auth_client, recap_text, declared_rights, panel_bytes
+):
     project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
-    auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    _seed_vision_analysis(project_id)
+    draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    assert draft.status_code == 200, draft.text
     script = auth_client.get(f"/api/projects/{project_id}/script").json()
-
-    sections = []
-    for s in script["sections"]:
-        locked = s["section"] == "hook"
-        sections.append({
+    sections = [
+        {
             "section": s["section"],
-            "text": "Hook terkunci milik saya." if locked else s["text"],
-            "locked": locked,
+            "text": "Locked hook supplied by the user." if s["section"] == "hook" else s["text"],
+            "locked": s["section"] == "hook",
             "citations": s["citations"],
-        })
-    auth_client.patch(f"/api/projects/{project_id}/script", json={"sections": sections})
-
+            "editorial_role": s.get("editorial_role", ""),
+            "claim_ids": s.get("claim_ids", []),
+            "evidence_panel_ids": s.get("evidence_panel_ids", []),
+            "evidence": s.get("evidence", []),
+        }
+        for s in script["sections"]
+    ]
+    edited = auth_client.patch(
+        f"/api/projects/{project_id}/script", json={"sections": sections}
+    )
+    assert edited.status_code == 200, edited.text
     regenerated = auth_client.post(
         f"/api/projects/{project_id}/script", json={"keep_locked": True, "seed": 7}
-    ).json()
-    hook = next(s for s in regenerated["sections"] if s["section"] == "hook")
-    assert hook["text"] == "Hook terkunci milik saya."
-    assert regenerated["version"] == 2
+    )
+    assert regenerated.status_code == 422, regenerated.text
+    assert "reconciled vision analysis" in regenerated.json()["detail"]
+    current = auth_client.get(f"/api/projects/{project_id}/script").json()
+    hook = next(s for s in current["sections"] if s["section"] == "hook")
+    assert hook["text"] == "Locked hook supplied by the user."
+    assert current["version"] == 1
 
 
 def test_voice_requires_script(auth_client, recap_text, declared_rights):
@@ -411,7 +470,18 @@ def test_voice_requires_script(auth_client, recap_text, declared_rights):
 
 def test_subtitles_and_srt_export(auth_client, recap_text, declared_rights, panel_bytes):
     project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
-    auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    _seed_vision_analysis(project_id)
+    draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    assert draft.status_code == 200, draft.text
+    approved = auth_client.post(
+        f"/api/projects/{project_id}/script/approve",
+        json={"editorial_review_confirmed": True},
+    )
+    assert approved.status_code == 200, approved.text
+    voice = auth_client.post(f"/api/projects/{project_id}/voice", json={"speed": 1.0})
+    assert voice.status_code == 200, voice.text
+    timeline = auth_client.post(f"/api/projects/{project_id}/timeline")
+    assert timeline.status_code == 200, timeline.text
 
     cues = auth_client.get(f"/api/projects/{project_id}/subtitles").json()
     assert cues
@@ -421,7 +491,7 @@ def test_subtitles_and_srt_export(auth_client, recap_text, declared_rights, pane
 
     edited = auth_client.patch(
         f"/api/projects/{project_id}/subtitles/{cues[0]['id']}",
-        json={"text": "Teks subtitle hasil koreksi"},
+        json={"text": "Corrected subtitle text"},
     )
     assert edited.status_code == 200
     assert edited.json()["edited_by_user"] is True
@@ -431,10 +501,22 @@ def test_scene_edit_validates_asset_and_times(
     auth_client, recap_text, declared_rights, panel_bytes
 ):
     project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
-    auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
-    scenes = auth_client.get(f"/api/projects/{project_id}/timeline").json()
-    scene_id = scenes[0]["id"]
+    _seed_vision_analysis(project_id)
+    draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    assert draft.status_code == 200, draft.text
+    approved = auth_client.post(
+        f"/api/projects/{project_id}/script/approve",
+        json={"editorial_review_confirmed": True},
+    )
+    assert approved.status_code == 200, approved.text
+    assert auth_client.post(
+        f"/api/projects/{project_id}/voice", json={"speed": 1.0}
+    ).status_code == 200
+    assert auth_client.post(f"/api/projects/{project_id}/timeline").status_code == 200
 
+    scenes = auth_client.get(f"/api/projects/{project_id}/timeline").json()
+    assert scenes
+    scene_id = scenes[0]["id"]
     ok = auth_client.patch(
         f"/api/projects/{project_id}/timeline/{scene_id}",
         json={"focus_x": 0.3, "focus_y": 0.6, "effect": "pan_left"},
@@ -481,7 +563,7 @@ def test_render_blocked_until_quality_passes(auth_client, recap_text, panel_byte
     auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
     response = auth_client.post(f"/api/projects/{project_id}/render", json={"kind": "final"})
     assert response.status_code == 422
-    assert "quality" in response.json()["detail"].lower()
+    assert "timeline" in response.json()["detail"].lower()
 
 
 def test_error_check_cannot_be_overridden(auth_client, recap_text, panel_bytes):

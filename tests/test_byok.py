@@ -606,7 +606,7 @@ def test_pipeline_analysis_uses_the_users_key(
     db.flush()
 
     # Without a key: rule-based, and it says so.
-    offline = pl.run_analysis(db, project.id, "tester")
+    offline = pl.run_legacy_text_analysis(db, project.id, "tester")
     assert any("rule-based" in n for n in offline.low_confidence_notes)
 
     cred_svc.save_credential(
@@ -622,7 +622,7 @@ def test_pipeline_analysis_uses_the_users_key(
     )
 
     # With a key: the provider's output reaches the database.
-    online = pl.run_analysis(db, project.id, "tester")
+    online = pl.run_legacy_text_analysis(db, project.id, "tester")
     assert online.twist == "Penjaga menara itu ayahnya sendiri"
     assert any("using your Mock LLM key" in n for n in online.low_confidence_notes)
 

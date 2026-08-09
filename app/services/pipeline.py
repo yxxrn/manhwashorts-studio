@@ -1140,6 +1140,27 @@ def current_script(db: Session, project_id: str) -> ScriptVersion | None:
     return approved_script_row(db, project_id) or latest_script_row(db, project_id)
 
 
+def _script_for_media(db: Session, project_id: str) -> ScriptVersion:
+    """Return the current script only when a vision draft is explicitly approved."""
+    latest = latest_script_row(db, project_id)
+    if latest is None:
+        raise PipelineError("generate a script first")
+    if latest.generator == "vision_evidence_v2":
+        approved = approved_script_row(db, project_id)
+        if (
+            latest.approved_at is None
+            or not latest.approved_by
+            or approved is None
+            or approved.id != latest.id
+        ):
+            raise PipelineError("latest evidence-backed script must be explicitly approved")
+        return latest
+    current = current_script(db, project_id)
+    if current is None:
+        raise PipelineError("generate a script first")
+    return current
+
+
 def all_scripts(db: Session, project_id: str) -> list[ScriptVersion]:
     """Every script version, newest first (FR-04 version history)."""
     return list(
@@ -1170,6 +1191,232 @@ def latest_analysis(db: Session, project_id: str) -> StoryAnalysis | None:
     ).first()
 
 
+_VISION_SCRIPT_ROLES = (
+    "hook",
+    "setup",
+    "escalation",
+    "editorial_insight",
+    "payoff_open_loop",
+)
+_VISION_ROLE_TO_SECTION = {
+    "hook": ScriptSection.HOOK.value,
+    "setup": ScriptSection.SETUP.value,
+    "escalation": ScriptSection.CONFLICT.value,
+    "editorial_insight": ScriptSection.TWIST.value,
+    "payoff_open_loop": ScriptSection.CTA.value,
+}
+_SAFE_STATUS_FINDING_KEYS = frozenset(
+    {
+        "code",
+        "stage",
+        "count",
+        "error_count",
+        "panel_count",
+        "chunk_index",
+        "coverage_map_hash",
+        "provider_type",
+        "provider_name",
+        "model",
+    }
+)
+
+
+def _validated_persisted_vision_output(
+    db: Session,
+    row: StoryAnalysis,
+    *,
+    required_state: str | None = None,
+) -> tuple[dict[str, Any], list[PanelRegion]]:
+    """Reconstruct and validate provider evidence without repairing it."""
+
+    if required_state is not None and row.state != required_state:
+        raise PipelineError(f"analysis must be in {required_state} state")
+    if isinstance(row.blocking_reasons_json, Mapping) and row.blocking_reasons_json.get(
+        "codes"
+    ):
+        raise PipelineError("analysis has blocking reasons")
+
+    try:
+        version, digest, _ = analyzer_contract.load_analyzer_instruction()
+    except analyzer_contract.AnalyzerContractError:
+        raise PipelineError("current analyzer instruction is unavailable") from None
+    if row.instruction_version != version or row.instruction_sha256 != digest:
+        raise PipelineError("analysis uses an outdated analyzer instruction")
+
+    manifest = row.coverage_manifest_json
+    if not isinstance(manifest, Mapping):
+        raise PipelineError("analysis coverage manifest is missing")
+    required_manifest = (
+        "total_panels",
+        "processed_panels",
+        "panel_ids",
+        "source_content_coverage_ratio",
+        "unresolved_material_area",
+        "material_unresolved_regions",
+        "reconciliation_complete",
+        "coverage_map_version",
+        "coverage_map_hash",
+    )
+    if any(key not in manifest for key in required_manifest):
+        raise PipelineError("analysis coverage manifest is incomplete")
+
+    panels = list(
+        db.scalars(
+            select(PanelRegion)
+            .where(PanelRegion.story_analysis_id == row.id)
+            .order_by(PanelRegion.source_order, PanelRegion.id)
+        )
+    )
+    if not panels:
+        raise PipelineError("analysis has no persisted panel evidence")
+    expected_panel_ids = tuple(panel.panel_id for panel in panels)
+    if (
+        len(set(expected_panel_ids)) != len(expected_panel_ids)
+        or any(not panel_id for panel_id in expected_panel_ids)
+        or [panel.source_order for panel in panels] != list(range(len(panels)))
+    ):
+        raise PipelineError("persisted panel evidence is not ordered")
+    if manifest.get("total_panels") != len(panels) or manifest.get(
+        "processed_panels"
+    ) != len(panels):
+        raise PipelineError("coverage panel counts are incomplete")
+    if tuple(manifest.get("panel_ids", ())) != expected_panel_ids:
+        raise PipelineError("coverage panel inventory is not reconciled")
+    for count_key in (
+        "total_canonical_panels",
+        "persisted_canonical_panels",
+        "processed_canonical_panel_count",
+    ):
+        if count_key in manifest and manifest[count_key] != len(panels):
+            raise PipelineError("persisted canonical panel counts do not match")
+    if (
+        manifest.get("source_content_coverage_ratio") != 1.0
+        or manifest.get("unresolved_material_area") != 0
+        or manifest.get("material_unresolved_regions") != []
+        or manifest.get("reconciliation_complete") is not True
+    ):
+        raise PipelineError("analysis coverage is not complete")
+
+    reconciliation = row.reconciliation_json
+    if not isinstance(reconciliation, Mapping):
+        raise PipelineError("analysis reconciliation is missing")
+    if reconciliation.get("chain_reconciled") is not True:
+        raise PipelineError("analysis evidence chain is not reconciled")
+    if (
+        reconciliation.get("coverage_map_version")
+        != manifest.get("coverage_map_version")
+        or reconciliation.get("coverage_map_hash") != manifest.get("coverage_map_hash")
+        or reconciliation.get("canonical_panel_count") != len(panels)
+        or reconciliation.get("processed_panel_count") != len(panels)
+    ):
+        raise PipelineError("analysis reconciliation does not match coverage")
+
+    observations: list[dict[str, Any]] = []
+    for source_index, panel in enumerate(panels):
+        observation = panel.observation_json
+        bounds = panel.bounds_json
+        if not isinstance(observation, Mapping) or not isinstance(bounds, Mapping):
+            raise PipelineError("persisted panel observation is malformed")
+        expected_bounds = {
+            "x": bounds.get("x"),
+            "y": bounds.get("y"),
+            "width": bounds.get("width"),
+            "height": bounds.get("height"),
+        }
+        if (
+            observation.get("panel_id") != panel.panel_id
+            or observation.get("source_asset_id") != panel.source_asset_id
+            or observation.get("strip_region_id") != panel.strip_region_id
+            or observation.get("source_index") != source_index
+            or observation.get("region_bounds") != expected_bounds
+            or observation.get("coverage_map_version")
+            != manifest.get("coverage_map_version")
+            or observation.get("coverage_map_hash") != manifest.get("coverage_map_hash")
+            or observation.get("evidence_refs") != list(panel.evidence_refs_json or [])
+        ):
+            raise PipelineError("persisted panel lineage is inconsistent")
+        observations.append(dict(observation))
+
+    continuity = row.continuity_ledger_json
+    graph_raw = row.evidence_graph_json
+    story_spine = row.story_spine_json
+    if not isinstance(continuity, Mapping) or not isinstance(graph_raw, Mapping):
+        raise PipelineError("analysis evidence ledger is incomplete")
+    if not isinstance(story_spine, Mapping):
+        raise PipelineError("analysis story spine is missing")
+    passages = graph_raw.get("script_passages")
+    if not isinstance(passages, list):
+        raise PipelineError("analysis script passages are missing")
+    evidence_graph = dict(graph_raw)
+    evidence_graph.pop("script_passages", None)
+    output = {
+        "observations": observations,
+        "continuity_ledger": dict(continuity),
+        "evidence_graph": evidence_graph,
+        "coverage_manifest": dict(manifest),
+        "narrative_outline": {"story_spine": dict(story_spine)},
+        "script_passages": [dict(passage) for passage in passages if isinstance(passage, Mapping)],
+    }
+    try:
+        analyzer_contract.validate_analyzer_output(
+            output,
+            expected_panel_ids=expected_panel_ids,
+        )
+    except analyzer_contract.AnalyzerContractError:
+        raise PipelineError("persisted vision evidence is invalid") from None
+    if len(output["script_passages"]) != len(passages):
+        raise PipelineError("persisted script passages are malformed")
+    return output, panels
+
+
+def analysis_status(db: Session, project_id: str) -> dict[str, Any] | None:
+    """Return a safe scalar/count summary of the latest analysis."""
+
+    row = latest_analysis(db, project_id)
+    if row is None:
+        return None
+    manifest = row.coverage_manifest_json if isinstance(row.coverage_manifest_json, Mapping) else {}
+    reconciliation = row.reconciliation_json if isinstance(row.reconciliation_json, Mapping) else {}
+    graph = row.evidence_graph_json if isinstance(row.evidence_graph_json, Mapping) else {}
+    blocking = row.blocking_reasons_json if isinstance(row.blocking_reasons_json, Mapping) else {}
+    safe_findings = []
+    for finding in blocking.get("findings", []) if isinstance(blocking.get("findings", []), list) else []:
+        if not isinstance(finding, Mapping):
+            continue
+        safe_findings.append(
+            {
+                key: value
+                for key, value in finding.items()
+                if key in _SAFE_STATUS_FINDING_KEYS
+                and isinstance(value, (str, int, float, bool))
+            }
+        )
+    return {
+        "state": row.state,
+        "run_id": row.analysis_run_id,
+        "provider_type": row.provider_type,
+        "provider_name": row.provider_name,
+        "model": row.model_name,
+        "instruction_version": row.instruction_version,
+        "instruction_sha256": row.instruction_sha256,
+        "coverage_map_version": manifest.get("coverage_map_version"),
+        "coverage_map_hash": manifest.get("coverage_map_hash"),
+        "total_panels": manifest.get("total_panels", 0),
+        "processed_panels": manifest.get("processed_panels", 0),
+        "source_content_coverage_ratio": manifest.get("source_content_coverage_ratio", 0.0),
+        "unresolved_material_area": manifest.get("unresolved_material_area", 0),
+        "reconciliation_complete": manifest.get("reconciliation_complete", False),
+        "chain_reconciled": reconciliation.get("chain_reconciled", False),
+        "claim_count": len(graph.get("claims", [])) if isinstance(graph.get("claims"), list) else 0,
+        "passage_count": len(graph.get("script_passages", [])) if isinstance(graph.get("script_passages"), list) else 0,
+        "blocking_codes": [
+            code for code in blocking.get("codes", [])
+            if isinstance(code, str) and code in _VISION_BLOCKING_CODES
+        ] if isinstance(blocking.get("codes", []), list) else [],
+        "findings": safe_findings,
+    }
+
+
 # --- stage: script ---------------------------------------------------------
 
 
@@ -1182,53 +1429,73 @@ def generate_script(
     seed: int | None = None,
     actor_id: str = "",
 ) -> ScriptVersion:
-    """Create the next script version. Locked sections carry over."""
+    """Materialize provider passages from the latest reconciled evidence."""
     project = get_project(db, project_id)
     row = latest_analysis(db, project_id)
     if row is None:
-        row = run_analysis(db, project_id, actor_id)
-    result = _analysis_to_result(row)
-
+        raise PipelineError("run vision analysis before generating a script")
+    if row.state != "RECONCILED":
+        raise PipelineError("script generation requires reconciled vision analysis")
+    output, panels = _validated_persisted_vision_output(db, row)
     previous = latest_script_row(db, project_id)
-    locked: dict[str, script_svc.Section] = {}
-    if keep_locked and previous:
-        for section in previous.sections or []:
-            if section.get("locked"):
-                locked[section["section"]] = script_svc.Section(
-                    section=section["section"],
-                    text=section.get("text", ""),
-                    locked=True,
-                    citations=list(section.get("citations", []) or []),
-                )
-
-    draft = script_svc.get_generator().generate(
-        result,
-        style=project.narration_style,
-        language=project.language,
-        target_seconds=float(project.target_duration),
-        spoiler_level=project.spoiler_level,
-        manhwa_title=project.manhwa_title,
-        chapter=project.chapter,
-        cta_text=project.cta_text,
-        locked=locked,
-        hook_count=hook_count,
-        seed=seed,
-    )
+    _ = (keep_locked, hook_count, seed, actor_id)
+    claim_map = {
+        claim["claim_id"]: claim
+        for claim in output["evidence_graph"]["claims"]
+        if isinstance(claim, Mapping)
+    }
+    panel_orders = {panel.panel_id: panel.source_order for panel in panels}
+    sections: list[dict[str, Any]] = []
+    for passage in output["script_passages"]:
+        role = passage["editorial_role"]
+        claim_ids = list(passage["claim_ids"])
+        evidence_panel_ids = list(passage["evidence_panel_ids"])
+        evidence = [
+            {
+                "claim_id": claim_id,
+                "panel_ids": list(claim_map[claim_id]["evidence_panel_ids"]),
+            }
+            for claim_id in claim_ids
+        ]
+        sections.append(
+            {
+                "section": _VISION_ROLE_TO_SECTION[role],
+                "text": passage["text"],
+                "locked": False,
+                "editorial_role": role,
+                "claim_ids": claim_ids,
+                "evidence_panel_ids": evidence_panel_ids,
+                "evidence": evidence,
+                "estimated_duration": script_svc.estimate_duration(
+                    passage["text"], project.narration_style
+                ),
+                "citations": sorted({panel_orders[panel_id] for panel_id in evidence_panel_ids}),
+            }
+        )
 
     version = (previous.version + 1) if previous else 1
     script_row = ScriptVersion(
         project_id=project_id,
         version=version,
-        sections=[s.to_dict() for s in draft.sections],
-        hook_options=draft.hook_options,
-        selected_hook=draft.selected_hook,
-        estimated_duration=draft.estimated_duration,
-        word_count=draft.word_count,
-        warnings=draft.warnings,
-        generator=draft.generator,
-        editorial_metadata=draft.editorial,
+        sections=sections,
+        hook_options=[output["script_passages"][0]["text"]],
+        selected_hook=0,
+        estimated_duration=round(sum(section["estimated_duration"] for section in sections), 2),
+        word_count=script_svc.word_count("\n".join(section["text"] for section in sections)),
+        warnings=[],
+        generator="vision_evidence_v2",
+        editorial_metadata={
+            "analysis_id": row.id,
+            "analysis_run_id": row.analysis_run_id,
+            "instruction_version": row.instruction_version,
+            "instruction_sha256": row.instruction_sha256,
+            "human_review_required": True,
+            "editorial_review_confirmed": False,
+            "editorial_review_actor": "",
+        },
     )
     db.add(script_row)
+    row.state = "SCRIPT_DRAFT"
     project.status = ProjectStatus.REVIEW
     audit(db, "script.generate", "project", project_id, actor_id, version=version)
     db.flush()
@@ -1262,6 +1529,8 @@ def update_script(
                 "text": text,
                 "locked": bool(section.get("locked", False)),
                 "editorial_role": str(section.get("editorial_role", "")),
+                "claim_ids": list(section.get("claim_ids", []) or []),
+                "evidence_panel_ids": list(section.get("evidence_panel_ids", []) or []),
                 "evidence": list(section.get("evidence", []) or []),
                 "estimated_duration": script_svc.estimate_duration(
                     text, project.narration_style
@@ -1277,28 +1546,85 @@ def update_script(
         sum(s["estimated_duration"] for s in cleaned), 2
     )
     script.word_count = script_svc.word_count(script.plain_text)
-
-    draft = script_svc.ScriptDraft(
-        sections=[script_svc.Section(**s) for s in cleaned],
-        estimated_duration=script.estimated_duration,
-        word_count=script.word_count,
-        editorial={"structure": [item.get("editorial_role", "") for item in cleaned], "evidence": [evidence for item in cleaned for evidence in item.get("evidence", [])]},
-    )
-    script.warnings = script_svc.check_script(draft, float(project.target_duration), project.language)
+    metadata = dict(script.editorial_metadata or {})
+    metadata["human_review_required"] = True
+    metadata["editorial_review_confirmed"] = False
+    metadata["editorial_review_actor"] = ""
+    script.editorial_metadata = metadata
 
     # Any edit invalidates a previous approval.
     script.approved_at = None
     script.approved_by = ""
+    analysis = latest_analysis(db, script.project_id)
+    if analysis is not None and (
+        not metadata.get("analysis_id") or metadata.get("analysis_id") == analysis.id
+    ):
+        analysis.state = "SCRIPT_DRAFT"
     audit(db, "script.update", "script_version", script.id, actor_id)
     db.flush()
     return script
 
 
-def approve_script(db: Session, script_id: str, actor_id: str = "") -> ScriptVersion:
-    """Mark a script reviewed. Blocking script warnings must be fixed first."""
+def approve_script(
+    db: Session,
+    script_id: str,
+    actor_id: str = "",
+    *,
+    editorial_review_confirmed: bool = False,
+) -> ScriptVersion:
+    """Approve only a current, explicitly confirmed evidence-backed script."""
     script = db.get(ScriptVersion, script_id)
     if script is None:
         raise PipelineError("script version not found")
+    if not actor_id.strip():
+        raise PipelineError("an editorial review actor is required")
+    if editorial_review_confirmed is not True:
+        raise PipelineError("explicit editorial review confirmation is required")
+    metadata = script.editorial_metadata if isinstance(script.editorial_metadata, Mapping) else {}
+    analysis = latest_analysis(db, script.project_id)
+    if analysis is None or analysis.state != "SCRIPT_DRAFT":
+        raise PipelineError("script approval requires the linked SCRIPT_DRAFT analysis")
+    if (
+        metadata.get("analysis_id") != analysis.id
+        or metadata.get("analysis_run_id") != analysis.analysis_run_id
+    ):
+        raise PipelineError("script is not linked to the latest analysis")
+    output, panels = _validated_persisted_vision_output(
+        db,
+        analysis,
+        required_state="SCRIPT_DRAFT",
+    )
+    claim_map = {
+        claim["claim_id"]: claim
+        for claim in output["evidence_graph"]["claims"]
+        if isinstance(claim, Mapping)
+    }
+    panel_ids = {panel.panel_id for panel in panels}
+    if len(script.sections or []) != len(_VISION_SCRIPT_ROLES):
+        raise PipelineError("script must contain exactly five evidence-backed sections")
+    for expected_role, section in zip(_VISION_SCRIPT_ROLES, script.sections, strict=True):
+        if (
+            section.get("section") != _VISION_ROLE_TO_SECTION[expected_role]
+            or section.get("editorial_role") != expected_role
+            or not str(section.get("text", "")).strip()
+        ):
+            raise PipelineError("script section roles or text are invalid")
+        claim_ids = section.get("claim_ids")
+        evidence_panel_ids = section.get("evidence_panel_ids")
+        if (
+            not isinstance(claim_ids, list)
+            or not claim_ids
+            or not isinstance(evidence_panel_ids, list)
+            or not evidence_panel_ids
+            or not set(claim_ids) <= set(claim_map)
+            or not set(evidence_panel_ids) <= panel_ids
+        ):
+            raise PipelineError("script section evidence is incomplete")
+        required_evidence = set().union(
+            *(set(claim_map[claim_id]["evidence_panel_ids"]) for claim_id in claim_ids)
+        )
+        if not required_evidence <= set(evidence_panel_ids):
+            raise PipelineError("script section evidence does not cover its claims")
     blocking = [w for w in (script.warnings or []) if w.get("severity") == "error"]
     if blocking:
         raise PipelineError(
@@ -1310,6 +1636,13 @@ def approve_script(db: Session, script_id: str, actor_id: str = "") -> ScriptVer
 
     script.approved_at = _now()
     script.approved_by = actor_id
+    script.editorial_metadata = {
+        **metadata,
+        "human_review_required": True,
+        "editorial_review_confirmed": True,
+        "editorial_review_actor": actor_id,
+    }
+    analysis.state = "SCRIPT_APPROVED"
     audit(db, "script.approve", "script_version", script.id, actor_id, version=script.version)
     db.flush()
     return script
@@ -1328,9 +1661,7 @@ def generate_voiceover(
 ) -> list[AudioSegment]:
     """Synthesise one clip per script section, replacing any previous audio."""
     project = get_project(db, project_id)
-    script = current_script(db, project_id)
-    if script is None:
-        raise PipelineError("generate a script before the voice-over")
+    script = _script_for_media(db, project_id)
 
     # BYOK: a verified speech key wins unless the caller forced a local provider.
     provider, tts_decision = resolver_svc.resolve_tts(
@@ -1483,9 +1814,7 @@ def spans_from_segments(segments: list[AudioSegment]) -> list[timeline_svc.Audio
 def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[TimelineScene]:
     """Derive scenes and subtitle cues from the current voice-over."""
     get_project(db, project_id)  # validates the project exists
-    script = current_script(db, project_id)
-    if script is None:
-        raise PipelineError("generate a script first")
+    script = _script_for_media(db, project_id)
 
     segments = audio_segments(db, script.id)
     if not segments:
@@ -2212,16 +2541,18 @@ def recover_stale_jobs(db: Session) -> int:
 
 
 def generate_draft(db: Session, project_id: str, actor_id: str = "", seed: int | None = None) -> dict:
-    """Run analyse -> script -> voice -> timeline in one call.
+    """Run the vision-only analyse -> script -> voice -> timeline shortcut.
 
     This is the "draft in under 10 minutes" path from the PRD. It stops short of
-    approval and rendering, which stay manual by design.
+    approval and rendering, which stay manual by design. It never starts an
+    analysis or falls back to a text/rules workflow.
     """
-    run_analysis(db, project_id, actor_id)
+    row = latest_analysis(db, project_id)
+    if row is None:
+        raise PipelineError("run vision analysis before generating a draft")
+    if row.state != "RECONCILED":
+        raise PipelineError("draft generation requires reconciled vision analysis")
     script = generate_script(db, project_id, seed=seed, actor_id=actor_id)
-    segments = generate_voiceover(db, project_id, actor_id=actor_id)
-    scenes = build_timeline(db, project_id, actor_id)
-    cues = project_cues(db, project_id)
     project = get_project(db, project_id)
     project.status = ProjectStatus.REVIEW
     db.flush()
@@ -2229,9 +2560,9 @@ def generate_draft(db: Session, project_id: str, actor_id: str = "", seed: int |
         "script_id": script.id,
         "script_version": script.version,
         "estimated_duration": script.estimated_duration,
-        "audio_duration": round(max((s.end_time for s in segments), default=0.0), 2),
-        "segments": len(segments),
-        "scenes": len(scenes),
-        "cues": len(cues),
+        "audio_duration": 0.0,
+        "segments": 0,
+        "scenes": 0,
+        "cues": 0,
         "warnings": script.warnings,
     }

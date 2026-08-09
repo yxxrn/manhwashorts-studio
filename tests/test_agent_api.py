@@ -175,20 +175,33 @@ def test_agent_can_drive_the_whole_pipeline_over_rest(
     )
     assert upload.status_code == 201, upload.text
 
-    # analyse -> script -> voice -> timeline in one call.
+    from test_vision_status_api import seed_reconciled_analysis_for_project_images
+
+    seed_reconciled_analysis_for_project_images(pid)
+
+    # Vision analysis is persisted before the script shortcut; media waits for review.
     draft = client.post(f"/api/projects/{pid}/draft?seed=42")
     assert draft.status_code == 200, draft.text
     body = draft.json()
-    assert body["segments"] > 0
-    assert body["scenes"] > 0
-    assert body["cues"] > 0
+    assert body["segments"] == 0
+    assert body["scenes"] == 0
+    assert body["cues"] == 0
+    assert body["audio_duration"] == 0.0
 
     # The agent reads the script, then approves it.
     script = client.get(f"/api/projects/{pid}/script").json()
     assert [s["section"] for s in script["sections"]] == [
         "hook", "setup", "conflict", "twist", "cta"
     ]
-    assert client.post(f"/api/projects/{pid}/script/approve").status_code == 200
+    approved = client.post(
+        f"/api/projects/{pid}/script/approve",
+        json={"editorial_review_confirmed": True},
+    )
+    assert approved.status_code == 200, approved.text
+    voice = client.post(f"/api/projects/{pid}/voice", json={"speed": 1.0})
+    assert voice.status_code == 200, voice.text
+    timeline = client.post(f"/api/projects/{pid}/timeline")
+    assert timeline.status_code == 200, timeline.text
 
     # Quality gate must be readable and must not block a clean project.
     quality = client.post(f"/api/projects/{pid}/quality").json()

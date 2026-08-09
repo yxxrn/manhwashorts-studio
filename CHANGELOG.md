@@ -16,6 +16,9 @@ Notable changes per release. Dates are ISO 8601.
 - Versioned the vision analyzer to v2 with exactly five evidence-linked
   narration roles, deterministic word bounds, grounded open-loop payoffs, and
   context-aware channel-CTA/repetition guards.
+- Added evidence-gated script generation and explicit human approval: only the
+  latest reconciled vision analysis can materialize five provider passages,
+  with safe analysis status summaries and no public text/rules fallback.
 ## Unreleased — Complete motion-comic pipeline
 
 - Set the project default to English narration with American English voice; Indonesian remains explicit opt-in.

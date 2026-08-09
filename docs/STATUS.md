@@ -24,6 +24,12 @@ Updated: 2026-08-09
 - BYOK encryption and provider discovery.
 - Vision-first analyzer v2 contract with complete chapter evidence gates and
   five-role, word-bounded, evidence-grounded narration.
+- Evidence-gated script materialization now requires the latest RECONCILED
+  analysis, revalidates persisted panel/claim evidence, and records explicit
+  human approval before SCRIPT_APPROVED.
+- Analysis status exposes only safe state, provider, coverage, reconciliation,
+  count, and blocking-code summaries; public analysis never falls back to text
+  or rules when vision capability is unavailable.
 - Full test, lint, compile, and real-FFmpeg validation on Google execution host.
 
 ## Current runtime boundary
@@ -37,6 +43,7 @@ Updated: 2026-08-09
 ## Not complete
 
 - A real, clean panel source with verified publication rights.
+- A configured multimodal vision credential/provider for a real chapter run.
 - Final commercial TTS provider selection.
 - Production-ready public upload credentials and channel policy.
 - Scheduling UI, external queue, multi-channel workspaces, analytics, and full
@@ -56,4 +63,5 @@ A render is review-only until all are true:
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
-Current state: **development / review-only**.
+Current state: **development / review-only**. Changes are committed on the VPS
+for review; no remote push is performed by the executor.

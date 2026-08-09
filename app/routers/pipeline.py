@@ -27,6 +27,7 @@ from app.models import (
 from app.routing import CommitRoute
 from app.schemas import (
     AnalysisOut,
+    AnalysisStatusOut,
     AnalysisUpdate,
     AudioSegmentOut,
     CueOut,
@@ -41,6 +42,7 @@ from app.schemas import (
     RenderRequestIn,
     SceneOut,
     SceneUpdate,
+    ScriptApproveRequest,
     ScriptGenerateRequest,
     ScriptOut,
     ScriptUpdate,
@@ -62,12 +64,18 @@ def _guard(fn, *args, **kwargs):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _analysis_view(row: StoryAnalysis) -> dict:
+    payload = AnalysisOut.model_validate(row).model_dump()
+    payload["blocking_reasons"] = row.blocking_reasons_json or {}
+    return payload
+
+
 # --- analysis (FR-03) ------------------------------------------------------
 
 
 @router.post("/analysis", response_model=AnalysisOut)
-def run_analysis(project: OwnedProject, db: DbSession, user: CurrentUser) -> StoryAnalysis:
-    return _guard(pl.run_analysis, db, project.id, user.id)
+def run_analysis(project: OwnedProject, db: DbSession, user: CurrentUser) -> dict:
+    return _analysis_view(_guard(pl.run_analysis, db, project.id, user.id))
 
 
 @router.get("/analysis", response_model=AnalysisOut)
@@ -75,7 +83,15 @@ def get_analysis(project: OwnedProject, db: DbSession) -> StoryAnalysis:
     row = pl.latest_analysis(db, project.id)
     if row is None:
         raise HTTPException(status_code=404, detail="No analysis yet. Run it first.")
-    return row
+    return _analysis_view(row)
+
+
+@router.get("/analysis/status", response_model=AnalysisStatusOut)
+def get_analysis_status(project: OwnedProject, db: DbSession) -> dict:
+    summary = pl.analysis_status(db, project.id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="No analysis yet. Run it first.")
+    return summary
 
 
 @router.patch("/analysis", response_model=AnalysisOut)
@@ -94,7 +110,7 @@ def update_analysis(
     row.edited_by_user = True
     pl.audit(db, "analysis.update", "project", project.id, user.id)
     db.flush()
-    return row
+    return _analysis_view(row)
 
 
 # --- script (FR-04) -------------------------------------------------------
@@ -152,11 +168,22 @@ def update_script(
 
 
 @router.post("/script/approve", response_model=ScriptOut)
-def approve_script(project: OwnedProject, db: DbSession, user: CurrentUser) -> ScriptVersion:
+def approve_script(
+    payload: ScriptApproveRequest,
+    project: OwnedProject,
+    db: DbSession,
+    user: CurrentUser,
+) -> ScriptVersion:
     script = pl.latest_script_row(db, project.id)
     if script is None:
         raise HTTPException(status_code=404, detail="No script yet. Generate one first.")
-    return _guard(pl.approve_script, db, script.id, user.id)
+    return _guard(
+        pl.approve_script,
+        db,
+        script.id,
+        user.id,
+        editorial_review_confirmed=payload.editorial_review_confirmed,
+    )
 
 
 # --- voice (FR-05) --------------------------------------------------------

@@ -267,7 +267,7 @@ def test_render_endpoint_rejects_invalid_encoders(auth_client, value):
 # --- persistence -----------------------------------------------------------
 
 
-def test_job_records_the_requested_encoder(db, recap_text, declared_rights):
+def test_job_records_the_requested_encoder(db, recap_text, declared_rights, panel_bytes):
     """The worker may run elsewhere, so the choice travels on the job row."""
     from app.constants import AssetType, LicenseType, RightsStatus
     from app.models import Project, SourceAsset, User, Workspace
@@ -301,11 +301,51 @@ def test_job_records_the_requested_encoder(db, recap_text, declared_rights):
             rights_owner="Tester",
         )
     )
+    image_stored = storage.put_bytes(
+        f"projects/{project.id}/images", "panel.jpg", panel_bytes
+    )
+    db.add(
+        SourceAsset(
+            project_id=project.id,
+            type=AssetType.IMAGE,
+            original_filename="panel.jpg",
+            storage_key=image_stored.storage_key,
+            size_bytes=image_stored.size_bytes,
+            checksum=image_stored.checksum,
+            mime_type="image/jpeg",
+            width=900,
+            height=1200,
+            original_width=900,
+            original_height=1200,
+            original_checksum=image_stored.checksum,
+            rights_status=RightsStatus.DECLARED,
+            license_type=LicenseType.OWNED,
+            rights_owner="Tester",
+            order_index=1,
+        )
+    )
     db.flush()
 
-    pl.generate_draft(db, project.id, seed=42, actor_id=user.id)
+    db.commit()
+    from test_vision_status_api import seed_reconciled_analysis_for_project_images
+
+    seed_reconciled_analysis_for_project_images(project.id)
+    db.expire_all()
+    draft = pl.generate_draft(db, project.id, seed=42, actor_id=user.id)
+    assert draft["script_version"] == 1
+    assert draft["segments"] == 0
     script = pl.latest_script_row(db, project.id)
-    pl.approve_script(db, script.id, user.id)
+    assert script is not None
+    pl.approve_script(
+        db,
+        script.id,
+        user.id,
+        editorial_review_confirmed=True,
+    )
+    segments = pl.generate_voiceover(db, project.id, actor_id=user.id)
+    assert segments
+    scenes = pl.build_timeline(db, project.id, actor_id=user.id)
+    assert scenes
 
     job = pl.enqueue_render(db, project.id, "final", user.id, encoder="cpu")
     assert job.encoder_requested == "cpu"
