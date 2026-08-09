@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import json
 import string
 from collections.abc import Mapping
@@ -26,6 +27,23 @@ _REQUIRED_OBSERVATION_KEYS = frozenset(
     }
 )
 
+_REQUIRED_SYNTHESIS_OBSERVATION_KEYS = frozenset(
+    {
+        "panel_id",
+        "source_asset_id",
+        "strip_region_id",
+        "source_index",
+        "region_bounds",
+        "coverage_map_version",
+        "coverage_map_hash",
+        "visible_facts",
+        "dialogue_or_ocr",
+        "inferences",
+        "uncertainties",
+        "evidence_refs",
+    }
+)
+
 
 @dataclass(frozen=True)
 class VisionCapabilityReport:
@@ -47,6 +65,18 @@ class VisionObservationRequest:
     panels: tuple[Mapping[str, Any], ...]
 
 
+@dataclass(frozen=True)
+class VisionChapterSynthesisRequest:
+    analysis_run_id: str
+    instruction_version: str
+    instruction_sha256: str
+    instruction_text: str
+    expected_panel_ids: tuple[str, ...]
+    coverage_manifest: Mapping[str, Any]
+    ordered_observations: tuple[Mapping[str, Any], ...]
+    chunks: tuple[Mapping[str, Any], ...]
+
+
 class VisionObservationProvider(Protocol):
     def capability(self) -> VisionCapabilityReport:
         ...
@@ -54,6 +84,11 @@ class VisionObservationProvider(Protocol):
     def observe(
         self, request: VisionObservationRequest
     ) -> list[Mapping[str, Any]]:
+        ...
+
+    def synthesize(
+        self, request: VisionChapterSynthesisRequest
+    ) -> Mapping[str, Any]:
         ...
 
 
@@ -140,6 +175,57 @@ class OpenAICompatibleVisionProvider:
         except (TypeError, ValueError):
             raise VisionResponseInvalid() from None
         return _validate_observations(observations, panels)
+
+    def synthesize(
+        self, request: VisionChapterSynthesisRequest
+    ) -> Mapping[str, Any]:
+        try:
+            expected_panel_ids = _validate_synthesis_request(request)
+        except VisionRequestInvalid:
+            raise
+        except Exception:
+            raise VisionRequestInvalid() from None
+
+        report = self.capability()
+        if not report.available:
+            raise VisionCapabilityError()
+
+        payload = _build_synthesis_payload(request, expected_panel_ids, self._model)
+        try:
+            response = httpx.post(
+                f"{self._base_url.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=VISION_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+        except Exception:
+            raise VisionProviderRequestFailed() from None
+
+        try:
+            provider_payload = response.json()
+            content = provider_payload["choices"][0]["message"]["content"]
+            if not isinstance(content, str):
+                raise ValueError
+            result = json.loads(content)
+        except Exception:
+            raise VisionResponseInvalid() from None
+
+        try:
+            analyzer_contract = importlib.import_module(
+                "app.services.analyzer_contract"
+            )
+            analyzer_contract.validate_analyzer_output(
+                result, expected_panel_ids=expected_panel_ids
+            )
+        except Exception:
+            raise VisionResponseInvalid() from None
+        if not isinstance(result, Mapping):
+            raise VisionResponseInvalid()
+        return result
 
     def _configured(self) -> bool:
         parsed = urlparse(self._base_url)
@@ -315,3 +401,285 @@ def _validate_observations(
     if set(by_panel_id) != requested_set:
         raise VisionResponseInvalid()
     return [by_panel_id[panel_id] for panel_id in requested_ids]
+
+
+def _valid_synthesis_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _synthesis_string_list(value: Any, *, allow_empty: bool = True) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise VisionRequestInvalid()
+    if not allow_empty and not value:
+        raise VisionRequestInvalid()
+    if any(not _valid_synthesis_text(item) for item in value):
+        raise VisionRequestInvalid()
+    return tuple(value)
+
+
+def _validate_synthesis_observations(
+    observations: tuple[Mapping[str, Any], ...],
+    expected_panel_ids: tuple[str, ...],
+) -> None:
+    if len(observations) != len(expected_panel_ids):
+        raise VisionRequestInvalid()
+    expected_set = set(expected_panel_ids)
+    for source_index, observation in enumerate(observations):
+        if not isinstance(observation, Mapping):
+            raise VisionRequestInvalid()
+        if set(observation) != _REQUIRED_SYNTHESIS_OBSERVATION_KEYS:
+            raise VisionRequestInvalid()
+        panel_id = observation.get("panel_id")
+        if panel_id != expected_panel_ids[source_index]:
+            raise VisionRequestInvalid()
+        if not _valid_synthesis_text(observation.get("source_asset_id")):
+            raise VisionRequestInvalid()
+        if not _valid_synthesis_text(observation.get("strip_region_id")):
+            raise VisionRequestInvalid()
+        observed_index = observation.get("source_index")
+        if (
+            isinstance(observed_index, bool)
+            or not isinstance(observed_index, int)
+            or observed_index != source_index
+        ):
+            raise VisionRequestInvalid()
+
+        bounds = observation.get("region_bounds")
+        if not isinstance(bounds, Mapping) or set(bounds) != {
+            "x",
+            "y",
+            "width",
+            "height",
+        }:
+            raise VisionRequestInvalid()
+        for coordinate in ("x", "y", "width", "height"):
+            number = bounds.get(coordinate)
+            if (
+                isinstance(number, bool)
+                or not isinstance(number, int)
+                or number < 0
+            ):
+                raise VisionRequestInvalid()
+        if bounds["width"] == 0 or bounds["height"] == 0:
+            raise VisionRequestInvalid()
+
+        if not _valid_synthesis_text(observation.get("coverage_map_version")):
+            raise VisionRequestInvalid()
+        if not _valid_synthesis_text(observation.get("coverage_map_hash")):
+            raise VisionRequestInvalid()
+        for field in (
+            "visible_facts",
+            "dialogue_or_ocr",
+            "inferences",
+            "uncertainties",
+        ):
+            _synthesis_string_list(observation.get(field))
+        evidence_refs = _synthesis_string_list(
+            observation.get("evidence_refs"), allow_empty=False
+        )
+        if not set(evidence_refs) <= expected_set:
+            raise VisionRequestInvalid()
+        if panel_id not in evidence_refs:
+            raise VisionRequestInvalid()
+
+
+def _validate_synthesis_coverage(
+    coverage_manifest: Mapping[str, Any], expected_panel_ids: tuple[str, ...]
+) -> None:
+    if not isinstance(coverage_manifest, Mapping):
+        raise VisionRequestInvalid()
+    required = {
+        "total_panels",
+        "processed_panels",
+        "panel_ids",
+        "source_content_coverage_ratio",
+        "unresolved_material_area",
+        "material_unresolved_regions",
+        "reconciliation_complete",
+    }
+    if not required <= set(coverage_manifest):
+        raise VisionRequestInvalid()
+    if coverage_manifest["total_panels"] != len(expected_panel_ids):
+        raise VisionRequestInvalid()
+    if coverage_manifest["processed_panels"] != len(expected_panel_ids):
+        raise VisionRequestInvalid()
+    if (
+        not isinstance(coverage_manifest["panel_ids"], list)
+        or tuple(coverage_manifest["panel_ids"]) != expected_panel_ids
+    ):
+        raise VisionRequestInvalid()
+    ratio = coverage_manifest["source_content_coverage_ratio"]
+    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
+        raise VisionRequestInvalid()
+    if ratio != 1.0:
+        raise VisionRequestInvalid()
+    unresolved = coverage_manifest["unresolved_material_area"]
+    if isinstance(unresolved, bool) or unresolved != 0:
+        raise VisionRequestInvalid()
+    if coverage_manifest["material_unresolved_regions"] != []:
+        raise VisionRequestInvalid()
+    if coverage_manifest["reconciliation_complete"] is not True:
+        raise VisionRequestInvalid()
+
+
+def _declared_overlap(
+    chunk: Mapping[str, Any], field: str, expected_panel_ids: tuple[str, ...]
+) -> tuple[str, ...]:
+    value = chunk.get(field, [])
+    declared = _synthesis_string_list(value)
+    if len(set(declared)) != len(declared):
+        raise VisionRequestInvalid()
+    if not set(declared) <= set(expected_panel_ids):
+        raise VisionRequestInvalid()
+    return declared
+
+
+def _validate_synthesis_chunks(
+    chunks: tuple[Mapping[str, Any], ...], expected_panel_ids: tuple[str, ...]
+) -> None:
+    if not chunks:
+        raise VisionRequestInvalid()
+    expected_set = set(expected_panel_ids)
+    chunk_ids: set[str] = set()
+    chunk_panel_ids: list[tuple[str, ...]] = []
+    flattened: list[str] = []
+    seen: set[str] = set()
+    positions = {panel_id: index for index, panel_id in enumerate(expected_panel_ids)}
+
+    for chunk in chunks:
+        if not isinstance(chunk, Mapping):
+            raise VisionRequestInvalid()
+        chunk_id = chunk.get("chunk_id")
+        if not _valid_synthesis_text(chunk_id) or chunk_id in chunk_ids:
+            raise VisionRequestInvalid()
+        chunk_ids.add(chunk_id)
+        panel_ids = _synthesis_string_list(chunk.get("panel_ids"), allow_empty=False)
+        if len(set(panel_ids)) != len(panel_ids):
+            raise VisionRequestInvalid()
+        if not set(panel_ids) <= expected_set:
+            raise VisionRequestInvalid()
+        if tuple(sorted(panel_ids, key=positions.__getitem__)) != panel_ids:
+            raise VisionRequestInvalid()
+        chunk_panel_ids.append(panel_ids)
+        for panel_id in panel_ids:
+            if panel_id not in seen:
+                flattened.append(panel_id)
+                seen.add(panel_id)
+
+    if set(seen) != expected_set or tuple(flattened) != expected_panel_ids:
+        raise VisionRequestInvalid()
+
+    if _declared_overlap(chunks[0], "overlap_with_previous", expected_panel_ids):
+        raise VisionRequestInvalid()
+    if _declared_overlap(chunks[-1], "overlap_with_next", expected_panel_ids):
+        raise VisionRequestInvalid()
+    for index, (previous, current) in enumerate(
+        zip(chunk_panel_ids, chunk_panel_ids[1:], strict=False)
+    ):
+        intersection = set(previous).intersection(current)
+        expected_overlap = tuple(
+            panel_id for panel_id in expected_panel_ids if panel_id in intersection
+        )
+        if not expected_overlap:
+            raise VisionRequestInvalid()
+        if (
+            _declared_overlap(
+                chunks[index],
+                "overlap_with_next",
+                expected_panel_ids,
+            )
+            != expected_overlap
+            or _declared_overlap(
+                chunks[index + 1],
+                "overlap_with_previous",
+                expected_panel_ids,
+            )
+            != expected_overlap
+        ):
+            raise VisionRequestInvalid()
+
+
+def _validate_synthesis_request(
+    request: VisionChapterSynthesisRequest,
+) -> tuple[str, ...]:
+    if not isinstance(request, VisionChapterSynthesisRequest):
+        raise VisionRequestInvalid()
+    if not _valid_synthesis_text(request.analysis_run_id):
+        raise VisionRequestInvalid()
+    if not _valid_synthesis_text(request.instruction_version):
+        raise VisionRequestInvalid()
+    if not _valid_synthesis_text(request.instruction_sha256):
+        raise VisionRequestInvalid()
+    if not _valid_synthesis_text(request.instruction_text):
+        raise VisionRequestInvalid()
+    if not isinstance(request.expected_panel_ids, tuple):
+        raise VisionRequestInvalid()
+    expected_panel_ids = request.expected_panel_ids
+    if (
+        not expected_panel_ids
+        or any(not _valid_synthesis_text(panel_id) for panel_id in expected_panel_ids)
+        or len(set(expected_panel_ids)) != len(expected_panel_ids)
+    ):
+        raise VisionRequestInvalid()
+    if not isinstance(request.ordered_observations, tuple):
+        raise VisionRequestInvalid()
+    if not isinstance(request.chunks, tuple):
+        raise VisionRequestInvalid()
+
+    try:
+        analyzer_contract = importlib.import_module(
+            "app.services.analyzer_contract"
+        )
+        committed = analyzer_contract.load_analyzer_instruction()
+    except Exception:
+        raise VisionRequestInvalid() from None
+    if (
+        not isinstance(committed, tuple)
+        or len(committed) != 3
+        or (request.instruction_version, request.instruction_sha256, request.instruction_text)
+        != committed
+    ):
+        raise VisionRequestInvalid()
+
+    _validate_synthesis_observations(
+        request.ordered_observations, expected_panel_ids
+    )
+    _validate_synthesis_coverage(request.coverage_manifest, expected_panel_ids)
+    _validate_synthesis_chunks(request.chunks, expected_panel_ids)
+    return expected_panel_ids
+
+
+def _build_synthesis_payload(
+    request: VisionChapterSynthesisRequest,
+    expected_panel_ids: tuple[str, ...],
+    model: str,
+) -> dict[str, Any]:
+    ledger = {
+        "analysis_run_id": request.analysis_run_id,
+        "instruction_version": request.instruction_version,
+        "instruction_sha256": request.instruction_sha256,
+        "expected_panel_ids": list(expected_panel_ids),
+        "coverage_manifest": dict(request.coverage_manifest),
+        "ordered_observations": [
+            dict(observation) for observation in request.ordered_observations
+        ],
+        "chunks": [dict(chunk) for chunk in request.chunks],
+    }
+    ledger_json = json.dumps(
+        ledger, ensure_ascii=False, separators=(",", ":")
+    )
+    ledger_instruction = (
+        "Synthesize the chapter from this complete ordered evidence ledger. "
+        "Return exactly one structured JSON object matching the analyzer "
+        "contract. Do not invent, repair, or omit evidence.\n"
+        f"{ledger_json}"
+    )
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": request.instruction_text},
+            {"role": "user", "content": ledger_instruction},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+    }
