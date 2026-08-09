@@ -29,7 +29,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from app.config import settings
 from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
 from app.services import encoders, motion_director
-from app.services.reference_profile import ReferenceProfileConfig
+from app.services.reference_profile import ReferenceProfileConfig, profile_hash
 from app.services.timeline import CueSpec, wrap_caption
 
 _SECTION_TRANSITION_MIN = 0.12
@@ -271,11 +271,231 @@ def crop_to_vertical(
     return dest
 
 
+@dataclass(frozen=True)
+class PreparedFrame:
+    """The static reference frame selected before camera motion is applied."""
+
+    path: Path
+    crop_box: tuple[int, int, int, int]
+    blank_fraction: float
+    base_zoom: float
+
+
+def reference_frame_cache_key(
+    image_path: Path,
+    width: int,
+    height: int,
+    focus_x: float,
+    focus_y: float,
+    end_x: float,
+    end_y: float,
+    profile: ReferenceProfileConfig | None,
+) -> tuple:
+    """Return a deterministic key for all inputs to static frame preparation."""
+    return (
+        str(image_path),
+        int(width),
+        int(height),
+        round(float(focus_x), 4),
+        round(float(focus_y), 4),
+        round(float(end_x), 4),
+        round(float(end_y), 4),
+        profile_hash(profile) if profile is not None else None,
+        profile.base_frame_zoom_max if profile is not None else None,
+        profile.max_blank_fraction if profile is not None else None,
+    )
+
+
+def _reference_even(value: int) -> int:
+    return max(2, int(value) // 2 * 2)
+
+
+def _reference_legacy_box(
+    src_w: int,
+    src_h: int,
+    width: int,
+    height: int,
+    focus_x: float,
+    focus_y: float,
+) -> tuple[int, int, int, int]:
+    target_ratio = width / height
+    if src_w / src_h > target_ratio:
+        crop_w = int(round(src_h * target_ratio))
+        crop_h = src_h
+    else:
+        crop_w = src_w
+        crop_h = int(round(src_w / target_ratio))
+    crop_w = max(1, min(crop_w, src_w))
+    crop_h = max(1, min(crop_h, src_h))
+    centre_x = float(focus_x) * src_w
+    centre_y = float(focus_y) * src_h
+    left = int(round(centre_x - crop_w / 2))
+    top = int(round(centre_y - crop_h / 2))
+    left = max(0, min(left, src_w - crop_w))
+    top = max(0, min(top, src_h - crop_h))
+    return left, top, left + crop_w, top + crop_h
+
+
+def _reference_content_stats(
+    image: Image.Image,
+    focus_x: float,
+    focus_y: float,
+) -> tuple[float, float, float]:
+    """Measure content and content near the requested focus without OCR."""
+    sample = image.resize((96, 172), Image.Resampling.BILINEAR).convert("RGB")
+    pixels = list(sample.getdata())
+    nonblank = [
+        not (red >= 245 and green >= 245 and blue >= 245 and
+             max(red, green, blue) - min(red, green, blue) <= 10)
+        for red, green, blue in pixels
+    ]
+    content_fraction = sum(nonblank) / len(nonblank)
+    focus_x = max(0.0, min(1.0, float(focus_x)))
+    focus_y = max(0.0, min(1.0, float(focus_y)))
+    centre_x = int(round(focus_x * (sample.width - 1)))
+    centre_y = int(round(focus_y * (sample.height - 1)))
+    radius_x = max(4, sample.width // 8)
+    radius_y = max(4, sample.height // 8)
+    patch = [
+        nonblank[y * sample.width + x]
+        for y in range(max(0, centre_y - radius_y), min(sample.height, centre_y + radius_y + 1))
+        for x in range(max(0, centre_x - radius_x), min(sample.width, centre_x + radius_x + 1))
+    ]
+    focus_content = sum(patch) / len(patch) if patch else 0.0
+    return 1.0 - content_fraction, content_fraction, focus_content
+
+
+def _reference_scales(max_zoom: float) -> tuple[float, ...]:
+    maximum = max(1.0, round(float(max_zoom), 2))
+    values: list[float] = []
+    index = 0
+    while 1.0 + index * 0.02 <= maximum + 1e-9:
+        values.append(round(1.0 + index * 0.02, 2))
+        index += 1
+    if not values or values[-1] != maximum:
+        values.append(maximum)
+    return tuple(values)
+
+
+def _reference_prepare_fallback(
+    src: Path,
+    dest: Path,
+    width: int,
+    height: int,
+    focus_x: float,
+    focus_y: float,
+) -> PreparedFrame:
+    crop_to_vertical(src, dest, width, height, focus_x, focus_y)
+    with Image.open(src) as image:
+        box = _reference_legacy_box(image.width, image.height, width, height, focus_x, focus_y)
+    with Image.open(dest) as prepared:
+        blank_fraction, _content, _focus_content = _reference_content_stats(
+            prepared, 0.5, 0.5
+        )
+    return PreparedFrame(dest, box, blank_fraction, 1.0)
+
+
+def prepare_reference_frame(
+    src: Path,
+    dest: Path,
+    width: int,
+    height: int,
+    focus_x: float,
+    focus_y: float,
+    profile: ReferenceProfileConfig | None,
+) -> PreparedFrame:
+    """Select one static content-aware frame for the reference profile."""
+    if profile is None:
+        return _reference_prepare_fallback(src, dest, width, height, focus_x, focus_y)
+    try:
+        with Image.open(src) as original:
+            image = original.convert("RGB")
+            src_w, src_h = image.size
+            if src_w < 2 or src_h < 2:
+                raise ValueError("degenerate source geometry")
+            target_ratio = width / height
+            if src_w / src_h > target_ratio:
+                base_w = int(round(src_h * target_ratio))
+                base_h = src_h
+            else:
+                base_w = src_w
+                base_h = int(round(src_w / target_ratio))
+            base_w = max(2, min(base_w, src_w))
+            base_h = max(2, min(base_h, src_h))
+            output_size = (
+                _reference_even(round(width * 1.15)),
+                _reference_even(round(height * 1.15)),
+            )
+            candidates: list[tuple[float, float, tuple[int, int, int, int]]] = []
+            focus_x = max(0.0, min(1.0, float(focus_x)))
+            focus_y = max(0.0, min(1.0, float(focus_y)))
+            for scale in _reference_scales(profile.base_frame_zoom_max):
+                crop_w = max(2, min(base_w, _reference_even(round(base_w / scale))))
+                crop_h = max(2, min(base_h, _reference_even(round(base_h / scale))))
+                centre_x = focus_x * src_w
+                centre_y = focus_y * src_h
+                left = int(round(centre_x - crop_w / 2))
+                top = int(round(centre_y - crop_h / 2))
+                left = max(0, min(left, src_w - crop_w))
+                top = max(0, min(top, src_h - crop_h))
+                box = (left, top, left + crop_w, top + crop_h)
+                cropped = image.crop(box)
+                local_focus_x = (focus_x * src_w - left) / crop_w
+                local_focus_y = (focus_y * src_h - top) / crop_h
+                blank, content, focus_content = _reference_content_stats(
+                    cropped, local_focus_x, local_focus_y
+                )
+                box_centre_x = (left + crop_w / 2) / src_w
+                box_centre_y = (top + crop_h / 2) / src_h
+                focus_distance = min(
+                    1.0,
+                    ((box_centre_x - focus_x) ** 2 + (box_centre_y - focus_y) ** 2) ** 0.5,
+                )
+                focus_score = 1.0 - focus_distance
+                feasible_bonus = 0.75 if blank <= profile.max_blank_fraction else -blank
+                scale_penalty = (scale - 1.0) / max(0.01, profile.base_frame_zoom_max - 1.0)
+                score = (
+                    feasible_bonus
+                    + content * 0.56
+                    + focus_content * 0.24
+                    + focus_score * 0.15
+                    + (1.0 - min(1.0, scale_penalty)) * 0.05
+                )
+                candidates.append((score, scale, box))
+            if not candidates:
+                raise ValueError("no deterministic framing candidates")
+            _score, scale, box = max(candidates, key=lambda item: (item[0], item[1], item[2][1], item[2][0]))
+            prepared = image.crop(box).resize(output_size, Image.Resampling.LANCZOS)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            prepared.save(dest, "JPEG", quality=94)
+            with Image.open(dest) as saved:
+                blank_fraction, _content, _focus_content = _reference_content_stats(
+                    saved, 0.5, 0.5
+                )
+            actual_zoom = max(
+                (box[2] - box[0]) and base_w / (box[2] - box[0]),
+                (box[3] - box[1]) and base_h / (box[3] - box[1]),
+            )
+            return PreparedFrame(
+                dest,
+                box,
+                blank_fraction,
+                round(min(float(profile.base_frame_zoom_max), actual_zoom), 3),
+            )
+    except (OSError, ValueError, ZeroDivisionError):
+        return _reference_prepare_fallback(src, dest, width, height, focus_x, focus_y)
+
+
 def editorial_frame(
     src: Path, dest: Path, width: int, height: int,
     focus_x: float, focus_y: float, end_x: float, end_y: float, mode: str,
+    profile: ReferenceProfileConfig | None = None,
 ) -> Path:
     """Build deterministic CPU compositing without altering panel geometry."""
+    if profile is not None:
+        return prepare_reference_frame(
+            src, dest, width, height, focus_x, focus_y, profile
+        ).path
     if mode not in {"split_focus", "panel_stack"}:
         return crop_to_vertical(src, dest, width, height, focus_x, focus_y)
     W, H = round(width * 1.15), round(height * 1.15)
@@ -773,9 +993,17 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     for i, scene in enumerate(request.scenes):
         prepared = work / f"img{i:03d}.jpg"
         cache_key = (
-            str(scene.image_path), round(scene.focus_x, 3), round(scene.focus_y, 3),
+            reference_frame_cache_key(
+                Path(scene.image_path) if scene.image_path else Path(""),
+                width,
+                height,
+                scene.focus_x,
+                scene.focus_y,
+                scene.focus_end_x,
+                scene.focus_end_y,
+                request.profile,
+            ),
             scene.motion_mode, scene.motion_intensity, tuple(sorted(scene.disabled_effects)),
-            width, height,
         )
         cached = prepared_cache.get(cache_key)
         if cached and cached.is_file():
@@ -786,6 +1014,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                     Path(scene.image_path), prepared, width, height,
                     scene.focus_x, scene.focus_y, scene.focus_end_x, scene.focus_end_y,
                     scene.motion_mode,
+                    profile=request.profile,
                 )
             except Exception as exc:
                 raise RenderError(

@@ -26,6 +26,8 @@ class ReferenceProfileConfig:
     transition_max_s: float
     normal_zoom_max: float
     impact_zoom_max: float
+    base_frame_zoom_max: float
+    max_blank_fraction: float
     caption_words_per_cue: int
     caption_uppercase: bool
     caption_unicode_punctuation_allowed: bool
@@ -77,6 +79,8 @@ REFERENCE_MATCHED_SHORTS_V1 = ReferenceProfileConfig(
     transition_max_s=0.18,
     normal_zoom_max=1.08,
     impact_zoom_max=1.14,
+    base_frame_zoom_max=1.35,
+    max_blank_fraction=0.18,
     caption_words_per_cue=1,
     caption_uppercase=True,
     caption_unicode_punctuation_allowed=False,
