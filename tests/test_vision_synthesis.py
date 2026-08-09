@@ -202,11 +202,40 @@ def _valid_output():
         },
         "script_passages": [
             {
-                "passage_id": "passage-sequence",
-                "text": "The clue keeps moving, and the lead follows it toward the tower.",
+                "passage_id": "passage-sequence-hook",
+                "editorial_role": "hook",
+                "text": "A visible clue appears before the lead can decide whether to follow it in the dark.",
                 "claim_ids": ["claim-panel-sequence"],
                 "evidence_panel_ids": list(PANEL_IDS),
-            }
+            },
+            {
+                "passage_id": "passage-sequence-setup",
+                "editorial_role": "setup",
+                "text": "The lead studies the clue while the surrounding panels show a path toward an uncertain destination and leave the lead with one direction.",
+                "claim_ids": ["claim-panel-sequence"],
+                "evidence_panel_ids": list(PANEL_IDS),
+            },
+            {
+                "passage_id": "passage-sequence-escalation",
+                "editorial_role": "escalation",
+                "text": "That movement raises the stakes because the clue points forward, yet the lead still cannot see who arranged it or what waits beyond the next panel, before the trail can disappear entirely.",
+                "claim_ids": ["claim-panel-sequence"],
+                "evidence_panel_ids": list(PANEL_IDS),
+            },
+            {
+                "passage_id": "passage-sequence-insight",
+                "editorial_role": "editorial_insight",
+                "text": "The detail matters because a quiet image can change the lead's safest choice without warning while the clue remains visible.",
+                "claim_ids": ["claim-panel-sequence"],
+                "evidence_panel_ids": list(PANEL_IDS),
+            },
+            {
+                "passage_id": "passage-sequence-payoff",
+                "editorial_role": "payoff_open_loop",
+                "text": "Who placed the clue there, and what will the next panel reveal?",
+                "claim_ids": ["claim-panel-sequence"],
+                "evidence_panel_ids": list(PANEL_IDS),
+            },
         ],
     }
 

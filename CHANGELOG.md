@@ -13,6 +13,9 @@ Notable changes per release. Dates are ISO 8601.
   normalize audio toward -14 LUFS with a -1.5 dBTP true-peak ceiling.
 - Rights/source checks remain hard blockers; unlicensed music and SFX are not
   selected for render.
+- Versioned the vision analyzer to v2 with exactly five evidence-linked
+  narration roles, deterministic word bounds, grounded open-loop payoffs, and
+  context-aware channel-CTA/repetition guards.
 ## Unreleased — Complete motion-comic pipeline
 
 - Set the project default to English narration with American English voice; Indonesian remains explicit opt-in.

@@ -468,11 +468,40 @@ def _valid_synthesis_output(request) -> dict[str, Any]:
         },
         "script_passages": [
             {
-                "passage_id": "passage-fixture",
-                "text": "The clue changes what the witness thought was possible.",
+                "passage_id": "passage-fixture-hook",
+                "editorial_role": "hook",
+                "text": "A visible clue appears before the witness can decide whether to follow it in the dark.",
                 "claim_ids": [claim_id],
                 "evidence_panel_ids": list(expected),
-            }
+            },
+            {
+                "passage_id": "passage-fixture-setup",
+                "editorial_role": "setup",
+                "text": "The witness studies the clue while the surrounding panels show a path toward an uncertain destination and leave the witness with one direction.",
+                "claim_ids": [claim_id],
+                "evidence_panel_ids": list(expected),
+            },
+            {
+                "passage_id": "passage-fixture-escalation",
+                "editorial_role": "escalation",
+                "text": "That movement raises the stakes because the clue points forward, yet the witness still cannot see who arranged it or what waits beyond the next panel, before the trail can disappear entirely.",
+                "claim_ids": [claim_id],
+                "evidence_panel_ids": list(expected),
+            },
+            {
+                "passage_id": "passage-fixture-insight",
+                "editorial_role": "editorial_insight",
+                "text": "The detail matters because a quiet image can change the witness's safest choice without warning while the clue remains visible.",
+                "claim_ids": [claim_id],
+                "evidence_panel_ids": list(expected),
+            },
+            {
+                "passage_id": "passage-fixture-payoff",
+                "editorial_role": "payoff_open_loop",
+                "text": "Who placed the clue there, and what will the next panel reveal?",
+                "claim_ids": [claim_id],
+                "evidence_panel_ids": list(expected),
+            },
         ],
     }
 

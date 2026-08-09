@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-PROMPT_VERSION = "vision-first-story-analyzer-v1"
+PROMPT_VERSION = "vision-first-story-analyzer-v2"
 REQUIRED_OUTPUT_KEYS = {
     "observations",
     "continuity_ledger",
@@ -194,17 +194,46 @@ def _chapter_one():
                 "obstacle": "A guard approaches while the dock gate remains locked.",
                 "decision": "Mara hides the compass and waits outside.",
                 "consequence": "The boat can move before she reaches it.",
-                "changed_stakes": "The compass may leave with someone else.",
+                "changed_stakes": "She may lose access to whoever the gate admitted.",
                 "unresolved_question": "Who is inside the dark boat?",
             }
         },
         "script_passages": [
             {
-                "passage_id": "passage-dock-1",
-                "text": "Mara came for one thing, but the guard's arrival makes the dock a trap.",
+                "passage_id": "passage-dock-hook",
+                "editorial_role": "hook",
+                "text": "Mara returns to the locked dock because the brass compass could leave on the dark boat.",
+                "claim_ids": ["claim-dock-motive"],
+                "evidence_panel_ids": [panel_ids[0], panel_ids[1]],
+            },
+            {
+                "passage_id": "passage-dock-setup",
+                "editorial_role": "setup",
+                "text": "She hides the compass as a guard approaches, but the gate opens for a dark boat while she remains outside.",
+                "claim_ids": ["claim-dock-motive", "claim-dock-risk"],
+                "evidence_panel_ids": list(panel_ids),
+            },
+            {
+                "passage_id": "passage-dock-escalation",
+                "editorial_role": "escalation",
+                "text": "That detail changes the threat: the guard may be more than a blocker, and he appears to control access to the boat while Mara's move leaves the evidence sailing away before she can ask who is waiting inside.",
+                "claim_ids": ["claim-dock-risk"],
+                "evidence_panel_ids": list(panel_ids),
+            },
+            {
+                "passage_id": "passage-dock-insight",
+                "editorial_role": "editorial_insight",
+                "text": "The clever part is the compass: it turns a locked gate into a choice between staying visible and losing a crucial clue.",
                 "claim_ids": ["claim-dock-motive", "claim-dock-risk"],
                 "evidence_panel_ids": [panel_ids[0], panel_ids[1]],
-            }
+            },
+            {
+                "passage_id": "passage-dock-payoff",
+                "editorial_role": "payoff_open_loop",
+                "text": "Mara waits outside, but who did the gate open for inside the dark boat?",
+                "claim_ids": ["claim-dock-risk"],
+                "evidence_panel_ids": list(panel_ids),
+            },
         ],
     }
 
@@ -320,17 +349,46 @@ def _chapter_two():
                 "obstacle": "The trail leaves the orchard and the traveler's identity is unclear.",
                 "decision": "Ilan follows the footprints to the watchtower.",
                 "consequence": "A lit tower becomes the only sign of the traveler.",
-                "changed_stakes": "The search has moved from the orchard into a possible ambush.",
+                "changed_stakes": "The search now depends on whoever lit the watchtower.",
                 "unresolved_question": "Who lit the lantern?",
             }
         },
         "script_passages": [
             {
-                "passage_id": "passage-orchard-1",
-                "text": "The ribbon is not a message; it is a direction, and Ilan follows it toward the light.",
+                "passage_id": "passage-orchard-hook",
+                "editorial_role": "hook",
+                "text": "Ilan follows a red ribbon because the trail may lead to the missing traveler.",
+                "claim_ids": ["claim-orchard-signal"],
+                "evidence_panel_ids": [panel_ids[0], panel_ids[1]],
+            },
+            {
+                "passage_id": "passage-orchard-setup",
+                "editorial_role": "setup",
+                "text": "The ribbon points past the orchard wall, where hurried footprints continue toward a lit watchtower and leave Ilan with one direction.",
                 "claim_ids": ["claim-orchard-signal", "claim-orchard-lantern"],
-                "evidence_panel_ids": [panel_ids[0], panel_ids[1], panel_ids[2]],
-            }
+                "evidence_panel_ids": list(panel_ids),
+            },
+            {
+                "passage_id": "passage-orchard-escalation",
+                "editorial_role": "escalation",
+                "text": "That trail raises the stakes: the lantern is visible, but the person who lit it remains uncertain, and Ilan must follow before the footprints disappear from sight.",
+                "claim_ids": ["claim-orchard-lantern"],
+                "evidence_panel_ids": [panel_ids[1], panel_ids[2]],
+            },
+            {
+                "passage_id": "passage-orchard-insight",
+                "editorial_role": "editorial_insight",
+                "text": "The ribbon matters because it turns a lost traveler into a deliberate trail, not a random disappearance, while the trail remains visible.",
+                "claim_ids": ["claim-orchard-signal"],
+                "evidence_panel_ids": [panel_ids[0], panel_ids[1]],
+            },
+            {
+                "passage_id": "passage-orchard-payoff",
+                "editorial_role": "payoff_open_loop",
+                "text": "But who lit the watchtower, and why was the trail meant for Ilan?",
+                "claim_ids": ["claim-orchard-lantern"],
+                "evidence_panel_ids": [panel_ids[1], panel_ids[2]],
+            },
         ],
     }
 

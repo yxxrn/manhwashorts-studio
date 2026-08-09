@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-PROMPT_VERSION = "vision-first-story-analyzer-v1"
+PROMPT_VERSION = "vision-first-story-analyzer-v2"
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / (
-    "vision_first_story_analyzer_v1.txt"
+    "vision_first_story_analyzer_v2.txt"
 )
 
 _REQUIRED_OUTPUT_KEYS = frozenset(
@@ -44,7 +45,43 @@ _STORY_SPINE_FIELDS = (
     "changed_stakes",
     "unresolved_question",
 )
-_GENERIC_CTA_MARKERS = ("subscribe", "like and subscribe", "follow for more")
+_SCRIPT_PASSAGE_KEYS = frozenset(
+    {
+        "passage_id",
+        "editorial_role",
+        "text",
+        "claim_ids",
+        "evidence_panel_ids",
+    }
+)
+_EDITORIAL_ROLES = (
+    "hook",
+    "setup",
+    "escalation",
+    "editorial_insight",
+    "payoff_open_loop",
+)
+_ROLE_WORD_LIMITS = {
+    "hook": (8, 18),
+    "setup": (15, 28),
+    "escalation": (22, 38),
+    "editorial_insight": (15, 30),
+    "payoff_open_loop": (10, 24),
+}
+_CTA_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\bsubscribe\b",
+        r"\bfollow[\s-]+for[\s-]+more\b",
+        r"\bplease\s+like\b",
+        r"\blike\s+(?:this\s+video|this\s+story)\b",
+        r"\b(?:drop|hit)\s+(?:a\s+)?like\b",
+        r"\bplease\s+comment\b",
+        r"\bcomment\s+below\b",
+        r"\bleave\s+(?:a\s+)?comment\b",
+        r"\btell\s+us\s+in\s+comments\b",
+    )
+)
 
 
 class AnalyzerContractError(ValueError):
@@ -334,36 +371,83 @@ def _validate_narrative_outline(value: Any) -> None:
         _nonempty_string(spine.get(field), f"story_spine.{field}")
 
 
+def _normalized_lexical_words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", text.casefold(), flags=re.UNICODE)
+
+
+def _normalized_sentences(text: str) -> list[str]:
+    sentences: list[str] = []
+    for raw_sentence in re.split(r"[.!?]+", text):
+        words = _normalized_lexical_words(raw_sentence)
+        if words:
+            sentences.append(" ".join(words))
+    return sentences
+
+
+def _contains_channel_cta(text: str) -> bool:
+    lowered = text.casefold()
+    return any(pattern.search(lowered) for pattern in _CTA_PATTERNS)
+
+
 def _validate_script_passages(
     value: Any, expected: tuple[str, ...], claim_evidence: dict[str, set[str]]
 ) -> None:
-    if not isinstance(value, list) or not value:
-        _fail("script_passages are required")
+    if not isinstance(value, list) or len(value) != len(_EDITORIAL_ROLES):
+        _fail("script_passages must contain exactly five passages")
+
     passage_ids: set[str] = set()
-    for passage_value in value:
+    opening_words: set[tuple[str, ...]] = set()
+    repeated_sentences: set[str] = set()
+    total_words = 0
+    for expected_role, passage_value in zip(_EDITORIAL_ROLES, value, strict=True):
         passage = _mapping(passage_value, "script passage")
-        _require_fields(
-            passage,
-            ("passage_id", "text", "claim_ids", "evidence_panel_ids"),
-            "script passage",
-        )
+        if set(passage) != _SCRIPT_PASSAGE_KEYS:
+            _fail("script passage keys do not match the contract")
         passage_id = _nonempty_string(passage["passage_id"], "passage_id")
         if passage_id in passage_ids:
             _fail("passage IDs must be unique")
         passage_ids.add(passage_id)
+
+        role = _nonempty_string(passage["editorial_role"], "editorial_role")
+        if role != expected_role:
+            _fail("script passage roles are missing, duplicated, or out of order")
         text = _nonempty_string(passage["text"], "script passage text")
-        lowered = text.lower()
-        if any(marker in lowered for marker in _GENERIC_CTA_MARKERS):
-            _fail("generic CTA language is not allowed")
-        claim_ids = _string_list(passage["claim_ids"], "passage claim_ids", allow_empty=False)
+        total_words += len(text.split())
+        minimum_words, maximum_words = _ROLE_WORD_LIMITS[expected_role]
+        word_count = len(text.split())
+        if not minimum_words <= word_count <= maximum_words:
+            _fail("script passage word count is outside its role guardrail")
+        if _contains_channel_cta(text):
+            _fail("generic channel CTA language is not allowed")
+
+        first_three = tuple(_normalized_lexical_words(text)[:3])
+        if first_three in opening_words:
+            _fail("script passage openings must be varied")
+        opening_words.add(first_three)
+        for sentence in _normalized_sentences(text):
+            if sentence in repeated_sentences:
+                _fail("script passages must not repeat a sentence")
+            repeated_sentences.add(sentence)
+
+        claim_ids = _string_list(
+            passage["claim_ids"], "passage claim_ids", allow_empty=False
+        )
         if not set(claim_ids) <= set(claim_evidence):
             _fail("script passage references an unknown claim")
         evidence_panel_ids = set(
             _panel_refs(passage["evidence_panel_ids"], expected, "passage evidence")
         )
-        required_evidence = set().union(*(claim_evidence[claim_id] for claim_id in claim_ids))
+        required_evidence = set().union(
+            *(claim_evidence[claim_id] for claim_id in claim_ids)
+        )
         if not required_evidence <= evidence_panel_ids:
             _fail("script passage evidence does not cover its claims")
+
+    if not 90 <= total_words <= 125:
+        _fail("script passage narration must contain 90-125 words")
+    payoff_text = value[-1]["text"]
+    if not payoff_text.rstrip().endswith("?"):
+        _fail("payoff_open_loop must end with an evidence-grounded question")
 
 
 def _validate_output(output: Any, expected: tuple[str, ...]) -> None:

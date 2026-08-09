@@ -1,6 +1,6 @@
 # Current status
 
-Updated: 2026-08-04
+Updated: 2026-08-09
 
 ## Implemented
 
@@ -22,6 +22,8 @@ Updated: 2026-08-04
   hard cuts, 0.12-0.18s section transitions, and readable caption groups.
 - Private-by-default publication gate with rights and approval checks.
 - BYOK encryption and provider discovery.
+- Vision-first analyzer v2 contract with complete chapter evidence gates and
+  five-role, word-bounded, evidence-grounded narration.
 - Full test, lint, compile, and real-FFmpeg validation on Google execution host.
 
 ## Current runtime boundary
