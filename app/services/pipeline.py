@@ -2541,11 +2541,10 @@ def recover_stale_jobs(db: Session) -> int:
 
 
 def generate_draft(db: Session, project_id: str, actor_id: str = "", seed: int | None = None) -> dict:
-    """Run the vision-only analyse -> script -> voice -> timeline shortcut.
+    """Materialize a vision-evidence script draft and stop before media stages.
 
-    This is the "draft in under 10 minutes" path from the PRD. It stops short of
-    approval and rendering, which stay manual by design. It never starts an
-    analysis or falls back to a text/rules workflow.
+    Voice-over, timeline, cues, and rendering require explicit human approval.
+    This path never starts analysis or falls back to a text/rules workflow.
     """
     row = latest_analysis(db, project_id)
     if row is None:

@@ -560,10 +560,32 @@ def test_render_blocked_until_quality_passes(auth_client, recap_text, panel_byte
     auth_client.post(
         f"/api/projects/{project_id}/assets/text", json={"text": recap_text, "rights": {}}
     )
-    auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    upload = auth_client.post(
+        f"/api/projects/{project_id}/assets/upload",
+        files=[("files", ("panel.jpg", panel_bytes, "image/jpeg"))],
+        data={
+            "rights_owner": "Tester",
+            "license_type": "owned",
+            "source_name": "Generated",
+            "declared": "false",
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    _seed_vision_analysis(project_id)
+    draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
+    assert draft.status_code == 200, draft.text
+    approved = auth_client.post(
+        f"/api/projects/{project_id}/script/approve",
+        json={"editorial_review_confirmed": True},
+    )
+    assert approved.status_code == 200, approved.text
+    voice = auth_client.post(f"/api/projects/{project_id}/voice", json={"speed": 1.0})
+    assert voice.status_code == 200, voice.text
+    timeline = auth_client.post(f"/api/projects/{project_id}/timeline")
+    assert timeline.status_code == 200, timeline.text
     response = auth_client.post(f"/api/projects/{project_id}/render", json={"kind": "final"})
     assert response.status_code == 422
-    assert "timeline" in response.json()["detail"].lower()
+    assert "quality" in response.json()["detail"].lower()
 
 
 def test_error_check_cannot_be_overridden(auth_client, recap_text, panel_bytes):
