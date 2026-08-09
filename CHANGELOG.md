@@ -7,8 +7,8 @@ Notable changes per release. Dates are ISO 8601.
 - Added deterministic speech-balloon, UI-overlay, and blank-dominance penalties
   without requiring OCR, with auditable chronology and source-family reasons.
 - Enforced per-asset reuse caps, four-mode normal motion diversity, hard action
-  cuts, bounded section transitions, readable 4-7 word captions, and media-end
-  clamping.
+  cuts, bounded section transitions, uppercase punctuation-free one-word display
+  cues, and media-end clamping while preserving spoken TTS punctuation.
 - Final renders use the fixed 1080x1920/30fps H.264 High yuv420p path and
   normalize audio toward -14 LUFS with a -1.5 dBTP true-peak ceiling.
 - Rights/source checks remain hard blockers; unlicensed music and SFX are not

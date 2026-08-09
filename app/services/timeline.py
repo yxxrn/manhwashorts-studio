@@ -263,17 +263,21 @@ def is_caption_boundary(word: str) -> bool:
 def _is_dangling(word: str) -> bool:
     return is_caption_boundary(word)
 
+
 def normalize_display_text(text: str) -> str:
-    """Caption text: no terminal period, no punctuation-only cue."""
-    value = re.sub(r"\s+", " ", str(text or "")).strip()
-    value = re.sub(r"\s+([,;:!?])", r"\1", value)
-    value = re.sub(r"[.]\s*$", "", value).strip()
-    return "" if not value or _PUNCTUATION_ONLY.fullmatch(value) else value
+    """Return one uppercase, punctuation-free display representation."""
+    compact = " ".join(str(text or "").split())
+    value = "".join(character for character in compact if character.isalnum() or character.isspace())
+    return " ".join(value.upper().split())
 
 
 def spoken_tokens(text: str) -> list[str]:
     """Words eligible for karaoke; punctuation remains attached to words."""
-    return [token for token in re.findall(r"\S+", str(text or "")) if not _PUNCTUATION_ONLY.fullmatch(token)]
+    return [
+        token
+        for token in re.findall(r"\S+", str(text or ""))
+        if normalize_display_text(token)
+    ]
 
 
 
@@ -513,43 +517,47 @@ def build_cues(
     min_cue_seconds: float = 0.45,
     media_duration: float | None = None,
 ) -> list[CueSpec]:
-    """Chunk narration into readable 4-7 word cues timed from narration."""
+    """Build one punctuation-free display cue for each spoken word."""
     cues: list[CueSpec] = []
     order = 0
 
     for span in spans:
-        timings = span.word_timings
-        if not timings:
-            chunks = _chunk_text(span.text, max_chars, max_lines)
-            if not chunks:
-                continue
-            slice_len = span.duration / len(chunks)
-            for index, chunk in enumerate(chunks):
+        timings = list(span.word_timings or [])
+        if timings:
+            for timing in timings:
+                word = str(timing.get("word", ""))
+                display = normalize_display_text(word)
+                if not display:
+                    continue
                 cues.append(
                     CueSpec(
                         order_index=order,
-                        text=normalize_display_text(chunk),
-                        start_time=round(span.start_time + index * slice_len, 3),
-                        end_time=round(span.start_time + (index + 1) * slice_len, 3),
+                        text=display,
+                        start_time=float(timing.get("start", span.start_time)),
+                        end_time=float(timing.get("end", span.end_time)),
                     )
                 )
                 order += 1
             continue
 
-        for group in _group_timings(timings, max_chars, max_lines):
-            if not group:
+        tokens = spoken_tokens(span.text)
+        if not tokens:
+            continue
+        slice_len = span.duration / len(tokens)
+        for index, token in enumerate(tokens):
+            display = normalize_display_text(token)
+            if not display:
                 continue
             cues.append(
                 CueSpec(
                     order_index=order,
-                    text=normalize_display_text(" ".join(str(t["word"]) for t in group)),
-                    start_time=float(group[0]["start"]),
-                    end_time=float(group[-1]["end"]),
+                    text=display,
+                    start_time=round(span.start_time + index * slice_len, 3),
+                    end_time=round(span.start_time + (index + 1) * slice_len, 3),
                 )
             )
             order += 1
 
-    cues = _rebalance_cues(cues, max_chars, max_lines)
     for index, cue in enumerate(cues):
         if cue.duration < min_cue_seconds:
             wanted = cue.start_time + min_cue_seconds
@@ -557,7 +565,9 @@ def build_cues(
             cue.end_time = max(cue.end_time, min(wanted, limit))
         if media_duration is not None:
             cue.end_time = min(cue.end_time, media_duration)
-        cue.start_time = max(0.0, min(cue.start_time, media_duration if media_duration is not None else cue.start_time))
+            cue.start_time = min(max(0.0, cue.start_time), media_duration)
+        else:
+            cue.start_time = max(0.0, cue.start_time)
         cue.end_time = round(max(cue.start_time, cue.end_time), 3)
     return cues
 
@@ -585,8 +595,12 @@ def _srt_timestamp(seconds: float) -> str:
 def to_srt(cues: list[CueSpec], max_chars: int = MAX_SUBTITLE_CHARS_PER_LINE) -> str:
     """Serialise cues as SRT (FR-07 export)."""
     blocks: list[str] = []
-    for i, cue in enumerate(cues, start=1):
-        lines = wrap_caption(cue.text, max_chars)
+    for cue in cues:
+        display = normalize_display_text(cue.text)
+        if not display or cue.end_time <= cue.start_time:
+            continue
+        lines = wrap_caption(display, max_chars)
+        i = len(blocks) + 1
         blocks.append(
             f"{i}\n{_srt_timestamp(cue.start_time)} --> {_srt_timestamp(cue.end_time)}\n"
             + "\n".join(lines)
@@ -600,32 +614,44 @@ def validate_cues(
     max_lines: int,
     media_duration: float | None = None,
 ) -> list[dict]:
-    """Warn about cues that break the readability and timing rules."""
+    """Validate one-word, display-safe cues and their timing boundaries."""
     warnings: list[dict] = []
 
     for cue in cues:
-        normalized = normalize_display_text(cue.text)
+        raw = str(cue.text or "")
+        normalized = normalize_display_text(raw)
         words = normalized.split()
         if not normalized:
-            warnings.append({"code": "subtitle.punctuation_only", "severity": "error", "message": f"Cue {cue.order_index + 1} contains no speakable words."})
-            continue
-        if re.search(r"(?:^|\s)[.,:;]+(?:\s|$)", cue.text):
-            warnings.append({"code": "subtitle.standalone_punctuation", "severity": "error", "message": f"Cue {cue.order_index + 1} contains standalone punctuation."})
-        if len(words) < _CAPTION_MIN_WORDS or len(words) > _CAPTION_MAX_WORDS:
             warnings.append(
                 {
-                    "code": "subtitle.word_group_outside_4_7",
-                    "severity": "warning",
-                    "message": f"Cue {cue.order_index + 1} has {len(words)} words; expected 4-7.",
+                    "code": "subtitle.display_empty",
+                    "severity": "error",
+                    "message": f"Cue {cue.order_index + 1} contains no display word.",
                 }
             )
-        last_word = re.sub(r"[^a-z'-]+$", "", words[-1].lower())
-        if is_caption_boundary(last_word):
+            continue
+        if len(words) != 1:
             warnings.append(
                 {
-                    "code": "subtitle.dangling_boundary",
+                    "code": "subtitle.display_multiword",
                     "severity": "error",
-                    "message": f"Cue {cue.order_index + 1} ends with dangling word '{words[-1]}'.",
+                    "message": f"Cue {cue.order_index + 1} must contain exactly one word.",
+                }
+            )
+        if raw != raw.upper():
+            warnings.append(
+                {
+                    "code": "subtitle.display_not_uppercase",
+                    "severity": "error",
+                    "message": f"Cue {cue.order_index + 1} is not uppercase.",
+                }
+            )
+        if any(not (character.isalnum() or character.isspace()) for character in raw):
+            warnings.append(
+                {
+                    "code": "subtitle.display_punctuation",
+                    "severity": "error",
+                    "message": f"Cue {cue.order_index + 1} contains punctuation or symbols.",
                 }
             )
         lines = wrap_caption(normalized, max_chars)
@@ -647,7 +673,26 @@ def validate_cues(
                     f"{cue.duration:.2f}s, too fast to read.",
                 }
             )
-        if media_duration is not None and cue.end_time > media_duration + 0.01:
+        if cue.start_time < 0.0 or cue.end_time < 0.0:
+            warnings.append(
+                {
+                    "code": "subtitle.before_media",
+                    "severity": "error",
+                    "message": f"Cue {cue.order_index + 1} starts before media.",
+                }
+            )
+        if cue.end_time <= cue.start_time:
+            warnings.append(
+                {
+                    "code": "subtitle.non_positive_timing",
+                    "severity": "error",
+                    "message": f"Cue {cue.order_index + 1} has non-positive timing.",
+                }
+            )
+        if media_duration is not None and (
+            cue.start_time > media_duration + 0.01
+            or cue.end_time > media_duration + 0.01
+        ):
             warnings.append(
                 {
                     "code": "subtitle.after_media",
@@ -655,14 +700,6 @@ def validate_cues(
                     "message": f"Cue {cue.order_index + 1} ends after media duration.",
                 }
             )
-    if cues and len(str(cues[-1].text).split()) == 1:
-        warnings.append(
-            {
-                "code": "subtitle.final_one_word",
-                "severity": "error",
-                "message": "The final cue contains one word.",
-            }
-        )
     for a, b in zip(cues, cues[1:], strict=False):
         if b.start_time < a.end_time - 0.01:
             warnings.append(

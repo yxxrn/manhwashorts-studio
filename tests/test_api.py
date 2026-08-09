@@ -491,7 +491,7 @@ def test_subtitles_and_srt_export(auth_client, recap_text, declared_rights, pane
 
     edited = auth_client.patch(
         f"/api/projects/{project_id}/subtitles/{cues[0]['id']}",
-        json={"text": "Corrected subtitle text"},
+        json={"text": "Corrected"},
     )
     assert edited.status_code == 200
     assert edited.json()["edited_by_user"] is True

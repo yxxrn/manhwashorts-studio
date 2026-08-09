@@ -14,12 +14,15 @@ Updated: 2026-08-09
 - Deterministic panel scoring, ROI focus, camera motion, transitions, and
   split-focus/panel-stack compositions.
 - Audio-master timeline and subtitle timing.
+- Spoken narration keeps punctuation for TTS prosody while display subtitles
+  are separate uppercase, punctuation-free, one-word Unicode-alphanumeric cues
+  with source-word timing preserved through SRT, edits, and render inputs.
 - CPU FFmpeg render: 1080×1920, 30 FPS, H.264/AAC.
 - Persisted QC report, immutable override history, render leases, stale-job
   recovery, resource metrics, and cleanup.
 - Phase 2 editorial gates: deterministic panel penalties and asset reuse caps,
   chronology/source-family audit reasons, four-mode motion diversity, action
-  hard cuts, 0.12-0.18s section transitions, and readable caption groups.
+  hard cuts, 0.12-0.18s section transitions, and one-word display captions.
 - Private-by-default publication gate with rights and approval checks.
 - BYOK encryption and provider discovery.
 - Vision-first analyzer v2 contract with complete chapter evidence gates and

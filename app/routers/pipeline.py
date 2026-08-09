@@ -50,6 +50,7 @@ from app.schemas import (
 )
 from app.services import pipeline as pl
 from app.services import quality as quality_svc
+from app.services import timeline as timeline_svc
 
 router = APIRouter(
     prefix="/api/projects/{project_id}", tags=["pipeline"], route_class=CommitRoute
@@ -275,7 +276,15 @@ def update_cue(
     cue = db.get(SubtitleCue, cue_id)
     if cue is None or cue.project_id != project.id:
         raise HTTPException(status_code=404, detail="Subtitle cue not found.")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if "text" in changes:
+        display_text = timeline_svc.normalize_display_text(changes["text"])
+        if not display_text:
+            raise HTTPException(status_code=422, detail="Subtitle text must contain a display word.")
+        if len(display_text.split()) != 1:
+            raise HTTPException(status_code=422, detail="Subtitle text must contain exactly one display word.")
+        changes["text"] = display_text
+    for field, value in changes.items():
         setattr(cue, field, value)
     if cue.end_time <= cue.start_time:
         raise HTTPException(status_code=422, detail="Cue end must be after its start.")

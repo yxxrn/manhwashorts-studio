@@ -3,7 +3,13 @@ from dataclasses import dataclass
 from app.services import visual_scoring
 from app.services.editorial_qc import build_report
 from app.services.encoders import CPU, Selection, video_args
-from app.services.timeline import AudioSpan, build_cues, validate_cues, wrap_caption
+from app.services.timeline import (
+    AudioSpan,
+    build_cues,
+    normalize_display_text,
+    validate_cues,
+    wrap_caption,
+)
 
 
 def test_final_encoder_is_high_quality_but_default_cpu_baseline_is_unchanged():
@@ -37,15 +43,30 @@ def test_caption_groups_are_readable_and_end_at_media():
             ]
         )
     ]
+    span = AudioSpan("hook", " ".join(item["word"] for item in timings), 0, 3.85, timings)
     cues = build_cues(
-        [AudioSpan("hook", " ".join(item["word"] for item in timings), 0, 3.85, timings)],
+        [span],
         media_duration=3.85,
     )
+    expected = [
+        normalize_display_text(timing["word"])
+        for timing in timings
+        if normalize_display_text(timing["word"])
+    ]
+
     assert cues
-    assert all(4 <= len(cue.text.split()) <= 7 for cue in cues)
+    assert [cue.text for cue in cues] == expected
+    assert all(len(cue.text.split()) == 1 for cue in cues)
+    assert all(cue.text == normalize_display_text(cue.text) for cue in cues)
+    assert all(all(character.isalnum() for character in cue.text) for cue in cues)
+    assert all(cue.text == cue.text.upper() for cue in cues)
     assert all(len(wrap_caption(cue.text)) <= 2 for cue in cues)
     assert all(cue.end_time <= 3.85 for cue in cues)
-    assert len(cues[-1].text.split()) != 1
+    assert all(cue.end_time > cue.start_time for cue in cues)
+    assert all(
+        right.start_time >= left.end_time - 1e-9
+        for left, right in zip(cues, cues[1:], strict=False)
+    )
     assert not [warning for warning in validate_cues(cues, 28, 2, media_duration=3.85) if warning["severity"] == "error"]
 
 

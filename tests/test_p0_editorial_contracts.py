@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-def test_display_subtitles_remove_terminal_period_but_keep_question():
+def test_display_subtitles_are_uppercase_and_punctuation_free():
     from app.services.timeline import normalize_display_text, spoken_tokens
 
-    assert normalize_display_text("The gate opens.") == "The gate opens"
-    assert normalize_display_text("Who opened it?") == "Who opened it?"
+    assert normalize_display_text("The gate opens.") == "THE GATE OPENS"
+    assert normalize_display_text("Who opened it?") == "WHO OPENED IT"
     assert normalize_display_text("...") == ""
     assert spoken_tokens("Wait...") == ["Wait..."]
 

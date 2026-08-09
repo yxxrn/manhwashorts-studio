@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from app.services import director, editorial_visual_planner
 from app.services.quality import check_repetition_and_motion
 from app.services.shot_director import plan_shots
-from app.services.timeline import AudioSpan, build_cues, is_caption_boundary, wrap_caption
+from app.services.timeline import AudioSpan, build_cues, normalize_display_text, wrap_caption
 from app.services.visual_scoring import (
     PanelCandidate,
     VisualFeatures,
@@ -95,13 +95,27 @@ def _real_p0_transcript_spans():
 
 
 def test_real_p0_transcript_has_semantic_caption_endings():
-    cues = build_cues(_real_p0_transcript_spans(), media_duration=57.7)
+    spans = _real_p0_transcript_spans()
+    cues = build_cues(spans, media_duration=57.7)
+    expected = [
+        normalize_display_text(timing["word"])
+        for span in spans
+        for timing in span.word_timings
+        if normalize_display_text(timing["word"])
+    ]
 
-    assert 26 <= len(cues) <= 28
-    assert all(4 <= len(cue.text.split()) <= 7 for cue in cues)
+    assert [cue.text for cue in cues] == expected
+    assert all(len(cue.text.split()) == 1 for cue in cues)
+    assert all(cue.text == normalize_display_text(cue.text) for cue in cues)
+    assert all(all(character.isalnum() for character in cue.text) for cue in cues)
+    assert all(cue.text == cue.text.upper() for cue in cues)
     assert all(len(wrap_caption(cue.text)) <= 2 for cue in cues)
     assert all(cue.end_time <= 57.7 for cue in cues)
-    assert not any(is_caption_boundary(cue.text.split()[-1]) for cue in cues)
+    assert all(cue.end_time > cue.start_time for cue in cues)
+    assert all(
+        right.start_time >= left.end_time - 1e-9
+        for left, right in zip(cues, cues[1:], strict=False)
+    )
 
 
 def test_selection_respects_explicit_per_asset_cap_when_alternatives_exist():
