@@ -59,14 +59,15 @@ class ProjectCreate(BaseModel):
     language: Literal["en", "id"] = DEFAULT_PROJECT_LANGUAGE
     spoiler_level: SpoilerLevel = SpoilerLevel.MEDIUM
     narration_style: NarrationStyle = NarrationStyle.DRAMATIC
-    # Legacy short projects may still be opened; production QC rejects <60s.
-    target_duration: int = Field(default=75, ge=10, le=90)
+    # New projects use the reference-matched 41-second target; stored projects
+    # retain their persisted values and legacy template behavior.
+    target_duration: int = Field(default=41, ge=10, le=90)
     voice_id: str = Field(default=DEFAULT_ENGLISH_VOICE_ID, max_length=80)
     series_name: str = Field(default="", max_length=200)
     cta_text: str = Field(default="", max_length=500)
     banned_words: list[str] = Field(default_factory=list)
     pronunciations: dict[str, str] = Field(default_factory=dict)
-    template: str = Field(default="classic", max_length=60)
+    template: str = Field(default="reference_matched_shorts_v1", max_length=60)
 
 
 class ProjectUpdate(BaseModel):

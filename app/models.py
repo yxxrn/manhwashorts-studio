@@ -105,7 +105,7 @@ class Project(Base, TimestampMixin):
     language: Mapped[str] = mapped_column(String(10), default=DEFAULT_PROJECT_LANGUAGE)
     spoiler_level: Mapped[str] = mapped_column(String(20), default=SpoilerLevel.MEDIUM)
     narration_style: Mapped[str] = mapped_column(String(20), default=NarrationStyle.DRAMATIC)
-    target_duration: Mapped[int] = mapped_column(Integer, default=75)
+    target_duration: Mapped[int] = mapped_column(Integer, default=41)
     status: Mapped[str] = mapped_column(String(20), default=ProjectStatus.DRAFT, index=True)
 
     series_name: Mapped[str] = mapped_column(String(200), default="")
@@ -113,7 +113,7 @@ class Project(Base, TimestampMixin):
     banned_words: Mapped[list[str]] = mapped_column(JSON, default=list)
     pronunciations: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     voice_id: Mapped[str] = mapped_column(String(80), default=DEFAULT_ENGLISH_VOICE_ID)
-    template: Mapped[str] = mapped_column(String(60), default="classic")
+    template: Mapped[str] = mapped_column(String(60), default="reference_matched_shorts_v1")
 
     error_message: Mapped[str] = mapped_column(Text, default="")
     archived: Mapped[bool] = mapped_column(Boolean, default=False)

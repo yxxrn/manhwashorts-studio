@@ -96,10 +96,73 @@ def _caption_contract_invalid(cues: list[object], duration: float) -> bool:
     )
 
 
+def _reference_qc_failures(scenes: list[object], duration: float, profile) -> list[str]:
+    failures: list[str] = []
+    if not profile.duration_min_s <= duration <= profile.duration_max_s:
+        failures.append("reference.duration_outside_38_50s")
+    if not profile.shot_min <= len(scenes) <= profile.shot_max:
+        failures.append("reference.shot_count_outside_28_36")
+    durations = [max(0.0, float(scene.end_time) - float(scene.start_time)) for scene in scenes]
+    normal = [value for value in durations if profile.hold_min_s <= value <= profile.hold_max_s]
+    emphasis = [value for value in durations if profile.emphasis_min_s <= value <= profile.emphasis_max_s]
+    if len(normal) + len(emphasis) != len(durations):
+        failures.append("reference.shot_duration_outside_0.65_2.20s")
+    if durations and len(normal) / len(durations) < profile.hold_ratio_min:
+        failures.append("reference.hold_ratio_below_70pct")
+    if durations and len(normal) / len(durations) > profile.hold_ratio_max:
+        failures.append("reference.hold_ratio_over_80pct")
+    if durations and len(emphasis) / len(durations) < profile.emphasis_ratio_min:
+        failures.append("reference.emphasis_ratio_below_20pct")
+    if durations and len(emphasis) / len(durations) > profile.emphasis_ratio_max:
+        failures.append("reference.emphasis_ratio_over_30pct")
+    if durations:
+        mean = sum(durations) / len(durations)
+        if not profile.mean_shot_min_s <= mean <= profile.mean_shot_max_s:
+            failures.append("reference.mean_shot_duration_outside_1.15_1.40s")
+        hard_cuts = sum(
+            1
+            for index, scene in enumerate(scenes)
+            if getattr(scene, "transition", "") == ("none" if index == 0 else "cut")
+        )
+        if hard_cuts / len(scenes) < profile.hard_cut_ratio_min:
+            failures.append("reference.hard_cut_ratio_below_85pct")
+    counts: dict[str, int] = {}
+    positions: dict[str, list[int]] = {}
+    for index, scene in enumerate(scenes):
+        asset_id = str(getattr(scene, "asset_id", "") or "")
+        if asset_id:
+            counts[asset_id] = counts.get(asset_id, 0) + 1
+            positions.setdefault(asset_id, []).append(index)
+    if any(count > profile.max_canonical_panel_uses for count in counts.values()):
+        failures.append("reference.panel_reuse_over_2")
+    for left, right in zip(scenes, scenes[1:], strict=False):
+        if getattr(left, "asset_id", None) != getattr(right, "asset_id", None):
+            continue
+        failures.append("reference.panel_reuse_consecutive")
+        if (
+            getattr(left, "roi_label", "") == getattr(right, "roi_label", "")
+            and abs(float(getattr(left, "focus_x", 0.0)) - float(getattr(right, "focus_x", 0.0))) < 0.001
+            and abs(float(getattr(left, "focus_y", 0.0)) - float(getattr(right, "focus_y", 0.0))) < 0.001
+        ):
+            failures.append("reference.panel_reuse_same_roi")
+        break
+    for indexes in positions.values():
+        if len(indexes) != 2:
+            continue
+        first, second = (scenes[indexes[0]], scenes[indexes[1]])
+        if (
+            getattr(first, "roi_label", "") == getattr(second, "roi_label", "")
+            and abs(float(getattr(first, "focus_x", 0.0)) - float(getattr(second, "focus_x", 0.0))) < 0.001
+            and abs(float(getattr(first, "focus_y", 0.0)) - float(getattr(second, "focus_y", 0.0))) < 0.001
+        ):
+            failures.append("reference.panel_reuse_same_roi")
+    return sorted(set(failures))
+
+
 def build_report(
     *, scenes: list[object], cues: list[object], duration: float, job_path: Path | None = None,
     rights_confidence: int = 5, source_cleanliness: int = 5, voice_profile_count: int = 0, minimum_duration: float = 45.0,
-    preview: bool = False,
+    preview: bool = False, profile: object | None = None,
 ) -> EditorialQC:
     average, longest_same, crops, total = _shot_metrics(scenes)
     frozen = _freeze_duration(job_path) if job_path and job_path.is_file() else 0.0
@@ -164,10 +227,13 @@ def build_report(
     report.audio_video_drift, report.black_frame_duration = _media_integrity(job_path, duration)
     report.audio_integrated_lufs, report.audio_true_peak_dbfs = _audio_metrics(job_path)
     report.failures.extend(motion_director.audit_camera_sequence(scenes))
-    if duration < minimum_duration or duration > 90:
-        report.failures.append("duration_outside_60_90s")
-    if not 2.3 <= average <= 3.3:
-        report.failures.append("average_shot_duration_outside_2.3_3.3s")
+    if profile is not None:
+        report.failures.extend(_reference_qc_failures(scenes, duration, profile))
+    else:
+        if duration < minimum_duration or duration > 90:
+            report.failures.append("duration_outside_60_90s")
+        if not 2.3 <= average <= 3.3:
+            report.failures.append("average_shot_duration_outside_2.3_3.3s")
     if dominance > 0.35 and len(set(signatures)) > 1:
         report.failures.append("dominant_background_over_35pct")
     if alternating >= 4:

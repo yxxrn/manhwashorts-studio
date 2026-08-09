@@ -16,6 +16,8 @@ class ReferenceProfileConfig:
     emphasis_min_s: float
     emphasis_max_s: float
     hold_ratio_min: float
+    hold_ratio_max: float
+    emphasis_ratio_min: float
     emphasis_ratio_max: float
     mean_shot_min_s: float
     mean_shot_max_s: float
@@ -57,14 +59,16 @@ REFERENCE_MATCHED_SHORTS_V1 = ReferenceProfileConfig(
     duration_max_s=50.0,
     shot_min=28,
     shot_max=36,
-    hold_min_s=0.9,
-    hold_max_s=1.5,
+    hold_min_s=0.65,
+    hold_max_s=1.59,
     emphasis_min_s=1.6,
     emphasis_max_s=2.2,
-    hold_ratio_min=0.85,
-    emphasis_ratio_max=0.15,
-    mean_shot_min_s=1.05,
-    mean_shot_max_s=1.65,
+    hold_ratio_min=0.70,
+    hold_ratio_max=0.80,
+    emphasis_ratio_min=0.20,
+    emphasis_ratio_max=0.30,
+    mean_shot_min_s=1.15,
+    mean_shot_max_s=1.40,
     hard_cut_ratio_min=0.85,
     transition_min_s=0.12,
     transition_max_s=0.18,

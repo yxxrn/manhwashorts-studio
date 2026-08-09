@@ -52,7 +52,14 @@ from app.models import (
     TimelineScene,
 )
 from app.services import analysis as analysis_svc
-from app.services import analyzer_contract, editorial_timing, segmentation, storage, visual_scoring
+from app.services import (
+    analyzer_contract,
+    editorial_timing,
+    reference_profile,
+    segmentation,
+    storage,
+    visual_scoring,
+)
 from app.services import director as director_svc
 from app.services import policy as policy_svc
 from app.services import quality as quality_svc
@@ -1808,34 +1815,110 @@ def spans_from_segments(segments: list[AudioSegment]) -> list[timeline_svc.Audio
     return spans
 
 
+def _reference_citation_map(
+    db: Session, project_id: str, script: ScriptVersion, images: list[SourceAsset]
+) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    """Map provider panel evidence to renderable assets without ID guessing."""
+    analysis = latest_analysis(db, project_id)
+    regions = []
+    if analysis is not None:
+        regions = list(
+            db.scalars(
+                select(PanelRegion)
+                .where(PanelRegion.story_analysis_id == analysis.id)
+                .order_by(PanelRegion.source_order, PanelRegion.panel_id)
+            )
+        )
+    by_panel = {region.panel_id: region for region in regions if region.panel_id}
+    by_source_order = {region.source_order: region for region in regions}
+    image_ids = {asset.id for asset in images}
+    mapped: dict[str, tuple[str, ...]] = {}
+    reasons: dict[str, tuple[str, ...]] = {}
+    for section in script.sections or []:
+        name = str(section.get("section", ""))
+        asset_ids: list[str] = []
+        section_reasons: list[str] = []
+        for panel_id in section.get("evidence_panel_ids", []) or []:
+            region = by_panel.get(str(panel_id))
+            if region is None:
+                section_reasons.append(f"evidence_panel_unavailable:{panel_id}")
+            elif region.source_asset_id in image_ids:
+                asset_ids.append(region.source_asset_id)
+                section_reasons.append(
+                    f"evidence_panel_mapped:{region.panel_id}->{region.source_asset_id}"
+                )
+            else:
+                section_reasons.append(f"evidence_panel_unrenderable:{panel_id}")
+        if not asset_ids:
+            for citation in section.get("citations", []) or []:
+                if isinstance(citation, bool) or not isinstance(citation, int):
+                    section_reasons.append("citation_source_order_invalid")
+                    continue
+                region = by_source_order.get(citation)
+                if region is not None and region.source_asset_id in image_ids:
+                    asset_ids.append(region.source_asset_id)
+                    section_reasons.append(
+                        f"citation_source_order_mapped:{citation}->{region.source_asset_id}"
+                    )
+                else:
+                    section_reasons.append(f"citation_source_order_unavailable:{citation}")
+        if not asset_ids:
+            section_reasons.append("evidence_fallback:unavailable")
+        mapped[name] = tuple(dict.fromkeys(asset_ids))
+        reasons[name] = tuple(sorted(set(section_reasons)))
+    return mapped, reasons
+
+
 # --- stage: timeline and subtitles ----------------------------------------
 
 
 def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[TimelineScene]:
     """Derive scenes and subtitle cues from the current voice-over."""
-    get_project(db, project_id)  # validates the project exists
+    project = get_project(db, project_id)
+    profile = reference_profile.resolve_reference_profile(project.template)
     script = _script_for_media(db, project_id)
 
     segments = audio_segments(db, script.id)
     if not segments:
         raise PipelineError("generate the voice-over before building the timeline")
 
+    audio_duration = max((float(segment.end_time) for segment in segments), default=0.0)
+    if profile is not None and not profile.duration_min_s <= audio_duration <= profile.duration_max_s:
+        raise PipelineError(
+            f"{profile.profile_id} requires audio duration between "
+            f"{profile.duration_min_s:.1f} and {profile.duration_max_s:.1f} seconds"
+        )
+
     assets = project_assets(db, project_id)
     images = image_assets(assets)
     spans = spans_from_segments(segments)
-
-    for old in db.scalars(select(TimelineScene).where(TimelineScene.project_id == project_id)):
-        db.delete(old)
-    for old_cue in db.scalars(select(SubtitleCue).where(SubtitleCue.project_id == project_id)):
-        db.delete(old_cue)
-    db.flush()
 
     scored = visual_scoring.analyze_assets(images, storage.read_bytes)
     # Director decides story beats and visual timing first. The Shot Sequencer
     # then turns those beats into ROI shots; panel scoring remains unchanged.
     from app.services import editorial_visual_planner
 
-    planned = editorial_visual_planner.plan(spans, scored)
+    citation_map, citation_reasons = ({}, {})
+    if profile is not None:
+        citation_map, citation_reasons = _reference_citation_map(
+            db, project_id, script, images
+        )
+    try:
+        planned = editorial_visual_planner.plan(
+            spans,
+            scored,
+            profile=profile,
+            cited_asset_ids_by_section=citation_map if profile is not None else None,
+            citation_alignment_reasons_by_section=citation_reasons if profile is not None else None,
+        )
+    except editorial_visual_planner.ReferencePlanningError as exc:
+        raise PipelineError(f"{exc.code}: {exc}") from exc
+
+    for old in db.scalars(select(TimelineScene).where(TimelineScene.project_id == project_id)):
+        db.delete(old)
+    for old_cue in db.scalars(select(SubtitleCue).where(SubtitleCue.project_id == project_id)):
+        db.delete(old_cue)
+    db.flush()
     # Audit remains observable, but sparse/low-information fixtures must still
     # render; the Director has already exhausted available ROI alternatives.
     editorial_issues = director_svc.audit_sequence(planned)
@@ -2348,6 +2431,7 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
     source_cleanliness = 0 if test_only or source_findings else 5
     if test_only and not any(getattr(f, "code", "") == "source.test_only" for f in source_findings):
         source_findings.append(policy_svc.PolicyFinding("source.test_only", policy_svc.CheckSeverity.ERROR, "NOT_FOR_PUBLICATION source is test-only."))
+    render_profile = reference_profile.resolve_reference_profile(project.template)
     qc = editorial_qc.build_report(
         scenes=scenes,
         cues=cues,
@@ -2357,6 +2441,7 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
         source_cleanliness=source_cleanliness,
         voice_profile_count=len({segment.voice_profile_hash for segment in audio_segments(db, current_script(db, job.project_id).id) if segment.voice_profile_hash}),
         preview=job.kind == "preview",
+        profile=render_profile,
     )
     report_dir = Path(result.output_path).parent
     report_dir.mkdir(parents=True, exist_ok=True)

@@ -172,7 +172,13 @@
           <input type="text" id="p-chapter" maxlength="60" placeholder="12">
         </label>
         <label for="p-duration">Target durasi (detik, maks {{ max_duration }})
-          <input type="number" id="p-duration" min="10" max="{{ max_duration }}" value="60">
+          <input type="number" id="p-duration" min="10" max="{{ max_duration }}" value="41">
+        </label>
+        <label for="p-template">Editorial profile
+          <select id="p-template">
+            <option value="reference_matched_shorts_v1" selected>Reference matched Shorts</option>
+            <option value="classic">Classic legacy</option>
+          </select>
         </label>
         <label for="p-style">Gaya narasi
           <select id="p-style">

@@ -281,7 +281,15 @@ def test_job_records_the_requested_encoder(db, recap_text, declared_rights, pane
     workspace = Workspace(owner_id=user.id, name="WS")
     db.add(workspace)
     db.flush()
-    project = Project(workspace_id=workspace.id, title="Enc", manhwa_title="M", chapter="1", language="id", voice_id="id")
+    project = Project(
+        workspace_id=workspace.id,
+        title="Enc",
+        manhwa_title="M",
+        chapter="1",
+        template="classic",
+        language="id",
+        voice_id="id",
+    )
     db.add(project)
     db.flush()
 

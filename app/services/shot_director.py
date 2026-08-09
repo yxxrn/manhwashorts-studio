@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -278,9 +279,30 @@ def _candidate_for(
     candidates: list[PanelCandidate], text: str, previous_order: int | None,
     used: set[str], signatures: set[str],
     usage_counts: dict[str, int], max_asset_uses: int,
+    preferred_asset_ids: set[str] | None = None,
 ) -> PanelCandidate | None:
+    preferred_pool = [
+        candidate
+        for candidate in candidates
+        if preferred_asset_ids is None or candidate.asset_id in preferred_asset_ids
+    ]
+    if preferred_asset_ids and any(
+        usage_counts.get(candidate.asset_id, 0) < max_asset_uses
+        for candidate in preferred_pool
+    ):
+        selection_pool = preferred_pool
+    else:
+        selection_pool = candidates
+    nonconsecutive = [
+        candidate
+        for candidate in selection_pool
+        if candidate.order_index != previous_order
+        and usage_counts.get(candidate.asset_id, 0) < max_asset_uses
+    ]
+    if nonconsecutive:
+        selection_pool = nonconsecutive
     return visual_scoring.select_panel(
-        candidates, text, previous_order=previous_order, used_ids=used, used_signatures=signatures,
+        selection_pool, text, previous_order=previous_order, used_ids=used, used_signatures=signatures,
         usage_counts=usage_counts, max_asset_uses=max_asset_uses,
     )
 
@@ -289,11 +311,20 @@ def _cooldown_candidate(
     candidates: list[PanelCandidate], text: str, current: PanelCandidate | None,
     previous_order: int | None, used: set[str], signatures: set[str],
     usage_counts: dict[str, int], max_asset_uses: int,
+    preferred_asset_ids: set[str] | None = None,
 ) -> PanelCandidate | None:
     """Prefer a new asset after two shots; fallback only when no alternative exists."""
     if current is None:
-        return _candidate_for(candidates, text, previous_order, used, signatures, usage_counts, max_asset_uses)
-    alternatives = [candidate for candidate in candidates if candidate.asset_id != current.asset_id]
+        return _candidate_for(
+            candidates, text, previous_order, used, signatures, usage_counts,
+            max_asset_uses, preferred_asset_ids,
+        )
+    alternatives = [
+        candidate
+        for candidate in candidates
+        if candidate.asset_id != current.asset_id
+        and (preferred_asset_ids is None or candidate.asset_id in preferred_asset_ids)
+    ]
     family_alternatives = [
         candidate for candidate in alternatives
         if not current.source_family or candidate.source_family != current.source_family
@@ -313,6 +344,8 @@ def _cooldown_candidate(
 def plan_shots(
     spans: list[object], candidates: list[PanelCandidate],
     min_scene_seconds: float = _MIN_SHOT, max_scene_seconds: float = _MAX_SHOT,
+    preferred_asset_ids_by_section: Mapping[str, Iterable[str]] | None = None,
+    max_asset_uses: int | None = None,
 ) -> list[ShotPlan]:
     """Direct a timeline with ROI cuts, motion diversity, and anticipation."""
     if not spans:
@@ -329,7 +362,11 @@ def plan_shots(
     timeline_start = min(float(span.start_time) for span in spans)
     timeline_end = max(float(span.end_time) for span in spans)
     estimated_shots = max(1, math.ceil(max(0.0, timeline_end - timeline_start) / _MAX_SHOT))
-    max_asset_uses = visual_scoring.asset_use_cap(estimated_shots)
+    max_asset_uses = (
+        max_asset_uses
+        if max_asset_uses is not None
+        else visual_scoring.asset_use_cap(estimated_shots)
+    )
     previous_order: int | None = None
     previous_focus: tuple[float, float] | None = None
     previous_asset_id: str | None = None
@@ -342,7 +379,17 @@ def plan_shots(
         block_end = max(span.end_time, next_start)
         duration = max(0.0, block_end - span.start_time)
         previous_asset_id = scenes[-1].asset_id if scenes else None
-        candidate = _candidate_for(candidates, span.text, previous_order, used, signatures, usage_counts, max_asset_uses)
+        preferred_asset_ids = None
+        if preferred_asset_ids_by_section is not None:
+            preferred_asset_ids = {
+                str(asset_id)
+                for asset_id in preferred_asset_ids_by_section.get(span.section, ())
+                if str(asset_id)
+            } or None
+        candidate = _candidate_for(
+            candidates, span.text, previous_order, used, signatures,
+            usage_counts, max_asset_uses, preferred_asset_ids,
+        )
         rois = _purposeful_rois(rank_rois(candidate, span.text))
         if previous_focus and candidate and candidate.asset_id != previous_asset_id:
             rois = _continuity_order(rois, *previous_focus, "fade")
@@ -412,7 +459,7 @@ def plan_shots(
                 previous_order = candidate.order_index
                 cooled = _cooldown_candidate(
                     candidates, span.text, candidate, previous_order, used, signatures,
-                    usage_counts, max_asset_uses,
+                    usage_counts, max_asset_uses, preferred_asset_ids,
                 )
                 if cooled is not candidate:
                     candidate = cooled
@@ -427,7 +474,10 @@ def plan_shots(
             if roi_cursor >= len(rois) and slot < slots - 1:
                 previous_order = candidate.order_index if candidate else previous_order
                 previous_asset_id = candidate.asset_id if candidate else previous_asset_id
-                candidate = _candidate_for(candidates, span.text, previous_order, used, signatures, usage_counts, max_asset_uses)
+                candidate = _candidate_for(
+                    candidates, span.text, previous_order, used, signatures,
+                    usage_counts, max_asset_uses, preferred_asset_ids,
+                )
                 rois = _purposeful_rois(rank_rois(candidate, span.text))
                 if candidate and candidate.asset_id == previous_asset_id and len(rois) == 1:
                     roi = rois[0]
@@ -463,6 +513,10 @@ def plan_shots(
                     alternatives = [
                         panel for panel in candidates
                         if panel.asset_id not in {left.asset_id, middle.asset_id}
+                        and (
+                            preferred_asset_ids is None
+                            or panel.asset_id in preferred_asset_ids
+                        )
                     ]
                     replacement = visual_scoring.select_panel(
                         alternatives,

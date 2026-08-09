@@ -11,7 +11,7 @@ import io
 import math
 import re
 import subprocess
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -455,13 +455,27 @@ def planned_focus(candidate: PanelCandidate | None, shot_index: int = 0) -> tupl
     return points[shot_index % len(points)]
 
 
-def plan_content_aware_scenes(spans: Iterable[object], candidates: list[PanelCandidate], min_scene_seconds: float = 2.0, max_scene_seconds: float = 6.0) -> list[dict]:
+def plan_content_aware_scenes(
+    spans: Iterable[object],
+    candidates: list[PanelCandidate],
+    min_scene_seconds: float = 2.0,
+    max_scene_seconds: float = 6.0,
+    preferred_asset_ids_by_section: Mapping[str, Iterable[str]] | None = None,
+    max_asset_uses: int | None = None,
+) -> list[dict]:
     """Plan directed shots; panel scoring remains the candidate provider."""
     from app.services.camera_planner import apply_camera_plans
     from app.services.shot_director import plan_shots
 
     return apply_camera_plans(
-        plan_shots(list(spans), candidates, min_scene_seconds, max_scene_seconds)
+        plan_shots(
+            list(spans),
+            candidates,
+            min_scene_seconds,
+            max_scene_seconds,
+            preferred_asset_ids_by_section=preferred_asset_ids_by_section,
+            max_asset_uses=max_asset_uses,
+        )
     )
 
 

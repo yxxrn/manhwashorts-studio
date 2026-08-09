@@ -19,7 +19,13 @@ from app.constants import (
     CheckSeverity,
 )
 from app.models import Project, RenderJob, ScriptVersion, SourceAsset
-from app.services import editorial_timing, motion_director, policy, visual_scoring
+from app.services import (
+    editorial_timing,
+    motion_director,
+    policy,
+    reference_profile,
+    visual_scoring,
+)
 from app.services.timeline import CueSpec, validate_cues
 
 
@@ -145,7 +151,149 @@ def check_panel_alignment(scenes: list) -> list[CheckResult]:
     return results or [_pass("panel.alignment_ok", f"{len(audited)} scene selections carry alignment evidence.")]
 
 
-def check_repetition_and_motion(scenes: list) -> list[CheckResult]:
+def _reference_reuse_checks(scenes: list, profile) -> list[CheckResult]:
+    results: list[CheckResult] = []
+    counts = Counter(
+        str(getattr(scene, "asset_id", ""))
+        for scene in scenes
+        if getattr(scene, "asset_id", "")
+    )
+    over = {
+        asset_id: count
+        for asset_id, count in counts.items()
+        if count > profile.max_canonical_panel_uses
+    }
+    if over:
+        results.append(_fail(
+            "reference.panel_reuse_over_2",
+            CheckSeverity.ERROR,
+            "A reference panel is used more than twice.",
+            {"asset_counts": dict(sorted(over.items()))},
+        ))
+    for left, right in zip(scenes, scenes[1:], strict=False):
+        if getattr(left, "asset_id", None) != getattr(right, "asset_id", None):
+            continue
+        results.append(_fail(
+            "reference.panel_reuse_consecutive",
+            CheckSeverity.ERROR,
+            "Reference panels may not be reused in consecutive shots.",
+        ))
+        if (
+            getattr(left, "roi_label", "") == getattr(right, "roi_label", "")
+            and abs(float(getattr(left, "focus_x", 0.0)) - float(getattr(right, "focus_x", 0.0))) < 0.001
+            and abs(float(getattr(left, "focus_y", 0.0)) - float(getattr(right, "focus_y", 0.0))) < 0.001
+        ):
+            results.append(_fail(
+                "reference.panel_reuse_same_roi",
+                CheckSeverity.ERROR,
+                "A repeated reference panel must use a distinct ROI.",
+            ))
+        break
+    positions: dict[str, list[object]] = {}
+    for scene in scenes:
+        asset_id = str(getattr(scene, "asset_id", "") or "")
+        if asset_id:
+            positions.setdefault(asset_id, []).append(scene)
+    for repeated in positions.values():
+        if len(repeated) != 2:
+            continue
+        first, second = repeated
+        if (
+            getattr(first, "roi_label", "") == getattr(second, "roi_label", "")
+            and abs(float(getattr(first, "focus_x", 0.0)) - float(getattr(second, "focus_x", 0.0))) < 0.001
+            and abs(float(getattr(first, "focus_y", 0.0)) - float(getattr(second, "focus_y", 0.0))) < 0.001
+        ):
+            results.append(_fail(
+                "reference.panel_reuse_same_roi",
+                CheckSeverity.ERROR,
+                "A repeated reference panel must use a distinct ROI.",
+            ))
+    unique: dict[str, CheckResult] = {}
+    for result in results:
+        unique[result.code] = result
+    return list(unique.values())
+
+
+def check_reference_profile(scenes: list, duration: float, profile) -> list[CheckResult]:
+    """Apply the empirical reference duration, cadence, and cut gates."""
+    results: list[CheckResult] = []
+    if not profile.duration_min_s <= duration <= profile.duration_max_s:
+        results.append(_fail(
+            "reference.duration_outside_38_50s",
+            CheckSeverity.ERROR,
+            "Reference output duration must be between 38 and 50 seconds.",
+        ))
+    if not profile.shot_min <= len(scenes) <= profile.shot_max:
+        results.append(_fail(
+            "reference.shot_count_outside_28_36",
+            CheckSeverity.ERROR,
+            "Reference output must contain 28 to 36 shots.",
+        ))
+    durations = [
+        max(0.0, float(scene.end_time) - float(scene.start_time))
+        for scene in scenes
+    ]
+    normal = [
+        value for value in durations
+        if profile.hold_min_s <= value <= profile.hold_max_s
+    ]
+    emphasis = [
+        value for value in durations
+        if profile.emphasis_min_s <= value <= profile.emphasis_max_s
+    ]
+    if len(normal) + len(emphasis) != len(durations):
+        results.append(_fail(
+            "reference.shot_duration_outside_0.65_2.20s",
+            CheckSeverity.ERROR,
+            "Every reference shot must be in the normal or emphasis duration band.",
+        ))
+    if durations and len(normal) / len(durations) < profile.hold_ratio_min:
+        results.append(_fail(
+            "reference.hold_ratio_below_70pct",
+            CheckSeverity.ERROR,
+            "At least 70 percent of reference shots must use the normal hold band.",
+        ))
+    if durations and len(normal) / len(durations) > profile.hold_ratio_max:
+        results.append(_fail(
+            "reference.hold_ratio_over_80pct",
+            CheckSeverity.ERROR,
+            "At most 80 percent of reference shots may use the normal hold band.",
+        ))
+    if durations and len(emphasis) / len(durations) < profile.emphasis_ratio_min:
+        results.append(_fail(
+            "reference.emphasis_ratio_below_20pct",
+            CheckSeverity.ERROR,
+            "At least 20 percent of reference shots must use the emphasis band.",
+        ))
+    if durations and len(emphasis) / len(durations) > profile.emphasis_ratio_max:
+        results.append(_fail(
+            "reference.emphasis_ratio_over_30pct",
+            CheckSeverity.ERROR,
+            "At most 30 percent of reference shots may use the emphasis band.",
+        ))
+    if durations:
+        mean = sum(durations) / len(durations)
+        if not profile.mean_shot_min_s <= mean <= profile.mean_shot_max_s:
+            results.append(_fail(
+                "reference.mean_shot_duration_outside_1.15_1.40s",
+                CheckSeverity.ERROR,
+                "Reference mean shot duration must be between 1.15 and 1.40 seconds.",
+            ))
+        hard_cuts = sum(
+            1
+            for index, scene in enumerate(scenes)
+            if getattr(scene, "transition", "") == ("none" if index == 0 else "cut")
+        )
+        if hard_cuts / len(scenes) < profile.hard_cut_ratio_min:
+            results.append(_fail(
+                "reference.hard_cut_ratio_below_85pct",
+                CheckSeverity.ERROR,
+                "At least 85 percent of reference transitions must be hard cuts.",
+            ))
+    return results
+
+
+def check_repetition_and_motion(scenes: list, profile=None) -> list[CheckResult]:
     """Block dominant backgrounds, A-B-A-B loops, and unexplained static runs."""
     if not scenes:
         return []
@@ -209,6 +357,8 @@ def check_repetition_and_motion(scenes: list) -> list[CheckResult]:
             f"Static/intentional-hold scenes occupy {static_duration / total:.0%} of the timeline.",
             {"static_ratio": round(static_duration / total, 3)},
         ))
+    if profile is not None:
+        results.extend(_reference_reuse_checks(scenes, profile))
     return results or [_pass("visual.repetition_ok", "No dominant-background or A-B-A-B repetition detected.")]
 
 
@@ -439,6 +589,9 @@ def run_all(
 ) -> list[CheckResult]:
     """Full pre-publication sweep, combining policy and technical checks."""
     results: list[CheckResult] = []
+    profile = reference_profile.resolve_reference_profile(
+        getattr(project, "template", None)
+    )
 
     # Policy gates first: rights problems should be the loudest signal.
     script_text = script.plain_text if script else ""
@@ -461,12 +614,15 @@ def run_all(
     results += check_audio(audio_segments)
     results += check_scenes(scenes, assets)
     results += check_panel_alignment(scenes)
-    results += check_repetition_and_motion(scenes)
+    results += check_repetition_and_motion(scenes, profile=profile)
     results += check_subtitles(cues)
 
     effective_duration = duration if duration is not None else (job.duration if job else 0.0)
     if effective_duration or job:
-        results += check_duration(effective_duration, float(project.target_duration))
+        if profile is not None:
+            results += check_reference_profile(scenes, effective_duration, profile)
+        else:
+            results += check_duration(effective_duration, float(project.target_duration))
     if job:
         results += check_output(job)
         results += check_render_qc_artifact(job)

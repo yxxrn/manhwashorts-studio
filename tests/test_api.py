@@ -264,8 +264,13 @@ def test_asset_delete(auth_client, recap_text, declared_rights):
 # --- pipeline over HTTP ---------------------------------------------------
 
 
-def _project_with_material(client, recap_text, declared_rights, panel_bytes, panels: int = 3):
-    project_id = _make_project(client, title="Pipeline Project")
+def _project_with_material(
+    client, recap_text, declared_rights, panel_bytes, panels: int = 3, template: str | None = None
+):
+    project_kwargs = {"title": "Pipeline Project"}
+    if template is not None:
+        project_kwargs["template"] = template
+    project_id = _make_project(client, **project_kwargs)
     client.post(
         f"/api/projects/{project_id}/assets/text",
         json={"text": recap_text, "title": "recap.txt", "rights": declared_rights},
@@ -322,7 +327,9 @@ def test_analysis_and_manual_correction(auth_client, recap_text, declared_rights
 def test_draft_creates_script_voice_timeline(
     auth_client, recap_text, declared_rights, panel_bytes
 ):
-    project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
+    project_id = _project_with_material(
+        auth_client, recap_text, declared_rights, panel_bytes, template="classic"
+    )
     _seed_vision_analysis(project_id)
     draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
     assert draft.status_code == 200, draft.text
@@ -469,7 +476,9 @@ def test_voice_requires_script(auth_client, recap_text, declared_rights):
 
 
 def test_subtitles_and_srt_export(auth_client, recap_text, declared_rights, panel_bytes):
-    project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
+    project_id = _project_with_material(
+        auth_client, recap_text, declared_rights, panel_bytes, template="classic"
+    )
     _seed_vision_analysis(project_id)
     draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
     assert draft.status_code == 200, draft.text
@@ -500,7 +509,9 @@ def test_subtitles_and_srt_export(auth_client, recap_text, declared_rights, pane
 def test_scene_edit_validates_asset_and_times(
     auth_client, recap_text, declared_rights, panel_bytes
 ):
-    project_id = _project_with_material(auth_client, recap_text, declared_rights, panel_bytes)
+    project_id = _project_with_material(
+        auth_client, recap_text, declared_rights, panel_bytes, template="classic"
+    )
     _seed_vision_analysis(project_id)
     draft = auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
     assert draft.status_code == 200, draft.text
@@ -556,7 +567,7 @@ def test_quality_blocks_when_rights_undeclared(auth_client, recap_text, panel_by
 
 
 def test_render_blocked_until_quality_passes(auth_client, recap_text, panel_bytes):
-    project_id = _make_project(auth_client)
+    project_id = _make_project(auth_client, template="classic")
     auth_client.post(
         f"/api/projects/{project_id}/assets/text", json={"text": recap_text, "rights": {}}
     )

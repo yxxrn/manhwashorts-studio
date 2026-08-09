@@ -155,6 +155,7 @@ def test_agent_can_drive_the_whole_pipeline_over_rest(
             "title": "Agent Flow",
             "manhwa_title": "Menara",
             "chapter": "9",
+            "template": "classic",
             "target_duration": 40,
             "language": "id",  # fixture text is Indonesian; explicit opt-in
         },
