@@ -436,16 +436,16 @@ def selection_reasons(
 def camera_effect(narration: str, index: int) -> str:
     tags = narration_tags(narration)
     if "explosion" in tags:
-        return "shake_zoom"
+        return "push_in"
     if "action" in tags:
-        return "punch_zoom"
+        return "pan_diagonal"
     if "reveal" in tags:
-        return "push_up"
+        return "pan_vertical"
     if "thinking" in tags:
-        return "pan_left"
+        return "pan_horizontal"
     if "dialogue" in tags:
-        return "kenburns_in"
-    return ("kenburns_in", "pan_right", "push_down")[index % 3]
+        return "slow_push_in"
+    return ("slow_push_in", "pan_horizontal", "static_emphasis")[index % 3]
 
 
 def planned_focus(candidate: PanelCandidate | None, shot_index: int = 0) -> tuple[float, float]:

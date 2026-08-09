@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from app.config import settings
-from app.services.timeline import is_caption_boundary
+from app.services import motion_director
 
 
 @dataclass
@@ -78,6 +78,24 @@ def _shot_metrics(scenes: list[object]) -> tuple[float, float, int, float]:
     return sum(durations) / len(durations), longest_same, len(crops), sum(durations)
 
 
+def _caption_contract_invalid(cues: list[object], duration: float) -> bool:
+    for cue in cues:
+        raw = str(getattr(cue, "text", "") or "")
+        if (
+            len(raw.split()) != 1
+            or raw != raw.upper()
+            or any(not (character.isalnum() or character.isspace()) for character in raw)
+            or float(getattr(cue, "start_time", 0.0)) < 0.0
+            or float(getattr(cue, "end_time", duration)) <= float(getattr(cue, "start_time", 0.0))
+            or float(getattr(cue, "end_time", duration)) > duration + 0.01
+        ):
+            return True
+    return any(
+        float(getattr(right, "start_time", 0.0)) < float(getattr(left, "end_time", 0.0)) - 0.01
+        for left, right in zip(cues, cues[1:], strict=False)
+    )
+
+
 def build_report(
     *, scenes: list[object], cues: list[object], duration: float, job_path: Path | None = None,
     rights_confidence: int = 5, source_cleanliness: int = 5, voice_profile_count: int = 0, minimum_duration: float = 45.0,
@@ -103,15 +121,12 @@ def build_report(
     caption_counts = [len(str(getattr(cue, "text", "")).split()) for cue in cues]
     caption_min = min(caption_counts, default=0)
     caption_max = max(caption_counts, default=0)
-    dangling_count = sum(
-        1 for cue in cues
-        if str(getattr(cue, "text", "")).split()
-        and is_caption_boundary(str(getattr(cue, "text", "")).split()[-1])
-    )
+    dangling_count = 0
     caption_overflow = max(
         (float(getattr(cue, "end_time", duration)) - duration for cue in cues),
         default=0.0,
     )
+    caption_contract_invalid = _caption_contract_invalid(cues, duration)
     action_transition_failures = sum(
         1 for scene in scenes
         if getattr(scene, "camera_intent", "") in {"action", "attack", "explosion", "impact"}
@@ -148,6 +163,7 @@ def build_report(
     )
     report.audio_video_drift, report.black_frame_duration = _media_integrity(job_path, duration)
     report.audio_integrated_lufs, report.audio_true_peak_dbfs = _audio_metrics(job_path)
+    report.failures.extend(motion_director.audit_camera_sequence(scenes))
     if duration < minimum_duration or duration > 90:
         report.failures.append("duration_outside_60_90s")
     if not 2.3 <= average <= 3.3:
@@ -160,8 +176,6 @@ def build_report(
         report.failures.append("static_ratio_over_55pct")
     if longest_same > 4.0:
         report.failures.append("same_panel_same_crop_over_2.5s")
-    if caption_ratio >= 0.15:
-        report.failures.append("single_word_caption_ratio_ge_15pct")
     if not preview:
         if len(scenes) >= 4 and motion_diversity < 4:
             report.failures.append("motion_mode_diversity_lt_4")
@@ -187,23 +201,15 @@ def build_report(
         ]
         if any(length < 0.12 or length > 0.18 for length in transition_lengths):
             report.failures.append("section_transition_outside_0.12_0.18s")
-        if any(count < 4 or count > 7 for count in caption_counts):
-            report.failures.append("caption_group_outside_4_7_words")
-        if dangling_count:
-            report.failures.append("caption_dangling_boundary")
-        if caption_counts and caption_counts[-1] == 1:
-            report.failures.append("caption_final_one_word")
+        if caption_contract_invalid:
+            report.failures.append("caption_display_contract_invalid")
         if caption_overflow > 0.01:
             report.failures.append("caption_end_after_media")
         if report.audio_integrated_lufs is not None and abs(report.audio_integrated_lufs + 14.0) > 1.0:
             report.failures.append("audio_lufs_outside_-14_target")
         if report.audio_true_peak_dbfs is not None and report.audio_true_peak_dbfs > -1.4:
             report.failures.append("audio_true_peak_over_-1.5dbtp")
-    valid_modes = {
-        "hold", "slow_push", "slow_pull", "guided_pan", "focus_shift", "panel_reveal",
-        "split_focus", "panel_stack", "impact", "whip_transition", "atmospheric",
-        "static_emphasis",
-    }
+    valid_modes = set(motion_director.MODES)
     invalid_motion = [s for s in scenes if getattr(s, "motion_mode", "hold") not in valid_modes]
     if invalid_motion:
         report.failures.append("invalid_motion_plan")

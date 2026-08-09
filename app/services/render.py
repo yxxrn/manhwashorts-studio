@@ -28,7 +28,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from app.config import settings
 from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
-from app.services import encoders
+from app.services import encoders, motion_director
 from app.services.timeline import CueSpec, wrap_caption
 
 _SECTION_TRANSITION_MIN = 0.12
@@ -252,54 +252,38 @@ def _motion_filter(
     focus_x: float = 0.5, focus_y: float = 0.4,
     focus_end_x: float = 0.5, focus_end_y: float = 0.4,
 ) -> str:
-    """Build directed crop motion with optional ROI-to-ROI interpolation."""
+    """Build one smooth, bounded crop trajectory with even coordinates."""
     frames = max(2, int(round(duration * fps)))
     last = frames - 1
     static = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
-    if effect == "static":
+    safe_effect = motion_director.safe_camera_curve(effect)
+    if safe_effect == "static":
         return static
 
-    # Interpolate between ranked ROIs. Integer coordinates prevent shimmer.
+    # Interpolate between ranked ROIs. Smoothstep never reverses direction.
     progress = f"(n/{last})"
     smooth = f"({progress}*{progress}*(3-2*{progress}))"
     fx = f"((1-{smooth})*{max(0.05, min(0.95, focus_x))}+{smooth}*{max(0.05, min(0.95, focus_end_x))})"
     fy = f"((1-{smooth})*{max(0.05, min(0.95, focus_y))}+{smooth}*{max(0.05, min(0.95, focus_end_y))})"
-    z = "1.10"
-    if effect in {"kenburns_in", "slow_push_in", "dialogue"}:
-        z = f"(1+0.12*{progress})"
-    elif effect in {"kenburns_out", "slow_pull_out", "dramatic_zoom_out"}:
-        z = f"(1.14-0.12*{progress})"
-    elif effect in {"push_in", "reveal"}:
-        z = f"(1+0.18*{progress})"
-    elif effect in {"punch_zoom", "attack"}:
-        z = f"(1+0.20*(1-abs(2*{progress}-1)))"
-    elif effect in {"shake_zoom", "impact_shake", "explosion"}:
-        z = "(1.16+0.06*sin(n*0.55))"
-        fx = f"({fx}+0.035*sin(n*0.8))"
-        fy = f"({fy}+0.035*cos(n*0.7))"
-    elif effect == "micro_shake":
-        z = "1.10"
-        fx = f"({fx}+0.012*sin(n*1.7))"
-        fy = f"({fy}+0.012*cos(n*1.3))"
-    elif effect in {"pan_horizontal", "pan_right", "pan_left"} or effect in {"pan_vertical", "push_up", "push_down"}:
-        z = "1.08"
-    elif effect == "pan_diagonal":
-        z = "1.10"
-    elif effect == "focus_shift":
-        z = f"(1.08+0.04*sin(PI*{progress}))"
-    elif effect == "orbit":
-        z = f"(1.10+0.025*sin(2*PI*{progress}))"
-        fx = f"({fx}+0.02*sin(2*PI*{progress}))"
-        fy = f"({fy}+0.015*cos(2*PI*{progress}))"
-    elif effect == "atmospheric":
-        z = "1.06"
-    elif effect == "static_emphasis":
+    if safe_effect == "slow_push_in":
+        z = f"(1+0.06*{smooth})"
+    elif safe_effect == "slow_pull_out":
+        z = f"(1.06-0.06*{smooth})"
+    elif safe_effect in {"push_in", "reveal"}:
+        z = f"(1+0.08*{smooth})"
+    elif safe_effect == "static_emphasis":
         z = "1.02"
+    elif safe_effect == "atmospheric":
+        z = "1.03"
     else:
-        return static
-    x = f"trunc((iw-iw/{z})*{fx})*2"
-    y = f"trunc((ih-ih/{z})*{fy})*2"
-    return f"crop=w='iw/{z}':h='ih/{z}':x='{x}':y='{y}',scale={width}:{height}:flags=lanczos"
+        z = "1.04"
+    crop_w = f"floor(iw/{z}/2)*2"
+    crop_h = f"floor(ih/{z}/2)*2"
+    x_raw = f"floor(((iw-{crop_w})*{fx})/2)*2"
+    y_raw = f"floor(((ih-{crop_h})*{fy})/2)*2"
+    x = f"max(0,min(iw-{crop_w},{x_raw}))"
+    y = f"max(0,min(ih-{crop_h},{y_raw}))"
+    return f"crop=w='{crop_w}':h='{crop_h}':x='{x}':y='{y}',scale={width}:{height}:flags=lanczos"
 
 
 def _procedural_effect(mode: str, intensity: str) -> str:

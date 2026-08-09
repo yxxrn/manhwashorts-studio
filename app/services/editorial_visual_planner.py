@@ -109,7 +109,7 @@ def plan(spans: Iterable[object], candidates: list[object]) -> list[dict]:
     curve_for = {
         "hold": "static", "static_emphasis": "static", "slow_push": "slow_push_in",
         "slow_pull": "slow_pull_out", "guided_pan": "pan_horizontal", "focus_shift": "focus_shift",
-        "panel_reveal": "push_in", "impact": "impact_shake", "whip_transition": "pan_horizontal",
+        "panel_reveal": "push_in", "impact": "push_in",
         "atmospheric": "slow_push_in", "split_focus": "focus_shift", "panel_stack": "slow_pull_out",
     }
     for index, shot in enumerate(shots):

@@ -7,9 +7,21 @@ from dataclasses import dataclass, replace
 
 MODES = frozenset({
     "hold", "slow_push", "slow_pull", "guided_pan", "focus_shift", "panel_reveal",
-    "split_focus", "panel_stack", "impact", "whip_transition", "atmospheric",
+    "split_focus", "panel_stack", "impact", "atmospheric",
     "static_emphasis",
 })
+FORBIDDEN_CURVES = frozenset({
+    "micro_shake", "impact_shake", "shake_zoom", "orbit", "punch_zoom",
+    "whip_transition", "explosion",
+})
+ALLOWED_CURVES = frozenset({
+    "static", "slow_push_in", "slow_pull_out", "pan_horizontal", "pan_vertical",
+    "pan_diagonal", "focus_shift", "push_in", "reveal", "atmospheric",
+    "static_emphasis",
+})
+NORMAL_ZOOM_MAX = 1.06
+IMPACT_ZOOM_MAX = 1.08
+_EMPHASIS_CURVES = frozenset({"push_in", "reveal"})
 _STRONG = frozenset({"attack", "action", "impact", "explosion"})
 
 
@@ -27,6 +39,68 @@ class MotionPlan:
         if self.mode == "impact" and self.intensity == "high" and not self.reason:
             return replace(self, intensity="medium", valid=False)
         return self
+
+
+def safe_camera_curve(curve: str) -> str:
+    """Map old or unknown curves to a stable, non-oscillating curve."""
+    value = str(curve or "").strip()
+    if value in FORBIDDEN_CURVES:
+        return "static_emphasis"
+    return value if value in ALLOWED_CURVES else "static"
+
+
+def curve_zoom_cap(curve: str) -> float:
+    """Return the exact normal or reveal zoom ceiling for a curve."""
+    return IMPACT_ZOOM_MAX if safe_camera_curve(curve) in _EMPHASIS_CURVES else NORMAL_ZOOM_MAX
+
+
+def _clamp_focus(value: float) -> float:
+    return max(0.05, min(0.95, float(value)))
+
+
+def _smoothstep(progress: float) -> float:
+    return progress * progress * (3.0 - 2.0 * progress)
+
+
+def sample_camera_curve(
+    curve: str,
+    frames: int,
+    focus_x: float = 0.5,
+    focus_y: float = 0.4,
+    focus_end_x: float = 0.5,
+    focus_end_y: float = 0.4,
+) -> tuple[tuple[float, float, float], ...]:
+    """Sample a deterministic monotonic ``(focus_x, focus_y, scale)`` path."""
+    if frames < 2:
+        raise ValueError("frames must be at least two")
+    safe = safe_camera_curve(curve)
+    start_x, start_y = _clamp_focus(focus_x), _clamp_focus(focus_y)
+    end_x, end_y = _clamp_focus(focus_end_x), _clamp_focus(focus_end_y)
+    samples: list[tuple[float, float, float]] = []
+    for index in range(frames):
+        progress = index / (frames - 1)
+        eased = _smoothstep(progress)
+        if safe in {"static", "static_emphasis"}:
+            x, y = start_x, start_y
+        else:
+            x = start_x + (end_x - start_x) * eased
+            y = start_y + (end_y - start_y) * eased
+        if safe == "slow_push_in":
+            scale = 1.0 + 0.06 * eased
+        elif safe == "slow_pull_out":
+            scale = NORMAL_ZOOM_MAX - 0.06 * eased
+        elif safe in _EMPHASIS_CURVES:
+            scale = 1.0 + 0.08 * eased
+        elif safe == "static_emphasis":
+            scale = 1.02
+        elif safe == "atmospheric":
+            scale = 1.03
+        elif safe == "static":
+            scale = 1.0
+        else:
+            scale = 1.04
+        samples.append((round(x, 9), round(y, 9), round(scale, 9)))
+    return tuple(samples)
 
 
 def _seed(seed: int, index: int, text: str) -> int:
@@ -56,14 +130,14 @@ def plan_motion(
     previous = list(history)[-2:]
     local_seed = _seed(seed, index, f"{section}:{roi_label}:{duration}")
     if "explosion" in tags or "impact" in tags:
-        mode, intensity, reason = "impact", "high", "impact tag and action ROI"
+        mode, intensity, reason = "impact", "high", "stable action emphasis without camera shake"
     elif "dialogue" in tags and roi_label == "speech_bubble":
         mode, intensity, reason = "split_focus", "low", "dialogue plus speech-bubble/face context"
     elif ("attack" in tags or "action" in tags) and roi_label in {"weapon", "magic_effect", "effect"}:
-        mode, intensity, reason = "panel_stack", "medium", "action object needs wide context plus detail"
+        mode, intensity, reason = "panel_stack", "medium", "stable action framing keeps context and detail"
     elif "attack" in tags or "action" in tags:
         mode = _choose_mode(["guided_pan", "focus_shift", "slow_pull", "atmospheric"], previous, local_seed)
-        intensity, reason = "medium", "action subject receives a deterministic directional move"
+        intensity, reason = "medium", "stable action subject receives a deterministic directional move"
     elif "reveal" in tags or section in {"twist", "cliffhanger"}:
         mode = _choose_mode(["panel_reveal", "focus_shift", "slow_pull", "atmospheric"], previous, local_seed)
         intensity, reason = "medium", "reveal receives a deterministic reveal-to-detail progression"
@@ -91,6 +165,7 @@ def audit_motion(plans: Iterable[MotionPlan]) -> list[str]:
     for left, right in zip(items, items[1:], strict=False):
         if left.mode == right.mode == "impact":
             issues.append("strong_effects_consecutive")
+            issues.append("motion.emphasis_consecutive")
         if left.mode == right.mode and left.mode not in {"hold", "static_emphasis"}:
             issues.append("motion_mode_repeated")
     if any(not item.valid for item in items):
@@ -98,5 +173,43 @@ def audit_motion(plans: Iterable[MotionPlan]) -> list[str]:
     return sorted(set(issues))
 
 
-__all__ = ["MODES", "MotionPlan", "audit_motion", "plan_motion"]
+def audit_camera_sequence(shots: Iterable[object]) -> list[str]:
+    """Audit legacy curves, same-asset reversals, and repeated emphasis pushes."""
+    items = list(shots)
+    issues: list[str] = []
+    for shot in items:
+        curve = str(getattr(shot, "camera_curve", "") or getattr(shot, "effect", ""))
+        if curve in FORBIDDEN_CURVES:
+            issues.append("motion.forbidden_curve")
+    for left, right in zip(items, items[1:], strict=False):
+        left_curve = str(getattr(left, "camera_curve", "") or getattr(left, "effect", ""))
+        right_curve = str(getattr(right, "camera_curve", "") or getattr(right, "effect", ""))
+        if left_curve in _EMPHASIS_CURVES and right_curve in _EMPHASIS_CURVES:
+            issues.append("motion.emphasis_push_consecutive")
+        if getattr(left, "asset_id", None) != getattr(right, "asset_id", None):
+            continue
+        if getattr(left, "transition", "cut") in {"cut", "none"} or getattr(
+            right, "transition", "cut"
+        ) in {"cut", "none"}:
+            continue
+        if left_curve not in {"pan_horizontal", "pan_vertical", "pan_diagonal"} or right_curve not in {
+            "pan_horizontal", "pan_vertical", "pan_diagonal"
+        }:
+            continue
+        dx = float(getattr(left, "focus_end_x", 0.5)) - float(getattr(left, "focus_x", 0.5))
+        dy = float(getattr(left, "focus_end_y", 0.5)) - float(getattr(left, "focus_y", 0.5))
+        next_dx = float(getattr(right, "focus_end_x", 0.5)) - float(getattr(right, "focus_x", 0.5))
+        next_dy = float(getattr(right, "focus_end_y", 0.5)) - float(getattr(right, "focus_y", 0.5))
+        if max(abs(dx), abs(dy)) < 0.12 or max(abs(next_dx), abs(next_dy)) < 0.12:
+            continue
+        if dx * next_dx + dy * next_dy < -0.01:
+            issues.append("motion.reversal_same_asset")
+    return sorted(set(issues))
+
+
+__all__ = [
+    "ALLOWED_CURVES", "FORBIDDEN_CURVES", "IMPACT_ZOOM_MAX", "MODES",
+    "NORMAL_ZOOM_MAX", "MotionPlan", "audit_camera_sequence", "audit_motion",
+    "curve_zoom_cap", "plan_motion", "safe_camera_curve", "sample_camera_curve",
+]
 # ponytail: rules-based motion ceiling; replace only the planner, not renderer contracts.

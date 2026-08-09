@@ -11,12 +11,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.motion_director import ALLOWED_CURVES, safe_camera_curve
+
 _SUPPORTED_CURVES = frozenset(
-    {
-        "static", "slow_push_in", "pan_horizontal", "pan_vertical", "pan_diagonal",
-        "slow_pull_out", "focus_shift", "orbit", "push_in", "punch_zoom",
-        "micro_shake", "impact_shake", "dramatic_zoom_out",
-    }
+    ALLOWED_CURVES
 )
 
 
@@ -36,9 +34,10 @@ class CameraPlan:
 
 def execute_camera_plan(order_index: int, camera_curve: str) -> CameraPlan:
     """Translate one approved director curve into renderer instructions."""
-    if camera_curve not in _SUPPORTED_CURVES:
+    safe = safe_camera_curve(camera_curve)
+    if camera_curve not in _SUPPORTED_CURVES and safe == "static":
         raise ValueError(f"unsupported camera curve: {camera_curve}")
-    return CameraPlan(order_index, camera_curve, camera_curve)
+    return CameraPlan(order_index, safe, safe)
 
 
 def apply_camera_plans(shots: Iterable[object]) -> list[dict[str, Any]]:

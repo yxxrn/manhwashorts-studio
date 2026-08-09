@@ -1,6 +1,7 @@
 from PIL import Image, ImageDraw
 
 from app.services.camera_planner import execute_camera_plan
+from app.services.motion_director import ALLOWED_CURVES, FORBIDDEN_CURVES
 from app.services.roi_detection import rank_rois
 from app.services.shot_director import plan_shots
 from app.services.visual_scoring import (
@@ -64,9 +65,9 @@ def test_repeated_panel_does_not_dominate_when_pool_has_fresh_panels():
 
 def test_semantic_tags_and_camera_plan():
     assert "explosion" in narration_tags("The explosion destroys the wall")
-    assert camera_effect("the monster attacked", 0) == "punch_zoom"
-    assert camera_effect("the dragon finally appears", 0) == "push_up"
-    assert camera_effect("a huge explosion erupts", 0) == "shake_zoom"
+    assert camera_effect("the monster attacked", 0) == "pan_diagonal"
+    assert camera_effect("the dragon finally appears", 0) == "pan_vertical"
+    assert camera_effect("a huge explosion erupts", 0) == "push_in"
 
 
 def test_weights_are_tunable_without_architecture_change():
@@ -91,7 +92,7 @@ def test_content_aware_plan_uses_semantic_camera_and_focus():
     )
     scenes = plan_content_aware_scenes([Span()], [candidate])
     assert scenes[0]["asset_id"] == "dragon"
-    assert scenes[0]["effect"] == "punch_zoom"
+    assert scenes[0]["effect"] == "pan_diagonal"
     assert scenes[0]["focus_x"] == 0.2
 
 
@@ -113,7 +114,10 @@ def test_shot_director_exhausts_rois_and_diversifies_motion():
     shots = plan_shots([Span()], [candidate])
     assert len(shots) == 4
     assert [shot.roi_label for shot in shots[:3]] == ["face", "opponent", "detail"]
-    assert len({shot.effect for shot in shots}) == 3
+    effects = {shot.effect for shot in shots}
+    assert len(effects) >= 3
+    assert effects <= ALLOWED_CURVES
+    assert not effects.intersection(FORBIDDEN_CURVES)
     assert shots[0].asset_id == shots[1].asset_id == shots[2].asset_id
     assert shots[0].focus_end_x == shots[1].focus_x
 

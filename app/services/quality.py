@@ -19,7 +19,7 @@ from app.constants import (
     CheckSeverity,
 )
 from app.models import Project, RenderJob, ScriptVersion, SourceAsset
-from app.services import editorial_timing, policy, visual_scoring
+from app.services import editorial_timing, motion_director, policy, visual_scoring
 from app.services.timeline import CueSpec, validate_cues
 
 
@@ -153,6 +153,12 @@ def check_repetition_and_motion(scenes: list) -> list[CheckResult]:
     total = sum(durations)
     signatures = [getattr(scene, "visual_signature", "") or getattr(scene, "asset_id", "") for scene in scenes]
     results: list[CheckResult] = []
+    for issue in motion_director.audit_camera_sequence(scenes):
+        results.append(_fail(
+            issue,
+            CheckSeverity.ERROR,
+            "Camera motion violates the stable monotonic motion contract.",
+        ))
     asset_counts = Counter(
         getattr(scene, "asset_id", "")
         for scene in scenes

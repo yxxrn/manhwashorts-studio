@@ -88,15 +88,16 @@ _CURVES: dict[str, tuple[str, ...]] = {
     "dialogue": ("slow_push_in", "pan_horizontal", "focus_shift"),
     "thinking": ("pan_horizontal", "focus_shift", "pan_diagonal"),
     "reveal": ("push_in", "focus_shift", "slow_push_in", "pan_vertical"),
-    "action": ("punch_zoom", "micro_shake", "pan_diagonal", "focus_shift"),
-    "attack": ("punch_zoom", "micro_shake", "pan_diagonal"),
-    "explosion": ("impact_shake", "micro_shake", "punch_zoom"),
-    "victory": ("dramatic_zoom_out", "slow_push_in", "pan_vertical"),
+    "action": ("pan_diagonal", "focus_shift", "slow_push_in", "static_emphasis"),
+    "attack": ("pan_diagonal", "focus_shift", "static_emphasis"),
+    "impact": ("push_in", "pan_diagonal", "static_emphasis"),
+    "explosion": ("push_in", "pan_diagonal", "static_emphasis"),
+    "victory": ("slow_pull_out", "slow_push_in", "pan_vertical"),
     "approach": ("pan_horizontal", "slow_push_in", "focus_shift"),
     "suspense": ("slow_push_in", "pan_horizontal", "focus_shift"),
     "neutral": (
         "slow_push_in", "pan_horizontal", "pan_vertical", "pan_diagonal",
-        "slow_pull_out", "focus_shift", "orbit",
+        "slow_pull_out", "focus_shift", "static_emphasis",
     ),
 }
 
@@ -124,7 +125,7 @@ def _directed_curve(
     if intent in {"neutral", "dialogue"}:
         return "slow_push_in"
     if intent in {"action", "attack"} and index % 3 == 2:
-        return "static"
+        return "static_emphasis"
     if intent == "reveal" and index % 2:
         return "static"
     if intent == "victory" and index % 2:
@@ -147,8 +148,12 @@ def _directed_curve(
         and max(abs(dx), abs(dy)) >= 0.12
         and previous_vector[0] * vector[0] + previous_vector[1] * vector[1] < -0.01
     )
-    if reverses and intent not in {"action", "attack", "explosion", "reveal", "victory"}:
+    if reverses:
         directional = tuple(curve for curve in directional if not curve.startswith("pan_"))
+        if not directional:
+            return "static_emphasis"
+    if recent and recent[-1] in {"push_in", "reveal"} and intent in {"action", "attack", "explosion", "impact", "reveal"}:
+        return "static_emphasis"
     for curve in directional:
         if curve not in recent[-2:]:
             return curve
