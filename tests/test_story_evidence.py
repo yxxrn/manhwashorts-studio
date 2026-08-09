@@ -376,6 +376,20 @@ def test_missing_provider_blocks_without_legacy_text_fallback(db, monkeypatch):
     assert db.scalars(select(ScriptVersion).where(ScriptVersion.project_id == project_id)).all() == []
 
 
+def test_missing_provider_resolves_before_panel_encoding(db, monkeypatch):
+    project_id = _seed_project(db)
+    module = _install_missing_provider(monkeypatch)
+
+    def fail_if_encoded(*args, **kwargs):
+        pytest.fail("panel transport must not be built before capability resolution")
+
+    monkeypatch.setattr(module, "_encode_panel_payload", fail_if_encoded, raising=True)
+    row = module.run_analysis(db, project_id)
+
+    assert row.state == "BLOCKED"
+    assert row.blocking_reasons_json["codes"] == ["vision_capability_missing"]
+
+
 def test_unresolved_material_blocks_before_provider_calls(db, monkeypatch):
     project_id = _seed_project(db, unresolved=True)
     provider = _Provider()

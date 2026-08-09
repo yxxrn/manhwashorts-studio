@@ -913,14 +913,6 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
             raise _AnalysisBlocked("coverage_incomplete", stage="panel_persistence")
         chunks = build_observation_chunks(panel_regions)
         input_by_asset = {item.source_asset_id: item for item in inputs}
-        panel_transports = {
-            panel.panel_id: _panel_transport(
-                panel,
-                input_by_asset[panel.source_asset_id],
-                coverage,
-            )
-            for panel in panel_regions
-        }
 
         try:
             provider, capability = resolver_svc.resolve_vision(db, project.workspace_id)
@@ -937,6 +929,14 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
         row.provider_type = capability.provider_type
         row.provider_name = capability.provider_name
         row.model_name = capability.model
+        panel_transports = {
+            panel.panel_id: _panel_transport(
+                panel,
+                input_by_asset[panel.source_asset_id],
+                coverage,
+            )
+            for panel in panel_regions
+        }
 
         semantic, chunk_ledger, first_chunk = _observe_chunks(
             provider,
