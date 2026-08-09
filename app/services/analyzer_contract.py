@@ -74,7 +74,7 @@ _CTA_PATTERNS = tuple(
         r"\bsubscribe\b",
         r"\bfollow[\s-]+for[\s-]+more\b",
         r"\bplease\s+like\b",
-        r"\blike\s+(?:this\s+video|this\s+story)\b",
+        r"\blike\s+this\s+video\b",
         r"\b(?:drop|hit)\s+(?:a\s+)?like\b",
         r"\bplease\s+comment\b",
         r"\bcomment\s+below\b",
@@ -424,10 +424,10 @@ def _validate_script_passages(
         if first_three in opening_words:
             _fail("script passage openings must be varied")
         opening_words.add(first_three)
-        for sentence in _normalized_sentences(text):
-            if sentence in repeated_sentences:
-                _fail("script passages must not repeat a sentence")
-            repeated_sentences.add(sentence)
+        passage_sentences = set(_normalized_sentences(text))
+        if passage_sentences & repeated_sentences:
+            _fail("script passages must not repeat a sentence")
+        repeated_sentences.update(passage_sentences)
 
         claim_ids = _string_list(
             passage["claim_ids"], "passage claim_ids", allow_empty=False
@@ -452,9 +452,8 @@ def _validate_script_passages(
 
 def _validate_output(output: Any, expected: tuple[str, ...]) -> None:
     document = _mapping(output, "analyzer output")
-    missing = _REQUIRED_OUTPUT_KEYS - set(document)
-    if missing:
-        _fail("analyzer output is missing required structures")
+    if set(document) != _REQUIRED_OUTPUT_KEYS:
+        _fail("analyzer output structures do not match the contract")
     _validate_observations(document["observations"], expected)
     _validate_coverage_manifest(document["coverage_manifest"], expected)
     _validate_continuity(document["continuity_ledger"], expected)

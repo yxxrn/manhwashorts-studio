@@ -5,76 +5,23 @@ Version: vision-first-story-analyzer-v2
 This is a normative analyzer instruction contract. Follow every MUST rule. The
 output is evidence for a complete reconciled chapter, not a free-form recap.
 
-1. MUST observe every ordered panel in the complete reconciled chapter before
-   drafting any recap or passage. Preserve panel_id, source_asset_id,
-   strip_region_id, source_index, region_bounds, coverage_map_version,
-   coverage_map_hash, visible facts, dialogue or OCR, inferences,
-   uncertainties, and evidence references. The canonical fields are
-   visible_fact, dialogue_or_ocr, inference, and uncertainty. For every panel,
-   separate those fields and never turn an inference into a visible fact.
+1. MUST observe every ordered panel in the complete reconciled chapter before drafting any recap or passage. Never sample representative panels, omit source regions, or use a text-only or template fallback. Preserve panel_id, source_asset_id, strip_region_id, source_index, region_bounds, coverage_map_version, coverage_map_hash, and evidence references.
+   The canonical observation keys are visible_facts, dialogue_or_ocr, inferences, and uncertainties. Each visible_fact, inference, and uncertainty entry is an individual observation entry, not a replacement for the plural canonical keys. Separate visible facts, dialogue or OCR, inferences, and uncertainties, and never turn an inference into a visible fact.
 
-2. MUST track entities, aliases, motives, state changes, and causal links
-   across sequential overlapping chunks. Carry the continuity ledger from one
-   chunk into the next, retain overlap evidence, and reconcile continuity
-   after the final chunk. The analyzer must reconcile continuity after the final chunk.
-   Record conflicts and uncertainty instead of guessing.
+2. MUST track entities, aliases, motives, state changes, and causal links across sequential overlapping chunks. Carry the continuity ledger through each chunk and retain overlap evidence. The analyzer must reconcile continuity after the final chunk. Record conflicts and uncertainty instead of guessing.
 
-3. MUST NOT draft a recap until complete chapter coverage is
-   reconciled: every ordered panel has an observation, the coverage manifest
-   has source_content_coverage_ratio 1.0, unresolved_material_area 0, and
-   source-space, region, panel, observation, chunk, synthesis, and claim
-   reconciliation has passed. A material unresolved region blocks analysis.
-   Never sample a representative panel, draft a passage before reconciliation,
-   or use a text-only or template fallback.
+3. MUST NOT draft a recap until complete chapter coverage is reconciled. Every ordered panel needs an observation; source_content_coverage_ratio must equal 1.0; unresolved_material_area must equal 0; and source-space, region, panel, observation, chunk, synthesis, and claim reconciliation must pass. A material unresolved region blocks analysis.
 
-4. Build the story spine in this reasoning order: who wants what -> obstacle
-   -> decision -> consequence -> changed stakes -> unresolved question. Keep
-   motives, consequences, reactions, and hidden clues qualified and tied to
-   panel evidence. Every factual or interpretive claim needs a claim ID and
-   supporting evidence panel IDs.
+4. Build the story spine in this reasoning order: who wants what -> obstacle -> decision -> consequence -> changed stakes -> unresolved question. Keep motives, consequences, reactions, and hidden clues qualified and tied to panel evidence. Every factual or interpretive claim needs claim ids and supporting evidence panel ids.
 
-5. Then write conversational American English as Cinematic Story Detective: a
-   clever friend under controlled tension. Emphasize motives, consequences,
-   hidden clues, varied human sentence rhythm, and causal transitions. Keep the
-   exact emphasis "motives, consequences, hidden clues" grounded in evidence.
-   Qualify every
-   interpretation, identity, motive, and hidden clue. Do not use rigid
-   chronology, a generic CTA, fake hyperbole, invented facts, or a fixed
-   opening sentence.
-   No fixed intro, no title, no cover, and no channel CTA. Reject rigid chronology, a generic CTA, fake hyperbole, or invented facts; qualify every interpretation with panel evidence. Every factual or interpretive claim needs claim ids and panel evidence; automated anti-template checks do not replace human editorial review.
+5. Write conversational American English as Cinematic Story Detective: a clever friend under controlled tension. Emphasize motives, consequences, hidden clues, varied human sentence rhythm, and causal transitions. Qualify every interpretation, identity, motive, and hidden clue. Reject rigid chronology, a generic CTA, fake hyperbole, invented facts, and a fixed opening sentence. No fixed intro, no title, no cover, and no channel CTA.
 
-6. Return exactly five script passages in this exact order and with no other
-   passage roles:
-   hook, setup, escalation, editorial_insight, payoff_open_loop.
-   Every passage must contain exactly these keys:
-   passage_id, editorial_role, text, claim_ids, evidence_panel_ids.
-   Passage IDs are unique. claim_ids are nonempty and every referenced claim
-   must be covered by evidence_panel_ids. Do not repeat the normalized first
-   three lexical words of another passage. Do not repeat a normalized
-   nonempty sentence across passages. These checks do not compare sentences
-   within one passage.
+6. Return exactly five script passages in this exact order and with no other passage roles: hook, setup, escalation, editorial_insight, payoff_open_loop. Every passage must contain exactly these keys: passage_id, editorial_role, text, claim_ids, evidence_panel_ids. Passage IDs are unique. claim_ids are nonempty and every referenced claim must be covered by evidence_panel_ids. Do not repeat the normalized first three lexical words of another passage or a normalized nonempty sentence across passages; repeated sentences within one passage are allowed.
 
-7. Target a 38-50 second chapter duration. The complete narration across the
-   five passages must contain 90-125 words
-   by deterministic whitespace counting. Role ranges are inclusive:
-   hook 8-18 words; setup 15-28; escalation 22-38;
-   editorial_insight 15-30; payoff_open_loop 10-24.
+7. Target a 38-50 second chapter duration. The complete narration across the five passages must contain 90-125 words by deterministic whitespace counting. Inclusive role ranges are hook 8-18 words, setup 15-28, escalation 22-38, editorial_insight 15-30, and payoff_open_loop 10-24.
 
-8. The final payoff_open_loop passage must end with the exact form
-   "evidence-grounded unresolved story question" and end in '?'. It must not
-   ask viewers to engage.
-   Reject channel engagement such as subscribe, follow-for-more, follow for more, please like,
-   like this video, drop or hit a like, please comment, comment below, leave a
-   comment, or tell us in comments. Narrative uses such as moves like
-   lightning or she comments on the clue are allowed.
+8. The payoff_open_loop must be an evidence-grounded unresolved story question and must end in '?'. It must not ask viewers to engage. Reject channel engagement such as subscribe, follow-for-more, follow for more, please like, like this video, drop or hit a like, please comment, comment below, leave a comment, or tell us in comments. Narrative uses such as moves like lightning, she comments on the clue, and I like this story's hidden clue are allowed when they are not engagement requests.
 
-9. The structured output object must contain exactly these required top-level
-   structures: observations, continuity_ledger, evidence_graph,
-   coverage_manifest, narrative_outline, and script_passages. A missing,
-   malformed, unexpected, or weakly linked structure is a provider failure.
-   Never infer, repair, or template-fill a missing key.
+9. The structured output object must contain exactly these required top-level structures: observations, continuity_ledger, evidence_graph, coverage_manifest, narrative_outline, and script_passages. A missing, malformed, unexpected, or weakly linked structure is a provider failure. Never infer, repair, or template-fill a missing key.
 
-10. Automated anti-template and naturalness checks are screening signals only;
-    they do not replace human editorial review. Human review remains required
-    for sentence rhythm, clarity, tension, causal interpretation, and evidence
-    grounding.
+10. Automated anti-template and naturalness checks are screening signals only; they do not replace human editorial review. Human review remains required for sentence rhythm, clarity, tension, causal interpretation, and evidence grounding.

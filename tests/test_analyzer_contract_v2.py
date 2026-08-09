@@ -370,6 +370,15 @@ def test_positive_v2_chapter_preserves_all_existing_evidence_gates():
     assert passages[-1]["text"].rstrip().endswith("?")
 
 
+def test_rejects_unexpected_top_level_output_key():
+    module = _contract_module()
+    chapter = _chapter()
+    chapter["unexpected_top_level"] = "must be rejected"
+
+    with pytest.raises(_contract_error(module)):
+        _validate(module, chapter)
+
+
 def test_v2_does_not_require_a_fixed_opening_sentence():
     module = _contract_module()
     chapter = copy.deepcopy(_chapter())
@@ -386,6 +395,7 @@ def test_v2_does_not_require_a_fixed_opening_sentence():
     (
         "Mara moves like lightning beside the locked dock.",
         "Mara comments on the clue beside the locked dock.",
+        "I like this story's hidden clue beside the locked dock today.",
     ),
 )
 def test_allows_narrative_like_and_comment_without_channel_cta(narrative_text):
@@ -555,3 +565,13 @@ def test_rejects_verbatim_repeated_sentences_across_passages():
 
     with pytest.raises(_contract_error(module)):
         _validate(module, chapter)
+
+
+def test_allows_repeated_normalized_sentence_within_one_passage():
+    module = _contract_module()
+    chapter = _chapter()
+    _passage(chapter, "hook")["text"] = (
+        "Mara waits. Mara waits. The brass compass could leave on the dark boat."
+    )
+
+    _validate(module, chapter)
