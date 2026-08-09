@@ -270,7 +270,7 @@ def generate_auditions(
     db: Any,
     project_id: str,
     voice_ids: Sequence[str],
-    speed: float = 1.0,
+    speed: float = 1.15,
     actor_id: str = "",
 ) -> dict[str, Any]:
     """Generate four isolated neural samples from one approved excerpt."""

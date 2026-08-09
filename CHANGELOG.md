@@ -24,6 +24,10 @@ Notable changes per release. Dates are ISO 8601.
   content-addressed WAVs, safe project-scoped download URLs, and no espeak/null
   fallback. No neural provider is configured on the current VPS, so no real
   audition samples were rendered.
+- Wired the reference render surface through the selected project voice,
+  compact one-word caption styling, bounded camera zoom, profile-aware output
+  QC, and explicit H.264 High/yuv420p final validation; previews and legacy
+  subtitle rendering remain unchanged without the profile.
 ## Unreleased — Complete motion-comic pipeline
 
 - Set the project default to English narration with American English voice; Indonesian remains explicit opt-in.

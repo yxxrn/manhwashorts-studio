@@ -50,6 +50,64 @@ def _pass(code: str, message: str = "OK") -> CheckResult:
     return CheckResult(code, CheckSeverity.INFO, message, passed=True)
 
 
+def check_reference_output_profile(info: dict, profile) -> list[CheckResult]:
+    """Return stable QC failures for the reference final stream contract."""
+    results: list[CheckResult] = []
+    scalar_checks = (
+        (
+            "width",
+            profile.final_width,
+            "reference.output_resolution",
+            "Reference output width is not 1080 pixels.",
+        ),
+        (
+            "height",
+            profile.final_height,
+            "reference.output_resolution",
+            "Reference output height is not 1920 pixels.",
+        ),
+        (
+            "codec",
+            profile.final_codec,
+            "reference.output_codec",
+            "Reference output is not H.264.",
+        ),
+        (
+            "profile",
+            profile.final_codec_profile,
+            "reference.output_codec_profile",
+            "Reference output is not H.264 High profile.",
+        ),
+        (
+            "pix_fmt",
+            profile.final_pixel_format,
+            "reference.output_pix_fmt",
+            "Reference output is not yuv420p.",
+        ),
+    )
+    seen_codes: set[str] = set()
+    for key, expected, code, message in scalar_checks:
+        actual = info.get(key)
+        if key in {"codec", "profile", "pix_fmt"}:
+            matches = str(actual or "").lower() == str(expected).lower()
+        else:
+            matches = actual == expected
+        if not matches and code not in seen_codes:
+            results.append(_fail(code, CheckSeverity.ERROR, message, {"expected": expected, "actual": actual}))
+            seen_codes.add(code)
+    actual_fps = info.get("fps")
+    if actual_fps is None or abs(float(actual_fps) - float(profile.final_fps)) > 0.01:
+        results.append(
+            _fail(
+                "reference.output_fps",
+                CheckSeverity.ERROR,
+                "Reference output frame rate is not 30 fps.",
+                {"expected": profile.final_fps, "actual": actual_fps},
+            )
+        )
+    return results
+
+
 def check_script_approved(script: ScriptVersion | None) -> list[CheckResult]:
     if script is None:
         return [

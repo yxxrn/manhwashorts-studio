@@ -270,13 +270,13 @@ class ScriptOut(BaseModel):
 
 
 class VoiceRequest(BaseModel):
-    speed: float = Field(default=0.90, ge=0.5, le=2.0)
+    speed: float = Field(default=1.15, ge=0.5, le=2.0)
     provider: str | None = None
 
 
 class VoiceAuditionRequest(BaseModel):
     voice_ids: list[str] = Field(min_length=4, max_length=4)
-    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    speed: float = Field(default=1.15, ge=0.5, le=2.0)
 
     @field_validator("voice_ids")
     @classmethod

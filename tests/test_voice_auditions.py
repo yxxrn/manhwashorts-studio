@@ -150,7 +150,7 @@ def test_request_requires_exactly_four_unique_voice_ids_and_bounded_speed():
 
     request = VoiceAuditionRequest(voice_ids=["nova", "echo", "fable", "onyx"])
     assert request.voice_ids == ["nova", "echo", "fable", "onyx"]
-    assert request.speed == 1.0
+    assert request.speed == 1.15
     for voice_ids in (
         [],
         ["nova", "echo", "fable"],

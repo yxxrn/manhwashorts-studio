@@ -30,8 +30,6 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.constants import (
-    DEFAULT_ENGLISH_SPEED,
-    DEFAULT_ENGLISH_VOICE_ID,
     JobStatus,
     ProjectStatus,
     ScriptSection,
@@ -1662,7 +1660,7 @@ def generate_voiceover(
     db: Session,
     project_id: str,
     *,
-    speed: float = DEFAULT_ENGLISH_SPEED,
+    speed: float = 1.15,
     provider_name: str | None = None,
     actor_id: str = "",
 ) -> list[AudioSegment]:
@@ -1699,9 +1697,7 @@ def generate_voiceover(
     if not prepared:
         raise PipelineError("script has no spoken text")
 
-    requested_voice_id = (
-        project.voice_id if project.language == "id" else DEFAULT_ENGLISH_VOICE_ID
-    )
+    requested_voice_id = project.voice_id
     try:
         if isinstance(provider, tts_svc.HttpProvider):
             clips = provider.synthesize_sections(
@@ -1733,7 +1729,7 @@ def generate_voiceover(
             text=text,
             spoken_text=spoken,
             display_text=display_text,
-            voice_id=requested_voice_id,
+            voice_id=clip.voice_id,
             provider=clip.provider,
             voice_profile_hash=profile_hash,
             voice_profile=clip.voice_profile,
@@ -2337,6 +2333,7 @@ def build_render_request(db: Session, job: RenderJob):
             )
         )
 
+    editorial_profile = reference_profile.resolve_reference_profile(project.template)
     filename = "preview.mp4" if job.kind == "preview" else "final.mp4"
     return render_svc.RenderRequest(
         project_id=job.project_id,
@@ -2345,7 +2342,8 @@ def build_render_request(db: Session, job: RenderJob):
         cues=cues,
         output_path=storage.output_path(job.project_id, filename),
         preview=job.kind == "preview",
-        title_text=project.title,
+        title_text="" if editorial_profile else project.title,
+        profile=editorial_profile,
         music_path=music_path,
         music_gain_db=-24.0,
         encoder=job.encoder_requested or None,

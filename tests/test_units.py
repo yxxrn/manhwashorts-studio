@@ -309,13 +309,13 @@ def test_word_timings_are_monotonic():
 
 
 def test_english_is_the_default_render_language_and_voice():
-    from app.constants import DEFAULT_ENGLISH_SPEED, DEFAULT_ENGLISH_VOICE_ID
+    from app.constants import DEFAULT_ENGLISH_VOICE_ID
     from app.schemas import ProjectCreate, VoiceRequest
 
     project = ProjectCreate(title="default")
     assert project.language == "en"
     assert project.voice_id == DEFAULT_ENGLISH_VOICE_ID
-    assert VoiceRequest().speed == DEFAULT_ENGLISH_SPEED
+    assert VoiceRequest().speed == 1.15
 
 
 def test_american_english_is_the_default_tts_contract():

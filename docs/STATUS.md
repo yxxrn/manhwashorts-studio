@@ -53,6 +53,10 @@ Updated: 2026-08-09
 - A configured multimodal vision credential/provider for a real chapter run.
 - An active neural BYOK TTS credential and real audition samples; the current
   VPS has no configured neural HTTP provider, so no samples were rendered.
+- Reference-matched final rendering now carries the selected project voice,
+  profile-specific one-word caption surface, stable zoom caps, and explicit
+  H.264 High/yuv420p output QC; legacy preview/build_ass behavior remains
+  unchanged when no profile is selected.
 - Production-ready public upload credentials and channel policy.
 - Scheduling UI, external queue, multi-channel workspaces, analytics, and full
   music/SFX workflow.

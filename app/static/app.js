@@ -564,7 +564,7 @@ $('voice-btn').addEventListener('click', async () => {
   const button = $('voice-btn');
   button.disabled = true;
   try {
-    const segments = await api(`/api/projects/${state.projectId}/voice`, { method: 'POST', body: { speed: 1.0 } });
+    const segments = await api(`/api/projects/${state.projectId}/voice`, { method: 'POST', body: { speed: 1.15 } });
     toast(`Voice-over dibuat: ${segments.length} segmen.`, 'ok');
     await api(`/api/projects/${state.projectId}/timeline`, { method: 'POST' });
     await loadTimeline();

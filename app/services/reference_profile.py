@@ -33,6 +33,9 @@ class ReferenceProfileConfig:
     caption_safe_region: tuple[float, float, float, float]
     caption_anchor: tuple[float, float]
     caption_font_weight: str
+    caption_font_height_ratio: float
+    caption_italic: bool
+    caption_highlight_current_word: bool
     caption_primary_color: str
     caption_outline_color: str
     caption_outline_pixels: int
@@ -72,15 +75,18 @@ REFERENCE_MATCHED_SHORTS_V1 = ReferenceProfileConfig(
     hard_cut_ratio_min=0.85,
     transition_min_s=0.12,
     transition_max_s=0.18,
-    normal_zoom_max=1.06,
-    impact_zoom_max=1.08,
+    normal_zoom_max=1.08,
+    impact_zoom_max=1.14,
     caption_words_per_cue=1,
     caption_uppercase=True,
     caption_unicode_punctuation_allowed=False,
     caption_top_sentence_allowed=False,
     caption_safe_region=(0.15, 0.85, 0.50, 0.75),
-    caption_anchor=(0.50, 0.64),
+    caption_anchor=(0.50, 0.56),
     caption_font_weight="bold",
+    caption_font_height_ratio=0.028,
+    caption_italic=True,
+    caption_highlight_current_word=False,
     caption_primary_color="white",
     caption_outline_color="black",
     caption_outline_pixels=6,

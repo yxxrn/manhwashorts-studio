@@ -29,6 +29,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from app.config import settings
 from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
 from app.services import encoders, motion_director
+from app.services.reference_profile import ReferenceProfileConfig
 from app.services.timeline import CueSpec, wrap_caption
 
 _SECTION_TRANSITION_MIN = 0.12
@@ -86,6 +87,7 @@ class RenderRequest:
     #: auto | cpu | nvenc | qsv | vaapi | videotoolbox. None uses the configured
     #: default. An unavailable GPU falls back to CPU rather than failing.
     encoder: str | None = None
+    profile: ReferenceProfileConfig | None = None
 
 
 @dataclass
@@ -130,18 +132,28 @@ def _run(cmd: list[str], timeout: int = 900, step: str = "ffmpeg") -> str:
 
 
 def probe(path: Path) -> dict:
-    """Return duration/width/height/audio presence for a media file."""
+    """Return media dimensions, stream profile, and audio presence."""
     out = _run(
         [
             settings.ffprobe_bin, "-v", "error",
-            "-show_entries", "format=duration:stream=width,height,codec_type",
+            "-show_entries",
+            "format=duration:stream=width,height,codec_type,codec_name,profile,pix_fmt,r_frame_rate",
             "-of", "default=noprint_wrappers=1",
             str(path),
         ],
         timeout=120,
         step="ffprobe",
     )
-    info: dict = {"duration": 0.0, "width": 0, "height": 0, "has_audio": False}
+    info: dict = {
+        "duration": 0.0,
+        "width": 0,
+        "height": 0,
+        "has_audio": False,
+        "codec": "",
+        "profile": "",
+        "pix_fmt": "",
+        "fps": 0.0,
+    }
     for line in out.splitlines():
         if line.startswith("duration=") and info["duration"] == 0.0:
             # ffprobe emits "duration=N/A" for some streams; leave the default.
@@ -151,9 +163,67 @@ def probe(path: Path) -> dict:
             info["width"] = int(float(line.split("=", 1)[1] or 0))
         elif line.startswith("height=") and not info["height"]:
             info["height"] = int(float(line.split("=", 1)[1] or 0))
+        elif line.startswith("codec_name=") and not info["codec"]:
+            info["codec"] = line.split("=", 1)[1]
+        elif line.startswith("profile=") and not info["profile"]:
+            info["profile"] = line.split("=", 1)[1]
+        elif line.startswith("pix_fmt=") and not info["pix_fmt"]:
+            info["pix_fmt"] = line.split("=", 1)[1]
+        elif line.startswith("r_frame_rate=") and not info["fps"]:
+            value = line.split("=", 1)[1]
+            with contextlib.suppress(ValueError, ZeroDivisionError):
+                numerator, denominator = value.split("/", 1)
+                info["fps"] = round(float(numerator) / float(denominator), 3)
         elif line == "codec_type=audio":
             info["has_audio"] = True
     return info
+
+
+def _validate_reference_encoder(selection, profile: ReferenceProfileConfig) -> None:
+    """Reject final encoders that cannot produce the reference video contract."""
+    args = encoders.video_args(selection, preview=False, final=True)
+    try:
+        profile_index = args.index("-profile:v")
+        profile_value = args[profile_index + 1]
+    except (ValueError, IndexError) as exc:
+        raise RenderError(
+            "reference.encoder_profile: encoder must explicitly emit H.264 High profile",
+            code="reference.encoder_profile",
+        ) from exc
+    if str(profile_value).lower() != str(profile.final_codec_profile).lower():
+        raise RenderError(
+            "reference.encoder_profile: encoder must explicitly emit H.264 High profile",
+            code="reference.encoder_profile",
+        )
+    try:
+        pixel_index = args.index("-pix_fmt")
+        pixel_value = args[pixel_index + 1]
+    except (ValueError, IndexError) as exc:
+        raise RenderError(
+            "reference.encoder_pixel_format: encoder must emit yuv420p",
+            code="reference.encoder_pixel_format",
+        ) from exc
+    if pixel_value != profile.final_pixel_format:
+        raise RenderError(
+            "reference.encoder_pixel_format: encoder must emit yuv420p",
+            code="reference.encoder_pixel_format",
+        )
+
+
+def validate_reference_output(info: dict, profile: ReferenceProfileConfig) -> None:
+    """Apply the profile-aware output QC gate before publishing a final file."""
+    from app.services import quality
+
+    failures = [
+        result for result in quality.check_reference_output_profile(info, profile)
+        if not result.passed
+    ]
+    if failures:
+        codes = ", ".join(result.code for result in failures)
+        raise RenderError(
+            f"reference.output_profile: {codes}",
+            code="reference.output_profile",
+        )
 
 
 # --- image preparation -----------------------------------------------------
@@ -251,6 +321,7 @@ def _motion_filter(
     effect: str, width: int, height: int, duration: float, fps: int,
     focus_x: float = 0.5, focus_y: float = 0.4,
     focus_end_x: float = 0.5, focus_end_y: float = 0.4,
+    profile: ReferenceProfileConfig | None = None,
 ) -> str:
     """Build one smooth, bounded crop trajectory with even coordinates."""
     frames = max(2, int(round(duration * fps)))
@@ -265,12 +336,14 @@ def _motion_filter(
     smooth = f"({progress}*{progress}*(3-2*{progress}))"
     fx = f"((1-{smooth})*{max(0.05, min(0.95, focus_x))}+{smooth}*{max(0.05, min(0.95, focus_end_x))})"
     fy = f"((1-{smooth})*{max(0.05, min(0.95, focus_y))}+{smooth}*{max(0.05, min(0.95, focus_end_y))})"
+    normal_delta = (profile.normal_zoom_max - 1.0) if profile else 0.06
+    impact_delta = (profile.impact_zoom_max - 1.0) if profile else 0.08
     if safe_effect == "slow_push_in":
-        z = f"(1+0.06*{smooth})"
+        z = f"(1+{normal_delta:.2f}*{smooth})"
     elif safe_effect == "slow_pull_out":
-        z = f"(1.06-0.06*{smooth})"
+        z = f"({1.0 + normal_delta:.2f}-{normal_delta:.2f}*{smooth})"
     elif safe_effect in {"push_in", "reveal"}:
-        z = f"(1+0.08*{smooth})"
+        z = f"(1+{impact_delta:.2f}*{smooth})"
     elif safe_effect == "static_emphasis":
         z = "1.02"
     elif safe_effect == "atmospheric":
@@ -286,8 +359,14 @@ def _motion_filter(
     return f"crop=w='{crop_w}':h='{crop_h}':x='{x}':y='{y}',scale={width}:{height}:flags=lanczos"
 
 
-def _procedural_effect(mode: str, intensity: str) -> str:
+def _procedural_effect(
+    mode: str,
+    intensity: str,
+    profile: ReferenceProfileConfig | None = None,
+) -> str:
     """Small deterministic accents; never injects content into the panel."""
+    if profile is not None:
+        return "null"
     if mode == "atmospheric":
         return "eq=saturation=0.78:contrast=1.04,vignette=PI/5"
     if mode == "impact":
@@ -306,7 +385,13 @@ _LOCAL_EFFECTS = {
 }
 
 
-def local_effects(mode: str, disabled: list[str] | None = None) -> tuple[str, ...]:
+def local_effects(
+    mode: str,
+    disabled: list[str] | None = None,
+    profile: ReferenceProfileConfig | None = None,
+) -> tuple[str, ...]:
+    if profile is not None:
+        return ()
     disabled_set = {str(item).strip().lower() for item in (disabled or [])}
     return tuple(effect for effect in _LOCAL_EFFECTS.get(mode, ()) if effect not in disabled_set)
 
@@ -359,6 +444,7 @@ def render_scene_clip(
     fps: int,
     encoder: encoders.Selection | None = None,
     preview: bool = False,
+    profile: ReferenceProfileConfig | None = None,
 ) -> Path:
     """Render one silent scene clip.
 
@@ -372,11 +458,12 @@ def render_scene_clip(
         _motion_filter(
             scene.camera_curve or scene.effect, width, height, duration, fps,
             scene.focus_x, scene.focus_y, scene.focus_end_x, scene.focus_end_y,
+            profile=profile,
         )
         if settings.motion_enabled
         else f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
     )
-    vf = f"{motion},{_procedural_effect(scene.motion_mode, scene.motion_intensity)},format=yuv420p"
+    vf = f"{motion},{_procedural_effect(scene.motion_mode, scene.motion_intensity, profile)},format=yuv420p"
 
     # The Shot Director owns transition intent. Do not fade every clip: that
     # creates a black flash between ROI cuts and makes the edit feel mechanical.
@@ -525,12 +612,54 @@ def build_ass(
     height: int,
     font_name: str = "DejaVu Sans",
     max_chars: int = MAX_SUBTITLE_CHARS_PER_LINE,
+    profile: ReferenceProfileConfig | None = None,
 ) -> str:
     """Generate an ASS subtitle file positioned inside the Shorts safe area.
 
     Bottom margin keeps text clear of the YouTube UI overlay; a heavy outline
     keeps it readable over busy artwork.
     """
+    if profile is not None:
+        font_size = max(1, round(height * profile.caption_font_height_ratio))
+        anchor_x = round(width * profile.caption_anchor[0])
+        anchor_y = round(height * profile.caption_anchor[1])
+        italic = -1 if profile.caption_italic else 0
+        shadow_alpha = round((1.0 - profile.caption_shadow_alpha_max) * 255)
+        header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Caption,{font_name},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H{shadow_alpha:02X}000000,-1,{italic},0,0,100,100,0,0,1,{profile.caption_outline_pixels},2,{profile.caption_alignment},0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+        lines: list[str] = []
+        for cue in cues:
+            display_text = cue.text.strip()
+            if (
+                not display_text
+                or len(display_text.split()) != profile.caption_words_per_cue
+                or display_text != display_text.upper()
+                or not display_text.isalnum()
+                or cue.end_time <= cue.start_time
+            ):
+                raise RenderError(
+                    "reference subtitle must be one uppercase punctuation-free word",
+                    code="reference.subtitle_invalid",
+                )
+            lines.append(
+                f"Dialogue: 0,{_ass_time(cue.start_time)},{_ass_time(cue.end_time)},"
+                f"Caption,,0,0,0,,{{\\pos({anchor_x},{anchor_y})}}"
+                f"{_ass_escape(display_text)}"
+            )
+        return header + "\n".join(lines) + "\n"
+
     font_size = max(42, int(height * 0.045))
     margin_v = int(height * SUBTITLE_SAFE_BOTTOM)
     margin_h = int(width * 0.08)
@@ -606,6 +735,10 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         width = request.width or settings.video_width
         height = request.height or settings.video_height
         fps = request.fps or settings.video_fps
+    elif request.profile is not None:
+        width = request.profile.final_width
+        height = request.profile.final_height
+        fps = request.profile.final_fps
     else:
         # Final delivery is a fixed vertical contract; previews may stay small.
         width, height, fps = settings.video_width, settings.video_height, settings.video_fps
@@ -623,6 +756,8 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     # subprocess for every clip, and a mid-render switch could mix codecs in the
     # concat stream, which "-c copy" cannot join.
     selection = encoders.select(request.encoder)
+    if request.profile is not None and not request.preview:
+        _validate_reference_encoder(selection, request.profile)
 
     from app.services import storage
 
@@ -660,7 +795,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 ) from exc
         else:
             placeholder_image(prepared, width, height, scene.overlay_text or "no image")
-        effects = local_effects(scene.motion_mode, scene.disabled_effects)
+        effects = local_effects(scene.motion_mode, scene.disabled_effects, request.profile)
         if effects:
             with Image.open(prepared) as prepared_image:
                 effected = apply_local_effects(
@@ -675,7 +810,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         clip = work / f"clip{i:03d}.mp4"
         render_scene_clip(
             scene, prepared, clip, width, height, fps,
-            encoder=selection, preview=request.preview,
+            encoder=selection, preview=request.preview, profile=request.profile,
         )
         clips.append(clip)
         report(5 + int(45 * (i + 1) / len(request.scenes)), f"scene {i + 1}/{len(request.scenes)}")
@@ -689,7 +824,13 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     if request.cues:
         ass_path = work / "captions.ass"
         ass_path.write_text(
-            build_ass(request.cues, width, height, settings.subtitle_font_name),
+            build_ass(
+                request.cues,
+                width,
+                height,
+                settings.subtitle_font_name,
+                profile=request.profile,
+            ),
             encoding="utf-8",
         )
         burned = work / "burned.mp4"
@@ -765,6 +906,8 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         )
 
     report(92, "finalising")
+    if request.profile is not None and not request.preview:
+        validate_reference_output(probe(tmp_out), request.profile)
     shutil.move(str(tmp_out), str(output))
 
     info = probe(output)
