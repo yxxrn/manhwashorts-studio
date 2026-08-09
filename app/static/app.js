@@ -554,7 +554,10 @@ $('save-script-btn').addEventListener('click', async () => {
 
 $('approve-script-btn').addEventListener('click', async () => {
   try {
-    await api(`/api/projects/${state.projectId}/script/approve`, { method: 'POST' });
+    await api(`/api/projects/${state.projectId}/script/approve`, {
+      method: 'POST',
+      body: { editorial_review_confirmed: true },
+    });
     toast('Naskah disetujui.', 'ok');
     await loadScript();
   } catch (err) { toast(err.message, 'error'); }

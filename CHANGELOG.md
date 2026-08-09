@@ -28,6 +28,8 @@ Notable changes per release. Dates are ISO 8601.
   compact one-word caption styling, bounded camera zoom, profile-aware output
   QC, and explicit H.264 High/yuv420p final validation; previews and legacy
   subtitle rendering remain unchanged without the profile.
+- Fixed the script-approval UI to send the required explicit confirmation
+  JSON body while preserving the backend human-approval gate.
 ## Unreleased — Complete motion-comic pipeline
 
 - Set the project default to English narration with American English voice; Indonesian remains explicit opt-in.

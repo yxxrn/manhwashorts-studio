@@ -172,6 +172,25 @@ def test_ui_covers_every_pipeline_stage():
         assert endpoint in JS, f"no UI reaches {endpoint}"
 
 
+def test_script_approval_posts_explicit_confirmation():
+    """The explicit backend approval gate must be reachable from the UI."""
+    match = re.search(
+        r"\$\('approve-script-btn'\)\.addEventListener\('click'.*?\n\}\);",
+        JS,
+        flags=re.DOTALL,
+    )
+    assert match, "script approval handler is missing"
+    handler = match.group(0)
+    assert "`/api/projects/${state.projectId}/script/approve`" in handler
+    assert "method: 'POST'" in handler
+    body = re.search(r"body:\s*\{\s*([^{}]*?)\s*\}", handler, flags=re.DOTALL)
+    assert body, "script approval must send a JSON body"
+    assert {part.strip() for part in body.group(1).split(',') if part.strip()} == {
+        "editorial_review_confirmed: true",
+    }
+    assert "opts.headers['Content-Type'] = 'application/json'" in JS
+
+
 def test_destructive_actions_ask_for_confirmation():
     """Deleting a project or key is irreversible; it must never be one click."""
     confirms = JS.count("window.confirm") + JS.count("confirm(")
