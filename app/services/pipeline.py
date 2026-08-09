@@ -13,14 +13,18 @@ Stage order:
 
 from __future__ import annotations
 
+import io
 import json
 import resource
 import secrets
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -35,6 +39,7 @@ from app.constants import (
 from app.models import (
     AudioSegment,
     AuditLog,
+    PanelRegion,
     Project,
     QCHistorySnapshot,
     QCOverrideEvent,
@@ -47,14 +52,21 @@ from app.models import (
     TimelineScene,
 )
 from app.services import analysis as analysis_svc
+from app.services import analyzer_contract, editorial_timing, segmentation, storage, visual_scoring
 from app.services import director as director_svc
-from app.services import editorial_timing, storage, visual_scoring
 from app.services import policy as policy_svc
 from app.services import quality as quality_svc
 from app.services import resolver as resolver_svc
 from app.services import script as script_svc
 from app.services import timeline as timeline_svc
 from app.services import tts as tts_svc
+from app.services.vision_adapter import (
+    VisionCapabilityError,
+    VisionChapterSynthesisRequest,
+    VisionObservationRequest,
+    VisionProviderRequestFailed,
+    VisionResponseInvalid,
+)
 
 
 class PipelineError(RuntimeError):
@@ -116,7 +128,7 @@ def image_assets(assets: list[SourceAsset]) -> list[SourceAsset]:
 # --- stage: analyse --------------------------------------------------------
 
 
-def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnalysis:
+def run_legacy_text_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnalysis:
     """Extract story facts from all text assets, replacing any prior analysis."""
     project = get_project(db, project_id)
     assets = project_assets(db, project_id)
@@ -169,6 +181,900 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
     )
     db.flush()
     return row
+
+
+_VISION_OBSERVATION_KEYS = frozenset(
+    {
+        "panel_id",
+        "visible_facts",
+        "dialogue_or_ocr",
+        "inferences",
+        "uncertainties",
+        "entities",
+        "state_changes",
+        "causal_links",
+        "evidence_refs",
+    }
+)
+_VISION_BLOCKING_CODES = frozenset(
+    {
+        "vision_capability_missing",
+        "vision_provider_unsupported",
+        "coverage_incomplete",
+        "analysis_observation_missing",
+        "analysis_chunk_link_missing",
+        "analysis_claim_evidence_missing",
+        "analysis_incomplete",
+        "analyzer_contract_invalid",
+        "vision_provider_request_failed",
+        "vision_response_invalid",
+    }
+)
+
+
+class _AnalysisBlocked(RuntimeError):
+    """Internal fail-closed stage result; details are always safe metadata."""
+
+    def __init__(self, code: str, **finding: Any) -> None:
+        self.code = code if code in _VISION_BLOCKING_CODES else "analysis_incomplete"
+        self.finding = {"code": self.code, **finding}
+        super().__init__(self.code)
+
+
+def _panel_region_bounds(panel: PanelRegion | Mapping[str, Any]) -> tuple[int, int, int, int]:
+    if isinstance(panel, Mapping):
+        raw_bounds = panel.get("bounds", panel.get("bounds_json", panel.get("region_bounds")))
+    else:
+        raw_bounds = getattr(panel, "bounds_json", None)
+    if isinstance(raw_bounds, Mapping):
+        values = (
+            raw_bounds.get("x"),
+            raw_bounds.get("y"),
+            raw_bounds.get("width"),
+            raw_bounds.get("height"),
+        )
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            raise ValueError("bounds must contain integer x, y, width, and height")
+        x, y, width, height = values
+        if width <= 0 or height <= 0 or x < 0 or y < 0:
+            raise ValueError("bounds must have positive dimensions")
+        return x, y, x + width, y + height
+    if isinstance(raw_bounds, (tuple, list)) and len(raw_bounds) == 4:
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in raw_bounds):
+            raise ValueError("bounds coordinates must be integers")
+        x0, y0, x1, y1 = raw_bounds
+        if x1 <= x0 or y1 <= y0 or x0 < 0 or y0 < 0:
+            raise ValueError("bounds must have positive dimensions")
+        return x0, y0, x1, y1
+    raise ValueError("bounds are required")
+
+
+def build_observation_chunks(
+    panel_regions: Sequence[PanelRegion],
+    *,
+    chunk_size: int = 12,
+    overlap: int = 2,
+) -> list[tuple[PanelRegion, ...]]:
+    """Build deterministic ordered chunks with an exact adjacent overlap."""
+
+    if (
+        isinstance(chunk_size, bool)
+        or not isinstance(chunk_size, int)
+        or chunk_size <= 0
+    ):
+        raise ValueError("chunk_size must be positive")
+    if isinstance(overlap, bool) or not isinstance(overlap, int) or overlap < 0:
+        raise ValueError("overlap must be non-negative")
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be smaller than chunk_size")
+
+    ordered = sorted(
+        panel_regions,
+        key=lambda panel: (
+            getattr(panel, "source_order", -1),
+            getattr(panel, "panel_id", ""),
+        ),
+    )
+    seen_orders: set[int] = set()
+    seen_panel_ids: set[str] = set()
+    for panel in ordered:
+        if not isinstance(panel, PanelRegion):
+            raise ValueError("panel_regions must contain PanelRegion rows")
+        source_order = panel.source_order
+        panel_id = panel.panel_id
+        if (
+            isinstance(source_order, bool)
+            or not isinstance(source_order, int)
+            or source_order < 0
+        ):
+            raise ValueError("source_order must be a non-negative integer")
+        if source_order in seen_orders:
+            raise ValueError("source_order must be unique")
+        if not isinstance(panel_id, str) or not panel_id.strip():
+            raise ValueError("panel_id must be non-empty")
+        if panel_id in seen_panel_ids:
+            raise ValueError("panel_id must be unique")
+        if panel.region_class != "canonical_panel":
+            raise ValueError("only canonical_panel regions may be observed")
+        if not isinstance(panel.source_asset_id, str) or not panel.source_asset_id.strip():
+            raise ValueError("source_asset_id must be non-empty")
+        _panel_region_bounds(panel)
+        seen_orders.add(source_order)
+        seen_panel_ids.add(panel_id)
+
+    if not ordered:
+        return []
+    if len(ordered) <= chunk_size:
+        return [tuple(ordered)]
+
+    step = chunk_size - overlap
+    chunks: list[tuple[PanelRegion, ...]] = []
+    start = 0
+    while start < len(ordered):
+        end = min(start + chunk_size, len(ordered))
+        chunk = tuple(ordered[start:end])
+        if chunks and chunk == chunks[-1]:
+            break
+        chunks.append(chunk)
+        if end == len(ordered):
+            break
+        next_start = start + step
+        if next_start <= start:
+            raise ValueError("chunk planner did not advance")
+        start = next_start
+    return chunks
+
+
+def _deduplicate_codes(codes: Sequence[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for code in codes:
+        if code not in seen:
+            result.append(code)
+            seen.add(code)
+    return result
+
+
+def _persist_blocked_analysis(
+    db: Session,
+    project: Project,
+    row: StoryAnalysis,
+    codes: Sequence[str],
+    findings: Sequence[Mapping[str, Any]],
+) -> StoryAnalysis:
+    safe_codes = _deduplicate_codes(
+        [code if code in _VISION_BLOCKING_CODES else "analysis_incomplete" for code in codes]
+    )
+    safe_findings = [
+        {str(key): value for key, value in finding.items() if key in {"code", "stage", "count", "error_count", "panel_count", "chunk_index", "coverage_map_hash", "provider_type", "provider_name", "model"}}
+        for finding in findings
+        if isinstance(finding, Mapping)
+    ]
+    row.state = "BLOCKED"
+    row.blocking_reasons_json = {"codes": safe_codes, "findings": safe_findings}
+    project.status = ProjectStatus.FAILED
+    audit(
+        db,
+        "analysis.blocked",
+        "project",
+        project.id,
+        detail_codes=safe_codes,
+        state=row.state,
+        panel_count=int(row.coverage_manifest_json.get("total_canonical_panels", 0))
+        if isinstance(row.coverage_manifest_json, Mapping)
+        else 0,
+    )
+    db.flush()
+    return row
+
+
+def _asset_source_bounds(asset: SourceAsset) -> tuple[int, int, int, int]:
+    raw_bounds = asset.source_bounds_json
+    if isinstance(raw_bounds, Mapping) and all(
+        key in raw_bounds for key in ("x", "y", "width", "height")
+    ):
+        x, y, width, height = (
+            raw_bounds["x"],
+            raw_bounds["y"],
+            raw_bounds["width"],
+            raw_bounds["height"],
+        )
+    else:
+        x, y = 0, 0
+        width, height = asset.width, asset.height
+        if width <= 0 or height <= 0:
+            width, height = asset.original_width, asset.original_height
+    if not all(isinstance(value, int) and not isinstance(value, bool) for value in (x, y, width, height)):
+        raise ValueError("source bounds are not integer lineage")
+    if x < 0 or y < 0 or width <= 0 or height <= 0:
+        raise ValueError("source bounds are not positive")
+    return x, y, x + width, y + height
+
+
+def _build_source_inputs(
+    assets: Sequence[SourceAsset],
+) -> tuple[tuple[segmentation.SourceAssetInput, ...], dict[str, SourceAsset]]:
+    inputs: list[segmentation.SourceAssetInput] = []
+    asset_by_id: dict[str, SourceAsset] = {}
+    for asset in assets:
+        source_bounds = _asset_source_bounds(asset)
+        original_width = asset.original_width or (source_bounds[2] - source_bounds[0])
+        original_height = asset.original_height or (source_bounds[3] - source_bounds[1])
+        decoded_width = asset.width or (source_bounds[2] - source_bounds[0])
+        decoded_height = asset.height or (source_bounds[3] - source_bounds[1])
+        if original_width <= 0 or original_height <= 0:
+            raise ValueError("original dimensions are not positive")
+        payload = storage.read_bytes(asset.storage_key)
+        inputs.append(
+            segmentation.SourceAssetInput(
+                source_asset_id=asset.id,
+                original_checksum=asset.original_checksum or asset.checksum or asset.id,
+                original_width=original_width,
+                original_height=original_height,
+                source_bounds=source_bounds,
+                strip_order=asset.strip_order,
+                region_order=asset.region_order,
+                payload=payload,
+                decoded_width=decoded_width,
+                decoded_height=decoded_height,
+            )
+        )
+        asset_by_id[asset.id] = asset
+    return tuple(inputs), asset_by_id
+
+
+def _coverage_manifest(
+    inputs: Sequence[segmentation.SourceAssetInput],
+    coverage: segmentation.CoverageMap,
+    *,
+    processed_panels: int = 0,
+    duplicate_observations: int = 0,
+    claim_to_panel_refs: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    full_lineages: dict[tuple[str, int, int], int] = {}
+    for item in inputs:
+        key = (item.original_checksum or item.source_asset_id, item.original_width, item.original_height)
+        full_lineages[key] = item.original_width * item.original_height
+    original_area = sum(full_lineages.values())
+    accounted_area = coverage.canonical_panel_area + coverage.verified_gutter_area
+    tile_ranges = [
+        {
+            "source_asset_id": tile.source_asset_id,
+            "tile_index": tile.tile_index,
+            "y0": tile.y0,
+            "y1": tile.y1,
+            "overlap_above": tile.overlap_above,
+            "overlap_below": tile.overlap_below,
+            "tile_sha256": tile.tile_sha256,
+        }
+        for tile in coverage.tiles
+    ]
+    panel_ids = [
+        region.region_id
+        for region in coverage.regions
+        if region.region_class == "canonical_panel"
+    ]
+    return {
+        "total_assets": len(inputs),
+        "original_source_space_area": original_area,
+        "accounted_source_space_area": accounted_area,
+        "source_content_coverage_ratio": coverage.source_content_coverage_ratio,
+        "unresolved_material_area": coverage.unresolved_material_area,
+        "material_unresolved_regions": [
+            region.region_id
+            for region in coverage.regions
+            if region.region_class == "unresolved_material"
+        ],
+        "reconciliation_complete": not coverage.reconciliation_errors
+        and coverage.source_content_coverage_ratio == 1.0
+        and coverage.unresolved_material_area == 0,
+        "total_panels": coverage.panel_count,
+        "total_canonical_panels": coverage.panel_count,
+        "persisted_canonical_panels": coverage.panel_count,
+        "processed_panels": processed_panels,
+        "duplicate_overlap_observations": duplicate_observations,
+        "panel_ids": panel_ids,
+        "unreadable_low_confidence_panels": [
+            region.region_id
+            for region in coverage.regions
+            if region.region_class == "canonical_panel" and region.confidence < 0.5
+        ],
+        "ordering_uncertainties": [],
+        "character_ambiguities": [],
+        "tile_ranges": tile_ranges,
+        "tile_overlap": [
+            {
+                "source_asset_id": tile.source_asset_id,
+                "tile_index": tile.tile_index,
+                "overlap_above": tile.overlap_above,
+                "overlap_below": tile.overlap_below,
+            }
+            for tile in coverage.tiles
+        ],
+        "coverage_map_hash": coverage.map_sha256,
+        "coverage_map_version": coverage.version,
+        "claim_to_panel_refs": {
+            claim_id: list(panel_ids)
+            for claim_id, panel_ids in (claim_to_panel_refs or {}).items()
+        },
+    }
+
+
+def _coverage_overviews(
+    inputs: Sequence[segmentation.SourceAssetInput],
+    coverage: segmentation.CoverageMap,
+) -> dict[str, Any]:
+    return {
+        item.source_asset_id: {
+            "bounds": list(item.source_bounds),
+            "bands": [
+                {
+                    "bounds": list(region.bounds),
+                    "region_class": region.region_class,
+                }
+                for region in coverage.regions
+                if region.source_asset_id == item.source_asset_id
+            ],
+        }
+        for item in inputs
+    }
+
+
+def _persist_panel_regions(
+    db: Session,
+    row: StoryAnalysis,
+    coverage: segmentation.CoverageMap,
+    asset_by_id: Mapping[str, SourceAsset],
+) -> list[PanelRegion]:
+    panel_rows: list[PanelRegion] = []
+    for region in coverage.regions:
+        if region.region_class != "canonical_panel":
+            continue
+        asset = asset_by_id.get(region.source_asset_id)
+        if asset is None:
+            raise _AnalysisBlocked("coverage_incomplete", stage="panel_persistence")
+        panel_id = region.region_id
+        panel_rows.append(
+            PanelRegion(
+                id=panel_id,
+                story_analysis_id=row.id,
+                source_asset_id=asset.id,
+                source_asset_checksum=asset.original_checksum or asset.checksum,
+                original_width=asset.original_width or asset.width,
+                original_height=asset.original_height or asset.height,
+                strip_region_id=panel_id,
+                panel_id=panel_id,
+                source_order=region.source_order,
+                bounds_json={
+                    "x": region.bounds[0],
+                    "y": region.bounds[1],
+                    "width": region.bounds[2] - region.bounds[0],
+                    "height": region.bounds[3] - region.bounds[1],
+                },
+                region_class=region.region_class,
+                segmentation_confidence=region.confidence,
+                segmentation_version=coverage.version,
+                coverage_map_hash=coverage.map_sha256,
+            )
+        )
+    db.add_all(panel_rows)
+    db.flush()
+    return panel_rows
+
+
+def _encode_panel_payload(
+    panel: PanelRegion,
+    source_input: segmentation.SourceAssetInput,
+) -> bytes:
+    global_bounds = _panel_region_bounds(panel)
+    source_bounds = source_input.source_bounds
+    local_bounds = (
+        global_bounds[0] - source_bounds[0],
+        global_bounds[1] - source_bounds[1],
+        global_bounds[2] - source_bounds[0],
+        global_bounds[3] - source_bounds[1],
+    )
+    decoded_width = source_input.decoded_width or (source_bounds[2] - source_bounds[0])
+    decoded_height = source_input.decoded_height or (source_bounds[3] - source_bounds[1])
+    if (
+        local_bounds[0] < 0
+        or local_bounds[1] < 0
+        or local_bounds[2] > decoded_width
+        or local_bounds[3] > decoded_height
+        or local_bounds[2] <= local_bounds[0]
+        or local_bounds[3] <= local_bounds[1]
+    ):
+        raise _AnalysisBlocked("coverage_incomplete", stage="panel_crop")
+    try:
+        with Image.open(io.BytesIO(source_input.payload)) as image:
+            image.load()
+            if image.size != (decoded_width, decoded_height):
+                raise _AnalysisBlocked("coverage_incomplete", stage="panel_decode")
+            cropped = image.convert("RGB").crop(local_bounds)
+            expected_size = (
+                global_bounds[2] - global_bounds[0],
+                global_bounds[3] - global_bounds[1],
+            )
+            if cropped.size != expected_size:
+                raise _AnalysisBlocked("coverage_incomplete", stage="panel_crop")
+            output = io.BytesIO()
+            cropped.save(output, format="PNG")
+            payload = output.getvalue()
+    except _AnalysisBlocked:
+        raise
+    except (OSError, UnidentifiedImageError, ValueError):
+        raise _AnalysisBlocked("coverage_incomplete", stage="panel_decode") from None
+    if not payload:
+        raise _AnalysisBlocked("coverage_incomplete", stage="panel_crop")
+    return payload
+
+
+def _panel_transport(
+    panel: PanelRegion,
+    source_input: segmentation.SourceAssetInput,
+    coverage: segmentation.CoverageMap,
+) -> dict[str, Any]:
+    bounds = _panel_region_bounds(panel)
+    return {
+        "panel_id": panel.panel_id,
+        "source_asset_id": panel.source_asset_id,
+        "strip_region_id": panel.strip_region_id,
+        "source_order": panel.source_order,
+        "region_bounds": {
+            "x": bounds[0],
+            "y": bounds[1],
+            "width": bounds[2] - bounds[0],
+            "height": bounds[3] - bounds[1],
+        },
+        "coverage_map_version": coverage.version,
+        "coverage_map_hash": coverage.map_sha256,
+        "mime_type": "image/png",
+        "payload": _encode_panel_payload(panel, source_input),
+    }
+
+
+def _validate_observation_rows(
+    value: Any,
+    expected_panel_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) != len(expected_panel_ids):
+        raise _AnalysisBlocked("analysis_observation_missing", stage="observation_reconcile")
+    rows: list[dict[str, Any]] = []
+    expected_set = set(expected_panel_ids)
+    for index, raw_row in enumerate(value):
+        if not isinstance(raw_row, Mapping) or set(raw_row) != _VISION_OBSERVATION_KEYS:
+            raise _AnalysisBlocked("analysis_observation_missing", stage="observation_reconcile")
+        row = dict(raw_row)
+        panel_id = row.get("panel_id")
+        if panel_id != expected_panel_ids[index] or panel_id not in expected_set:
+            raise _AnalysisBlocked("analysis_observation_missing", stage="observation_reconcile")
+        for key in _VISION_OBSERVATION_KEYS - {"panel_id"}:
+            if not isinstance(row.get(key), list):
+                raise _AnalysisBlocked("vision_response_invalid", stage="observation_reconcile")
+        refs = row["evidence_refs"]
+        if not refs or panel_id not in refs or any(ref not in expected_set for ref in refs):
+            raise _AnalysisBlocked("analysis_observation_missing", stage="observation_reconcile")
+        rows.append(row)
+    return rows
+
+
+def _observe_chunks(
+    provider: Any,
+    chunks: Sequence[Sequence[PanelRegion]],
+    panel_transports: Mapping[str, Mapping[str, Any]],
+    *,
+    analysis_run_id: str,
+    instruction_version: str,
+    instruction_sha256: str,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+    unique: dict[str, dict[str, Any]] = {}
+    last_seen: dict[str, int] = {}
+    first_chunk: dict[str, int] = {}
+    ledger: list[dict[str, Any]] = []
+    for chunk_index, chunk in enumerate(chunks):
+        panel_ids = tuple(panel.panel_id for panel in chunk)
+        request = VisionObservationRequest(
+            analysis_run_id=analysis_run_id,
+            instruction_version=instruction_version,
+            instruction_sha256=instruction_sha256,
+            chunk_index=chunk_index,
+            panels=tuple(panel_transports[panel_id] for panel_id in panel_ids),
+        )
+        try:
+            response = provider.observe(request)
+        except VisionResponseInvalid:
+            raise _AnalysisBlocked("vision_response_invalid", stage="observation_provider") from None
+        except VisionProviderRequestFailed:
+            raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider") from None
+        except VisionCapabilityError:
+            raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider") from None
+        except Exception:
+            raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider") from None
+        rows = _validate_observation_rows(response, panel_ids)
+        for row in rows:
+            panel_id = row["panel_id"]
+            if panel_id in unique:
+                if last_seen[panel_id] + 1 != chunk_index or unique[panel_id] != row:
+                    raise _AnalysisBlocked("analysis_observation_missing", stage="observation_overlap")
+            else:
+                unique[panel_id] = row
+                first_chunk[panel_id] = chunk_index
+            last_seen[panel_id] = chunk_index
+        previous_ids = tuple(panel.panel_id for panel in chunks[chunk_index - 1]) if chunk_index else ()
+        next_ids = tuple(panel.panel_id for panel in chunks[chunk_index + 1]) if chunk_index + 1 < len(chunks) else ()
+        ledger.append(
+            {
+                "chunk_id": f"chunk-{chunk_index}",
+                "panel_ids": list(panel_ids),
+                "observation_ids": [f"observation-{panel_id}" for panel_id in panel_ids],
+                "overlap_with_previous": [panel_id for panel_id in panel_ids if panel_id in previous_ids],
+                "overlap_with_next": [panel_id for panel_id in panel_ids if panel_id in next_ids],
+            }
+        )
+    expected = {panel.panel_id for chunk in chunks for panel in chunk}
+    if set(unique) != expected:
+        raise _AnalysisBlocked("analysis_observation_missing", stage="observation_reconcile")
+    return unique, ledger, first_chunk
+
+
+def _enrich_observations(
+    panel_regions: Sequence[PanelRegion],
+    semantic_observations: Mapping[str, Mapping[str, Any]],
+    first_chunk: Mapping[str, int],
+    coverage: segmentation.CoverageMap,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    enriched: dict[str, dict[str, Any]] = {}
+    chain_rows: list[dict[str, Any]] = []
+    for source_index, panel in enumerate(panel_regions):
+        semantic = semantic_observations.get(panel.panel_id)
+        if semantic is None:
+            raise _AnalysisBlocked("analysis_observation_missing", stage="observation_enrich")
+        bounds = _panel_region_bounds(panel)
+        observation = {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "strip_region_id": panel.strip_region_id,
+            "source_index": source_index,
+            "region_bounds": {
+                "x": bounds[0],
+                "y": bounds[1],
+                "width": bounds[2] - bounds[0],
+                "height": bounds[3] - bounds[1],
+            },
+            "coverage_map_version": coverage.version,
+            "coverage_map_hash": coverage.map_sha256,
+            "visible_facts": list(semantic["visible_facts"]),
+            "dialogue_or_ocr": list(semantic["dialogue_or_ocr"]),
+            "inferences": list(semantic["inferences"]),
+            "uncertainties": list(semantic["uncertainties"]),
+            "evidence_refs": list(semantic["evidence_refs"]),
+        }
+        enriched[panel.panel_id] = observation
+        panel.observation_json = observation
+        panel.evidence_refs_json = list(observation["evidence_refs"])
+        panel.chunk_index = first_chunk[panel.panel_id]
+        chain_rows.append(
+            {
+                "observation_id": f"observation-{panel.panel_id}",
+                "panel_id": panel.panel_id,
+            }
+        )
+    return enriched, chain_rows
+
+
+def _classify_synthesis_output(
+    output: Any,
+    expected_panel_ids: Sequence[str],
+    expected_chunks: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    if not isinstance(output, Mapping):
+        raise _AnalysisBlocked("analysis_incomplete", stage="synthesis_structure")
+    required = {
+        "observations",
+        "continuity_ledger",
+        "evidence_graph",
+        "coverage_manifest",
+        "narrative_outline",
+        "script_passages",
+    }
+    if not required.issubset(output):
+        raise _AnalysisBlocked("analysis_incomplete", stage="synthesis_structure")
+    observations = output.get("observations")
+    if isinstance(observations, list):
+        observation_ids = [
+            item.get("panel_id") if isinstance(item, Mapping) else None
+            for item in observations
+        ]
+        if tuple(observation_ids) != tuple(expected_panel_ids):
+            raise _AnalysisBlocked("analysis_observation_missing", stage="synthesis_observations")
+    else:
+        raise _AnalysisBlocked("analysis_incomplete", stage="synthesis_observations")
+
+    continuity = output.get("continuity_ledger")
+    if not isinstance(continuity, Mapping) or not isinstance(continuity.get("chunks"), list):
+        raise _AnalysisBlocked("analysis_incomplete", stage="synthesis_chunks")
+    declared_chunks = continuity["chunks"]
+    expected_chunk_ids = [tuple(chunk["panel_ids"]) for chunk in expected_chunks]
+    actual_chunk_ids: list[tuple[str, ...]] = []
+    for chunk in declared_chunks:
+        if not isinstance(chunk, Mapping) or not isinstance(chunk.get("panel_ids"), list):
+            raise _AnalysisBlocked("analysis_chunk_link_missing", stage="synthesis_chunks")
+        panel_ids = tuple(chunk["panel_ids"])
+        if not panel_ids or any(panel_id not in expected_panel_ids for panel_id in panel_ids):
+            raise _AnalysisBlocked("analysis_chunk_link_missing", stage="synthesis_chunks")
+        actual_chunk_ids.append(panel_ids)
+    if actual_chunk_ids != expected_chunk_ids:
+        raise _AnalysisBlocked("analysis_chunk_link_missing", stage="synthesis_chunks")
+
+    graph = output.get("evidence_graph")
+    if not isinstance(graph, Mapping) or not isinstance(graph.get("claims"), list):
+        raise _AnalysisBlocked("analysis_incomplete", stage="synthesis_claims")
+    expected_set = set(expected_panel_ids)
+    for claim in graph["claims"]:
+        if not isinstance(claim, Mapping):
+            raise _AnalysisBlocked("analysis_claim_evidence_missing", stage="synthesis_claims")
+        refs = claim.get("evidence_panel_ids")
+        if not isinstance(refs, list) or not refs or any(ref not in expected_set for ref in refs):
+            raise _AnalysisBlocked("analysis_claim_evidence_missing", stage="synthesis_claims")
+    return output
+
+
+def _derive_legacy_fields(row: StoryAnalysis, output: Mapping[str, Any]) -> None:
+    ledger = output["continuity_ledger"]
+    row.characters = [
+        {
+            "name": entity.get("canonical_name", ""),
+            "role": "",
+            "aliases": list(entity.get("aliases", []) or []),
+            "mentions": len(entity.get("panel_ids", []) or []),
+            "source_index": index,
+        }
+        for index, entity in enumerate(ledger.get("entities", []))
+        if isinstance(entity, Mapping)
+    ]
+    row.locations = []
+    row.events = list(ledger.get("state_changes", []) or []) + list(
+        ledger.get("causal_links", []) or []
+    )
+    spine = output["narrative_outline"]["story_spine"]
+    row.main_conflict = spine.get("obstacle", "")
+    row.twist = spine.get("consequence", "")
+    row.cliffhanger = spine.get("unresolved_question", "")
+    row.pronunciation_candidates = []
+    row.low_confidence_notes = [
+        uncertainty
+        for observation in output.get("observations", [])
+        for uncertainty in observation.get("uncertainties", [])
+        if isinstance(uncertainty, str)
+    ]
+
+
+def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnalysis:
+    """Run only the complete, fail-closed vision-first analysis flow."""
+
+    project = get_project(db, project_id)
+    assets = image_assets(project_assets(db, project_id))
+    run_id = secrets.token_hex(16)
+    for old in db.scalars(select(StoryAnalysis).where(StoryAnalysis.project_id == project_id)):
+        db.delete(old)
+    db.flush()
+    row = StoryAnalysis(
+        project_id=project_id,
+        analysis_run_id=run_id,
+        state="PROCESSING",
+        instruction_version=analyzer_contract.PROMPT_VERSION,
+    )
+    db.add(row)
+    project.status = ProjectStatus.GENERATING
+    db.flush()
+
+    try:
+        try:
+            instruction_version, instruction_sha256, instruction_text = (
+                analyzer_contract.load_analyzer_instruction()
+            )
+        except analyzer_contract.AnalyzerContractError:
+            raise _AnalysisBlocked("analyzer_contract_invalid", stage="instruction_load") from None
+        row.instruction_version = instruction_version
+        row.instruction_sha256 = instruction_sha256
+
+        if not assets:
+            raise _AnalysisBlocked("vision_capability_missing", stage="image_input")
+        try:
+            inputs, asset_by_id = _build_source_inputs(assets)
+            coverage = segmentation.build_complete_coverage_map(
+                inputs,
+                segmentation_version=segmentation.SEGMENTATION_VERSION,
+            )
+        except _AnalysisBlocked:
+            raise
+        except Exception:
+            raise _AnalysisBlocked("coverage_incomplete", stage="coverage_build") from None
+
+        overview_errors = segmentation.verify_segmentation_completeness(
+            _coverage_overviews(inputs, coverage), coverage
+        )
+        coverage_errors = tuple(sorted(set(coverage.reconciliation_errors + overview_errors)))
+        row.coverage_manifest_json = _coverage_manifest(inputs, coverage)
+        if (
+            coverage_errors
+            or coverage.source_content_coverage_ratio != 1.0
+            or coverage.unresolved_material_area != 0
+        ):
+            raise _AnalysisBlocked(
+                "coverage_incomplete",
+                stage="coverage_reconcile",
+                error_count=len(coverage_errors),
+                coverage_map_hash=coverage.map_sha256,
+            )
+
+        panel_regions = _persist_panel_regions(db, row, coverage, asset_by_id)
+        if not panel_regions:
+            raise _AnalysisBlocked("coverage_incomplete", stage="panel_persistence")
+        chunks = build_observation_chunks(panel_regions)
+        input_by_asset = {item.source_asset_id: item for item in inputs}
+        panel_transports = {
+            panel.panel_id: _panel_transport(
+                panel,
+                input_by_asset[panel.source_asset_id],
+                coverage,
+            )
+            for panel in panel_regions
+        }
+
+        try:
+            provider, capability = resolver_svc.resolve_vision(db, project.workspace_id)
+        except Exception:
+            raise _AnalysisBlocked("vision_capability_missing", stage="vision_resolve") from None
+        if provider is None or capability is None or not capability.available:
+            code = getattr(capability, "blocking_reason", None)
+            if code not in _VISION_BLOCKING_CODES:
+                code = "vision_capability_missing"
+            row.provider_type = getattr(capability, "provider_type", None)
+            row.provider_name = getattr(capability, "provider_name", None)
+            row.model_name = getattr(capability, "model", None)
+            raise _AnalysisBlocked(str(code), stage="vision_capability")
+        row.provider_type = capability.provider_type
+        row.provider_name = capability.provider_name
+        row.model_name = capability.model
+
+        semantic, chunk_ledger, first_chunk = _observe_chunks(
+            provider,
+            chunks,
+            panel_transports,
+            analysis_run_id=run_id,
+            instruction_version=instruction_version,
+            instruction_sha256=instruction_sha256,
+        )
+        enriched, chain_observations = _enrich_observations(
+            panel_regions, semantic, first_chunk, coverage
+        )
+        duplicate_observations = sum(len(chunk) for chunk in chunks) - len(enriched)
+        manifest = _coverage_manifest(
+            inputs,
+            coverage,
+            processed_panels=len(enriched),
+            duplicate_observations=duplicate_observations,
+        )
+        row.coverage_manifest_json = manifest
+        synthesis_chunks = tuple(
+            {
+                "chunk_id": item["chunk_id"],
+                "panel_ids": list(item["panel_ids"]),
+                "observation_ids": list(item["observation_ids"]),
+                "overlap_with_previous": list(item["overlap_with_previous"]),
+                "overlap_with_next": list(item["overlap_with_next"]),
+            }
+            for item in chunk_ledger
+        )
+        expected_panel_ids = tuple(panel.panel_id for panel in panel_regions)
+        synthesis_request = VisionChapterSynthesisRequest(
+            analysis_run_id=run_id,
+            instruction_version=instruction_version,
+            instruction_sha256=instruction_sha256,
+            instruction_text=instruction_text,
+            expected_panel_ids=expected_panel_ids,
+            coverage_manifest=manifest,
+            ordered_observations=tuple(enriched[panel_id] for panel_id in expected_panel_ids),
+            chunks=synthesis_chunks,
+        )
+        try:
+            synthesis_output = provider.synthesize(synthesis_request)
+        except analyzer_contract.AnalyzerContractError:
+            raise _AnalysisBlocked("analyzer_contract_invalid", stage="synthesis_request") from None
+        except VisionResponseInvalid:
+            raise _AnalysisBlocked("vision_response_invalid", stage="synthesis_response") from None
+        except VisionProviderRequestFailed:
+            raise _AnalysisBlocked("vision_provider_request_failed", stage="synthesis_provider") from None
+        except VisionCapabilityError:
+            raise _AnalysisBlocked("vision_provider_request_failed", stage="synthesis_provider") from None
+        except Exception:
+            raise _AnalysisBlocked("vision_provider_request_failed", stage="synthesis_provider") from None
+
+        synthesis_output = _classify_synthesis_output(
+            synthesis_output,
+            expected_panel_ids,
+            synthesis_chunks,
+        )
+        try:
+            analyzer_contract.validate_analyzer_output(
+                synthesis_output,
+                expected_panel_ids=expected_panel_ids,
+            )
+        except analyzer_contract.AnalyzerContractError:
+            raise _AnalysisBlocked("analysis_incomplete", stage="analyzer_validation") from None
+
+        claims = synthesis_output["evidence_graph"]["claims"]
+        panel_chain = [
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "bounds": _panel_region_bounds(panel),
+            }
+            for panel in panel_regions
+        ]
+        reconciled, chain_errors = segmentation.reconcile_coverage_chain(
+            coverage,
+            panel_chain,
+            chain_observations,
+            chunk_ledger,
+            claims,
+        )
+        if not reconciled:
+            if any(error.startswith("chain.chunk") for error in chain_errors):
+                raise _AnalysisBlocked("analysis_chunk_link_missing", stage="chain_reconcile")
+            if any(error.startswith("chain.claim") for error in chain_errors):
+                raise _AnalysisBlocked("analysis_claim_evidence_missing", stage="chain_reconcile")
+            raise _AnalysisBlocked("analysis_incomplete", stage="chain_reconcile")
+
+        claim_refs = {
+            claim["claim_id"]: list(claim["evidence_panel_ids"])
+            for claim in claims
+            if isinstance(claim, Mapping)
+        }
+        manifest["claim_to_panel_refs"] = claim_refs
+        row.coverage_manifest_json = manifest
+        row.continuity_ledger_json = synthesis_output["continuity_ledger"]
+        row.evidence_graph_json = dict(synthesis_output["evidence_graph"])
+        row.evidence_graph_json["script_passages"] = list(synthesis_output["script_passages"])
+        row.story_spine_json = dict(synthesis_output["narrative_outline"]["story_spine"])
+        row.reconciliation_json = {
+            "coverage_map_hash": coverage.map_sha256,
+            "coverage_map_version": coverage.version,
+            "canonical_panel_count": coverage.panel_count,
+            "processed_panel_count": len(enriched),
+            "duplicate_overlap_observations": duplicate_observations,
+            "chain_reconciled": True,
+            "chain_errors": list(chain_errors),
+        }
+        row.blocking_reasons_json = None
+        _derive_legacy_fields(row, synthesis_output)
+        row.state = "RECONCILED"
+        project.status = ProjectStatus.REVIEW
+        audit(
+            db,
+            "analysis.run",
+            "project",
+            project_id,
+            actor_id,
+            generator="vision_first",
+            provider=capability.provider_name,
+            model=capability.model,
+            state=row.state,
+            panel_count=coverage.panel_count,
+            processed_panel_count=len(enriched),
+        )
+        db.flush()
+        return row
+    except _AnalysisBlocked as blocked:
+        return _persist_blocked_analysis(
+            db,
+            project,
+            row,
+            [blocked.code],
+            [blocked.finding],
+        )
 
 
 def _analysis_to_result(row: StoryAnalysis) -> analysis_svc.AnalysisResult:
