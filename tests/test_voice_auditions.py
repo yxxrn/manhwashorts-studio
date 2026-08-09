@@ -84,7 +84,7 @@ class _RecordingProvider:
         if self.fail_at is not None and len(self.calls) == self.fail_at:
             raise RuntimeError(f"provider failed {self.secret}".strip())
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"RIFF" + b"audition-wav")
+        out_path.write_bytes(b"RIFF" + b"audition-wav-" + voice_id.encode())
         return SimpleNamespace(
             path=out_path,
             text=text,
@@ -107,6 +107,41 @@ def _patch_valid_generation(monkeypatch, service, provider):
         "_resolve_neural_provider",
         lambda _db, _project_id: provider,
     )
+
+
+class _FileProvider:
+    name = "byok:custom_openai"
+    label = "Mock file provider"
+
+    def __init__(self, payload_for_voice, *, fail_at=None, write_before_failure=False):
+        self.payload_for_voice = payload_for_voice
+        self.fail_at = fail_at
+        self.write_before_failure = write_before_failure
+        self.calls = []
+        self.paths = []
+
+    def available(self):
+        return True
+
+    def synthesize(self, text, out_path, voice_id, speed):
+        self.calls.append((text, voice_id, speed))
+        self.paths.append(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self.payload_for_voice(voice_id)
+        if self.fail_at is not None and len(self.calls) == self.fail_at:
+            if self.write_before_failure:
+                out_path.write_bytes(payload)
+            raise RuntimeError("provider failure")
+        out_path.write_bytes(payload)
+        return SimpleNamespace(
+            path=out_path,
+            text=text,
+            duration=1.25,
+            voice_id=voice_id,
+            provider=self.name,
+            word_timings=[],
+            voice_profile={"provider": self.name, "voice_id": voice_id},
+        )
 
 
 def test_request_requires_exactly_four_unique_voice_ids_and_bounded_speed():
@@ -152,6 +187,20 @@ def test_audition_text_caps_very_long_roles_without_sampling():
     excerpt = service.build_audition_text(very_long)
     assert len(excerpt.text.split()) == 60
     assert excerpt.represented_roles == ROLE_ORDER
+
+
+def test_audition_text_allocates_balanced_role_prefixes():
+    service = _service()
+    sections = [
+        {
+            **section,
+            "text": " ".join(f"role{index}_word{word}" for word in range(1, 31)),
+        }
+        for index, section in enumerate(SECTIONS, start=1)
+    ]
+    excerpt = service.build_audition_text(sections)
+    assert 45 <= sum(excerpt.role_word_counts) <= 65
+    assert max(excerpt.role_word_counts) - min(excerpt.role_word_counts) <= 1
 
 
 def test_audition_text_keeps_each_role_contiguous_when_truncated():
@@ -285,6 +334,23 @@ def test_four_auditions_share_exact_punctuated_text_and_roles(monkeypatch):
     assert all(mark in result["text"] for mark in (",", ".", "?"))
 
 
+def test_provider_voice_ids_never_enter_audition_temp_paths(monkeypatch, tmp_path):
+    service = _service()
+    voice_ids = ["voice/alpha", r"voice\beta", "voice:gamma", "voice..delta"]
+    provider = _FileProvider(lambda voice_id: b"RIFF-" + voice_id.encode())
+    provider._audition_provider_key = "elevenlabs"
+    provider._audition_available_models = [{"id": voice_id} for voice_id in voice_ids]
+    _patch_valid_generation(monkeypatch, service, provider)
+    monkeypatch.setattr(service.storage, "workspace_dir", lambda *_args: tmp_path)
+
+    service.generate_auditions(None, "project-a", voice_ids)
+
+    assert len(provider.paths) == 4
+    assert all(path.parent == tmp_path for path in provider.paths)
+    assert all("/" not in path.name and "\\" not in path.name for path in provider.paths)
+    assert all(voice_id not in path.name for path, voice_id in zip(provider.paths, voice_ids, strict=True))
+
+
 def test_provider_failure_aborts_without_partial_success_or_fallback(monkeypatch):
     service = _service()
     provider = _RecordingProvider(fail_at=3, secret="sk-audition-secret")
@@ -297,6 +363,92 @@ def test_provider_failure_aborts_without_partial_success_or_fallback(monkeypatch
     assert "sk-audition-secret" not in str(error.value)
     assert "espeak" not in str(error.value).lower()
     assert "null" not in str(error.value).lower()
+
+
+def test_partial_temp_output_is_cleaned_after_provider_failure(monkeypatch, tmp_path):
+    service = _service()
+    provider = _FileProvider(
+        lambda _voice_id: b"RIFF-partial",
+        fail_at=1,
+        write_before_failure=True,
+    )
+    _patch_valid_generation(monkeypatch, service, provider)
+    monkeypatch.setattr(service.storage, "workspace_dir", lambda *_args: tmp_path)
+
+    with pytest.raises(service.VoiceAuditionError) as error:
+        service.generate_auditions(None, "project-a", ["nova", "echo", "fable", "onyx"])
+
+    assert error.value.code == "voice_audition_generation_failed"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_duplicate_audio_checksums_abort_before_publishing(monkeypatch, tmp_path):
+    service = _service()
+    provider = _FileProvider(lambda _voice_id: b"RIFF-identical")
+    _patch_valid_generation(monkeypatch, service, provider)
+    monkeypatch.setattr(service.storage, "workspace_dir", lambda *_args: tmp_path)
+    put_calls = []
+    monkeypatch.setattr(
+        service.storage,
+        "put_file",
+        lambda *args, **kwargs: put_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(service.VoiceAuditionError) as error:
+        service.generate_auditions(None, "project-a", ["nova", "echo", "fable", "onyx"])
+
+    assert error.value.code == "voice_audition_duplicate_audio"
+    assert put_calls == []
+
+
+def test_rollback_preserves_preexisting_content_addressed_object(monkeypatch, tmp_path):
+    import hashlib
+
+    from app.services.storage import StoredObject
+
+    service = _service()
+    payloads = {
+        "nova": b"RIFF-nova",
+        "echo": b"RIFF-echo",
+        "fable": b"RIFF-fable",
+        "onyx": b"RIFF-onyx",
+    }
+    provider = _FileProvider(lambda voice_id: payloads[voice_id])
+    _patch_valid_generation(monkeypatch, service, provider)
+    monkeypatch.setattr(service.storage, "workspace_dir", lambda *_args: tmp_path)
+    prefix = "projects/project-a/voice-auditions"
+    first_checksum = hashlib.sha256(payloads["nova"]).hexdigest()
+    existing_key = f"{prefix}/{first_checksum[:16]}.wav"
+    objects = {existing_key: payloads["nova"]}
+    deleted = []
+    put_count = 0
+
+    def fake_put_file(storage_prefix, source, filename=None):
+        nonlocal put_count
+        put_count += 1
+        if put_count == 2:
+            raise RuntimeError("storage failed")
+        data = source.read_bytes()
+        checksum = hashlib.sha256(data).hexdigest()
+        key = f"{storage_prefix}/{checksum[:16]}.wav"
+        objects.setdefault(key, data)
+        path = tmp_path / f"stored-{checksum[:16]}.wav"
+        return StoredObject(key, path, len(data), checksum)
+
+    monkeypatch.setattr(service.storage, "put_file", fake_put_file)
+    monkeypatch.setattr(service.storage, "exists", lambda key: key in objects)
+    monkeypatch.setattr(
+        service.storage,
+        "delete",
+        lambda key: deleted.append(key) or objects.pop(key, None) is not None,
+    )
+
+    with pytest.raises(service.VoiceAuditionError) as error:
+        service.generate_auditions(None, "project-a", list(payloads))
+
+    assert error.value.code == "voice_audition_generation_failed"
+    assert objects[existing_key] == payloads["nova"]
+    assert existing_key not in deleted
 
 
 def test_missing_or_local_provider_never_silently_falls_back(monkeypatch):
@@ -322,9 +474,13 @@ def test_response_is_safe_and_audit_contains_only_nonsecret_summary(monkeypatch)
     provider = _RecordingProvider()
     _patch_valid_generation(monkeypatch, service, provider)
     audit_rows = []
-    monkeypatch.setattr(service, "_audit_audition_batch", audit_rows.append)
+    monkeypatch.setattr(
+        service.pipeline_svc,
+        "audit",
+        lambda _db, _action, _entity_type, _entity_id, _actor_id, **fields: audit_rows.append(fields),
+    )
     result = service.generate_auditions(
-        None,
+        object(),
         "project-a",
         ["nova", "echo", "fable", "onyx"],
         actor_id="user-a",
@@ -338,6 +494,11 @@ def test_response_is_safe_and_audit_contains_only_nonsecret_summary(monkeypatch)
     assert result["items"][0]["download_url"].startswith(
         "/api/projects/project-a/voice/auditions/"
     )
+
+
+def test_audition_service_has_no_empty_audit_test_hook():
+    service = _service()
+    assert not hasattr(service, "_audit_audition_batch")
 
 
 def test_existing_final_audio_segments_are_not_mutated(monkeypatch):
@@ -428,3 +589,48 @@ def test_openai_byok_keeps_model_separate_from_project_voice(monkeypatch, tmp_pa
     assert calls[0]["model"] == "tts-1"
     assert calls[0]["voice"] == "nova"
     assert calls[0]["voice"] != calls[0]["model"]
+
+
+def test_default_project_voice_sentinel_uses_stored_voice_per_provider(monkeypatch, tmp_path):
+    from app.constants import DEFAULT_ENGLISH_VOICE_ID
+    from app.services import providers as providers_service
+    from app.services import tts
+
+    calls = []
+
+    class Adapter:
+        def synthesize(self, **kwargs):
+            calls.append(kwargs)
+            kwargs["out_path"].write_bytes(b"RIFF audition")
+            return kwargs["out_path"]
+
+    monkeypatch.setattr(providers_service, "get_tts_adapter", lambda _provider: Adapter())
+    monkeypatch.setattr(tts, "probe_duration", lambda _path: 1.0)
+
+    eleven = tts.ByokProvider(
+        "elevenlabs",
+        "sk-eleven",
+        "eleven-model",
+        "http://mock.test/v1",
+        voice="stored-eleven",
+    )
+    eleven.synthesize("A punctuated excerpt.", tmp_path / "eleven-default.wav", DEFAULT_ENGLISH_VOICE_ID)
+    eleven.synthesize("A punctuated excerpt.", tmp_path / "eleven-explicit.wav", "explicit-eleven")
+
+    openai = tts.ByokProvider(
+        "custom_openai",
+        "sk-openai",
+        "tts-1",
+        "http://mock.test/v1",
+        voice="stored-openai",
+    )
+    openai.synthesize("A punctuated excerpt.", tmp_path / "openai-default.wav", DEFAULT_ENGLISH_VOICE_ID)
+    openai.synthesize("A punctuated excerpt.", tmp_path / "openai-explicit.wav", "nova")
+
+    assert [call["voice"] for call in calls] == [
+        "stored-eleven",
+        "explicit-eleven",
+        "stored-openai",
+        "nova",
+    ]
+    assert [call["model"] for call in calls] == ["eleven-model", "eleven-model", "tts-1", "tts-1"]

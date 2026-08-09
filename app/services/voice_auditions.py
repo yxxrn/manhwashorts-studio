@@ -9,6 +9,7 @@ segments.
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -94,11 +95,17 @@ def build_audition_text(
     budget = min(60, available)
     counts = [min(7, len(tokens)) for tokens in token_rows]
     remaining = budget - sum(counts)
-    for index, tokens in enumerate(token_rows):
-        extra = min(len(tokens) - counts[index], remaining)
-        counts[index] += extra
-        remaining -= extra
-        if remaining == 0:
+    while remaining:
+        progressed = False
+        for index, tokens in enumerate(token_rows):
+            if counts[index] >= len(tokens):
+                continue
+            counts[index] += 1
+            remaining -= 1
+            progressed = True
+            if remaining == 0:
+                break
+        if not progressed:
             break
     selected_rows: list[list[str]] = []
     for tokens, count in zip(token_rows, counts, strict=True):
@@ -231,10 +238,6 @@ def _provider_metadata(provider: Any) -> tuple[str, str, Sequence[Any]]:
     return key, label, available
 
 
-def _audit_audition_batch(summary: dict[str, Any]) -> None:
-    """Hook kept narrow so tests can inspect the non-secret audit payload."""
-
-
 def _safe_audition_id(checksum: str) -> str:
     if not _AUDITION_ID_RE.fullmatch(checksum):
         raise VoiceAuditionError(
@@ -289,10 +292,12 @@ def generate_auditions(
 
     work = storage.workspace_dir(project_id, "voice-auditions")
     generated: list[tuple[str, Any, Path]] = []
-    stored_keys: list[str] = []
+    temp_paths: list[Path] = []
+    created_storage_keys: list[str] = []
     try:
         for index, voice_id in enumerate(selected):
-            output = work / f"{index:02d}-{voice_id}.wav"
+            output = work / f"{index:02d}-{uuid.uuid4().hex}.wav"
+            temp_paths.append(output)
             try:
                 clip = provider.synthesize(excerpt.text, output, voice_id, float(speed))
             except Exception:
@@ -308,14 +313,30 @@ def generate_auditions(
                 )
             generated.append((voice_id, clip, path))
 
+        checksums: set[str] = set()
+        for _voice_id, _clip, path in generated:
+            checksum = storage.sha256_file(path)
+            if checksum in checksums:
+                raise VoiceAuditionError(
+                    "voice_audition_duplicate_audio",
+                    "each requested voice must produce distinct audition audio",
+                )
+            checksums.add(checksum)
+
         items: list[dict[str, Any]] = []
         for index, (voice_id, clip, path) in enumerate(generated):
+            checksum = storage.sha256_file(path)
+            storage_key = (
+                f"projects/{project_id}/voice-auditions/{checksum[:16]}.wav"
+            )
+            existed_before = storage.exists(storage_key)
             stored = storage.put_file(
                 f"projects/{project_id}/voice-auditions",
                 path,
                 f"{index:02d}.wav",
             )
-            stored_keys.append(stored.storage_key)
+            if not existed_before:
+                created_storage_keys.append(stored.storage_key)
             audition_id = _safe_audition_id(stored.checksum)
             items.append(
                 {
@@ -331,23 +352,22 @@ def generate_auditions(
                 }
             )
     except VoiceAuditionError:
-        for key in stored_keys:
+        for key in created_storage_keys:
             storage.delete(key)
-        _cleanup_files([path for _, _, path in generated])
+        _cleanup_files([*temp_paths, *(path for _, _, path in generated)])
         raise
     except Exception:
-        for key in stored_keys:
+        for key in created_storage_keys:
             storage.delete(key)
-        _cleanup_files([path for _, _, path in generated])
+        _cleanup_files([*temp_paths, *(path for _, _, path in generated)])
         raise VoiceAuditionError(
             "voice_audition_generation_failed",
             "neural TTS provider failed; no audition files were published",
         ) from None
     finally:
-        _cleanup_files([path for _, _, path in generated])
+        _cleanup_files([*temp_paths, *(path for _, _, path in generated)])
 
     summary = {"count": len(items), "provider": provider_key, "voice_ids": list(selected)}
-    _audit_audition_batch(summary)
     if db is not None:
         pipeline_svc.audit(
             db,

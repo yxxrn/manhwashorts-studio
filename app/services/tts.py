@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Protocol
 
 from app.config import settings
+from app.constants import DEFAULT_ENGLISH_VOICE_ID
 
 
 class TTSError(RuntimeError):
@@ -458,16 +459,22 @@ class ByokProvider:
         from app.services.providers import ProviderError
 
         provider_key = self._provider.lower()
+        requested_voice = (voice_id or "").strip()
+        explicit_voice = (
+            requested_voice
+            if requested_voice and requested_voice != DEFAULT_ENGLISH_VOICE_ID
+            else ""
+        )
         if provider_key in {"openai", "custom_openai"}:
             # OpenAI-compatible APIs keep the selected TTS model separate from
             # the timbre voice.  Never send the model identifier as ``voice``.
-            voice = voice_id or self._voice or "alloy"
+            voice = explicit_voice or self._voice or "alloy"
         elif provider_key == "elevenlabs":
             # An explicit project choice wins; otherwise use the credential's
             # stored voice selection.
-            voice = voice_id or self._voice
+            voice = explicit_voice or self._voice or self._model
         else:
-            voice = voice_id or self._voice or "default"
+            voice = explicit_voice or self._voice or "default"
         if not voice:
             raise TTSError(f"{self.label} has no selected voice")
         try:
