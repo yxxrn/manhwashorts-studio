@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from PIL import Image, UnidentifiedImageError
 
-SEGMENTATION_VERSION = "vision-coverage-v1"
+SEGMENTATION_VERSION = "vision-coverage-v2"
 RegionClass = Literal["canonical_panel", "verified_gutter", "unresolved_material"]
 Bounds = tuple[int, int, int, int]
 
@@ -32,6 +32,8 @@ class SourceAssetInput:
     strip_order: int
     region_order: int
     payload: bytes
+    decoded_width: int | None = None
+    decoded_height: int | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,69 @@ def _safe_rect(asset: SourceAssetInput) -> Bounds:
         return (0, 0, width, height)
 
 
+def _full_source_rect(asset: SourceAssetInput) -> Bounds:
+    width = asset.original_width
+    height = asset.original_height
+    if (
+        isinstance(width, bool)
+        or not isinstance(width, int)
+        or width <= 0
+        or isinstance(height, bool)
+        or not isinstance(height, int)
+        or height <= 0
+    ):
+        raise ValueError("original_dimensions_invalid")
+    return (0, 0, width, height)
+
+
+def _validated_lineage(asset: SourceAssetInput) -> tuple[Bounds, int, int]:
+    full_bounds = _full_source_rect(asset)
+    try:
+        bounds = _rect(asset.source_bounds)
+    except ValueError:
+        raise ValueError("source_bounds_invalid") from None
+    if (
+        bounds[0] < full_bounds[0]
+        or bounds[1] < full_bounds[1]
+        or bounds[2] > full_bounds[2]
+        or bounds[3] > full_bounds[3]
+    ):
+        raise ValueError("source_bounds_outside_original")
+
+    span_width = bounds[2] - bounds[0]
+    span_height = bounds[3] - bounds[1]
+    decoded_width = getattr(asset, "decoded_width", None)
+    decoded_height = getattr(asset, "decoded_height", None)
+    if decoded_width is None:
+        decoded_width = span_width
+    if decoded_height is None:
+        decoded_height = span_height
+    if (
+        isinstance(decoded_width, bool)
+        or not isinstance(decoded_width, int)
+        or decoded_width <= 0
+        or isinstance(decoded_height, bool)
+        or not isinstance(decoded_height, int)
+        or decoded_height <= 0
+    ):
+        raise ValueError("decoded_dimensions_invalid")
+    if (decoded_width, decoded_height) != (span_width, span_height):
+        raise ValueError("decoded_bounds_mismatch")
+    return bounds, decoded_width, decoded_height
+
+
+def _planning_dimensions(asset: SourceAssetInput, bounds: Bounds) -> tuple[int, int]:
+    span_width = max(bounds[2] - bounds[0], 1)
+    span_height = max(bounds[3] - bounds[1], 1)
+    decoded_width = getattr(asset, "decoded_width", None)
+    decoded_height = getattr(asset, "decoded_height", None)
+    if not isinstance(decoded_width, int) or isinstance(decoded_width, bool) or decoded_width <= 0:
+        decoded_width = span_width
+    if not isinstance(decoded_height, int) or isinstance(decoded_height, bool) or decoded_height <= 0:
+        decoded_height = span_height
+    return decoded_width, decoded_height
+
+
 def _rect_area(bounds: Bounds) -> int:
     return (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
 
@@ -159,6 +224,7 @@ def plan_overlapping_tiles(
     *,
     tile_height: int = 2048,
     overlap: int = 128,
+    source_y_offset: int = 0,
 ) -> tuple[CoverageTile, ...]:
     """Plan ordered full-width tiles without dropping seams or image ends."""
 
@@ -178,6 +244,12 @@ def plan_overlapping_tiles(
         or overlap >= tile_height
     ):
         raise ValueError("overlap must satisfy 0 <= overlap < tile_height")
+    if (
+        not isinstance(source_y_offset, int)
+        or isinstance(source_y_offset, bool)
+        or source_y_offset < 0
+    ):
+        raise ValueError("source_y_offset must be a non-negative integer")
 
     tiles: list[CoverageTile] = []
     start = 0
@@ -194,15 +266,15 @@ def plan_overlapping_tiles(
             "tile_index": index,
             "tile_height": tile_height,
             "width": width,
-            "y0": start,
-            "y1": end,
+            "y0": source_y_offset + start,
+            "y1": source_y_offset + end,
         }
         tiles.append(
             CoverageTile(
                 source_asset_id=source_asset_id,
                 tile_index=index,
-                y0=start,
-                y1=end,
+                y0=source_y_offset + start,
+                y1=source_y_offset + end,
                 overlap_above=overlap_above,
                 overlap_below=overlap_below,
                 tile_sha256=_sha256(metadata),
@@ -234,7 +306,7 @@ def _lineage_key(asset: SourceAssetInput) -> tuple[str, int, int]:
 def _invalid_candidate(
     asset: SourceAssetInput,
     reason: str,
-) -> tuple[list[_Candidate], str]:
+) -> tuple[list[_Candidate], tuple[str, ...]]:
     bounds = _safe_rect(asset)
     candidate = _Candidate(
         source_asset_id=asset.source_asset_id,
@@ -245,7 +317,9 @@ def _invalid_candidate(
         confidence=0.0,
         evidence=f"coverage.unresolved_material:{reason}",
     )
-    return [candidate], f"coverage.unresolved_material:{asset.source_asset_id}:{reason}"
+    return [candidate], (
+        f"coverage.unresolved_material:{asset.source_asset_id}:{reason}",
+    )
 
 
 def _row_classification(image: Image.Image) -> list[tuple[RegionClass, float, str]]:
@@ -282,22 +356,14 @@ def _decode_candidates(
     asset: SourceAssetInput,
 ) -> tuple[list[_Candidate], tuple[str, ...]]:
     try:
-        bounds = _rect(asset.source_bounds)
-    except ValueError:
-        return _invalid_candidate(asset, "bounds_invalid")
-
-    if (
-        asset.original_width != bounds[2] - bounds[0]
-        or asset.original_height != bounds[3] - bounds[1]
-        or asset.original_width <= 0
-        or asset.original_height <= 0
-    ):
-        return _invalid_candidate(asset, "dimension_bounds_mismatch")
+        bounds, decoded_width, decoded_height = _validated_lineage(asset)
+    except ValueError as exc:
+        return _invalid_candidate(asset, str(exc))
 
     try:
         with Image.open(io.BytesIO(asset.payload)) as decoded:
             decoded.load()
-            if decoded.size != (asset.original_width, asset.original_height):
+            if decoded.size != (decoded_width, decoded_height):
                 return _invalid_candidate(asset, "decoded_dimensions_mismatch")
             image = decoded.convert("RGB")
     except (OSError, UnidentifiedImageError, ValueError):
@@ -481,13 +547,24 @@ def build_complete_coverage_map(
     )
 
     tiles: list[CoverageTile] = []
-    source_bounds_by_lineage: dict[tuple[str, int, int], list[Bounds]] = {}
+    full_bounds_by_lineage: dict[tuple[str, int, int], Bounds] = {}
     asset_metadata: list[dict[str, Any]] = []
     for asset in ordered_assets:
         bounds = _safe_rect(asset)
-        source_bounds_by_lineage.setdefault(_lineage_key(asset), []).append(bounds)
+        try:
+            full_bounds = _full_source_rect(asset)
+        except ValueError:
+            full_bounds = _safe_rect(asset)
+        full_bounds_by_lineage.setdefault(_lineage_key(asset), full_bounds)
+        try:
+            validated_bounds, decoded_width, decoded_height = _validated_lineage(asset)
+        except ValueError:
+            validated_bounds = bounds
+            decoded_width, decoded_height = _planning_dimensions(asset, bounds)
         asset_metadata.append(
             {
+                "decoded_height": decoded_height,
+                "decoded_width": decoded_width,
                 "original_checksum": asset.original_checksum,
                 "original_height": asset.original_height,
                 "original_width": asset.original_width,
@@ -501,24 +578,22 @@ def build_complete_coverage_map(
             tiles.extend(
                 plan_overlapping_tiles(
                     asset.source_asset_id,
-                    asset.original_width,
-                    asset.original_height,
+                    decoded_width,
+                    decoded_height,
+                    source_y_offset=max(validated_bounds[1], 0),
                 )
             )
         except ValueError as exc:
             invalid, error = _invalid_candidate(asset, f"tile_plan_invalid:{exc}")
             candidates.extend(invalid)
-            errors.append(error)
+            errors.extend(error)
             continue
         decoded, decode_errors = _decode_candidates(asset)
         candidates.extend(decoded)
         errors.extend(decode_errors)
 
     partition, partition_area = _partition_candidates(candidates)
-    total_area = sum(
-        _union_area(bounds)
-        for bounds in source_bounds_by_lineage.values()
-    )
+    total_area = sum(_rect_area(bounds) for bounds in full_bounds_by_lineage.values())
     if partition_area != total_area:
         errors.append(
             f"coverage.partition_gap:accounted={partition_area}:expected={total_area}"
@@ -578,6 +653,15 @@ def build_complete_coverage_map(
                 "source_order": region.source_order,
             }
             for region in regions_tuple
+        ],
+        "lineage_rectangles": [
+            {
+                "original_checksum": lineage[0],
+                "original_height": lineage[2],
+                "original_width": lineage[1],
+                "bounds": list(bounds),
+            }
+            for lineage, bounds in sorted(full_bounds_by_lineage.items())
         ],
         "segmentation_version": segmentation_version,
         "source_asset_ids": list(source_asset_ids),

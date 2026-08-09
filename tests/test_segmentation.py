@@ -8,7 +8,7 @@ import importlib.util
 import io
 import random
 import sys
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 import pytest
@@ -76,6 +76,171 @@ def _jpeg(width: int, height: int, *, top: int = 0, bottom: int | None = None) -
     output = io.BytesIO()
     image.save(output, format="JPEG", quality=92)
     return output.getvalue()
+
+
+@dataclass(frozen=True)
+class _SliceInput:
+    """Test-only fallback while the production lineage fields are RED."""
+
+    source_asset_id: str
+    original_checksum: str
+    original_width: int
+    original_height: int
+    source_bounds: tuple[int, int, int, int]
+    strip_order: int
+    region_order: int
+    payload: bytes
+    decoded_width: int
+    decoded_height: int
+
+
+def _slice_inputs(segmentation_module, *, heights=(32, 32, 32), missing=()):
+    source_type = getattr(segmentation_module, "SourceAssetInput", None)
+    assert source_type is not None, "coverage_boundary_missing: SourceAssetInput"
+    source_fields = {field.name for field in fields(source_type)}
+    input_type = (
+        source_type
+        if {"decoded_width", "decoded_height"} <= source_fields
+        else _SliceInput
+    )
+    width = 32
+    original_height = sum(heights)
+    result = []
+    offset = 0
+    for index, height in enumerate(heights):
+        payload = _jpeg(width, height)
+        if index not in missing:
+            result.append(
+                input_type(
+                    source_asset_id=f"slice-{index}",
+                    original_checksum="original-slice-checksum",
+                    original_width=width,
+                    original_height=original_height,
+                    source_bounds=(0, offset, width, offset + height),
+                    strip_order=index,
+                    region_order=index,
+                    payload=payload,
+                    decoded_width=width,
+                    decoded_height=height,
+                )
+            )
+        offset += height
+    return tuple(result)
+
+
+def test_source_asset_input_exposes_decoded_payload_dimensions():
+    segmentation_module = _require_segmentation()
+    source_type = getattr(segmentation_module, "SourceAssetInput", None)
+    assert source_type is not None, "coverage_boundary_missing: SourceAssetInput"
+    result_fields = {field.name for field in fields(source_type)}
+    assert {"decoded_width", "decoded_height"} <= result_fields, (
+        "slice_lineage_missing: SourceAssetInput must distinguish decoded "
+        "payload dimensions from original dimensions"
+    )
+
+
+def test_adjacent_slices_reconcile_against_one_full_original_denominator():
+    segmentation_module = _require_segmentation()
+    builder = getattr(segmentation_module, "build_complete_coverage_map", None)
+    assert builder is not None, "coverage_boundary_missing: build_complete_coverage_map"
+    inputs = _slice_inputs(segmentation_module, heights=(32, 64))
+
+    coverage = builder(inputs, segmentation_version="slice-task3-2-v1")
+    assert coverage.source_asset_ids == ("slice-0", "slice-1")
+    assert coverage.source_content_coverage_ratio == pytest.approx(1.0)
+    assert coverage.unresolved_material_area == 0
+    assert coverage.reconciliation_errors == ()
+    assert [
+        tuple(region.bounds)
+        for region in coverage.regions
+        if region.region_class == "canonical_panel"
+    ] == [(0, 0, 32, 32), (0, 32, 32, 96)]
+    assert coverage.map_sha256 == builder(
+        inputs,
+        segmentation_version="slice-task3-2-v1",
+    ).map_sha256
+
+
+@pytest.mark.parametrize("missing", (1, 2), ids=("middle_slice", "last_slice"))
+def test_missing_slice_cannot_disappear_from_source_denominator(missing):
+    segmentation_module = _require_segmentation()
+    builder = getattr(segmentation_module, "build_complete_coverage_map", None)
+    assert builder is not None, "coverage_boundary_missing: build_complete_coverage_map"
+    inputs = _slice_inputs(
+        segmentation_module,
+        heights=(32, 32, 32),
+        missing=(missing,),
+    )
+
+    coverage = builder(inputs, segmentation_version="slice-task3-2-v1")
+    assert coverage.source_content_coverage_ratio < 1.0
+    assert any(
+        error.startswith("coverage.partition_gap")
+        for error in coverage.reconciliation_errors
+    )
+    assert coverage.reconciliation_errors
+
+
+@pytest.mark.parametrize("mismatch", ("decoded_dimensions", "bounds_span"))
+def test_slice_decode_or_global_bounds_mismatch_blocks(mismatch):
+    segmentation_module = _require_segmentation()
+    builder = getattr(segmentation_module, "build_complete_coverage_map", None)
+    assert builder is not None, "coverage_boundary_missing: build_complete_coverage_map"
+    source = _slice_inputs(segmentation_module, heights=(32,))[0]
+    if mismatch == "decoded_dimensions":
+        source = replace(source, decoded_width=31)
+    else:
+        source = replace(source, source_bounds=(0, 0, 32, 31))
+
+    coverage = builder((source,), segmentation_version="slice-task3-2-v1")
+    assert coverage.unresolved_material_area > 0
+    assert coverage.source_content_coverage_ratio < 1.0
+    assert any("decoded" in error for error in coverage.reconciliation_errors)
+
+
+def test_slice_tile_ranges_include_global_y_offset_and_unsliced_defaults_remain():
+    segmentation_module = _require_segmentation()
+    builder = getattr(segmentation_module, "build_complete_coverage_map", None)
+    planner = getattr(segmentation_module, "plan_overlapping_tiles", None)
+    assert builder is not None, "coverage_boundary_missing: build_complete_coverage_map"
+    assert planner is not None, "coverage_boundary_missing: plan_overlapping_tiles"
+    inputs = _slice_inputs(segmentation_module, heights=(32, 64))
+    coverage = builder(inputs, segmentation_version="slice-task3-2-v1")
+
+    assert [
+        (tile.source_asset_id, tile.y0, tile.y1)
+        for tile in coverage.tiles
+    ] == [
+        ("slice-0", 0, 32),
+        ("slice-1", 32, 96),
+    ]
+    unsliced = planner("unsliced", 32, 96, tile_height=2048, overlap=128)
+    assert [(tile.y0, tile.y1) for tile in unsliced] == [(0, 96)]
+
+
+def test_original_lineage_dimensions_and_checksum_are_in_map_hash_boundary():
+    segmentation_module = _require_segmentation()
+    builder = getattr(segmentation_module, "build_complete_coverage_map", None)
+    assert builder is not None, "coverage_boundary_missing: build_complete_coverage_map"
+    inputs = _slice_inputs(segmentation_module, heights=(32, 64))
+    baseline = builder(inputs, segmentation_version="slice-task3-2-v1")
+    assert baseline.source_content_coverage_ratio == pytest.approx(1.0)
+
+    checksum_changed = replace(inputs[0], original_checksum="different-checksum")
+    dimensions_changed = replace(
+        inputs[0],
+        original_width=33,
+        decoded_width=33,
+        source_bounds=(0, 0, 33, 32),
+    )
+    assert builder(
+        (checksum_changed, *inputs[1:]),
+        segmentation_version="slice-task3-2-v1",
+    ).map_sha256 != baseline.map_sha256
+    assert builder(
+        (dimensions_changed, *inputs[1:]),
+        segmentation_version="slice-task3-2-v1",
+    ).map_sha256 != baseline.map_sha256
 
 
 def _overviews(strips, coverage):
