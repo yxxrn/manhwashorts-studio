@@ -2,6 +2,13 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added the next-agent implementation plan for a reproducible 50-60 second
+  Codex manual-vision preview. The plan targets 54.2 seconds across the same
+  23 chronological, non-repeated content panels; extracts a generic committed
+  review renderer; validates duration/crop/caption contracts with TDD; audits
+  69 start/mid/end frames; and documents the Git-tracked versus ignored VPS
+  data boundary for local work. This commit changes documentation only.
+
 - Added a review-only Codex manual-vision preview checkpoint for the existing
   24-panel sample chapter. Sol inspected all six ordered contact sheets and
   all source orders 0..23; title panel 0 is documented but excluded from the

@@ -463,6 +463,12 @@ Updated: 2026-08-11
   Task 7 readiness gate is satisfied. `publish_allowed` remains false and the
   source rights remain internal-review-only.
 
+Next approved manual-preview slice is documented in
+`docs/superpowers/plans/2026-08-11-codex-manual-vision-preview-50-60s.md`.
+It targets 54.2 seconds using the same 23 panels exactly once, adds a generic
+tested review CLI, requires a 69-frame start/mid/end visual audit, and keeps
+voice, publication, and provider-evidence claims deferred.
+
 ## Not complete
 
 - A real, clean panel source with verified publication rights.
