@@ -42,8 +42,10 @@ Baseline and authority:
 
 - Authoritative checkout: /home/yusronrohmani/manhwashorts through SSH alias google.
 - Baseline for this implementation slice: clean main at
-  9f958877db1521ff2e5f1865fe08dc05e5fa8370, the published panel-lineage amendment
-  commit. The amendment commit becomes the implementation parent;
+  241e1ff4f61e71238cf59cf842a1c71c7fc2184a, the published Task 6/7 panel-lineage
+  contract correction commit. The preceding docs-only amendment parent was
+  historical 9f958877db1521ff2e5f1865fe08dc05e5fa8370; this commit is the
+  implementation parent;
   do not copy a stale historical parent into a task command.
 - Historical checkpoint: 635 passed in the full non-slow suite at f9221dd; it is evidence only and is not a fresh result for this planning commit.
 - Every PowerShell SSH command in this plan ends with 2>&1.
@@ -897,7 +899,7 @@ Commit only the five owned paths with:
 
 Push immediately with the exact-history Windows bundle workflow and verify
 GitHub main equals the new SHA. Tasks 1-5 are already complete before this correction; implementation after the published
-amendment starts at `9f958877db1521ff2e5f1865fe08dc05e5fa8370`, and Task 6 is the next atomic slice.
+amendment starts at `241e1ff4f61e71238cf59cf842a1c71c7fc2184a`, and Task 6 is the next atomic slice.
 
 ## Task 4: Persist panel lineage and materialize evidence-aligned panel crops
 
@@ -1605,7 +1607,7 @@ Push immediately by exact-history fast-forward and record rollback SHA.
 ## Task 6: Apply exact panel/beat fallback plus reference QC
 
 This is a standalone planner and quality slice. It begins after the published
-Task 5 contract at amendment HEAD 9f958877db1521ff2e5f1865fe08dc05e5fa8370.
+Task 5 contract at amendment HEAD 241e1ff4f61e71238cf59cf842a1c71c7fc2184a.
 It does not wire live pipeline candidate construction; that responsibility belongs
 to Task 7. The current live planner was verified at the baseline: plan(...) returns
 list[dict], and the profile=None branch must remain that same public return and
@@ -1639,7 +1641,7 @@ is one exact PanelRegion.
     class ReferenceROIAlternative:
         kind: str
         roi_label: str
-        crop_box: tuple[int, int, int, int] | None
+        crop_box: tuple[int, int, int, int]
         focus: tuple[float, float, float, float]
 
     @dataclass(frozen=True)
@@ -1649,6 +1651,8 @@ is one exact PanelRegion.
         panel_id: str
         source_order: int
         panel_bounds: tuple[int, int, int, int]
+        panel_size: tuple[int, int]
+        border_mask: framing_analysis.BorderMaskResult
         source_asset_checksum: str
         visual_evidence: PanelVisualEvidence
         evidence_hash: str
@@ -1658,11 +1662,18 @@ is one exact PanelRegion.
         panel_candidate: visual_scoring.PanelCandidate
 
 The real implementation must validate nonempty IDs, positive integer source
-order and bounds, the exact source asset checksum, and a locally recomputed
-canonical visual evidence hash. A provider-supplied hash is untrusted: the
-local Task 1 serializer is authoritative. The wrapper's visual_evidence must
-be the exact typed evidence for panel_id/panel_region_id, not evidence copied
-from another PanelRegion on the same asset.
+order and bounds, a required positive panel-crop coordinate box
+(x0, y0, x1, y1) for every ROI alternative with
+0 <= x0 < x1 <= panel_size[0] and 0 <= y0 < y1 <= panel_size[1], and panel_size
+equal to the exact materialized crop dimensions. The
+border_mask must have the same source dimensions as panel_size, a supported
+detector/profile contract, and a locally recomputed mask identity containing
+detector_version, source dimensions, canonical masks, and mask_sha256. The
+source asset checksum and locally recomputed canonical visual evidence hash are
+also required. A provider-supplied hash is untrusted: the local Task 1
+serializer is authoritative. The wrapper's visual_evidence must be the exact
+typed evidence for panel_id/panel_region_id, not evidence copied from another
+PanelRegion on the same asset.
 
 The profile-aware planner extends the live signature with one optional,
 panel-keyed sequence after the existing citation arguments:
@@ -1696,6 +1707,8 @@ panel lineage directly:
         "source_order": int,
         "source_asset_checksum": str,
         "panel_bounds": [int, int, int, int],
+        "panel_size": [int, int],
+        "border_mask": dict,
         "visual_evidence": dict,
         "evidence_hash": str,
         "section": str,
@@ -1707,10 +1720,9 @@ panel lineage directly:
 
 Each fallback_attempts entry is an ordered immutable-at-write audit record with
 attempt_order, panel_region_id, panel_id, source_asset_checksum, source_order,
-beat, roi/crop box, evidence_hash, kind, accepted, stable reason_code, and a
-short reason. A rejected attempt remains tied to the exact panel it evaluated.
-There is no result.fallback_attempts attribute: the public result is still a
-list, and tests flatten the ordered ledgers from its shot dictionaries.
+beat, panel_size, roi/crop box, evidence_hash, detector_version, mask_sha256,
+telemetry, kind, accepted, stable rejection/reason code, and a short reason.
+A rejected attempt remains tied to the exact panel and mask it evaluated.
 
 A reference shot uses this exact fallback order:
 
@@ -1727,15 +1739,29 @@ Unknown visual geometry is never relabeled known_empty, and balloon overlap is
 never relabeled safe. An alternate panel is eligible only when its own typed
 evidence, checksum, bounds, and beat/section eligibility are validated.
 
-For every chosen candidate, the consumer sequence is structural lineage
-validation, require_reference_ready_visual_evidence, candidate feasibility, and
-only then ranking/fallback. Failures are ordered as
+For every fallback attempt, the planner calls the existing Task 5 boundary
+with the exact typed values; it never reads an image, recomputes a mask, or
+accepts a predeclared safe boolean:
+
+    framing_analysis.candidate_is_feasible(
+        roi.crop_box,
+        candidate.visual_evidence,
+        candidate.border_mask,
+        candidate.panel_size,
+        (profile.final_width, profile.final_height),
+    )
+
+The consumer sequence is structural lineage validation,
+require_reference_ready_visual_evidence, this exact feasibility call, and only
+then ranking/fallback. Failures are ordered as
 visual.panel_lineage_unavailable, visual.balloon_mask_unknown,
 visual.balloon_overlap, visual.protected_coverage, visual.blank_infeasible,
 or visual.visual_unavailable as applicable. The Task 5 hard constraints remain
 unchanged: zero balloon intersection, subject/face at least .98,
 action/continuity at least .95, effect at least .90, source-resolution guard,
-and deterministic telemetry.
+and deterministic telemetry. The ledger records the returned telemetry and
+rejection code together with detector_version, mask_sha256, panel_size,
+crop_box, and evidence_hash.
 
 ### Panel-exact QC boundary
 
@@ -1745,6 +1771,10 @@ than an asset-level evidence map:
     def check_reference_framing(
         scenes: Sequence[Mapping[str, object]],
         panel_evidence_by_key: Mapping[tuple[str, str], PanelVisualEvidence],
+        panel_border_masks_by_key: Mapping[
+            tuple[str, str], framing_analysis.BorderMaskResult
+        ],
+        panel_sizes_by_key: Mapping[tuple[str, str], tuple[int, int]],
         telemetry_by_key: Mapping[
             tuple[str, str], FramingTelemetry | None
         ],
@@ -1753,10 +1783,11 @@ than an asset-level evidence map:
     ) -> list[CheckResult]:
 
 The key is (source_asset_id, panel_region_id); panel_id, checksum, bounds,
-visual_evidence, and telemetry must agree with the scene snapshot. A missing,
-foreign, stale, or ambiguous key emits visual.panel_lineage_unavailable before
-checking balloon readiness. A structurally valid unknown evidence state emits
-visual.balloon_mask_unknown. Known geometry then checks zero balloon overlap,
+visual_evidence, panel_size, border_mask detector_version/mask_sha256, and
+telemetry must agree with the scene snapshot and Task 4 crop. A missing,
+foreign, stale, dimension-mismatched, hash-mismatched, or ambiguous key emits
+visual.panel_lineage_unavailable before checking balloon readiness. A
+structurally valid unknown evidence state emits visual.balloon_mask_unknown. Known geometry then checks zero balloon overlap,
 protected coverage, edge-connected blank telemetry, crop zoom/source quality,
 monotonic motion, and the existing reference pacing/reuse rules. The same
 stable visual.* codes are exposed through editorial_qc.build_report and
@@ -1788,6 +1819,14 @@ Task 4 exact panel snapshot and crop
 
       Expected RED is collection-clean and body failures only; no provider,
       fixture, database, or media setup failure is acceptable.
+
+- [ ] Add negative body-level tests for mismatched mask dimensions, mask
+      SHA, detector/profile contract, and a predeclared-feasibility boolean.
+      Add a two-panel same-asset fixture with distinct BorderMaskResult
+      identities and assert every feasibility call receives the selected
+      panel's own mask, panel_size, and final profile target size. These tests
+      must fail closed before ranking; they must not read or synthesize image
+      data in the planner.
 
 - [ ] Implement ReferenceROIAlternative and
       ReferencePanelFallbackCandidate with frozen dataclass validation,
@@ -1854,7 +1893,7 @@ Task 4 exact panel snapshot and crop
       Push that exact commit immediately through a clean Windows transport clone
       with main-only fast-forward, then verify VPS/GitHub parity and clean state.
       The Task 6 rollback point is the published amendment parent
-      9f958877db1521ff2e5f1865fe08dc05e5fa8370. The next slice is Task 7
+      241e1ff4f61e71238cf59cf842a1c71c7fc2184a. The next slice is Task 7
       pipeline candidate construction and silent review.
 
 ## Task 7: Integrate the isolated real-panel silent review render
@@ -1904,17 +1943,21 @@ visual.panel_lineage_unavailable. No random sampling, filename matching, or
 arbitrary first-panel selection is permitted.
 
 Each candidate carries the actual source_asset_id, panel_region_id, panel_id,
-integer panel_bounds, source_asset_checksum, locally canonicalized typed
-visual_evidence/evidence_hash, eligible beat/section metadata, and its exact
-ROI alternatives. The pipeline must require source_asset_id equality between
-the render PanelCandidate and the PanelRegion before yielding the wrapper.
+integer panel_bounds, exact panel_size, a BorderMaskResult built from that
+exact Task 4 materialized crop before plan(), source_asset_checksum, locally canonicalized
+typed visual_evidence/evidence_hash, eligible beat/section metadata, and its
+exact ROI alternatives. The pipeline must require source_asset_id equality
+between the render PanelCandidate and the PanelRegion before yielding the
+wrapper. Two PanelRegions from one SourceAsset receive separate masks and
+separate mask_sha256 identities; a mask is never reused across panel crops.
 
 ### Planner output and exact Task 4 binding
 
 Call the profile planner with reference_panel_candidates equal to that exact
 sequence. The planner-selected shot already contains panel_region_id,
-panel_id, source_order, panel_bounds, source checksum, evidence hash, and its
-fallback_attempts ledger. Pipeline code must not call a different PanelRegion
+panel_id, source_order, panel_bounds, panel_size, source checksum, evidence
+hash, border-mask identity, and its fallback_attempts ledger. Pipeline code
+must not call a different PanelRegion
 or recycle an asset-level candidate after planning.
 
 Extend the existing Task 4 _bind_reference_panel_regions boundary to validate
@@ -1937,16 +1980,20 @@ strip. Unknown remains structurally preserved until Task 5 readiness.
 ### QC, silent review, and audit
 
 Render/QC sidecars are keyed by (source_asset_id, panel_region_id) and retain
-panel_id, source_order, bounds, source checksum, evidence_hash, crop box,
-fallback_attempts, FramingTelemetry, stable reason/rejection code, and
-publish_allowed. No sidecar may collapse evidence to an asset-level value.
+panel_id, source_order, bounds, panel_size, source checksum,
+evidence_hash, detector_version, mask_sha256, crop box, fallback_attempts,
+FramingTelemetry, stable reason/rejection code, and publish_allowed. No
+sidecar may collapse evidence to an asset-level value.
 Task 7 still produces a silent visual review only; no TTS/audio path is called,
 and publish_allowed remains false until source rights are verified.
 
 The review test must use at least two PanelRegions under one SourceAsset with
 different bounds and evidence, assert that selected and persisted lineage match,
 prove integer citation 3 is handled only as source_order, and prove foreign or
-stale lineage fails closed. It must also assert legacy profile=None list/SceneInput
+stale lineage fails closed. It must also assert mismatched mask dimensions,
+mask SHA, and detector/profile contract fail closed; two same-asset panels use
+different masks; no predeclared feasibility boolean bypasses the exact
+candidate_is_feasible call; legacy profile=None list/SceneInput
 behavior, exact crop dimensions/pixels, deterministic repeated-panel reuse, no
 consecutive same-panel reuse, no random calls, and the complete 32-shot/order
 and coverage audit.

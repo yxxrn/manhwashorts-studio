@@ -6,9 +6,13 @@ Notable changes per release. Dates are ISO 8601.
   ReferencePanelFallbackCandidate records instead of an ambiguous
   asset-level evidence map. Per-shot fallback_attempts now retain panel
   lineage and stable rejection reasons; Task 7 constructs and validates the
-  selected PanelRegion before binding/rendering. No production code, tests,
-  media, database, voice, or credentials changed. Baseline/rollback:
-  9f958877db1521ff2e5f1865fe08dc05e5fa8370; Task 6 is next.
+  selected PanelRegion before binding/rendering. Candidate feasibility now
+  carries required panel_size and a distinct BorderMaskResult per panel, calls
+  candidate_is_feasible with the exact typed mask/evidence inputs, and records
+  detector/mask identities in each ledger. No production code, tests, media,
+  database, voice, or credentials changed. The preceding docs-only amendment
+  parent 9f958877db1521ff2e5f1865fe08dc05e5fa8370 is historical; current
+  baseline/rollback is 241e1ff4f61e71238cf59cf842a1c71c7fc2184a. Task 6 is next.
 
 
 - Hardened Visual Plan Task 5 deterministic crop selection from rollback
