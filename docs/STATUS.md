@@ -2,13 +2,39 @@
 
 Updated: 2026-08-11
 
+## Visual Task 6 panel-keyed fallback plan correction - 2026-08-11
+
+- Sol review found that an asset-keyed visual evidence map cannot distinguish
+  two PanelRegions from one SourceAsset because provider geometry is relative to
+  the exact panel crop.
+- The Visual Task 6 plan now defines frozen
+  ReferencePanelFallbackCandidate records keyed by
+  (source_asset_id, panel_region_id, panel_id), carrying source order, integer
+  panel bounds, immutable source checksum, locally authoritative evidence hash,
+  typed evidence, beat/section eligibility, and exact ROI alternatives.
+  Multiple panels from one asset remain independent candidates.
+- Each reference shot owns its ordered fallback_attempts ledger. The exact
+  fallback order is same-panel alternate ROI, same-panel tighter crop,
+  same-beat eligible PanelRegion, then visual.visual_unavailable. Missing or
+  foreign lineage precedes balloon unknown/overlap/blank checks. No
+  asset-level evidence fallback or result.fallback_attempts return object is
+  planned.
+- Task 7 now constructs these candidates from latest PanelRegion rows before
+  planning, uses evidence_panel_ids first and citations only as source_order
+  fallbacks, validates the exact selected panel in Task 4 binding, and carries
+  panel-keyed evidence into render/QC. Legacy profile=None remains unchanged.
+- This is a docs-only correction at rollback parent
+  9f958877db1521ff2e5f1865fe08dc05e5fa8370. The next atomic implementation is
+  Visual Task 6 planner/QC; Task 7 remains silent and voice-free, and
+  publish_allowed stays false until rights are verified.
+
 ## Implementation planning amendment - 2026-08-11
 
 - Approved the docs-only design in
   docs/superpowers/specs/2026-08-11-balloon-free-framing-narrative-identity-v3-design.md
   for COLOR_AGNOSTIC_BALLOON_FREE_V1 framing and sharp_friend_v1 narration.
-- The current implementation baseline for this slice is clean main at
-  aa11bdbd500beca00ad7481b85731f17297e8e58. The historical full non-slow
+- The current implementation baseline for this correction is clean main at
+  9f958877db1521ff2e5f1865fe08dc05e5fa8370. The historical full non-slow
   result of 635 passed at f9221dd remains checkpoint evidence; it was not
   rerun for this docs-only amendment.
 - The visual plan is amended into seven ordered tasks: typed states,
@@ -22,8 +48,8 @@ Updated: 2026-08-11
 - Implementation planning is complete in
   docs/superpowers/plans/2026-08-11-balloon-free-color-agnostic-framing.md and
   docs/superpowers/plans/2026-08-11-sharp-friend-narrative-identity-v3.md.
-- Visual Plan Tasks 1-3 are green and published before the current parent
-  `aa11bdbd500beca00ad7481b85731f17297e8e58`. The amendment adds a standalone
+- Visual Plan Tasks 1-5 are green and published before the current correction
+  parent `9f958877db1521ff2e5f1865fe08dc05e5fa8370`. The amendment adds a standalone
   panel-lineage boundary because visual evidence coordinates are produced from
   `_encode_panel_payload(PanelRegion)` crops while TimelineScene and
   build_render_request previously retained/rendered only a full SourceAsset.

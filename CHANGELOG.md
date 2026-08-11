@@ -2,6 +2,15 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Corrected the Visual Task 6/7 design to use exact panel-keyed
+  ReferencePanelFallbackCandidate records instead of an ambiguous
+  asset-level evidence map. Per-shot fallback_attempts now retain panel
+  lineage and stable rejection reasons; Task 7 constructs and validates the
+  selected PanelRegion before binding/rendering. No production code, tests,
+  media, database, voice, or credentials changed. Baseline/rollback:
+  9f958877db1521ff2e5f1865fe08dc05e5fa8370; Task 6 is next.
+
+
 - Hardened Visual Plan Task 5 deterministic crop selection from rollback
   parent 61258817101a10a3b11916f653d89aca21088fe2: RED was 19 passed and
   5 body failures; GREEN is 50 focused framing tests, 36 related

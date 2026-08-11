@@ -34,8 +34,9 @@ Baseline and authority:
 
 - Authoritative checkout: /home/yusronrohmani/manhwashorts through SSH alias google.
 - Baseline for the next implementation work: clean main at
-  e0d8fdf523c095740a984d88798200ed3dd4707e; GitHub main must be verified at
-  that SHA immediately before transport. The historical planning baseline and
+  9f958877db1521ff2e5f1865fe08dc05e5fa8370; GitHub main must be verified at
+  that SHA immediately before transport. The visual Task 6/7 correction is
+  panel-keyed; this narrative plan consumes that boundary without owning it. The historical planning baseline and
   earlier visual Task 1/2 checkpoints are retained only as prior evidence.
 - Historical checkpoint: 635 passed in the full non-slow suite at f9221dd; it is historical evidence, not a fresh result for this docs-only planning commit.
 - Every PowerShell SSH command in the implementation sequence ends with 2>&1.
@@ -52,8 +53,10 @@ Baseline and authority:
   observation phase and persists balloon_mask_status, balloon/protected-region
   geometry, confidence, provenance, and lineage. Visual Task 4 then persists
   the cited PanelRegion identity and materializes the panel-coordinate crop
-  before visual readiness/candidate work. This narrative plan consumes that
-  sidecar and lineage snapshot exactly as provided; it does not rename, prompt,
+  before visual readiness/candidate work.
+  This narrative plan consumes the panel-keyed sidecar and lineage snapshot
+  exactly as provided; it never collapses multiple PanelRegions from one
+  SourceAsset into an asset-level evidence value and does not rename, prompt,
   or infer them.
 - app/services/pipeline.py defines run_analysis(db, project_id, actor_id=""), generate_script(), build_timeline(), current_script(), and the persisted StoryAnalysis-to-ScriptVersion evidence gate. The public path must not call legacy text analysis or a template generator.
 - app/services/editorial_qc.py defines build_report(..., profile=None) and the existing visual/audio/subtitle/rights checks. app/services/quality.py defines CheckResult and profile-aware quality functions.

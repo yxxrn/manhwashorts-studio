@@ -42,8 +42,8 @@ Baseline and authority:
 
 - Authoritative checkout: /home/yusronrohmani/manhwashorts through SSH alias google.
 - Baseline for this implementation slice: clean main at
-  e0d8fdf523c095740a984d88798200ed3dd4707e, the published Visual Task 3
-  detector commit. The amendment commit becomes the implementation parent;
+  9f958877db1521ff2e5f1865fe08dc05e5fa8370, the published panel-lineage amendment
+  commit. The amendment commit becomes the implementation parent;
   do not copy a stale historical parent into a task command.
 - Historical checkpoint: 635 passed in the full non-slow suite at f9221dd; it is evidence only and is not a fresh result for this planning commit.
 - Every PowerShell SSH command in this plan ends with 2>&1.
@@ -61,7 +61,7 @@ These are the real baseline symbols inspected before writing this plan:
   owner of color-agnostic border-mask metrics and Task 5 extends the same
   focused module with candidate feasibility; it imports Task 1 visual evidence
   types and does not re-export or duplicate their validators.
-- app/services/editorial_visual_planner.py defines plan(spans, candidates, profile=None, cited_asset_ids_by_section=None, citation_alignment_reasons_by_section=None), the reference _plan_reference path, ReferencePlanningError, and _reference_roi_key.
+- app/services/editorial_visual_planner.py defines the current plan(...)->list[dict] and _plan_reference path; Task 6 adds the frozen ReferencePanelFallbackCandidate sequence without changing the profile=None return.
 - app/services/editorial_qc.py defines build_report(..., profile=None); app/services/quality.py defines check_reference_profile, check_repetition_and_motion, check_subtitles, and profile-aware CheckResult values.
 - app/services/pipeline.py defines run_analysis(db, project_id, actor_id=""), generate_script, build_timeline, build_render_request, and current evidence-to-asset mapping through _reference_citation_map. build_timeline currently creates TimelineScene rows from timeline.SceneSpec without panel lineage; build_render_request currently maps each scene.asset_id back to the full SourceAsset path.
 - app/services/timeline.py defines SceneSpec with asset_id, focus/camera fields, alignment telemetry, and no panel-region snapshot fields. app/services/render.py defines SceneInput with image_path and camera/effect fields, and RenderRequest.profile; neither currently carries panel_id, panel bounds, or typed visual evidence.
@@ -896,9 +896,8 @@ Commit only the five owned paths with:
     git commit -m "feat: detect color agnostic border padding"
 
 Push immediately with the exact-history Windows bundle workflow and verify
-GitHub main equals the new SHA. Task 3 is already complete at
-`e0d8fdf523c095740a984d88798200ed3dd4707e`; Task 4 starts from the published
-amendment commit and rollback is the Task 4 commit.
+GitHub main equals the new SHA. Tasks 1-5 are already complete before this correction; implementation after the published
+amendment starts at `9f958877db1521ff2e5f1865fe08dc05e5fa8370`, and Task 6 is the next atomic slice.
 
 ## Task 4: Persist panel lineage and materialize evidence-aligned panel crops
 
@@ -1603,9 +1602,17 @@ Stage only the six owned paths and commit:
 
 Push immediately by exact-history fast-forward and record rollback SHA.
 
-## Task 6: Apply panel and beat fallback plus reference QC
+## Task 6: Apply exact panel/beat fallback plus reference QC
+
+This is a standalone planner and quality slice. It begins after the published
+Task 5 contract at amendment HEAD 9f958877db1521ff2e5f1865fe08dc05e5fa8370.
+It does not wire live pipeline candidate construction; that responsibility belongs
+to Task 7. The current live planner was verified at the baseline: plan(...) returns
+list[dict], and the profile=None branch must remain that same public return and
+behavior.
 
 **Files:**
+
 - Modify: app/services/editorial_visual_planner.py.
 - Modify: app/services/editorial_qc.py.
 - Modify: app/services/quality.py.
@@ -1613,63 +1620,52 @@ Push immediately by exact-history fast-forward and record rollback SHA.
 - Modify: docs/STATUS.md.
 - Modify: CHANGELOG.md.
 
-The six paths are intentional: the two documentation files are mandatory
-handoff records and the four source/test paths are the smallest coherent QC
-boundary.
+These six paths are the smallest coherent Task 6 boundary. Task 6 must not
+modify pipeline.py, render.py, database models, migrations, voice, narration, or
+media. Task 7 owns live construction and persistence of the candidates defined
+here.
 
-**Interfaces:**
-- **Consumes:** Task 4 lineage-bearing SceneInput panel crops and snapshots,
-  PanelVisualEvidence, `framing_analysis.FramingTelemetry`, candidate evidence
-  mapping, planner citations, and current plan(..., profile=...) signature.
-- **Produces:** alignment reasons, fallback records, stable QC codes, and no speech_bubble target.
+### Exact panel-keyed interface
 
-Every fallback record retains `panel_region_id`, `panel_id`, source asset
-checksum, source/beat, crop box, and evidence hash. A stale or absent Task 4
-lineage snapshot emits `visual.panel_lineage_unavailable` before balloon,
-blank, or subject scoring; it is not reported as a balloon error.
+The current visual_scoring.PanelCandidate is asset-level render scoring data:
+it carries asset_id, order_index, features, visual_score, semantic_score, and
+source_family. It is not sufficient to carry panel-relative visual evidence.
+Task 6 therefore adds a frozen panel wrapper in
+app/services/editorial_visual_planner.py. The wrapper is allowed to contain
+one or more PanelCandidate values for the same SourceAsset, but every wrapper
+is one exact PanelRegion.
 
-- [ ] **Step 1: Add failing fallback and QC tests**
+    @dataclass(frozen=True)
+    class ReferenceROIAlternative:
+        kind: str
+        roi_label: str
+        crop_box: tuple[int, int, int, int] | None
+        focus: tuple[float, float, float, float]
 
-Use synthetic candidates with a deterministic evidence map:
+    @dataclass(frozen=True)
+    class ReferencePanelFallbackCandidate:
+        source_asset_id: str
+        panel_region_id: str
+        panel_id: str
+        source_order: int
+        panel_bounds: tuple[int, int, int, int]
+        source_asset_checksum: str
+        visual_evidence: PanelVisualEvidence
+        evidence_hash: str
+        eligible_sections: tuple[str, ...]
+        eligible_beats: tuple[str, ...]
+        roi_alternatives: tuple[ReferenceROIAlternative, ...]
+        panel_candidate: visual_scoring.PanelCandidate
 
-    def test_reference_fallback_order_is_auditable():
-        result = planner.plan(
-            spans, candidates, profile=REFERENCE_MATCHED_SHORTS_V1,
-            cited_asset_ids_by_section={"hook": ("asset-1",)},
-            visual_evidence_by_asset=evidence_map,
-        )
-        assert [attempt.kind for attempt in result.fallback_attempts] == [
-            "alternate_roi", "tighter_crop", "same_beat_panel"
-        ]
-        assert result.alignment_reasons[-1] == "evidence_context_fallback:anchor:asset-1"
+The real implementation must validate nonempty IDs, positive integer source
+order and bounds, the exact source asset checksum, and a locally recomputed
+canonical visual evidence hash. A provider-supplied hash is untrusted: the
+local Task 1 serializer is authoritative. The wrapper's visual_evidence must
+be the exact typed evidence for panel_id/panel_region_id, not evidence copied
+from another PanelRegion on the same asset.
 
-    def test_unknown_balloon_and_positive_overlap_are_blocking_reference_qc():
-        failures = quality.check_reference_framing(
-            scenes, evidence_by_asset, profile=REFERENCE_MATCHED_SHORTS_V1
-        )
-        assert {failure.code for failure in failures} >= {
-            "visual.balloon_mask_unknown",
-            "visual.balloon_mask_overlap",
-        }
-
-    def test_speech_bubble_roi_is_never_selected_or_motion_target():
-        planned = planner.plan(
-            spans, candidates, profile=profile,
-            visual_evidence_by_asset=evidence_map
-        )
-        assert all(shot["roi_label"] != "speech_bubble" for shot in planned)
-        assert all(shot["camera_intent"] != "speech_bubble" for shot in planned)
-
-Expected RED: framing_analysis has no candidate feasibility boundary, the
-plan has no visual_evidence_by_asset parameter or fallback attempt ledger, and
-quality has no visual framing gate.
-
-- [ ] **Step 2: Add explicit planner evidence inputs and fallback result**
-
-First extract the current non-profile branch into the private compatibility
-function `def _plan_legacy(span_list: list[object], candidates: list[object]) -> list[dict]`;
-its body and output must remain byte/behavior compatible. Extend the reference
-path without changing the legacy call:
+The profile-aware planner extends the live signature with one optional,
+panel-keyed sequence after the existing citation arguments:
 
     def plan(
         spans: Iterable[object],
@@ -1677,206 +1673,353 @@ path without changing the legacy call:
         profile: object | None = None,
         cited_asset_ids_by_section: Mapping[str, Iterable[str]] | None = None,
         citation_alignment_reasons_by_section: Mapping[str, Iterable[str]] | None = None,
-        visual_evidence_by_asset: Mapping[str, PanelVisualEvidence] | None = None,
+        reference_panel_candidates: Sequence[ReferencePanelFallbackCandidate] | None = None,
     ) -> list[dict]:
-        span_list = list(spans)
-        if profile is not None:
-            return _plan_reference(
-                span_list,
-                candidates,
-                profile,
-                cited_asset_ids_by_section,
-                citation_alignment_reasons_by_section,
-                visual_evidence_by_asset,
-            )
-        return _plan_legacy(span_list, candidates)
 
-Before selecting a shot in reference mode, call
-require_reference_ready_visual_evidence for each candidate; it rejects unknown
-balloon mask before any ROI is selected. Also reject a speech_bubble ROI.
-Preserve valid cited anchors. When a
-section needs more shots than its mapped anchors can fill, select chronological
-context candidates only from the same story progression and append
-evidence_context_fallback:anchor:<panel_id>. Never append citation_alignment
-to a context candidate.
+When profile is None, the new argument is ignored and the existing list[dict]
+legacy result is returned without changing ordering, serialization, motion, or
+fallback behavior. When the reference profile is active, candidates are sorted
+deterministically by source_order, panel_id, panel_region_id, and the planner
+must consume the exact panel-keyed sequence; a one-value-per-asset evidence map
+is not a valid input. Multiple panels with the same source_asset_id remain
+distinct candidates.
 
-Keep ReferencePlanningError and its safe code. If a same-panel alternate ROI
-is available, attempt it first; then a tighter safe crop; then another
-renderable candidate in the same beat; then raise visual.visual_unavailable.
-No candidate may be silently relabeled as safe.
+### Shot records and fallback ledger
 
-- [ ] **Step 3: Wire profile-aware QC in both report paths**
+Every reference shot dictionary returned by the planner carries the selected
+panel lineage directly:
 
-Add a focused helper in quality.py:
+    {
+        "asset_id": str,
+        "panel_region_id": str,
+        "panel_id": str,
+        "source_order": int,
+        "source_asset_checksum": str,
+        "panel_bounds": [int, int, int, int],
+        "visual_evidence": dict,
+        "evidence_hash": str,
+        "section": str,
+        "beat": str,
+        "roi": dict,
+        "alignment_reasons": list[str],
+        "fallback_attempts": list[dict],
+    }
+
+Each fallback_attempts entry is an ordered immutable-at-write audit record with
+attempt_order, panel_region_id, panel_id, source_asset_checksum, source_order,
+beat, roi/crop box, evidence_hash, kind, accepted, stable reason_code, and a
+short reason. A rejected attempt remains tied to the exact panel it evaluated.
+There is no result.fallback_attempts attribute: the public result is still a
+list, and tests flatten the ordered ledgers from its shot dictionaries.
+
+A reference shot uses this exact fallback order:
+
+1. alternate safe ROI on the same exact PanelRegion;
+2. a tighter feasible crop on that same exact PanelRegion;
+3. another exact eligible PanelRegion in the same story beat/section
+   progression, selected by deterministic source_order/panel_id/region ordering;
+4. stable visual.visual_unavailable rejection when no exact panel candidate is
+   feasible.
+
+The planner must never transfer evidence from one panel to another, fall back by
+filename or random choice, or call an arbitrary first panel for an asset.
+Unknown visual geometry is never relabeled known_empty, and balloon overlap is
+never relabeled safe. An alternate panel is eligible only when its own typed
+evidence, checksum, bounds, and beat/section eligibility are validated.
+
+For every chosen candidate, the consumer sequence is structural lineage
+validation, require_reference_ready_visual_evidence, candidate feasibility, and
+only then ranking/fallback. Failures are ordered as
+visual.panel_lineage_unavailable, visual.balloon_mask_unknown,
+visual.balloon_overlap, visual.protected_coverage, visual.blank_infeasible,
+or visual.visual_unavailable as applicable. The Task 5 hard constraints remain
+unchanged: zero balloon intersection, subject/face at least .98,
+action/continuity at least .95, effect at least .90, source-resolution guard,
+and deterministic telemetry.
+
+### Panel-exact QC boundary
+
+Add a reference-only quality boundary that receives exact scene lineage rather
+than an asset-level evidence map:
 
     def check_reference_framing(
-        scenes: list[object],
-        evidence_by_asset: Mapping[str, PanelVisualEvidence],
+        scenes: Sequence[Mapping[str, object]],
+        panel_evidence_by_key: Mapping[tuple[str, str], PanelVisualEvidence],
+        telemetry_by_key: Mapping[
+            tuple[str, str], FramingTelemetry | None
+        ],
         *,
-        profile: ReferenceProfileConfig,
+        profile: object,
     ) -> list[CheckResult]:
-        failures: list[CheckResult] = []
-        for asset_id, evidence in sorted(evidence_by_asset.items()):
-            try:
-                require_reference_ready_visual_evidence(evidence)
-            except VisualEvidenceError as error:
-                failures.append(_fail(error.code, CheckSeverity.ERROR, str(error)))
-            if evidence.balloon_mask_status == "known_nonempty":
-                failures.extend(_check_balloon_intersection(asset_id, scenes, evidence))
-        failures.extend(_check_reference_coverage(scenes, profile))
-        return sorted(failures, key=lambda failure: failure.code)
 
-It emits visual.balloon_mask_unknown, visual.balloon_mask_overlap,
-visual.subject_coverage_insufficient, visual.action_coverage_insufficient,
-visual.blank_infeasible, and visual.visual_unavailable with CheckSeverity.ERROR
-for hard failures. editorial_qc.build_report(..., profile=profile) adds the
-same safe codes to its report without changing profile=None behavior. It also
-calls motion_director.audit_camera_sequence so forbidden curves and reversals
-remain blocking.
+The key is (source_asset_id, panel_region_id); panel_id, checksum, bounds,
+visual_evidence, and telemetry must agree with the scene snapshot. A missing,
+foreign, stale, or ambiguous key emits visual.panel_lineage_unavailable before
+checking balloon readiness. A structurally valid unknown evidence state emits
+visual.balloon_mask_unknown. Known geometry then checks zero balloon overlap,
+protected coverage, edge-connected blank telemetry, crop zoom/source quality,
+monotonic motion, and the existing reference pacing/reuse rules. The same
+stable visual.* codes are exposed through editorial_qc.build_report and
+quality.py without changing profile=None behavior.
 
-The helper calls `_check_balloon_intersection`, `_check_reference_coverage`,
-and the existing `_fail(code, severity, message, detail)` boundary; it never
-rewrites a candidate or downgrades an unknown mask to known_empty.
+This boundary must not inspect only scene.asset_id or a visual_evidence_by_asset
+value. If the historical term visual_evidence_by_asset is mentioned in a
+review fixture, it means the rejected design and must not be implemented.
 
-- [ ] **Step 4: Add chronology, rights, and motion regressions**
+### Dependency graph
 
-Assert every planned shot retains source asset, panel ID, panel region ID, crop
-box, story beat, and
-evidence hash; every source order remains covered; repeated assets use distinct
-ROIs and explicit reuse reasons; and no random call is made. Keep rights
-checks and publish_allowed=false untouched. Sample at least 120 frames of each
-reference curve and assert monotonic focus/scale and no forbidden tokens.
-Assert legacy/default scenes still use their prior panel fallback and QC codes.
+Task 4 exact panel snapshot and crop
+  -> Task 5 detector, readiness, candidate feasibility, and telemetry
+  -> Task 6 ReferencePanelFallbackCandidate sequence
+  -> Task 6 planner fallback ledger and panel-exact QC
+  -> Task 7 pipeline candidate construction and exact timeline binding.
 
-- [ ] **Step 5: Run, document, commit, and push**
+### TDD and implementation steps
 
-Run:
+- [ ] Add body-level tests in tests/test_reference_profile_integration.py for two
+      PanelRegions with distinct evidence and geometry under one SourceAsset.
+      The current planner must fail because the frozen panel candidate type,
+      panel-keyed argument, exact fallback ledger, and panel-exact QC boundary
+      do not yet exist. Keep imports collection-safe by probing new symbols in
+      test bodies. RED command:
 
-    PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_reference_profile_integration.py tests/test_reference_framing.py tests/test_motion_stability.py tests/test_visual_scoring.py tests/test_quality.py -q
-    .venv/bin/ruff check app/services/editorial_visual_planner.py app/services/editorial_qc.py app/services/quality.py tests/test_reference_profile_integration.py
-    .venv/bin/python -m compileall -q app
-    git diff --check
-    PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest -q -m "not slow"
+      PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest
+      tests/test_reference_profile_integration.py -q
 
-Update both docs with exact stable codes, fallback evidence, and Task 7.
-Commit only the six owned paths:
+      Expected RED is collection-clean and body failures only; no provider,
+      fixture, database, or media setup failure is acceptable.
 
-    git add -- app/services/editorial_visual_planner.py app/services/editorial_qc.py app/services/quality.py tests/test_reference_profile_integration.py docs/STATUS.md CHANGELOG.md
-    git diff --cached --check
-    git commit -m "feat: gate balloon free reference panel fallback"
+- [ ] Implement ReferenceROIAlternative and
+      ReferencePanelFallbackCandidate with frozen dataclass validation,
+      canonical local hash verification, deterministic ordering, and exact
+      panel lineage. Reuse PanelVisualEvidence validators from
+      visual_scoring.py and framing_analysis.py; do not duplicate structural
+      parsing. Run the focused integration test and confirm that known_empty,
+      known_nonempty, and unknown remain distinct.
 
-Push immediately with the exact-history workflow and record the rollback SHA.
+- [ ] Replace asset-level reference evidence selection with the panel-keyed
+      sequence on the profile branch. Require exact panel/asset/checksum/bounds
+      agreement before readiness or candidate ranking. Keep the legacy branch
+      byte/behavior compatible and leave its list[dict] return unchanged.
+
+- [ ] Implement the four-step fallback ledger. Each attempt must record the
+      exact panel and its own evidence hash. Same-panel alternatives precede
+      same-beat alternate panels; a final rejection carries
+      visual.visual_unavailable. Tests must show a two-panel same-asset case
+      never evaluates panel A's evidence while rendering panel B.
+
+- [ ] Add deterministic panel-exact check_reference_framing integration in
+      editorial_qc.py and quality.py. Test missing/foreign/stale lineage first,
+      then unknown, overlap, blank, protected coverage, motion, pacing, and
+      reuse. Add a profile=None regression proving existing report inputs and
+      serialized output are unchanged.
+
+- [ ] Run the Task 6 focused matrix:
+
+      PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest
+      tests/test_reference_profile_integration.py
+      tests/test_reference_framing.py
+      tests/test_motion_stability.py
+      tests/test_visual_scoring.py
+      tests/test_quality.py -q
+
+      .venv/bin/ruff check app/services/editorial_visual_planner.py
+      app/services/editorial_qc.py app/services/quality.py
+      tests/test_reference_profile_integration.py
+
+      .venv/bin/python -m compileall -q app/services/editorial_visual_planner.py
+      app/services/editorial_qc.py app/services/quality.py
+
+      .venv/bin/git diff --check
+
+- [ ] Update docs/STATUS.md and CHANGELOG.md with the exact RED/GREEN totals,
+      panel-keyed candidate and ledger behavior, stable error precedence,
+      legacy compatibility, and the next Task 7 checkpoint. Include the
+      amendment parent and a rollback SHA for this slice.
+
+- [ ] Run the full non-slow suite before commit:
+
+      PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest
+      -q -m "not slow"
+
+      Fix only Task 6 regressions; do not weaken or skip old tests. Confirm no
+      media, database, credential, or runtime artifact is in the diff.
+
+- [ ] Self-review exact six-path allowlist, panel lineage keys, no random calls,
+      no asset-level evidence fallback, no result.fallback_attempts claim, no
+      placeholder markers, and no secret-shaped values. Commit on VPS:
+
+      feat: gate balloon free reference panel fallback
+
+      Push that exact commit immediately through a clean Windows transport clone
+      with main-only fast-forward, then verify VPS/GitHub parity and clean state.
+      The Task 6 rollback point is the published amendment parent
+      9f958877db1521ff2e5f1865fe08dc05e5fa8370. The next slice is Task 7
+      pipeline candidate construction and silent review.
 
 ## Task 7: Integrate the isolated real-panel silent review render
 
+Task 7 starts only after Task 6's panel-keyed planner and QC are green. It
+remains a standalone pipeline/render slice: no voice, narration generation,
+audio provider, or publication approval. The current Task 4 timeline snapshot
+and crop are the source of truth for every reference SceneInput.
+
 **Files:**
-- Modify: app/services/pipeline.py at build_timeline and reference evidence mapping.
-- Modify: app/services/render.py at RenderRequest/profile-aware preparation and QC sidecars.
+
+- Modify: app/services/pipeline.py at reference candidate construction,
+  build_timeline, and exact panel binding.
+- Modify: app/services/render.py at reference SceneInput/QC sidecars.
 - Create: tests/test_reference_visual_review.py.
 - Modify: docs/STATUS.md.
 - Modify: CHANGELOG.md.
 
-**Interfaces:**
-- **Consumes:** Task 4 persisted TimelineScene panel snapshots and
-  materialized SceneInput crops, approved script section evidence_panel_ids,
-  PanelVisualEvidence, planner fallback results, PreparedFrame telemetry, and
-  RenderRequest.profile.
-- **Produces:** an untracked silent visual review bundle; no TTS, no audio provider, and no publication approval.
+### Candidate construction before planning
 
-- [ ] **Step 1: Add a body-failing isolated review test**
+Before calling editorial_visual_planner.plan in reference mode, pipeline.py
+must build a deterministic sequence of ReferencePanelFallbackCandidate objects
+from the latest StoryAnalysis PanelRegion rows and the approved script's
+section evidence. The candidate sequence is panel-keyed and can contain
+multiple records with the same source_asset_id.
 
-The test must construct real rights-safe PIL images in a temporary directory,
-three PanelRegion-like evidence records, 32 deterministic scenes, one-word
-display cues, and a RenderRequest with audio_path=None and profile
-REFERENCE_MATCHED_SHORTS_V1:
+The planned helper has this exact boundary:
 
-    def test_reference_review_bundle_is_visual_only(tmp_path, monkeypatch):
-        request = RenderRequest(
-            output_path=tmp_path / "review.mp4",
-            scenes=reference_scenes(),
-            cues=reference_cues(),
-            audio_path=None,
-            preview=False,
-            profile=REFERENCE_MATCHED_SHORTS_V1,
-            encoder="cpu",
-            title_text="",
-            music_path=None,
-        )
-        assert request.profile.profile_id == "reference_matched_shorts_v1"
-        assert request.audio_path is None
-        result = render.render(request)
-        assert result.audio_stream is False
-        assert result.qc["publish_allowed"] is False
+    def _build_reference_panel_fallback_candidates(
+        *,
+        panel_regions: Sequence[PanelRegion],
+        panel_candidates: Sequence[visual_scoring.PanelCandidate],
+        section_evidence_panel_ids: Mapping[str, Sequence[str]],
+        section_citations: Mapping[str, Sequence[int]],
+        beats_by_section: Mapping[str, Sequence[str]],
+    ) -> tuple[ReferencePanelFallbackCandidate, ...]:
 
-Expected RED: the current render review path does not yet prove the Task 4
-panel snapshot/crop sidecar, and no isolated review assertion exists.
-The test must not call TTS, espeak, a network provider, or write outside
-tmp_path.
+It sorts rows by source_order, panel_id, panel_region_id. For each section,
+evidence_panel_ids are matched first by exact panel_id. Integer citations are
+only source_order fallbacks; they are never interpreted as SourceAsset IDs.
+When a source-order fallback maps more than one real PanelRegion, all exact
+lineage candidates remain represented in deterministic order and the alignment
+audit records source_order_fallback plus the selected panel ID. A missing
+explicit panel ID, foreign source asset, stale checksum, malformed evidence,
+or ambiguous binding that cannot be resolved to a real panel fails with
+visual.panel_lineage_unavailable. No random sampling, filename matching, or
+arbitrary first-panel selection is permitted.
 
-- [ ] **Step 2: Verify deterministic persisted-lineage render inputs**
+Each candidate carries the actual source_asset_id, panel_region_id, panel_id,
+integer panel_bounds, source_asset_checksum, locally canonicalized typed
+visual_evidence/evidence_hash, eligible beat/section metadata, and its exact
+ROI alternatives. The pipeline must require source_asset_id equality between
+the render PanelCandidate and the PanelRegion before yielding the wrapper.
 
-Do not duplicate Task 4's panel binding in this task. At build_render_request,
-load the persisted scene snapshots, verify the current source checksum and
-PanelRegion identity, and pass the exact Task 4 crop/evidence fields into the
-render preparation path:
+### Planner output and exact Task 4 binding
 
-    editorial_profile = reference_profile.resolve_reference_profile(project.template)
-    render_workspace = storage.workspace_dir(job.project_id, "render-panels")
-    for index, scene in enumerate(project_scenes(db, job.project_id)):
-        asset = db.get(SourceAsset, scene.asset_id) if scene.asset_id else None
-        if asset is None:
-            raise PipelineError("visual.panel_lineage_unavailable")
-        if editorial_profile is not None:
-            image_path = _materialize_reference_panel_crop(
-                db, asset, scene, render_workspace / f"scene-{index:04d}.png"
-            )
-            evidence = parse_panel_visual_evidence(scene.visual_evidence_json)
-        else:
-            image_path = storage.path_for(asset.storage_key)
-            evidence = None
+Call the profile planner with reference_panel_candidates equal to that exact
+sequence. The planner-selected shot already contains panel_region_id,
+panel_id, source_order, panel_bounds, source checksum, evidence hash, and its
+fallback_attempts ledger. Pipeline code must not call a different PanelRegion
+or recycle an asset-level candidate after planning.
 
-Invalid or missing evidence must raise PipelineError with the stable
-`visual.panel_lineage_unavailable` code. Legacy profile=None continues its
-current full-asset path. The review test must assert an integer citation is
-never treated as an asset ID and that a foreign or stale snapshot cannot render.
+Extend the existing Task 4 _bind_reference_panel_regions boundary to validate
+the planner-selected panel_region_id/panel_id/source_asset_id/bounds/checksum
+against the same latest PanelRegion row, then persist that exact snapshot.
+The selected panel must be present in the section's eligible evidence set.
+A missing selected panel lineage raises visual.panel_lineage_unavailable before
+prior TimelineScene/SubtitleCue rows are deleted; planning and all lineage
+validation complete first. Legacy profile=None keeps current binding and
+deletion behavior.
 
-- [ ] **Step 3: Persist framing telemetry in render QC**
+At build_render_request, render.py consumes the persisted exact snapshot:
+verify scene asset ID, panel region ID, panel ID, integer bounds, source checksum,
+canonical visual evidence/hash, and the source asset record. Materialize the
+panel-coordinate crop already guaranteed by Task 4 and pass the exact selected
+panel lineage and telemetry into Task 5/6 reference preparation. A selected
+panel's evidence is never evaluated against another panel or a full source
+strip. Unknown remains structurally preserved until Task 5 readiness.
 
-Extend the existing RenderRequest/scene sidecar path to include the selected
-FramingTelemetry fields in QC JSON and shot_list output. Keep width, height,
-fps, H.264 High, yuv420p, hard cuts, audio normalization, and existing
-reference output checks. When request.profile is None, serialize no new
-reference telemetry and preserve legacy preview behavior.
+### QC, silent review, and audit
 
-- [ ] **Step 4: Run visual review verification on VPS**
+Render/QC sidecars are keyed by (source_asset_id, panel_region_id) and retain
+panel_id, source_order, bounds, source checksum, evidence_hash, crop box,
+fallback_attempts, FramingTelemetry, stable reason/rejection code, and
+publish_allowed. No sidecar may collapse evidence to an asset-level value.
+Task 7 still produces a silent visual review only; no TTS/audio path is called,
+and publish_allowed remains false until source rights are verified.
 
-Run:
+The review test must use at least two PanelRegions under one SourceAsset with
+different bounds and evidence, assert that selected and persisted lineage match,
+prove integer citation 3 is handled only as source_order, and prove foreign or
+stale lineage fails closed. It must also assert legacy profile=None list/SceneInput
+behavior, exact crop dimensions/pixels, deterministic repeated-panel reuse, no
+consecutive same-panel reuse, no random calls, and the complete 32-shot/order
+and coverage audit.
 
-    PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_reference_visual_review.py tests/test_reference_profile_integration.py tests/test_reference_framing.py tests/test_motion_stability.py tests/test_subtitle_display_contract.py -q
-    .venv/bin/ruff check app/services/pipeline.py app/services/render.py tests/test_reference_visual_review.py
-    .venv/bin/python -m compileall -q app
-    git diff --check
-    PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest -q -m "not slow"
-    /home/yusronrohmani/.local/bin/ffprobe -v error -show_streams -show_format review.mp4
+### TDD and implementation steps
 
-The FFmpeg check must report geometry, frame rate, codec/profile/pixel format,
-shot count, cue count, blank fraction, balloon intersection, source coverage,
-no black frames, and publish_allowed=false. Voice generation and audio
-generation remain absent.
+- [ ] Add collection-safe body-failing tests/test_reference_visual_review.py
+      for candidate construction before calling the planner, two distinct
+      PanelRegions under one SourceAsset, exact selected-panel persistence,
+      stale/foreign mismatch, and the silent RenderRequest boundary. The
+      current pipeline has no panel-keyed candidate builder and cannot prove
+      the required failures. RED command:
 
-- [ ] **Step 5: Update docs, commit, and push**
+      PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest
+      tests/test_reference_visual_review.py -q
 
-Record exact isolated bundle paths, test totals, probe metrics, rights
-decision, commit SHA, clean state, and the next approved action. Stage only
-the five paths and commit:
+      Expected RED is collection-clean body failures only; no media, provider,
+      database, or setup error.
 
-    git add -- app/services/pipeline.py app/services/render.py tests/test_reference_visual_review.py docs/STATUS.md CHANGELOG.md
-    git diff --cached --check
-    git commit -m "test: audit balloon free silent visual review"
+- [ ] Implement the deterministic candidate builder using latest StoryAnalysis
+      PanelRegion rows. Preserve every exact evidence_panel_ids match; use
+      citations as source_order only; attach alignment reasons for cited,
+      source_order fallback, unavailable, or context fallback. No asset-level
+      evidence map is allowed.
 
-Push immediately through the Windows exact-history clone. Remove only the
-temporary bundle/patch after HTTPS ls-remote equals the commit. Keep the clean
-transport clone for audit and rollback.
+- [ ] Pass candidates before editorial_visual_planner.plan and validate the
+      selected panel in _bind_reference_panel_regions. Persist exact Task 4
+      snapshot fields and leave prior scene/cue rows untouched until planning
+      succeeds. Fail closed with visual.panel_lineage_unavailable for missing,
+      foreign, stale, or mismatched selections.
+
+- [ ] Thread selected panel lineage through build_render_request/render.py
+      sidecars and Task 5/6 QC. Assert panel-relative evidence is consumed only
+      with the materialized panel crop. Keep legacy profile=None full-asset
+      behavior byte/behavior compatible.
+
+- [ ] Run the silent review verification:
+
+      PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest
+      tests/test_reference_visual_review.py
+      tests/test_reference_profile_integration.py
+      tests/test_reference_framing.py
+      tests/test_motion_stability.py
+      tests/test_subtitle_display_contract.py -q
+
+      .venv/bin/ruff check app/services/pipeline.py app/services/render.py
+      tests/test_reference_visual_review.py
+
+      .venv/bin/python -m compileall -q app/services/pipeline.py app/services/render.py
+      git diff --check
+
+      PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest
+      -q -m "not slow"
+
+      ffprobe -v error -show_streams -show_format reference-visual-review.mp4
+
+      The review report must show 32 planned shots, exact panel lineage,
+      one-word display cues, hard cuts, monotonic stable motion, no black
+      frames, no audio stream, rights-unverified publish_allowed=false, and
+      no provider or voice call.
+
+- [ ] Update docs/STATUS.md and CHANGELOG.md with exact RED/GREEN/full totals,
+      panel candidate and binding evidence, isolated review paths, rights gate,
+      rollback, and the next approved action. Commit only:
+
+      git add -- app/services/pipeline.py app/services/render.py tests/test_reference_visual_review.py docs/STATUS.md CHANGELOG.md
+      git diff --cached --check
+      git commit -m "test: audit balloon free silent visual review"
+
+      Push the exact object immediately through a clean Windows transport clone,
+      main-only fast-forward, no force/tags/all branches, then verify GitHub
+      SHA parity and clean VPS/transport state. The Task 7 rollback point is
+      the Task 6 commit; voice generation remains deferred.
 
 ## Acceptance matrix and rollback
 
@@ -1892,11 +2035,12 @@ transport clone for audit and rollback.
 | Internal low-information diagnostic without discard | Task 3 sealed-island mask test |
 | Deterministic detector/cache identity | Task 3 mask_sha256 and cache-key test |
 | PanelRegion-to-timeline lineage and crop coordinate space | Task 4 cited-panel binding, snapshot, migration, and exact-pixel crop tests |
+| Multiple PanelRegions under one SourceAsset remain distinct | Tasks 6-7 exact panel-keyed candidate, fallback, binding, and QC tests |
 | Balloon intersection exactly zero | Tasks 5-7 one-pixel and area-overlap failures |
 | Subject/action/effect/continuity minimums | Task 5 candidate feasibility |
 | Dynamic zoom/upscale guard | Task 5 native-resolution tests |
-| Exact fallback order and stable visual_unavailable | Task 6 fallback ledger |
-| No speech_bubble selection or motion | Task 6 planner assertions |
+| Exact fallback order and stable visual_unavailable | Task 6 exact panel-keyed fallback ledger with per-shot attempts |
+| No speech_bubble selection or motion | Task 6 typed panel-candidate and exact-panel planner assertions |
 | Stable monotonic motion and no shake | Tasks 5-7 120-frame and filter tests |
 | Full panel/story/claim coverage and rights gate | Tasks 1, 2, 4, 6, and 7 lineage/rights assertions |
 | Legacy profile=None behavior | Tasks 3, 4, and 5 regression snapshots |
