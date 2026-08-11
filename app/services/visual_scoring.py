@@ -7,15 +7,23 @@ dataclass so tuning does not touch the planner.
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import math
 import re
 import subprocess
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageFilter, ImageStat
+
+VISUAL_EVIDENCE_CONTRACT_VERSION = "COLOR_AGNOSTIC_BALLOON_FREE_V1"
+_MASK_STATUSES = frozenset({"unknown", "known_empty", "known_nonempty"})
+_BALLOON_KINDS = frozenset({"speech_balloon"})
+_PROTECTED_KINDS = frozenset({"background", "subject", "face", "action", "effect", "continuity_context"})
 
 
 # Keep Pillow 12+ and older supported without a hard dependency upgrade.
@@ -89,6 +97,381 @@ class PanelCandidate:
     visual_score: float
     semantic_score: float = 0.0
     source_family: str = ""
+
+
+class VisualEvidenceError(ValueError):
+    """Stable fail-closed error for typed visual evidence."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(f"{code}: {message}")
+
+
+@dataclass(frozen=True)
+class BalloonRegionEvidence:
+    region_id: str
+    kind: str
+    normalized_bbox: tuple[float, float, float, float] | None
+    normalized_polygon: tuple[tuple[float, float], ...]
+    confidence: float
+    evidence_source: str
+    mask_status: str
+
+
+@dataclass(frozen=True)
+class ProtectedRegionEvidence:
+    region_id: str
+    kind: str
+    normalized_bbox: tuple[float, float, float, float] | None
+    normalized_polygon: tuple[tuple[float, float], ...]
+    confidence: float
+    evidence_source: str
+    required: bool
+    minimum_coverage: float
+
+
+@dataclass(frozen=True)
+class PanelVisualEvidence:
+    contract_version: str
+    panel_id: str
+    source_asset_id: str
+    source_order: int
+    balloon_regions: tuple[BalloonRegionEvidence, ...]
+    protected_regions: tuple[ProtectedRegionEvidence, ...]
+    balloon_mask_status: str
+    mask_confidence: float
+    evidence_source: str
+    mask_reason: str
+    evidence_hash: str = ""
+
+
+def _visual_error(code: str, message: str) -> VisualEvidenceError:
+    return VisualEvidenceError(code, message)
+
+
+def _number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _normalised_bbox(value: object) -> tuple[float, float, float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (tuple, list)) or len(value) != 4:
+        raise _visual_error("visual.region_invalid", "normalized_bbox must contain four values")
+    if not all(_number(item) for item in value):
+        raise _visual_error("visual.region_invalid", "normalized_bbox values must be numeric")
+    bbox = tuple(float(item) for item in value)
+    if not all(0.0 <= item <= 1.0 for item in bbox) or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+        raise _visual_error("visual.region_invalid", "normalized_bbox is outside the unit frame")
+    return bbox  # type: ignore[return-value]
+
+
+def _normalised_polygon(value: object) -> tuple[tuple[float, float], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (tuple, list)):
+        raise _visual_error("visual.region_invalid", "normalized_polygon must be a sequence")
+    points: list[tuple[float, float]] = []
+    for point in value:
+        if not isinstance(point, (tuple, list)) or len(point) != 2 or not all(_number(item) for item in point):
+            raise _visual_error("visual.region_invalid", "polygon points must be numeric pairs")
+        x, y = (float(item) for item in point)
+        if not 0.0 <= x <= 1.0 or not 0.0 <= y <= 1.0:
+            raise _visual_error("visual.region_invalid", "polygon point is outside the unit frame")
+        points.append((x, y))
+    if points and len(points) < 3:
+        raise _visual_error("visual.region_invalid", "polygon requires at least three points")
+    return tuple(points)
+
+
+def _confidence(value: object, field: str) -> float:
+    if not _number(value) or not 0.0 <= float(value) <= 1.0:
+        raise _visual_error("visual.region_invalid", f"{field} must be between zero and one")
+    return float(value)
+
+
+def _validate_balloon_region(region: BalloonRegionEvidence) -> None:
+    if not isinstance(region.region_id, str) or not region.region_id:
+        raise _visual_error("visual.region_invalid", "balloon region identity is invalid")
+    if not isinstance(region.kind, str) or region.kind not in _BALLOON_KINDS:
+        raise _visual_error("visual.region_invalid", "balloon region identity or kind is invalid")
+    if not isinstance(region.mask_status, str) or region.mask_status not in {"unknown", "known_nonempty"}:
+        raise _visual_error("visual.region_invalid", "balloon region mask status is invalid")
+    _normalised_bbox(region.normalized_bbox)
+    polygon = _normalised_polygon(region.normalized_polygon)
+    if region.mask_status == "known_nonempty" and region.normalized_bbox is None and not polygon:
+        raise _visual_error("visual.balloon_geometry_invalid", "known geometry has no bbox or polygon")
+    _confidence(region.confidence, "confidence")
+    if not isinstance(region.evidence_source, str) or not region.evidence_source:
+        raise _visual_error("visual.region_invalid", "balloon evidence source is empty")
+
+
+def _validate_protected_region(region: ProtectedRegionEvidence) -> None:
+    if not isinstance(region.region_id, str) or not region.region_id:
+        raise _visual_error("visual.region_invalid", "protected region identity is invalid")
+    if not isinstance(region.kind, str) or region.kind not in _PROTECTED_KINDS:
+        raise _visual_error("visual.region_invalid", "protected region identity or kind is invalid")
+    _normalised_bbox(region.normalized_bbox)
+    _normalised_polygon(region.normalized_polygon)
+    _confidence(region.confidence, "confidence")
+    if not isinstance(region.evidence_source, str) or not region.evidence_source:
+        raise _visual_error("visual.region_invalid", "protected evidence source is empty")
+    if not isinstance(region.required, bool):
+        raise _visual_error("visual.region_invalid", "required must be boolean")
+    _confidence(region.minimum_coverage, "minimum_coverage")
+
+
+def _visual_payload(evidence: PanelVisualEvidence, *, include_hash: bool) -> dict[str, Any]:
+    return {
+        "contract_version": evidence.contract_version,
+        "panel_id": evidence.panel_id,
+        "source_asset_id": evidence.source_asset_id,
+        "source_order": evidence.source_order,
+        "balloon_regions": [
+            {
+                "region_id": region.region_id,
+                "kind": region.kind,
+                "normalized_bbox": region.normalized_bbox,
+                "normalized_polygon": region.normalized_polygon,
+                "confidence": region.confidence,
+                "evidence_source": region.evidence_source,
+                "mask_status": region.mask_status,
+            }
+            for region in evidence.balloon_regions
+        ],
+        "protected_regions": [
+            {
+                "region_id": region.region_id,
+                "kind": region.kind,
+                "normalized_bbox": region.normalized_bbox,
+                "normalized_polygon": region.normalized_polygon,
+                "confidence": region.confidence,
+                "evidence_source": region.evidence_source,
+                "required": region.required,
+                "minimum_coverage": region.minimum_coverage,
+            }
+            for region in evidence.protected_regions
+        ],
+        "balloon_mask_status": evidence.balloon_mask_status,
+        "mask_confidence": evidence.mask_confidence,
+        "evidence_source": evidence.evidence_source,
+        "mask_reason": evidence.mask_reason,
+        "evidence_hash": evidence.evidence_hash if include_hash else "",
+    }
+
+
+def _canonical_visual_json(evidence: PanelVisualEvidence) -> str:
+    return json.dumps(
+        _visual_payload(evidence, include_hash=False),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def visual_evidence_hash(evidence: PanelVisualEvidence) -> str:
+    _validate_panel_visual_evidence(evidence, verify_hash=False)
+    return hashlib.sha256(_canonical_visual_json(evidence).encode("utf-8")).hexdigest()
+
+
+def _validate_panel_visual_evidence(evidence: PanelVisualEvidence, *, verify_hash: bool) -> None:
+    if not isinstance(evidence, PanelVisualEvidence):
+        raise _visual_error("visual.evidence_invalid", "visual evidence has an unexpected type")
+    if evidence.contract_version != VISUAL_EVIDENCE_CONTRACT_VERSION:
+        raise _visual_error("visual.evidence_invalid", "visual evidence contract version is unsupported")
+    if (
+        not isinstance(evidence.panel_id, str)
+        or not evidence.panel_id
+        or not isinstance(evidence.source_asset_id, str)
+        or not evidence.source_asset_id
+        or not isinstance(evidence.source_order, int)
+        or isinstance(evidence.source_order, bool)
+        or evidence.source_order < 0
+    ):
+        raise _visual_error("visual.lineage_invalid", "panel lineage is incomplete")
+    if evidence.balloon_mask_status not in _MASK_STATUSES:
+        raise _visual_error("visual.evidence_invalid", "balloon mask status is unsupported")
+    confidence = _confidence(evidence.mask_confidence, "mask_confidence")
+    if not isinstance(evidence.evidence_source, str) or not isinstance(evidence.mask_reason, str):
+        raise _visual_error("visual.evidence_invalid", "visual evidence provenance is invalid")
+    if evidence.balloon_mask_status == "known_empty" and (
+        confidence <= 0.0
+        or not evidence.evidence_source
+        or not evidence.mask_reason.strip()
+        or evidence.balloon_regions
+    ):
+        raise _visual_error("visual.balloon_mask_empty_unproven", "empty geometry was not affirmatively established")
+    if not isinstance(evidence.evidence_source, str) or not evidence.evidence_source:
+        raise _visual_error("visual.evidence_invalid", "visual evidence source is empty")
+    if evidence.balloon_mask_status == "unknown" and not evidence.mask_reason.strip():
+        raise _visual_error("visual.evidence_invalid", "visual evidence reason is required")
+    if evidence.balloon_mask_status == "known_nonempty" and not evidence.balloon_regions:
+        raise _visual_error("visual.balloon_geometry_invalid", "nonempty geometry has no balloon regions")
+    region_ids: set[str] = set()
+    for region in evidence.balloon_regions:
+        _validate_balloon_region(region)
+        if region.region_id in region_ids:
+            raise _visual_error("visual.region_invalid", "region ids must be unique")
+        region_ids.add(region.region_id)
+    for region in evidence.protected_regions:
+        _validate_protected_region(region)
+        if region.region_id in region_ids:
+            raise _visual_error("visual.region_invalid", "region ids must be unique")
+        region_ids.add(region.region_id)
+    if evidence.balloon_mask_status == "known_nonempty" and any(
+        region.mask_status != "known_nonempty" for region in evidence.balloon_regions
+    ):
+        raise _visual_error("visual.balloon_geometry_invalid", "known geometry contains an unknown region")
+    if evidence.evidence_hash and verify_hash and evidence.evidence_hash != visual_evidence_hash(evidence):
+        raise _visual_error("visual.evidence_hash_invalid", "visual evidence hash does not match its content")
+
+
+def validate_panel_visual_evidence(evidence: PanelVisualEvidence) -> None:
+    """Validate structure while allowing unknown geometry to be persisted."""
+
+    _validate_panel_visual_evidence(evidence, verify_hash=True)
+
+
+def panel_visual_evidence_json(evidence: PanelVisualEvidence) -> dict[str, Any]:
+    validate_panel_visual_evidence(evidence)
+    hashed = replace(evidence, evidence_hash=visual_evidence_hash(evidence))
+    return _visual_payload(hashed, include_hash=True)
+
+
+def _parse_balloon_region(raw: object) -> BalloonRegionEvidence:
+    if not isinstance(raw, Mapping):
+        raise _visual_error("visual.region_invalid", "balloon region is not an object")
+    required = {"region_id", "kind", "normalized_bbox", "normalized_polygon", "confidence", "evidence_source", "mask_status"}
+    if set(raw) != required:
+        raise _visual_error("visual.region_invalid", "balloon region keys are incomplete")
+    return BalloonRegionEvidence(
+        region_id=raw["region_id"],
+        kind=raw["kind"],
+        normalized_bbox=_normalised_bbox(raw["normalized_bbox"]),
+        normalized_polygon=_normalised_polygon(raw["normalized_polygon"]),
+        confidence=raw["confidence"],
+        evidence_source=raw["evidence_source"],
+        mask_status=raw["mask_status"],
+    )
+
+
+def _parse_protected_region(raw: object) -> ProtectedRegionEvidence:
+    if not isinstance(raw, Mapping):
+        raise _visual_error("visual.region_invalid", "protected region is not an object")
+    required = {"region_id", "kind", "normalized_bbox", "normalized_polygon", "confidence", "evidence_source", "required", "minimum_coverage"}
+    if set(raw) != required:
+        raise _visual_error("visual.region_invalid", "protected region keys are incomplete")
+    return ProtectedRegionEvidence(
+        region_id=raw["region_id"],
+        kind=raw["kind"],
+        normalized_bbox=_normalised_bbox(raw["normalized_bbox"]),
+        normalized_polygon=_normalised_polygon(raw["normalized_polygon"]),
+        confidence=raw["confidence"],
+        evidence_source=raw["evidence_source"],
+        required=raw["required"],
+        minimum_coverage=raw["minimum_coverage"],
+    )
+
+
+def parse_panel_visual_evidence(raw: Mapping[str, Any]) -> PanelVisualEvidence:
+    """Parse and validate serialized visual evidence without mutating input."""
+
+    try:
+        if not isinstance(raw, Mapping):
+            raise _visual_error("visual.evidence_invalid", "visual evidence is not an object")
+        required = {
+            "contract_version", "panel_id", "source_asset_id", "source_order", "balloon_regions",
+            "protected_regions", "balloon_mask_status", "mask_confidence", "evidence_source", "mask_reason",
+        }
+        allowed = required | {"evidence_hash"}
+        if set(raw) != allowed and set(raw) != required:
+            raise _visual_error("visual.evidence_invalid", "visual evidence keys are unexpected")
+        if not isinstance(raw["balloon_regions"], (tuple, list)) or not isinstance(raw["protected_regions"], (tuple, list)):
+            raise _visual_error("visual.evidence_invalid", "visual region collections are invalid")
+        evidence = PanelVisualEvidence(
+            contract_version=raw["contract_version"],
+            panel_id=raw["panel_id"],
+            source_asset_id=raw["source_asset_id"],
+            source_order=raw["source_order"],
+            balloon_regions=tuple(_parse_balloon_region(item) for item in raw["balloon_regions"]),
+            protected_regions=tuple(_parse_protected_region(item) for item in raw["protected_regions"]),
+            balloon_mask_status=raw["balloon_mask_status"],
+            mask_confidence=raw["mask_confidence"],
+            evidence_source=raw["evidence_source"],
+            mask_reason=raw["mask_reason"],
+            evidence_hash=raw.get("evidence_hash", ""),
+        )
+        validate_panel_visual_evidence(evidence)
+        return evidence
+    except VisualEvidenceError:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _visual_error("visual.evidence_invalid", "visual evidence could not be parsed") from exc
+
+
+def unknown_visual_evidence(*, panel_id: str, source_asset_id: str, source_order: int, reason: str) -> PanelVisualEvidence:
+    """Create a persisted unknown state when the provider has no geometry sidecar."""
+
+    if not reason.strip():
+        raise _visual_error("visual.evidence_invalid", "unknown visual evidence requires a reason")
+    evidence = PanelVisualEvidence(
+        contract_version=VISUAL_EVIDENCE_CONTRACT_VERSION,
+        panel_id=panel_id,
+        source_asset_id=source_asset_id,
+        source_order=source_order,
+        balloon_regions=(),
+        protected_regions=(),
+        balloon_mask_status="unknown",
+        mask_confidence=0.0,
+        evidence_source="vision_geometry_unavailable",
+        mask_reason=reason,
+    )
+    return replace(evidence, evidence_hash=visual_evidence_hash(evidence))
+
+
+def ensure_panel_visual_evidence(
+    observation: Mapping[str, Any] | None,
+    *,
+    panel_id: str,
+    source_asset_id: str,
+    source_order: int,
+) -> tuple[dict[str, Any], PanelVisualEvidence]:
+    """Attach a validated sidecar, or an explicit unknown record, to an observation."""
+
+    merged = dict(observation or {})
+    raw = merged.get("visual_evidence")
+    if raw is None:
+        evidence = unknown_visual_evidence(
+            panel_id=panel_id,
+            source_asset_id=source_asset_id,
+            source_order=source_order,
+            reason="visual geometry acquisition is not available in this analysis phase",
+        )
+    elif isinstance(raw, PanelVisualEvidence):
+        validate_panel_visual_evidence(raw)
+        evidence = raw
+    else:
+        evidence = parse_panel_visual_evidence(raw)
+    if (
+        evidence.panel_id != panel_id
+        or evidence.source_asset_id != source_asset_id
+        or evidence.source_order != source_order
+    ):
+        raise _visual_error("visual.lineage_invalid", "visual evidence lineage does not match its panel")
+    merged["visual_evidence"] = panel_visual_evidence_json(evidence)
+    return merged, parse_panel_visual_evidence(merged["visual_evidence"])
+
+
+def require_reference_ready_visual_evidence(
+    evidence: PanelVisualEvidence | Mapping[str, Any],
+) -> PanelVisualEvidence:
+    """Reject unknown geometry only when a reference crop consumes the record."""
+
+    parsed = evidence if isinstance(evidence, PanelVisualEvidence) else parse_panel_visual_evidence(evidence)
+    validate_panel_visual_evidence(parsed)
+    if parsed.balloon_mask_status == "unknown":
+        raise _visual_error("visual.balloon_mask_unknown", "reference framing requires known balloon geometry")
+    return parsed
 
 
 _ACTION = {"attack", "attacked", "attacks", "hit", "struck", "strike", "fight", "fought", "run", "jump", "fall", "battle", "chase", "serang", "menyerang", "memukul", "merampas", "menebas", "bertarung", "berlari", "melompat", "jatuh", "kejar", "mengejar"}

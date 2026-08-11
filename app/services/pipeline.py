@@ -754,8 +754,17 @@ def _enrich_observations(
             "uncertainties": list(semantic["uncertainties"]),
             "evidence_refs": list(semantic["evidence_refs"]),
         }
-        enriched[panel.panel_id] = observation
-        panel.observation_json = observation
+        semantic_observation = dict(observation)
+        if "visual_evidence" in semantic:
+            observation["visual_evidence"] = semantic["visual_evidence"]
+        persisted_observation, _ = visual_scoring.ensure_panel_visual_evidence(
+            observation,
+            panel_id=panel.panel_id,
+            source_asset_id=panel.source_asset_id,
+            source_order=panel.source_order,
+        )
+        enriched[panel.panel_id] = semantic_observation
+        panel.observation_json = persisted_observation
         panel.evidence_refs_json = list(observation["evidence_refs"])
         panel.chunk_index = first_chunk[panel.panel_id]
         chain_rows.append(

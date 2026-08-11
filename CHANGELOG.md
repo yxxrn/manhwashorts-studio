@@ -4,6 +4,13 @@ Notable changes per release. Dates are ISO 8601.
 
 ## Unreleased - Phase 2 editorial gates
 
+- Implemented Visual Plan Task 1 typed visual evidence persistence: immutable
+  balloon/protected-region records, deterministic canonical hashes, complete
+  panel lineage validation, and explicit unknown/affirmative-empty states.
+  Unknown geometry remains auditable but blocks only reference readiness with
+  `visual.balloon_mask_unknown`; Task 2 provider acquisition is still pending.
+- Task 1 verification: 7 body-failing RED tests, 58 focused GREEN tests, and
+  642 full non-slow tests passed; scoped Ruff, compileall, and diff-check pass.
 - Completed the approved implementation plans for balloon-free color-agnostic
   framing and sharp_friend_v1 narrative identity. Voice provider choice,
   auditions, and audio generation remain deferred until explicit user selection.

@@ -33,6 +33,32 @@ Updated: 2026-08-11
   transport clone; runtime data, media, databases, credentials, and review
   artifacts remain outside Git.
 
+## Visual Plan Task 1 - typed visual evidence - 2026-08-11
+
+- RED was deliberate and body-only: `PATH=/home/yusronrohmani/.local/bin:$PATH
+  .venv/bin/pytest tests/test_balloon_evidence.py -q` collected 7 tests and
+  reported 7 assertion failures because the typed visual-evidence boundary did
+  not exist; there were no collection or setup failures.
+- GREEN focused verification collected 58 and passed across
+  `tests/test_balloon_evidence.py`, `tests/test_vision_adapter.py`,
+  `tests/test_vision_synthesis.py`, and `tests/test_vision_pipeline.py`.
+- The full PATH-correct non-slow run passed 642 tests. Scoped Ruff,
+  compileall, and `git diff --check` also pass for this slice.
+- `PanelVisualEvidence`, balloon/protected-region records, deterministic
+  canonical JSON/SHA-256, lineage checks, and safe observation persistence are
+  now implemented in `visual_scoring.py` and `pipeline.py`. Missing sidecars
+  persist as explicit `unknown` records with real panel lineage; they are
+  accepted for audit and rejected only by the reference-readiness gate with
+  `visual.balloon_mask_unknown`. Affirmative `known_empty` and validated
+  `known_nonempty` geometry remain fail-closed.
+- Task 2 is next: acquire versioned balloon/protected geometry from every
+  ordered vision observation. This slice intentionally does not add that
+  provider prompt/adapter acquisition, and therefore does not claim reference
+  framing readiness or visual acceptance.
+- Rollback point before Task 1 is the clean parent
+  `1dff696f1dc7f2bcc59b337d4cc38f53fee54434`; the resulting Task 1 commit is
+  the next review/push checkpoint.
+
 ## Implemented
 
 - FastAPI UI/API with local SQLite and content-addressed storage.
