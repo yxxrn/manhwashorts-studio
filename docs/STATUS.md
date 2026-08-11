@@ -1,6 +1,25 @@
 # Current status
 
-Updated: 2026-08-09
+Updated: 2026-08-11
+
++## Approved design checkpoint - 2026-08-11
+
+- Approved the docs-only design in
+  docs/superpowers/specs/2026-08-11-balloon-free-framing-narrative-identity-v3-design.md
+  for COLOR_AGNOSTIC_BALLOON_FREE_V1 framing and sharp_friend_v1 narration.
+- Checkpoint baseline is main at
+  f9221dd546a24f6c18a7f891b2ded8e1c678c3f2. The recorded historical full
+  non-slow result is 635 passed; it was not rerun for this docs-only change.
+- Next task is Slice A: typed balloon, protected-region, mask-status, and
+  evidence-hash contracts. No production behavior is claimed until its RED,
+  GREEN, full verification, commit, and push gates pass.
+- Voice choice, provider configuration, auditions, audio generation, and
+  final voice rendering remain explicitly deferred until the user chooses
+  local or API execution. Rights/source checks keep publish_allowed=false.
+- Source and test execution remains VPS-only. Because VPS GitHub SSH auth is
+  unavailable, exact history is published through the isolated Windows
+  transport clone; runtime data, media, databases, credentials, and review
+  artifacts remain outside Git.
 
 ## Implemented
 
@@ -75,5 +94,7 @@ A render is review-only until all are true:
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
-Current state: **development / review-only**. Changes are committed on the VPS
-for review; no remote push is performed by the executor.
+Current state: **development / review-only**. This checkpoint is documentation
+only; production behavior remains unchanged until the approved slices pass.
+VPS GitHub SSH is unavailable, so approved commits are published through the
+isolated Windows transport workflow.

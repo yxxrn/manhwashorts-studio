@@ -4,6 +4,13 @@ Notable changes per release. Dates are ISO 8601.
 
 ## Unreleased - Phase 2 editorial gates
 
++- Approved the balloon-free framing and sharp_friend_v1 narrative design
+  checkpoint. Reference framing must hard-block any known or unknown balloon
+  intersection, minimize color-agnostic edge padding deterministically, and
+  preserve subject/action coverage. Narrative naturalness is screened without
+  rewriting evidence-grounded prose. Voice provider choice and generation
+  remain deferred until explicit user selection.
+
 - Added deterministic speech-balloon, UI-overlay, and blank-dominance penalties
   without requiring OCR, with auditable chronology and source-family reasons.
 - Enforced per-asset reuse caps, four-mode normal motion diversity, hard action
