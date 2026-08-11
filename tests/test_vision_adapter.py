@@ -382,7 +382,16 @@ def test_visual_prompt_snapshot_is_normalized_and_local_hash_owned():
 
 @pytest.mark.parametrize(
     "variant",
-    ("missing", "foreign", "malformed", "known_empty_unproven", "duplicate", "ocr_only", "provider_hash"),
+    (
+        "missing",
+        "foreign",
+        "malformed",
+        "known_empty_unproven",
+        "known_empty_ocr_only",
+        "duplicate",
+        "ocr_only",
+        "provider_hash",
+    ),
 )
 def test_visual_sidecars_fail_closed_without_provider_hash_trust(
     mock_provider_url, variant
@@ -401,9 +410,13 @@ def test_visual_sidecars_fail_closed_without_provider_hash_trust(
     elif variant == "known_empty_unproven":
         sidecar = response[1]["visual_evidence"]
         sidecar.update(mask_confidence=0.0, evidence_source="", mask_reason="")
+    elif variant == "known_empty_ocr_only":
+        sidecar = response[1]["visual_evidence"]
+        sidecar["evidence_source"] = "ocr_text_only"
     elif variant == "duplicate":
         sidecar["balloon_regions"].append(copy.deepcopy(sidecar["balloon_regions"][0]))
     elif variant == "ocr_only":
+        sidecar["evidence_source"] = "ocr_text_only"
         sidecar["balloon_regions"][0]["evidence_source"] = "ocr_text_only"
     else:
         sidecar["evidence_hash"] = "provider-supplied"

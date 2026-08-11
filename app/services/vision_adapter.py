@@ -82,6 +82,16 @@ _PROTECTED_REGION_KEYS = frozenset(
         "minimum_coverage",
     }
 )
+_OCR_ONLY_EVIDENCE_SOURCES = frozenset(
+    {"ocr_text_only", "text_only_ocr", "ocr_only"}
+)
+
+
+def _is_ocr_only_evidence_source(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return normalized in _OCR_ONLY_EVIDENCE_SOURCES
 
 
 @dataclass(frozen=True)
@@ -469,6 +479,8 @@ def validate_visual_evidence_observation(
         reason = observation.get("mask_reason")
         if not isinstance(source, str) or not source.strip() or not isinstance(reason, str) or not reason.strip():
             raise VisionResponseInvalid()
+        if status in {"known_empty", "known_nonempty"} and _is_ocr_only_evidence_source(source):
+            raise VisionResponseInvalid()
 
         balloon_regions = observation.get("balloon_regions")
         protected_regions = observation.get("protected_regions")
@@ -563,8 +575,8 @@ def validate_visual_evidence_observation(
                 for region in balloon_regions
             ):
                 raise VisionResponseInvalid()
-            if source.lower().startswith("ocr") or all(
-                "ocr" in str(region.get("evidence_source", "")).lower()
+            if any(
+                _is_ocr_only_evidence_source(region.get("evidence_source"))
                 for region in balloon_regions
             ):
                 raise VisionResponseInvalid()
@@ -585,7 +597,8 @@ def _validate_observations(
         raise VisionResponseInvalid()
 
     requested_ids = [panel["panel_id"] for panel in panels]
-    requested_set = set(requested_ids)
+    requested_by_panel_id = {panel["panel_id"]: panel for panel in panels}
+    requested_set = set(requested_by_panel_id)
     by_panel_id: dict[str, Mapping[str, Any]] = {}
     for observation in observations:
         if not isinstance(observation, Mapping):
@@ -618,16 +631,13 @@ def _validate_observations(
             raise VisionResponseInvalid()
         row = dict(observation)
         if require_visual_evidence:
+            requested_panel = requested_by_panel_id[panel_id]
             row["visual_evidence"] = dict(
                 validate_visual_evidence_observation(
                     row["visual_evidence"],
                     expected_panel_id=panel_id,
-                    expected_source_asset_id=next(
-                        panel["source_asset_id"] for panel in panels if panel["panel_id"] == panel_id
-                    ),
-                    expected_source_order=next(
-                        panel["source_order"] for panel in panels if panel["panel_id"] == panel_id
-                    ),
+                    expected_source_asset_id=requested_panel["source_asset_id"],
+                    expected_source_order=requested_panel["source_order"],
                 )
             )
         by_panel_id[panel_id] = row

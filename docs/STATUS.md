@@ -93,6 +93,9 @@ Updated: 2026-08-11
   during every production observation, preserves unknown geometry for audit,
   and computes the local canonical visual evidence hash; providers never
   supply or establish that hash.
+- Task 2 review hardening now rejects OCR-only provenance for every known
+  balloon state, rejects partial visual instruction pairs before provider
+  calls, and uses one requested-panel lineage lookup per response row.
 - Evidence-gated script materialization now requires the latest RECONCILED
   analysis, revalidates persisted panel/claim evidence, and records explicit
   human approval before SCRIPT_APPROVED.
@@ -141,16 +144,15 @@ A render is review-only until all are true:
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
-Current state: **development / review-only**. Visual Plan Task 2 is green at
-the `4730022492f0e32cbf53a1e751e52dc2196aa60f` rollback point: RED was 40
-collected with 14 body failures and no collection/setup failures; focused
-GREEN is 40 passed, the amended regression matrix is 168 passed, and the full
-non-slow suite is 657 passed with 15 deselected. Scoped Ruff, compileall,
-prompt-snapshot, and diff-check verification pass. The sole additional test
-path, `tests/test_story_evidence.py`, was authorized to add visual sidecars
-to its local provider spy; this keeps its synthesis-stage assertions valid
-under the production visual-mode gate without adding a production fallback.
-Task 3 color-agnostic detection is next, and reference output remains
-unavailable until geometry feasibility is fulfilled. VPS GitHub SSH is
-unavailable, so approved commits are published through the isolated Windows
-transport workflow.
+Current state: **development / review-only**. Visual Plan Task 2 review
+hardening is green from the `4fbfc4eff478edb3c65554e54ecbcd439e967de4`
+rollback point: RED was 35 collected with 2 body failures and no
+collection/setup failures; focused adapter/pipeline GREEN is 35 passed, the
+evidence/regression set is 54 passed, the expanded matrix is 181 passed, and
+the full non-slow suite is 659 passed with 15 deselected. Scoped Ruff,
+compileall, and diff-check verification pass. The provider remains unable to
+establish `evidence_hash`; local hashing remains authoritative. Task 3
+color-agnostic detection is next, and reference output remains unavailable
+until geometry feasibility is fulfilled. VPS GitHub SSH is unavailable, so
+approved commits are published through the isolated Windows transport
+workflow.

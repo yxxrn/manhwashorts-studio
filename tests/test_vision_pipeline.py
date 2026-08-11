@@ -852,6 +852,36 @@ def test_observe_chunks_activates_visual_prompt_and_locally_hashes_sidecars():
         assert scoring.visual_evidence_hash(parsed) == persisted["evidence_hash"]
 
 
+def test_observe_chunks_rejects_partial_visual_instruction_pair_before_provider_call():
+    module = _pipeline_module()
+    _, (version, _, _) = _visual_loader()
+    panels = _panel_regions(3)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"synthetic-image-payload",
+        }
+        for panel in panels
+    }
+    provider = _VisualObservationSpy()
+    with pytest.raises(Exception) as caught:
+        module._observe_chunks(
+            provider,
+            module.build_observation_chunks(panels),
+            transports,
+            analysis_run_id="run-partial-visual-instruction",
+            instruction_version="vision-first-story-analyzer-v1",
+            instruction_sha256="a" * 64,
+            visual_instruction_version=version,
+            visual_instruction_sha256=None,
+        )
+    assert getattr(caught.value, "code", None) == "analyzer_contract_invalid"
+    assert provider.requests == []
+
+
 @pytest.mark.parametrize("mode", ("missing", "foreign", "malformed", "provider_hash"))
 def test_observe_chunks_rejects_invalid_visual_sidecars(mode):
     module = _pipeline_module()

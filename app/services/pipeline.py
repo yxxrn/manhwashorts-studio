@@ -696,6 +696,9 @@ def _observe_chunks(
     visual_instruction_version: str | None = None,
     visual_instruction_sha256: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+    if (visual_instruction_version is None) != (visual_instruction_sha256 is None):
+        raise _AnalysisBlocked("analyzer_contract_invalid", stage="visual_instruction")
+    require_visual_evidence = visual_instruction_version is not None
     unique: dict[str, dict[str, Any]] = {}
     last_seen: dict[str, int] = {}
     first_chunk: dict[str, int] = {}
@@ -725,7 +728,7 @@ def _observe_chunks(
             response,
             panel_ids,
             expected_panels={panel_id: panel_transports[panel_id] for panel_id in panel_ids},
-            require_visual_evidence=visual_instruction_version is not None,
+            require_visual_evidence=require_visual_evidence,
         )
         for row in rows:
             panel_id = row["panel_id"]

@@ -22,6 +22,12 @@ Notable changes per release. Dates are ISO 8601.
   `tests/test_story_evidence.py` fixture update supplies visual sidecars only
   when production visual mode is requested; no production compatibility
   fallback was added.
+- Hardened the Task 2 review boundary: OCR-only provenance is rejected for
+  known empty and known nonempty balloon masks while remaining eligible for
+  unknown, and incomplete visual instruction version/hash pairs fail before
+  any generic provider is called. The correction is 35 focused tests, 54
+  evidence tests, 181 regression tests, and 659 full non-slow tests passed
+  with 15 deselected; Task 3 remains the next slice.
 - Task 1 verification: 7 body-failing RED tests, 58 focused GREEN tests, and
   642 full non-slow tests passed; scoped Ruff, compileall, and diff-check pass.
 - Completed the approved implementation plans for balloon-free color-agnostic
