@@ -483,6 +483,14 @@ def prepare_reference_frame(
                     "reference framing mask does not match panel source",
                     code="visual.panel_lineage_unavailable",
                 )
+            if not framing_analysis.detector_contract_matches(
+                profile.framing_contract_version,
+                border_mask.detector_version,
+            ):
+                raise RenderError(
+                    "visual.framing_contract_incompatible: detector/profile mismatch",
+                    code="visual.framing_contract_incompatible",
+                )
             target_ratio = width / height
             if src_w / src_h > target_ratio:
                 base_w = max(2, min(src_w, int(round(src_h * target_ratio))))
@@ -524,17 +532,20 @@ def prepare_reference_frame(
                 )
                 last_telemetry = telemetry
                 if feasible:
-                    blank_target_met = (
-                        telemetry.edge_connected_blank_fraction
-                        <= profile.framing_blank_target_fraction + 1e-9
+                    balloon_zero = (
+                        1.0
+                        if telemetry.balloon_mask_intersection_ratio
+                        <= profile.framing_balloon_intersection_max + 1e-9
+                        else 0.0
                     )
                     rank = (
-                        1.0 if blank_target_met else 0.0,
-                        -telemetry.edge_connected_blank_fraction,
+                        balloon_zero,
+                        telemetry.protected_retained_fraction,
+                        1.0 - telemetry.edge_connected_blank_fraction,
                         focus_score,
-                        telemetry.base_zoom,
-                        -float(top),
-                        -float(left),
+                        -telemetry.base_zoom,
+                        float(top),
+                        float(left),
                     )
                     candidates.append((rank, telemetry))
             if not candidates:
@@ -573,8 +584,11 @@ def prepare_reference_frame(
             else "visual.panel_lineage_unavailable"
         )
         raise RenderError(f"{code}: reference framing evidence is unavailable", code=code) from exc
-    except (OSError, ValueError, ZeroDivisionError):
-        return _reference_prepare_fallback(src, dest, width, height, focus_x, focus_y)
+    except (OSError, ValueError, ZeroDivisionError) as exc:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference source is unavailable",
+            code="visual.panel_lineage_unavailable",
+        ) from exc
 
 
 def editorial_frame(

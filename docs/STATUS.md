@@ -222,7 +222,29 @@ Updated: 2026-08-11
   persisted panel crop, typed evidence, and Task 5 feasibility telemetry.
   Rollback point: 8f7f15bf44e525760948d9614be6f5099c1f7347.
 
-## Current runtime boundary
+## Visual Plan Task 5 hardening checkpoint
+
+- The deterministic ranking correction is committed at
+  61258817101a10a3b11916f653d89aca21088fe2, with rollback parent
+  8f7f15bf44e525760948d9614be6f5099c1f7347.
+- RED was collection-clean: 19 passed and 5 body failures covering the
+  protected-area/less-zoom ranking direction, larger tie-break coordinates,
+  protected geometry cap, incompatible detector contract, and corrupt-source
+  fail-closed behavior. GREEN is 50 focused tests, 36 related
+  visual/reference-render tests, and 703 exact non-slow tests passed.
+- Candidate ranking is now
+  balloon-zero, protected retained area, one-minus edge blank, focus score,
+  negative base zoom, then larger top and left coordinates. Protected zoom
+  telemetry is the minimum of the source-resolution cap and deterministic
+  geometry caps computed from the candidate-center crop needed to retain each
+  required protected region fraction; it is never looser than source cap.
+- Active reference preparation no longer falls back to legacy framing for
+  undecodable or invalid sources. It emits
+  visual.panel_lineage_unavailable; incompatible profile/detector contracts
+  emit visual.framing_contract_incompatible. profile=None remains unchanged.
+- Task 6 fallback/QC integration is next. No reference profile fields, media,
+  DB, credentials, voice, or actual render changed.
+
 
 - Production execution target: Google VPS through the `google` SSH alias.
 - Local machine: orchestration, source transfer, and requested artifact delivery.
@@ -258,10 +280,9 @@ A render is review-only until all are true:
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
-Current state: **development / review-only**. Visual Plan Task 5 is green
-at the uncommitted rollback parent 8f7f15bf44e525760948d9614be6f5099c1f7347;
-Task 6 is the next fallback/QC consumer of panel lineage and feasibility
-telemetry. Reference output remains unavailable until all lineage, balloon,
-protected-region, and rights gates are fulfilled. VPS GitHub SSH is
-unavailable, so approved commits are published through the isolated Windows
-transport workflow.
+Current state: **development / review-only**. Visual Plan Task 5 hardening is
+committed at 61258817101a10a3b11916f653d89aca21088fe2; Task 6 is the next
+fallback/QC consumer of panel lineage and feasibility telemetry. Reference
+output remains unavailable until all lineage, balloon, protected-region, and
+rights gates are fulfilled. VPS GitHub SSH is unavailable, so approved
+commits are published through the isolated Windows transport workflow.

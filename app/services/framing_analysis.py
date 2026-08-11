@@ -26,6 +26,14 @@ from app.services.visual_scoring import (
 )
 
 DETECTOR_VERSION = "COLOR_AGNOSTIC_BALLOON_FREE_V1:grid256:structure4"
+
+
+def detector_contract_matches(contract_version: str, detector_version: str) -> bool:
+    return detector_version == contract_version or detector_version.startswith(
+        f"{contract_version}:"
+    )
+
+
 _LOW_INFORMATION_THRESHOLDS = (0.08, 0.20, 0.08, 0.08)
 _NEIGHBOUR_OFFSETS = (
     (-1, -1),
@@ -390,6 +398,88 @@ def _protected_coverage(
     return coverage
 
 
+_REQUIRED_PROTECTED_COVERAGE = {
+    "subject": 0.98,
+    "face": 0.98,
+    "action": 0.95,
+    "continuity_context": 0.95,
+    "effect": 0.90,
+}
+
+
+def _required_crop_fraction(
+    centre: float,
+    start: float,
+    end: float,
+    required_fraction: float,
+) -> float:
+    span = max(0.0, end - start)
+    if span <= 0.0:
+        return 1.0
+    retained_span = span * min(1.0, max(0.0, required_fraction))
+    left_constraint = centre - (end - retained_span)
+    right_constraint = (start + retained_span) - centre
+    return min(1.0, max(0.0, 2.0 * max(left_constraint, right_constraint)))
+
+
+def _protected_area_fraction(
+    evidence: PanelVisualEvidence,
+    crop_box: tuple[int, int, int, int],
+    source_size: tuple[int, int],
+) -> float:
+    crop = _normalised_box(crop_box, source_size)
+    total_area = 0.0
+    retained_area = 0.0
+    for region in evidence.protected_regions:
+        region_box = _region_bounds(region)
+        if region_box is None:
+            continue
+        area = _region_area(region_box)
+        total_area += area
+        retained_area += _intersection_area(region_box, crop)
+    return round(retained_area / total_area, 6) if total_area else 1.0
+
+
+def _protected_region_zoom_cap(
+    evidence: PanelVisualEvidence,
+    crop_box: tuple[int, int, int, int],
+    source_size: tuple[int, int],
+    target_size: tuple[int, int],
+    source_resolution_cap: float,
+) -> float:
+    source_width, source_height = source_size
+    base_width, base_height = _reference_base_dimensions(source_size, target_size)
+    crop_left, crop_top, crop_right, crop_bottom = crop_box
+    centre_x = ((crop_left + crop_right) / 2.0) / source_width
+    centre_y = ((crop_top + crop_bottom) / 2.0) / source_height
+    protected_cap = source_resolution_cap
+    for region in evidence.protected_regions:
+        region_box = _region_bounds(region)
+        if region_box is None:
+            continue
+        kind = getattr(region, "kind", "")
+        required = max(
+            float(getattr(region, "minimum_coverage", 0.0)),
+            _REQUIRED_PROTECTED_COVERAGE.get(kind, 0.0),
+        )
+        if required <= 0.0:
+            continue
+        x0, y0, x1, y1 = region_box
+        width_fraction = _required_crop_fraction(centre_x, x0, x1, required)
+        height_fraction = _required_crop_fraction(centre_y, y0, y1, required)
+        if width_fraction > 0.0:
+            protected_cap = min(
+                protected_cap,
+                base_width / (source_width * width_fraction),
+            )
+        if height_fraction > 0.0:
+            protected_cap = min(
+                protected_cap,
+                base_height / (source_height * height_fraction),
+            )
+    return round(max(0.0, protected_cap), 6)
+
+
 def _balloon_intersection_ratio(
     evidence: PanelVisualEvidence,
     crop_box: tuple[int, int, int, int],
@@ -471,6 +561,14 @@ def candidate_is_feasible(
     base_zoom = max(base_width / crop_width, base_height / crop_height)
     coverage = _protected_coverage(parsed, crop_box, source_size)
     balloon_ratio = _balloon_intersection_ratio(parsed, crop_box, source_size)
+    protected_area = _protected_area_fraction(parsed, crop_box, source_size)
+    protected_cap = _protected_region_zoom_cap(
+        parsed,
+        crop_box,
+        source_size,
+        target_size,
+        source_cap,
+    )
     telemetry = FramingTelemetry(
         contract_version=parsed.contract_version,
         detector_version=border_mask.detector_version,
@@ -478,10 +576,10 @@ def candidate_is_feasible(
         crop_box=crop_box,
         base_zoom=round(base_zoom, 6),
         source_resolution_zoom_cap=round(source_cap, 6),
-        protected_region_zoom_cap=round(source_cap, 6),
+        protected_region_zoom_cap=protected_cap,
         edge_connected_blank_fraction=_mask_crop_fraction(border_mask, crop_box),
         non_discardable_low_information_fraction=border_mask.non_discardable_low_information_fraction,
-        protected_retained_fraction=border_mask.protected_retained_fraction,
+        protected_retained_fraction=protected_area,
         balloon_mask_intersection_ratio=round(balloon_ratio, 6),
         subject_coverage=round(coverage["subject"], 6),
         face_coverage=round(coverage["face"], 6),
@@ -504,6 +602,8 @@ def candidate_is_feasible(
     ):
         if coverage[kind] < minimum:
             return False, replace(telemetry, rejection_code=f"visual.protected_{kind}_coverage")
+    if base_zoom > protected_cap + 1e-9:
+        return False, replace(telemetry, rejection_code="visual.protected_zoom_insufficient")
     return True, telemetry
 
 

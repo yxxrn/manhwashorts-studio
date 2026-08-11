@@ -2,8 +2,18 @@
 
 Notable changes per release. Dates are ISO 8601.
 
-## Unreleased - Phase 2 editorial gates
-
+- Hardened Visual Plan Task 5 deterministic crop selection from rollback
+  parent 61258817101a10a3b11916f653d89aca21088fe2: RED was 19 passed and
+  5 body failures; GREEN is 50 focused framing tests, 36 related
+  visual/reference-render tests, and 703 exact non-slow tests passed. Ranking
+  now prioritizes balloon-zero, protected retained area, lower structural blank,
+  focus, lower zoom, and larger top/left tie-break coordinates. The protected
+  zoom cap is derived from the required retained fraction of each protected
+  region around the candidate center and is clamped by source resolution.
+  Incompatible detector/profile contracts and undecodable reference sources
+  fail with stable visual codes; legacy profile=None fallback is unchanged.
+  Task 6 remains next. No profile fields, media, DB, credentials, voice, or
+  actual render changed.
 - Implemented Visual Plan Task 5 candidate feasibility on the exact
   8f7f15bf44e525760948d9614be6f5099c1f7347 rollback parent: hard-zero
   balloon overlap, protected subject/face/action/context/effect thresholds,

@@ -590,3 +590,241 @@ def test_real_task9c1_panels_have_auditable_reference_preparation_smoke(tmp_path
     assert len(metrics) == 24
     assert contact_sheet.is_file()
     assert report.is_file()
+
+
+def _ranking_telemetry(
+    crop_box,
+    evidence,
+    border_mask,
+    *,
+    base_zoom,
+    protected_retained_fraction=0.99,
+    edge_blank=0.01,
+):
+    from app.services import framing_analysis
+
+    return framing_analysis.FramingTelemetry(
+        contract_version=evidence.contract_version,
+        detector_version=border_mask.detector_version,
+        mask_sha256=border_mask.mask_sha256,
+        crop_box=crop_box,
+        base_zoom=base_zoom,
+        source_resolution_zoom_cap=3.0,
+        protected_region_zoom_cap=3.0,
+        edge_connected_blank_fraction=edge_blank,
+        non_discardable_low_information_fraction=0.0,
+        protected_retained_fraction=protected_retained_fraction,
+        balloon_mask_intersection_ratio=0.0,
+        subject_coverage=1.0,
+        face_coverage=1.0,
+        action_coverage=1.0,
+        effect_coverage=1.0,
+        continuity_context_coverage=1.0,
+        mask_confidence=evidence.mask_confidence,
+        mask_source=evidence.evidence_source,
+    )
+
+
+def test_reference_ranking_prefers_protected_retention_before_blank_and_zoom(
+    tmp_path, monkeypatch
+):
+    from app.services import framing_analysis, reference_profile, render
+
+    source = tmp_path / 'ranking-source.png'
+    Image.new('RGB', (900, 2400), (64, 64, 64)).save(source)
+    evidence = _visual_evidence()
+    with Image.open(source) as image:
+        border_mask = framing_analysis.build_color_agnostic_border_mask(
+            image, evidence, grid_long_edge=64
+        )
+
+    monkeypatch.setattr(render, '_reference_scales', lambda _max_zoom: (1.0, 1.2))
+
+    def fake_candidate(crop_box, candidate_evidence, candidate_mask, source_size, target_size):
+        zoom = 1.0 if crop_box[2] - crop_box[0] > 800 else 1.2
+        return True, _ranking_telemetry(
+            crop_box,
+            candidate_evidence,
+            candidate_mask,
+            base_zoom=zoom,
+            protected_retained_fraction=0.99 if zoom == 1.0 else 0.90,
+            edge_blank=0.20 if zoom == 1.0 else 0.05,
+        )
+
+    monkeypatch.setattr(framing_analysis, 'candidate_is_feasible', fake_candidate)
+    prepared = render.prepare_reference_frame(
+        source,
+        tmp_path / 'ranking-prepared.jpg',
+        TARGET_WIDTH,
+        TARGET_HEIGHT,
+        0.5,
+        0.5,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        evidence=evidence,
+        border_mask=border_mask,
+    )
+
+    assert prepared.crop_box == (0, 400, 900, 2000)
+    assert prepared.telemetry is not None
+    assert prepared.telemetry.protected_retained_fraction == pytest.approx(0.99)
+
+
+def test_reference_ranking_prefers_larger_tie_break_box_and_is_deterministic(
+    tmp_path, monkeypatch
+):
+    from app.services import framing_analysis, reference_profile, render
+
+    source = tmp_path / 'tie-source.png'
+    Image.new('RGB', (900, 2400), (64, 64, 64)).save(source)
+    evidence = _visual_evidence()
+    with Image.open(source) as image:
+        border_mask = framing_analysis.build_color_agnostic_border_mask(
+            image, evidence, grid_long_edge=64
+        )
+
+    monkeypatch.setattr(render, '_reference_scales', lambda _max_zoom: (1.0, 1.2))
+
+    def fake_candidate(crop_box, candidate_evidence, candidate_mask, source_size, target_size):
+        return True, _ranking_telemetry(
+            crop_box,
+            candidate_evidence,
+            candidate_mask,
+            base_zoom=1.0,
+            protected_retained_fraction=0.99,
+            edge_blank=0.01,
+        )
+
+    monkeypatch.setattr(framing_analysis, 'candidate_is_feasible', fake_candidate)
+    first = render.prepare_reference_frame(
+        source,
+        tmp_path / 'tie-first.jpg',
+        TARGET_WIDTH,
+        TARGET_HEIGHT,
+        0.5,
+        0.5,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        evidence=evidence,
+        border_mask=border_mask,
+    )
+    second = render.prepare_reference_frame(
+        source,
+        tmp_path / 'tie-second.jpg',
+        TARGET_WIDTH,
+        TARGET_HEIGHT,
+        0.5,
+        0.5,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        evidence=evidence,
+        border_mask=border_mask,
+    )
+
+    assert first.crop_box == (75, 534, 825, 1866)
+    assert second.crop_box == first.crop_box
+    assert Path(first.path).read_bytes() == Path(second.path).read_bytes()
+
+
+def test_candidate_tightens_protected_zoom_cap_for_edge_region():
+    from app.services import framing_analysis
+
+    image = Image.new('RGB', (1000, 2000), (64, 64, 64))
+    plain_evidence = _visual_evidence()
+    edge_evidence = _visual_evidence(
+        protected_regions=(
+            _protected('subject', (0.01, 0.45, 0.11, 0.55), 0.98),
+        )
+    )
+    plain_mask = framing_analysis.build_color_agnostic_border_mask(
+        image, plain_evidence, grid_long_edge=64
+    )
+    edge_mask = framing_analysis.build_color_agnostic_border_mask(
+        image, edge_evidence, grid_long_edge=64
+    )
+
+    plain_ok, plain_telemetry = framing_analysis.candidate_is_feasible(
+        (0, 0, 1000, 2000),
+        plain_evidence,
+        plain_mask,
+        (1000, 2000),
+        (100, 200),
+    )
+    edge_ok, edge_telemetry = framing_analysis.candidate_is_feasible(
+        (0, 0, 1000, 2000),
+        edge_evidence,
+        edge_mask,
+        (1000, 2000),
+        (100, 200),
+    )
+
+    assert plain_ok is True
+    assert edge_ok is True
+    assert edge_telemetry.protected_region_zoom_cap < edge_telemetry.source_resolution_zoom_cap
+    assert edge_telemetry.protected_region_zoom_cap <= 1.03
+    assert edge_telemetry.protected_region_zoom_cap <= plain_telemetry.protected_region_zoom_cap
+
+
+def test_reference_rejects_incompatible_detector_contract(tmp_path):
+    from app.services import framing_analysis, reference_profile, render
+
+    source = tmp_path / 'contract-source.png'
+    Image.new('RGB', (900, 2400), (64, 64, 64)).save(source)
+    evidence = _visual_evidence()
+    with Image.open(source) as image:
+        border_mask = framing_analysis.build_color_agnostic_border_mask(
+            image, evidence, grid_long_edge=64
+        )
+    incompatible = replace(border_mask, detector_version='OTHER_FRAMING_CONTRACT:grid')
+    destination = tmp_path / 'contract-prepared.jpg'
+
+    with pytest.raises(
+        render.RenderError, match='visual.framing_contract_incompatible'
+    ):
+        render.prepare_reference_frame(
+            source,
+            destination,
+            TARGET_WIDTH,
+            TARGET_HEIGHT,
+            0.5,
+            0.5,
+            profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            evidence=evidence,
+            border_mask=incompatible,
+        )
+    assert not destination.exists()
+
+
+def test_reference_corrupt_source_fails_closed_but_legacy_fallback_remains(tmp_path):
+    from app.services import reference_profile, render
+
+    corrupt = tmp_path / 'corrupt-reference.png'
+    corrupt.write_bytes(b'not-an-image')
+    evidence = _visual_evidence()
+    reference_destination = tmp_path / 'corrupt-prepared.jpg'
+
+    with pytest.raises(
+        render.RenderError, match='visual.panel_lineage_unavailable'
+    ):
+        render.prepare_reference_frame(
+            corrupt,
+            reference_destination,
+            TARGET_WIDTH,
+            TARGET_HEIGHT,
+            0.5,
+            0.5,
+            profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            evidence=evidence,
+        )
+    assert not reference_destination.exists()
+
+    valid = tmp_path / 'legacy-source.png'
+    _write_focus_fixture(valid)
+    legacy_destination = tmp_path / 'legacy-prepared.jpg'
+    legacy_result = render.prepare_reference_frame(
+        valid,
+        legacy_destination,
+        TARGET_WIDTH,
+        TARGET_HEIGHT,
+        0.5,
+        0.5,
+        profile=None,
+    )
+    assert _result_path(legacy_result) == legacy_destination
