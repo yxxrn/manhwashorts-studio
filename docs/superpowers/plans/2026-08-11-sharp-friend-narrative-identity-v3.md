@@ -44,6 +44,11 @@ Baseline and authority:
 - app/prompts/vision_first_story_analyzer_v2.txt is the current committed analyzer instruction. It requires all-panel observation, fixed five roles, 90-125 total words, per-role ranges, and an open-question payoff.
 - app/services/analyzer_contract.py defines PROMPT_VERSION, load_analyzer_instruction(), validate_analyzer_output(output, *, expected_panel_ids), exact observation/coverage/continuity/story-spine/claim gates, and the v2 five-role validator.
 - app/services/vision_adapter.py defines VisionChapterSynthesisRequest, VisionObservationProvider.synthesize(), VisionRequestInvalid, VisionResponseInvalid, and the OpenAI-compatible structured JSON request. Synthesis currently accepts the committed v2 instruction identity.
+- The visual plan owns app/prompts/balloon_free_visual_evidence_v1.txt and the
+  nested visual_evidence observation contract. It is acquired during the
+  observation phase and persists balloon_mask_status, balloon/protected-region
+  geometry, confidence, provenance, and lineage. This narrative plan consumes
+  that sidecar exactly as provided; it does not rename, prompt, or infer it.
 - app/services/pipeline.py defines run_analysis(db, project_id, actor_id=""), generate_script(), build_timeline(), current_script(), and the persisted StoryAnalysis-to-ScriptVersion evidence gate. The public path must not call legacy text analysis or a template generator.
 - app/services/editorial_qc.py defines build_report(..., profile=None) and the existing visual/audio/subtitle/rights checks. app/services/quality.py defines CheckResult and profile-aware quality functions.
 - app/schemas.py defines AnalysisOut, AnalysisStatusOut, ScriptGenerateRequest, SectionIn, and ScriptApproveRequest. SectionIn already carries editorial_role, claim_ids, evidence_panel_ids, and evidence.
@@ -54,7 +59,8 @@ Baseline and authority:
 
 ## Architecture and dependency graph
 
-    ordered PanelRegion observations + coverage manifest
+    ordered PanelRegion observations + visual_evidence sidecars + coverage manifest
+      -> visual geometry readiness gate from the visual plan
       -> VisionChapterSynthesisRequest with narrative identity
       -> vision provider structured output
       -> analyzer_contract v2 or sharp_friend_v1 validation
@@ -68,7 +74,9 @@ Baseline and authority:
 Task dependencies:
 
 - Task 1 creates the immutable identity record consumed by all later tasks.
-- Task 2 creates the v3 instruction and carries identity metadata through synthesis.
+- Task 2 consumes the visual plan's versioned visual_evidence sidecar, creates
+  the v3 instruction, and carries identity metadata through synthesis. It does
+  not own visual geometry acquisition or change its version.
 - Task 3 extends validation while preserving v2 when no identity is selected.
 - Task 4 adds non-rewriting naturalness screening used by Task 5.
 - Task 5 wires profile selection, persistence, status, and approval-safe pipeline behavior.
@@ -80,7 +88,8 @@ Interfaces produced and consumed:
 - Task 2 consumes that profile and produces v3 prompt/version/hash fields in VisionChapterSynthesisRequest.
 - Task 3 consumes identity plus analyzer output and produces a validated flexible script_passages structure with ending_kind.
 - Task 4 consumes validated passages and claims and produces NarrativeNaturalnessReport plus stable screening findings.
-- Task 5 consumes the profile/validator/report and persists safe identity metadata; API status exposes only identity scalars.
+- Task 5 consumes the profile/validator/report and the already validated visual_evidence
+  sidecars, then persists safe identity metadata; API status exposes only identity scalars.
 - Task 6 consumes the persisted script and approval service and produces review fixtures, not media.
 
 ## Task 1: Define the immutable sharp_friend_v1 runtime profile
@@ -92,6 +101,13 @@ Interfaces produced and consumed:
 - Modify: CHANGELOG.md.
 
 **Interfaces:**
+
+- **Consumes from the visual plan:** each ordered observation's validated
+  visual_evidence mapping from balloon_free_visual_evidence_v1, including
+  unknown versus known_empty versus known_nonempty state. If reference-mode
+  readiness has not passed, this plan must fail closed rather than infer a mask.
+- **Produces:** only the narrative profile identity and v3 synthesis metadata;
+  no visual-region schema or prompt rename.
 
     @dataclass(frozen=True)
     class NarrativeIdentityProfile:
@@ -480,6 +496,9 @@ Interfaces produced and consumed:
 - [ ] Add a valid sharp_friend analysis fixture with complete coverage, continuity, claims, flexible four-passage output, ending_kind, and stored identity metadata; assert the profile is absent from current status or the generate path rejects the new identity.
 - [ ] Add mismatch tests for profile ID/version/hash, stale analysis identity, missing coverage, missing human review metadata, and invalid flexible passages. Assert no ScriptVersion is created.
 - [ ] Add a v2 fixture with identity omitted and assert the existing five-role path remains valid.
+- [ ] Add a visual-evidence fixture whose ordered observations contain the
+  exact balloon_free_visual_evidence_v1 sidecar. Assert narrative validation
+  consumes its lineage/claims and never upgrades unknown to known_empty.
 - [ ] Add a safety test monkeypatching resolve_analyzer, RulesScriptGenerator, generate_voiceover, and build_timeline to raise; generate_script with sharp_friend must not call any of them.
 - [ ] Add status API assertions for allowed scalar/count/code fields and forbidden observations, full claims/passages, prompt text, secrets, and file paths.
 - [ ] Add explicit approval tests: generate creates SCRIPT_DRAFT with confirmed false; approve without editorial_review_confirmed or actor fails; approve with both and valid evidence succeeds.
@@ -576,10 +595,10 @@ Interfaces produced and consumed:
 | Approved spec section | Visual plan | Narrative plan |
 | --- | --- | --- |
 | Current evidence and baseline | Global constraints, symbol map | Global constraints, symbol map |
-| COLOR_AGNOSTIC_BALLOON_FREE_V1 contract | Tasks 1-4 | Task 5 consumes visual sidecars without changing them |
+| COLOR_AGNOSTIC_BALLOON_FREE_V1 contract | Tasks 1-5 | Task 5 consumes visual sidecars without changing them |
 | Balloon/subject/action/effect evidence and provenance | Task 1 | Tasks 3 and 5 preserve claim/evidence lineage |
-| Color-agnostic blank detection and feasibility telemetry | Tasks 2-3 | Task 6 reviews the resulting visual evidence only |
-| Deterministic panel/beat fallback and stable motion | Task 4 | Task 5 preserves the timeline and approval boundary |
+| Color-agnostic blank detection and feasibility telemetry | Tasks 3-4 | Task 6 reviews the resulting visual evidence only |
+| Deterministic panel/beat fallback and stable motion | Task 5 | Task 5 preserves the timeline and approval boundary |
 | sharp_friend_v1 identity and prompt | Not applicable | Tasks 1-2 |
 | Flexible narration, ending kinds, and evidence validator | Not applicable | Task 3 |
 | Naturalness screening and human-readable QC | Not applicable | Task 4 and Task 6 |

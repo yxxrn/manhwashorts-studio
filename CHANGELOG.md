@@ -7,6 +7,10 @@ Notable changes per release. Dates are ISO 8601.
 - Completed the approved implementation plans for balloon-free color-agnostic
   framing and sharp_friend_v1 narrative identity. Voice provider choice,
   auditions, and audio generation remain deferred until explicit user selection.
+- Corrected the plans so unknown balloon geometry persists for audit and blocks
+  only reference readiness, while a dedicated ordered vision acquisition task
+  supplies the versioned visual-evidence prompt, adapter validation, mocks, and
+  snapshot before blank detection.
 
 - Added deterministic speech-balloon, UI-overlay, and blank-dominance penalties
   without requiring OCR, with auditable chronology and source-family reasons.

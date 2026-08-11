@@ -23,6 +23,8 @@ The following requirements are copied from the approved design and apply to ever
 - "balloon intersection remains a hard zero: never silently allow it"
 - "exact fallback: alternate ROI same panel -> tighter quality-safe crop -> different panel from same story beat -> stable visual_unavailable rejection"
 - "missing/unreliable balloon geometry cannot silently pass"
+- "unknown is an explicit persisted state, not an empty-mask inference; only
+  reference readiness rejects unknown geometry"
 - "preserve monotonic smooth motion and forbidden-shake rules"
 - "no speech_bubble ROI in output selection/motion planning"
 - "full-panel evidence, coverage, provenance, and no random sampling remain mandatory"
@@ -54,6 +56,10 @@ These are the real baseline symbols inspected before writing this plan:
 - app/services/editorial_qc.py defines build_report(..., profile=None); app/services/quality.py defines check_reference_profile, check_repetition_and_motion, check_subtitles, and profile-aware CheckResult values.
 - app/services/pipeline.py defines run_analysis(db, project_id, actor_id=""), generate_script, build_timeline, and current evidence-to-asset mapping through _reference_citation_map. PanelRegion stores bounds, segmentation metadata, observation_json, chunk_index, evidence_refs_json, and coverage_map_hash.
 - app/services/vision_adapter.py defines VisionObservationRequest, VisionChapterSynthesisRequest, VisionObservationProvider, VisionRequestInvalid, VisionResponseInvalid, and OpenAICompatibleVisionProvider.observe/synthesize. Its provider request must remain structured and fail-closed.
+- The current vision adapter _build_payload asks for semantic observation keys
+  but does not request nested visual geometry. Task 2 is the bounded extension
+  point: it adds the versioned visual prompt/hash and validates nested
+  visual_evidence without changing the v2 top-level key set.
 - app/models.py defines StoryAnalysis JSON fields and PanelRegion.observation_json/evidence_refs_json; no balloon-specific database column exists.
 - There is no root AGENTS.md in the repository. The only AGENTS.md found is outside this repository under the adjacent OmniVoice project, so no agent handoff file is part of this plan.
 
@@ -61,7 +67,10 @@ These are the real baseline symbols inspected before writing this plan:
 
     SourceAsset + PanelRegion lineage
       -> run_analysis complete coverage
-      -> visual_scoring.PanelVisualEvidence sidecar
+      -> balloon_free_visual_evidence_v1 prompt
+      -> VisionObservationRequest/OpenAICompatibleVisionProvider.observe
+      -> nested visual_evidence validation and PanelRegion persistence
+      -> require_reference_ready_visual_evidence
       -> render.prepare_reference_frame static candidate window
       -> editorial_visual_planner.plan reference fallback
       -> TimelineScene evidence/alignment telemetry
@@ -71,22 +80,26 @@ These are the real baseline symbols inspected before writing this plan:
 
 Task dependencies:
 
-- Task 1 establishes typed evidence and persistence shape.
-- Task 2 consumes Task 1 evidence and produces the color-agnostic border mask.
-- Task 3 consumes both records and mask telemetry to produce feasible static frames.
-- Task 4 consumes frame feasibility and planner citations to enforce fallback and QC.
-- Task 5 consumes all prior interfaces and proves the isolated real-panel review path.
+- Task 1 establishes typed evidence and persistence shape; unknown is persistable.
+- Task 2 acquires that geometry from every ordered vision observation.
+- Task 3 consumes the acquired evidence and produces the color-agnostic border mask.
+- Task 4 consumes both records and mask telemetry to produce feasible static frames.
+- Task 5 consumes frame feasibility and planner citations to enforce fallback and QC.
+- Task 6 consumes all prior interfaces and proves the isolated real-panel review path.
 
 Interfaces between tasks:
 
 - Task 1 produces PanelVisualEvidence, BalloonRegionEvidence,
   ProtectedRegionEvidence, VisualEvidenceError, parse_panel_visual_evidence,
-  validate_panel_visual_evidence, and panel_visual_evidence_json.
-- Task 2 produces BorderMaskResult and build_color_agnostic_border_mask.
-- Task 3 produces FramingTelemetry and PreparedFrame.telemetry, while retaining
+  validate_panel_visual_evidence, require_reference_ready_visual_evidence,
+  and panel_visual_evidence_json.
+- Task 2 produces the versioned visual-evidence prompt/hash and the adapter
+  observation contract consumed by run_analysis.
+- Task 3 produces BorderMaskResult and build_color_agnostic_border_mask.
+- Task 4 produces FramingTelemetry and PreparedFrame.telemetry, while retaining
   the existing PreparedFrame.path/crop_box/blank_fraction/base_zoom fields.
-- Task 4 consumes evidence_by_asset and produces stable planner/QC findings.
-- Task 5 consumes all prior sidecars and produces only isolated review artifacts;
+- Task 5 consumes evidence_by_asset and produces stable planner/QC findings.
+- Task 6 consumes all prior sidecars and produces only isolated review artifacts;
   it does not produce audio or publication state.
 
 ## Task 1: Persist typed visual region evidence
@@ -122,9 +135,11 @@ Use runtime attribute probes so collection succeeds on the current baseline:
         assert getattr(visual_scoring, "PanelVisualEvidence", None) is not None
         assert getattr(visual_scoring, "parse_panel_visual_evidence", None) is not None
 
-    def test_unknown_balloon_mask_is_not_empty():
+    def test_unknown_balloon_mask_persists_but_blocks_reference_consumption():
         evidence_type = getattr(visual_scoring, "PanelVisualEvidence", None)
-        assert evidence_type is not None
+        validate = getattr(visual_scoring, "validate_panel_visual_evidence", None)
+        require_ready = getattr(visual_scoring, "require_reference_ready_visual_evidence", None)
+        assert evidence_type is not None and validate is not None and require_ready is not None
         evidence = evidence_type(
             contract_version="COLOR_AGNOSTIC_BALLOON_FREE_V1",
             panel_id="panel-1",
@@ -135,11 +150,36 @@ Use runtime attribute probes so collection succeeds on the current baseline:
             balloon_mask_status="unknown",
             mask_confidence=0.0,
             evidence_source="vision",
+            mask_reason="provider could not determine geometry",
+            evidence_hash="",
+        )
+        validate(evidence)
+        serialized = visual_scoring.panel_visual_evidence_json(evidence)
+        assert serialized["balloon_mask_status"] == "unknown"
+        with pytest.raises(Exception) as caught:
+            require_ready(evidence)
+        assert "visual.balloon_mask_unknown" in str(caught.value)
+
+    def test_known_empty_requires_affirmative_provenance():
+        evidence_type = getattr(visual_scoring, "PanelVisualEvidence", None)
+        validate = getattr(visual_scoring, "validate_panel_visual_evidence", None)
+        assert evidence_type is not None and validate is not None
+        evidence = evidence_type(
+            contract_version="COLOR_AGNOSTIC_BALLOON_FREE_V1",
+            panel_id="panel-1",
+            source_asset_id="asset-1",
+            source_order=1,
+            balloon_regions=(),
+            protected_regions=(),
+            balloon_mask_status="known_empty",
+            mask_confidence=0.0,
+            evidence_source="",
+            mask_reason="",
             evidence_hash="",
         )
         with pytest.raises(Exception) as caught:
-            visual_scoring.validate_panel_visual_evidence(evidence)
-        assert "visual.balloon_mask_unknown" in str(caught.value)
+            validate(evidence)
+        assert "visual.balloon_mask_empty_unproven" in str(caught.value)
 
     def test_known_balloon_geometry_requires_normalized_geometry_and_confidence():
         parse = getattr(visual_scoring, "parse_panel_visual_evidence", None)
@@ -174,6 +214,7 @@ Use runtime attribute probes so collection succeeds on the current baseline:
             "balloon_mask_status": "known_empty",
             "mask_confidence": 1.0,
             "evidence_source": "vision",
+            "mask_reason": "vision adapter confirmed no balloon geometry",
             "balloon_regions": [],
             "protected_regions": [],
         }
@@ -237,29 +278,72 @@ The file already imports dataclass, Mapping, Image, and the feature types:
         balloon_mask_status: str
         mask_confidence: float
         evidence_source: str
+        mask_reason: str
         evidence_hash: str
 
     def validate_panel_visual_evidence(evidence: PanelVisualEvidence) -> None:
         if evidence.contract_version != "COLOR_AGNOSTIC_BALLOON_FREE_V1":
             raise VisualEvidenceError("visual.evidence_version_invalid", "unsupported version")
-        if evidence.balloon_mask_status == "unknown":
-            raise VisualEvidenceError("visual.balloon_mask_unknown", "geometry is unavailable")
+        if evidence.balloon_mask_status not in {"unknown", "known_empty", "known_nonempty"}:
+            raise VisualEvidenceError("visual.balloon_mask_status_invalid", "unsupported mask state")
         if not evidence.panel_id or not evidence.source_asset_id or evidence.source_order < 0:
             raise VisualEvidenceError("visual.evidence_lineage_invalid", "lineage is incomplete")
         if not 0.0 <= evidence.mask_confidence <= 1.0:
             raise VisualEvidenceError("visual.evidence_confidence_invalid", "confidence is outside 0..1")
+        if evidence.balloon_mask_status == "unknown" and not evidence.mask_reason:
+            raise VisualEvidenceError("visual.balloon_mask_reason_missing", "unknown geometry needs a reason")
+        if evidence.balloon_mask_status == "known_empty" and (
+            evidence.mask_confidence <= 0.0 or not evidence.evidence_source or not evidence.mask_reason
+        ):
+            raise VisualEvidenceError("visual.balloon_mask_empty_unproven", "known_empty requires affirmative evidence")
         for region in evidence.balloon_regions:
-            if region.mask_status == "unknown":
-                raise VisualEvidenceError("visual.balloon_mask_unknown", "region geometry is unknown")
-            if not region.normalized_polygon and region.normalized_bbox is None:
+            if region.mask_status == "known_nonempty" and not region.normalized_polygon and region.normalized_bbox is None:
                 raise VisualEvidenceError("visual.balloon_geometry_invalid", "known geometry is empty")
+            if region.mask_status not in {"unknown", "known_nonempty"}:
+                raise VisualEvidenceError("visual.balloon_mask_status_invalid", "unsupported region state")
 
+    def require_reference_ready_visual_evidence(
+        evidence: PanelVisualEvidence,
+    ) -> None:
+        validate_panel_visual_evidence(evidence)
+        if evidence.balloon_mask_status == "unknown":
+            raise VisualEvidenceError("visual.balloon_mask_unknown", "reference geometry is unavailable")
+        if evidence.balloon_mask_status == "known_nonempty":
+            for region in evidence.balloon_regions:
+                if region.mask_status == "unknown":
+                    raise VisualEvidenceError("visual.balloon_mask_unknown", "reference region geometry is unavailable")
+
+    def unknown_visual_evidence(
+        *, panel_id: str, source_asset_id: str, source_order: int,
+        reason: str, evidence_source: str,
+    ) -> PanelVisualEvidence:
+        return PanelVisualEvidence(
+            contract_version="COLOR_AGNOSTIC_BALLOON_FREE_V1",
+            panel_id=panel_id,
+            source_asset_id=source_asset_id,
+            source_order=source_order,
+            balloon_regions=(),
+            protected_regions=(),
+            balloon_mask_status="unknown",
+            mask_confidence=0.0,
+            evidence_source=evidence_source,
+            mask_reason=reason,
+            evidence_hash="",
+        )
+
+    When the observation provider has no reliable geometry, the persistence
+    boundary calls unknown_visual_evidence with the real panel lineage and a
+    nonempty reason. It never calls a known_empty constructor as a default.
     parse_panel_visual_evidence converts JSON lists to tuples, checks every
     normalized coordinate is in 0..1, checks polygon bounds, checks confidence
-    and allowed enum strings, and calls the validator. panel_visual_evidence_json
-    emits compact JSON-compatible dictionaries without dropping evidence_source
-    or mask_status. It hashes canonical sorted-key JSON after lineage and
-    geometry validation. No function reads provider secrets or source paths.
+    and allowed enum strings, and calls the structural validator. The structural
+    validator accepts unknown and preserves it; require_reference_ready_visual_evidence
+    is the separate reference-mode feasibility gate. panel_visual_evidence_json
+    emits compact JSON-compatible dictionaries without dropping evidence_source,
+    mask_reason, or mask_status, including unknown. known_empty is valid only with affirmative
+    provider/adapter provenance and positive confidence; an empty region list by
+    itself never proves known_empty. It hashes canonical sorted-key JSON after
+    lineage and geometry validation. No function reads provider secrets or source paths.
 
 - [ ] **Step 3: Persist the sidecar at the existing pipeline boundary**
 
@@ -276,13 +360,15 @@ keep the analyzer observation unchanged and merge only the validated sidecar:
     }
 
 The implementation must take the sidecar from the vision observation/evidence
-record, not invent it from a filename or list position. If the provider does
-not supply a required mask-status value, the analysis is BLOCKED with
-visual.balloon_mask_unknown. VisionObservationRequest and
-VisionChapterSynthesisRequest remain compatible because the sidecar is nested
-and the existing adapter preserves complete ordered mappings. Add a test that
-the adapter's required top-level observation keys and panel order remain
-unchanged.
+record, not invent it from a filename or list position. If the provider cannot
+obtain geometry, persist an explicit unknown record tied to the real panel
+lineage; do not convert it to known_empty and do not block non-reference legacy
+analysis. VisionObservationRequest and VisionChapterSynthesisRequest remain
+compatible because the sidecar is nested and the existing adapter preserves
+complete ordered mappings. Reference planning/QC must call
+require_reference_ready_visual_evidence and block with visual.balloon_mask_unknown
+when it consumes unknown evidence. Add tests that the adapter's required
+top-level observation keys and panel order remain unchanged.
 
 - [ ] **Step 4: Run focused regressions and lint**
 
@@ -299,7 +385,8 @@ tests pass. The full non-slow suite is also required before the commit.
 - [ ] **Step 5: Update docs, commit, and push the green slice**
 
 Update docs/STATUS.md with the exact tests, coverage of known_empty versus
-unknown, the new evidence hash, commit SHA, clean Git state, and Task 2 as
+unknown, the new evidence hash, commit SHA, clean Git state, and Task 2 geometry
+acquisition as
 the next atomic task. Add the same concise milestone to CHANGELOG.md.
 
 Stage only the five owned paths, verify git diff --cached --name-only, and
@@ -321,7 +408,91 @@ git push origin main:main, then verify
 git ls-remote https://github.com/yxxrn/manhwashorts-studio.git refs/heads/main
 equals the new commit. Never force-push. Rollback is the new commit SHA.
 
-## Task 2: Detect color-agnostic border-connected low-information padding
+## Task 2: Acquire versioned balloon and protected-region geometry during observation
+
+**Files:**
+- Modify: app/services/vision_adapter.py at VisionObservationRequest, _build_payload, and _validate_observations.
+- Modify: app/services/visual_scoring.py at the Task 1 visual contract loader/validator.
+- Create: app/prompts/balloon_free_visual_evidence_v1.txt.
+- Modify: tests/mock_provider.py and tests/test_vision_adapter.py.
+- Create: tests/fixtures/visual_evidence_prompt_snapshot.sha256.
+- Modify: docs/STATUS.md.
+- Modify: CHANGELOG.md.
+
+**Interfaces:**
+
+    VISUAL_EVIDENCE_PROMPT_VERSION = "balloon-free-visual-evidence-v1"
+
+    def load_visual_evidence_instruction() -> tuple[str, str, str]:
+        """Return committed version, SHA-256, and normalized LF prompt."""
+
+    @dataclass(frozen=True)
+    class VisionObservationRequest:
+        analysis_run_id: str
+        instruction_version: str
+        instruction_sha256: str
+        chunk_index: int
+        panels: tuple[Mapping[str, Any], ...]
+        visual_instruction_version: str | None = None
+        visual_instruction_sha256: str | None = None
+
+    def validate_visual_evidence_observation(
+        observation: Mapping[str, Any],
+        *,
+        expected_panel_id: str,
+        expected_source_asset_id: str,
+        expected_source_order: int,
+    ) -> Mapping[str, Any]:
+        ...
+
+- [ ] Preserve the existing five top-level analyzer observation keys and add only a nested visual_evidence mapping in the visual-observation mode. A v2 request without visual_instruction_version remains byte/behavior compatible.
+- [ ] Require visual_evidence in every ordered panel observation when the visual contract is requested. Its lineage must equal the request panel_id, source_asset_id, and source_order; no filename or list position may substitute for lineage.
+- [ ] Preserve unknown as a valid provider result. The nested mapping must include balloon_mask_status, balloon_regions, protected_regions, mask_confidence, evidence_source, mask_reason, and evidence_hash.
+- [ ] Accept balloon_mask_status unknown with empty geometry only when evidence_source states an unavailable/insufficient geometry result. Accept known_empty only when the provider affirmatively reports reliable empty geometry with nonzero confidence and provenance. Accept known_nonempty only with valid normalized bbox or polygon geometry.
+- [ ] Reject malformed claimed-known geometry, out-of-range coordinates, duplicate region IDs, blank provenance, confidence outside 0..1, lineage mismatch, and a text-only OCR result presented as known geometry. OCR boxes may be included as optional evidence_source metadata but OCR text alone never upgrades unknown.
+- [ ] Keep visual evidence acquisition separate from the later sharp_friend narrative prompt. The v3 narrative plan consumes the persisted visual_evidence sidecar and does not rename, own, or replace this contract.
+
+**RED:**
+
+- [ ] Add a valid three-panel multimodal mock response with visual_evidence for each panel, including one known_nonempty panel, one affirmative known_empty panel, and one explicit unknown panel. Assert ordered request metadata, exact panel lineage, and preservation of nested records.
+- [ ] Add a provider request assertion that the visual instruction version/hash are present and that the payload explicitly asks for balloon regions, protected subject/face/action/effect regions, normalized geometry, mask status, confidence, provenance, and lineage.
+- [ ] Add invalid response cases for missing visual_evidence, foreign panel lineage, malformed known_nonempty bbox/polygon, known_empty without affirmative confidence/provenance, duplicate region IDs, and OCR-only geometry.
+- [ ] Add a snapshot assertion for the normalized prompt SHA-256 and ensure the mock provider captures the prompt without secrets. Do not use a live network call.
+- [ ] Run:
+
+      PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_vision_adapter.py tests/test_balloon_evidence.py -q
+
+  Expected RED: the current adapter has no visual prompt fields and the mock observations have no nested visual evidence. Existing v2 observe/synthesis cases must remain collection-clean.
+
+**Implementation:**
+
+- [ ] Add load_visual_evidence_instruction beside the Task 1 canonical serializer. Read app/prompts/balloon_free_visual_evidence_v1.txt, normalize CRLF to LF with one trailing LF, and hash UTF-8 bytes. The snapshot is generated from this normalized content, never guessed.
+- [ ] Add the two defaulted request fields shown above. When either visual field is supplied, require the exact committed version/hash pair before any HTTP call; when both are absent, keep the existing v2 payload path.
+- [ ] Extend _build_payload to add the exact visual prompt as a separate structured instruction before images. The prompt must say:
+
+    Observe every supplied panel in source order before any story writing.
+    Return one observation for every requested panel.
+    Include visual_evidence with balloon_mask_status, balloon_regions,
+    protected_regions, mask_confidence, evidence_source, evidence_hash,
+    panel_id, source_asset_id, and source_order.
+    Classify geometry as unknown when the provider cannot reliably determine it.
+    Never infer known_empty from an empty list and never use OCR text alone
+    as geometry. Do not omit, sample, randomize, or use filenames as evidence.
+
+- [ ] Extend _validate_observations with a require_visual_evidence flag. Validate the existing top-level key set first, then call validate_visual_evidence_observation for each row when the flag is true. Return the nested mapping unchanged except for deterministic tuple/list normalization required by existing JSON persistence.
+- [ ] Call the Task 1 structural validator for nested geometry, not require_reference_ready_visual_evidence. This keeps unknown parseable and lets reference crop/planner/QC be the only consumer gate.
+- [ ] Update tests/mock_provider.py so its multimodal response has deterministic visual_evidence by panel ID and preserves existing BYOK/TTS behavior. The mock must never fabricate known_empty for an unknown case.
+- [ ] Keep vision adapter exceptions safe and machine-readable: malformed geometry is VisionResponseInvalid with a stable detail code such as visual.balloon_geometry_invalid; no prompt, image payload, API key, or raw provider response is included.
+
+**GREEN and checkpoint:**
+
+- [ ] Run the focused adapter/evidence tests, Task 7A synthesis, Task 7B pipeline, resolver vision, analyzer v1/v2, and BYOK tests with PATH=/home/yusronrohmani/.local/bin:$PATH.
+- [ ] Run .venv/bin/ruff check app/services/vision_adapter.py app/services/visual_scoring.py tests/mock_provider.py tests/test_vision_adapter.py and .venv/bin/python -m compileall -q app/services/vision_adapter.py app/services/visual_scoring.py.
+- [ ] Run git diff --check and compare the snapshot file to load_visual_evidence_instruction().
+- [ ] Update STATUS/CHANGELOG with the provider acquisition contract, unknown-versus-known_empty behavior, and exact focused results.
+- [ ] Stage only the listed implementation, prompt, mock, test, snapshot, and doc paths; commit feat: acquire balloon visual evidence; run the full non-slow suite; export/push the exact commit through the Windows transport. Rollback is this commit. Do not start Task 3 until GitHub SHA and VPS status are verified.
+
+## Task 3: Detect color-agnostic border-connected low-information padding
 
 **Files:**
 - Modify: app/services/visual_scoring.py beside the typed evidence functions.
@@ -331,7 +502,7 @@ equals the new commit. Never force-push. Rollback is the new commit SHA.
 - Modify: CHANGELOG.md.
 
 **Interfaces:**
-- **Consumes:** PanelVisualEvidence from Task 1 and a PIL Image.
+- **Consumes:** PanelVisualEvidence from Tasks 1-2 and a PIL Image.
 - **Produces:** frozen BorderMaskResult and build_color_agnostic_border_mask(image, evidence, grid_long_edge=256).
 
 - [ ] **Step 1: Add deterministic fixture tests**
@@ -457,7 +628,7 @@ Commit only the five owned paths with:
 Push immediately with the exact-history Windows bundle workflow and verify
 GitHub main equals the new SHA. Rollback is this commit.
 
-## Task 3: Rank feasible crop candidates with hard balloon exclusion
+## Task 4: Rank feasible crop candidates with hard balloon exclusion
 
 **Files:**
 - Modify: app/services/reference_profile.py.
@@ -554,7 +725,7 @@ The default keeps existing non-reference callers source-compatible.
 - [ ] **Step 3: Implement deterministic candidate feasibility**
 
 Replace only the profile branch of prepare_reference_frame with a candidate
-loop that calls the Task 2 detector. For each 0.02 scale:
+loop that calls the Task 3 detector. For each 0.02 scale:
 
     def candidate_is_feasible(
         box: tuple[int, int, int, int],
@@ -574,8 +745,8 @@ source-resolution crop dimensions are at least target dimensions divided by
     (balloon_zero, protected_area, 1.0 - edge_blank, focus_score,
      -base_zoom, box[1], box[0])
 
-Reject unknown mask status before candidate ranking with
-visual.balloon_mask_unknown. If all candidates meet hard requirements but
+Call require_reference_ready_visual_evidence before candidate ranking; it
+rejects unknown mask status with visual.balloon_mask_unknown. If all candidates meet hard requirements but
 edge blank is above zero, select the deterministic lowest-blank candidate and
 set fallback_reason to visual.blank_infeasible. If no candidate meets a hard
 requirement, raise RenderError with the stable rejection code and telemetry
@@ -601,7 +772,7 @@ Run:
     git diff --check
     PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest -q -m "not slow"
 
-Update STATUS/CHANGELOG with profile hash, telemetry examples, and Task 4.
+Update STATUS/CHANGELOG with profile hash, telemetry examples, and Task 5.
 Stage only the five owned paths and commit:
 
     git add -- app/services/reference_profile.py app/services/render.py tests/test_reference_framing.py docs/STATUS.md CHANGELOG.md
@@ -610,7 +781,7 @@ Stage only the five owned paths and commit:
 
 Push immediately by exact-history fast-forward and record rollback SHA.
 
-## Task 4: Apply panel and beat fallback plus reference QC
+## Task 5: Apply panel and beat fallback plus reference QC
 
 **Files:**
 - Modify: app/services/editorial_visual_planner.py.
@@ -677,8 +848,10 @@ Extend the reference path without changing the legacy call:
     ) -> list[dict]:
         ...
 
-Before selecting a shot in reference mode, reject a candidate with unknown
-balloon mask or a speech_bubble ROI. Preserve valid cited anchors. When a
+Before selecting a shot in reference mode, call
+require_reference_ready_visual_evidence for each candidate; it rejects unknown
+balloon mask before any ROI is selected. Also reject a speech_bubble ROI.
+Preserve valid cited anchors. When a
 section needs more shots than its mapped anchors can fill, select chronological
 context candidates only from the same story progression and append
 evidence_context_fallback:anchor:<panel_id>. Never append citation_alignment
@@ -728,7 +901,7 @@ Run:
     git diff --check
     PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest -q -m "not slow"
 
-Update both docs with exact stable codes, fallback evidence, and Task 5.
+Update both docs with exact stable codes, fallback evidence, and Task 6.
 Commit only the six owned paths:
 
     git add -- app/services/editorial_visual_planner.py app/services/editorial_qc.py app/services/quality.py tests/test_reference_profile_integration.py docs/STATUS.md CHANGELOG.md
@@ -737,7 +910,7 @@ Commit only the six owned paths:
 
 Push immediately with the exact-history workflow and record the rollback SHA.
 
-## Task 5: Integrate the isolated real-panel silent review render
+## Task 6: Integrate the isolated real-panel silent review render
 
 **Files:**
 - Modify: app/services/pipeline.py at build_timeline and reference evidence mapping.
@@ -844,19 +1017,20 @@ transport clone for audit and rollback.
 | Approved spec requirement | Plan task and proving assertion |
 | --- | --- |
 | Typed balloon/background/subject/action/effect records | Task 1 dataclasses, enum validation, JSON round-trip |
-| Unknown versus known-empty masks | Tasks 1 and 4 blocking tests |
-| Color-agnostic white/black/gray/arbitrary/gradient detection | Task 2 PIL fixtures |
-| Meaningful light/dark art protection | Task 2 protected-area tests |
-| Border flood fill and internal-background distinction | Task 2 mask topology tests |
-| Balloon intersection exactly zero | Tasks 3-5 one-pixel and area-overlap failures |
-| Subject/action/effect/continuity minimums | Task 3 candidate feasibility |
-| Dynamic zoom/upscale guard | Task 3 native-resolution tests |
-| Exact fallback order and stable visual_unavailable | Task 4 fallback ledger |
-| No speech_bubble selection or motion | Task 4 planner assertions |
+| Unknown versus known-empty masks | Task 1 persistence and Task 4 reference-readiness failures |
+| Provider acquisition of balloon/protected geometry | Task 2 prompt, adapter, mock, and snapshot tests |
+| Color-agnostic white/black/gray/arbitrary/gradient detection | Task 3 PIL fixtures |
+| Meaningful light/dark art protection | Task 3 protected-area tests |
+| Border flood fill and internal-background distinction | Task 3 mask topology tests |
+| Balloon intersection exactly zero | Tasks 4-6 one-pixel and area-overlap failures |
+| Subject/action/effect/continuity minimums | Task 4 candidate feasibility |
+| Dynamic zoom/upscale guard | Task 4 native-resolution tests |
+| Exact fallback order and stable visual_unavailable | Task 5 fallback ledger |
+| No speech_bubble selection or motion | Task 5 planner assertions |
 | Stable monotonic motion and no shake | Tasks 4-5 120-frame and filter tests |
-| Full panel/story/claim coverage and rights gate | Tasks 1, 4, and 5 lineage/rights assertions |
-| Legacy profile=None behavior | Tasks 2 and 3 regression snapshots |
-| Silent visual review with no voice/audio | Task 5 RenderRequest and FFprobe assertions |
+| Full panel/story/claim coverage and rights gate | Tasks 1, 2, 5, and 6 lineage/rights assertions |
+| Legacy profile=None behavior | Tasks 3 and 4 regression snapshots |
+| Silent visual review with no voice/audio | Task 6 RenderRequest and FFprobe assertions |
 | STATUS/CHANGELOG progress and immediate push | Every task's final step |
 | No media/DB/credentials/runtime data in Git | Every task's staged allowlist and secret scan |
 

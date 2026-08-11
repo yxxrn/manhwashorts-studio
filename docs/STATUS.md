@@ -2,7 +2,7 @@
 
 Updated: 2026-08-11
 
-## Implementation planning checkpoint - 2026-08-11
+## Implementation planning amendment - 2026-08-11
 
 - Approved the docs-only design in
   docs/superpowers/specs/2026-08-11-balloon-free-framing-narrative-identity-v3-design.md
@@ -10,11 +10,20 @@ Updated: 2026-08-11
 - Planning baseline is clean main at
   7fe75cd3c7b19ade96bc39f3f00a84aa2b06865f. The recorded historical full
   non-slow result is 635 passed; it was not rerun for this docs-only change.
+- The plans are amended at baseline
+  f7c7b065ca9436c86070fd717e99ac55af2819d3. Plan 1 now has six tasks:
+  typed states, provider geometry acquisition, detector, crop, fallback/QC,
+  and silent review. Plan 2 remains six tasks.
+- The correction preserves unknown visual geometry for lineage/audit and
+  rejects it only at reference readiness. It also adds the missing provider
+  prompt, adapter validation, mock, and snapshot acquisition boundary before
+  color-agnostic detection.
 - Implementation planning is complete in
   docs/superpowers/plans/2026-08-11-balloon-free-color-agnostic-framing.md and
   docs/superpowers/plans/2026-08-11-sharp-friend-narrative-identity-v3.md.
-- Next atomic task is Visual Plan Task 1: typed balloon, protected-region,
-  mask-status, and evidence-hash contracts. No production behavior is claimed until its RED,
+- Next atomic task is Visual Plan Task 1: typed balloon states and persistence,
+  including unknown versus affirmative known_empty. No production behavior is
+  claimed until its RED,
   GREEN, full verification, commit, and push gates pass.
 - Voice choice, provider configuration, auditions, audio generation, and
   final voice rendering remain explicitly deferred until the user chooses
