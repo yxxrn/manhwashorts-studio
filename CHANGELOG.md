@@ -28,6 +28,14 @@ Notable changes per release. Dates are ISO 8601.
   any generic provider is called. The correction is 35 focused tests, 54
   evidence tests, 181 regression tests, and 659 full non-slow tests passed
   with 15 deselected; Task 3 remains the next slice.
+- Corrected the Visual Plan Task 3/4 boundary at baseline
+  `940ab42d135626cfb096c3b3b3e7957d549e3923`: Task 3 now creates focused
+  `framing_analysis.py` with fixed/robust four-metric structure detection,
+  exact source-area ratios, protected-region rasterization, diagnostic-only
+  internal low-information masks, and deterministic `mask_sha256`; Task 4
+  extends that module for candidate feasibility. The legacy profile=None path,
+  provider hash ownership, balloon hard-zero rule, and Task 3 as the next
+  implementation slice remain explicit.
 - Task 1 verification: 7 body-failing RED tests, 58 focused GREEN tests, and
   642 full non-slow tests passed; scoped Ruff, compileall, and diff-check pass.
 - Completed the approved implementation plans for balloon-free color-agnostic

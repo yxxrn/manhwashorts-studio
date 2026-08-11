@@ -4,7 +4,7 @@
 
 **Goal:** Add deterministic color-agnostic, balloon-free reference framing that preserves protected visual evidence, uses an auditable fallback chain, and leaves legacy profile=None behavior unchanged.
 
-**Architecture:** Extend the existing visual_scoring.py feature boundary with typed panel-region evidence and a deterministic border-connected low-information mask. Extend render.py prepare_reference_frame to rank static candidate windows against that evidence, then let the existing editorial_visual_planner.py and editorial_qc.py enforce fallback and reference gates. Persist the evidence as a versioned JSON sidecar inside PanelRegion.observation_json; do not add a migration unless a focused test proves the current JSON boundary cannot represent the required data.
+**Architecture:** Keep visual_scoring.py as the typed panel-region evidence boundary and add the focused app/services/framing_analysis.py module for deterministic border masks and later candidate feasibility. Extend render.py prepare_reference_frame to consume that module, then let the existing editorial_visual_planner.py and editorial_qc.py enforce fallback and reference gates. Persist evidence as a versioned JSON sidecar inside PanelRegion.observation_json; do not add a migration unless a focused test proves the current JSON boundary cannot represent the required data.
 
 **Tech Stack:** Python 3.11, SQLAlchemy ORM, Pydantic, Pillow, existing OpenCV/Tesseract optional signals, FFmpeg from /home/yusronrohmani/.local/bin, pytest, Ruff, Alembic only if a schema need is proven.
 
@@ -40,8 +40,9 @@ Baseline and authority:
 
 - Authoritative checkout: /home/yusronrohmani/manhwashorts through SSH alias google.
 - Baseline for this implementation slice: clean main at
-  a45084688ebbe4b2b21ad1ea251b884f1fcee8ab, the pushed Task 1 commit. The
-  historical planning baseline remains recorded in the prior checkpoint.
+  940ab42d135626cfb096c3b3b3e7957d549e3923, the pushed Task 2 hardening
+  commit. The historical planning baseline remains recorded in the prior
+  checkpoint.
 - Historical checkpoint: 635 passed in the full non-slow suite at f9221dd; it is evidence only and is not a fresh result for this planning commit.
 - Every PowerShell SSH command in this plan ends with 2>&1.
 - Current profile=None crop_to_vertical, legacy editorial_frame compositions, legacy build_ass, and preview behavior are compatibility surfaces. Tests must prove no reference change leaks into them.
@@ -54,6 +55,10 @@ These are the real baseline symbols inspected before writing this plan:
 - app/services/render.py defines crop_to_vertical(src, dest, width, height, focus_x, focus_y), frozen PreparedFrame(path, crop_box, blank_fraction, base_zoom), reference_frame_cache_key(..., profile), prepare_reference_frame(..., profile), editorial_frame(..., profile=None), and build_ass(..., profile=None).
 - prepare_reference_frame currently searches 0.02 scale increments and scores _reference_content_stats. That helper uses a near-white RGB threshold; it is not a hard blank gate.
 - app/services/visual_scoring.py defines PanelScoreWeights, VisualFeatures, PanelCandidate, analyze_panel(data, asset_id="", order_index=0, source_family=""), analyze_assets, selection_reasons, and plan_content_aware_scenes. Its current speech_balloon_dominance and blank_dominance values are heuristics, not masks.
+- app/services/framing_analysis.py does not yet exist. Task 3 creates it as
+  the sole owner of color-agnostic border-mask metrics and Task 4 extends the
+  same focused module with candidate feasibility; it imports Task 1 visual
+  evidence types and does not re-export or duplicate their validators.
 - app/services/editorial_visual_planner.py defines plan(spans, candidates, profile=None, cited_asset_ids_by_section=None, citation_alignment_reasons_by_section=None), the reference _plan_reference path, ReferencePlanningError, and _reference_roi_key.
 - app/services/editorial_qc.py defines build_report(..., profile=None); app/services/quality.py defines check_reference_profile, check_repetition_and_motion, check_subtitles, and profile-aware CheckResult values.
 - app/services/pipeline.py defines run_analysis(db, project_id, actor_id=""), generate_script, build_timeline, and current evidence-to-asset mapping through _reference_citation_map. PanelRegion stores bounds, segmentation metadata, observation_json, chunk_index, evidence_refs_json, and coverage_map_hash.
@@ -73,6 +78,7 @@ These are the real baseline symbols inspected before writing this plan:
       -> VisionObservationRequest/OpenAICompatibleVisionProvider.observe
       -> nested visual_evidence validation and PanelRegion persistence
       -> require_reference_ready_visual_evidence
+      -> framing_analysis.build_color_agnostic_border_mask
       -> render.prepare_reference_frame static candidate window
       -> editorial_visual_planner.plan reference fallback
       -> TimelineScene evidence/alignment telemetry
@@ -84,8 +90,8 @@ Task dependencies:
 
 - Task 1 establishes typed evidence and persistence shape; unknown is persistable.
 - Task 2 acquires that geometry from every ordered vision observation.
-- Task 3 consumes the acquired evidence and produces the color-agnostic border mask.
-- Task 4 consumes both records and mask telemetry to produce feasible static frames.
+- Task 3 consumes the acquired evidence and produces the color-agnostic border mask in framing_analysis.py.
+- Task 4 extends framing_analysis.py with candidate feasibility and consumes both records and mask telemetry to produce feasible static frames.
 - Task 5 consumes frame feasibility and planner citations to enforce fallback and QC.
 - Task 6 consumes all prior interfaces and proves the isolated real-panel review path.
 
@@ -99,8 +105,8 @@ Interfaces between tasks:
   observation contract consumed by run_analysis. It also updates the caller
   so visual mode is explicitly requested; adapter compatibility alone is not
   sufficient to activate acquisition.
-- Task 3 produces BorderMaskResult and build_color_agnostic_border_mask.
-- Task 4 produces FramingTelemetry and PreparedFrame.telemetry, while retaining
+- Task 3 produces framing_analysis.BorderMaskResult and framing_analysis.build_color_agnostic_border_mask.
+- Task 4 produces framing_analysis.FramingTelemetry and PreparedFrame.telemetry, while retaining
   the existing PreparedFrame.path/crop_box/blank_fraction/base_zoom fields.
 - Task 5 consumes evidence_by_asset and produces stable planner/QC findings.
 - Task 6 consumes all prior sidecars and produces only isolated review artifacts;
@@ -566,10 +572,11 @@ equals the new commit. Never force-push. Rollback is the new commit SHA.
 - [ ] Call the Task 1 structural validator for nested geometry, not require_reference_ready_visual_evidence. This keeps unknown parseable and lets reference crop/planner/QC be the only consumer gate.
 - [ ] Update tests/mock_provider.py so its multimodal response has deterministic visual_evidence by panel ID and preserves existing BYOK/TTS behavior. The mock must never fabricate known_empty for an unknown case.
 - [ ] Keep vision adapter exceptions safe and machine-readable: malformed geometry is VisionResponseInvalid with a stable detail code such as visual.balloon_geometry_invalid; no prompt, image payload, API key, or raw provider response is included.
-- [ ] Keep visual_scoring.py focused: it is already about 902 lines after Task
-  1. Add only the small versioned prompt loader and reuse the Task 1 canonical
-  validators. Task 3 must place the color-agnostic detector in a focused module
-  or otherwise avoid growing this shared file past a healthy boundary.
+- [ ] Keep visual_scoring.py focused: it is already about 924 lines after Task
+  2. Add only the small versioned prompt loader and reuse the Task 1 canonical
+  validators. Task 3 creates app/services/framing_analysis.py for the
+  color-agnostic detector instead of growing this shared file; Task 4 extends
+  that focused module for candidate feasibility.
 
 **GREEN and checkpoint:**
 
@@ -582,22 +589,39 @@ equals the new commit. Never force-push. Rollback is the new commit SHA.
 ## Task 3: Detect color-agnostic border-connected low-information padding
 
 **Files:**
-- Modify: app/services/visual_scoring.py beside the typed evidence functions.
-- Modify: app/services/render.py beside _reference_content_stats and prepare_reference_frame.
+- Create: app/services/framing_analysis.py as the focused detector/cache module.
+- Modify: app/services/render.py to import framing_analysis and include detector identity in reference cache telemetry.
 - Create: tests/test_color_agnostic_blank.py.
 - Modify: docs/STATUS.md.
 - Modify: CHANGELOG.md.
 
 **Interfaces:**
-- **Consumes:** PanelVisualEvidence from Tasks 1-2 and a PIL Image.
-- **Produces:** frozen BorderMaskResult and build_color_agnostic_border_mask(image, evidence, grid_long_edge=256).
+- **Consumes:** `PanelVisualEvidence` and its validated typed protected regions from `app.services.visual_scoring`, plus a PIL Image. `framing_analysis.py` imports these types and validators; it does not re-export or duplicate them.
+- **Produces:** `framing_analysis.BorderMaskResult`, `framing_analysis.build_color_agnostic_border_mask(image: Image.Image, evidence: PanelVisualEvidence, *, grid_long_edge: int = 256) -> BorderMaskResult`, and `framing_analysis.canonical_protected_geometry(evidence: PanelVisualEvidence) -> tuple[str, ...]`.
+- **Render cache signature:** extend `render.reference_frame_cache_key(image_path, width, height, focus_x, focus_y, end_x, end_y, profile, *, border_mask: BorderMaskResult | None = None, evidence: PanelVisualEvidence | None = None) -> tuple` without changing the profile=None key when optional evidence is absent.
+- **Cache contract:** `BorderMaskResult.mask_sha256` is derived locally from detector version, source/grid dimensions, and canonical bit masks. The reference cache key also includes the evidence mask status/hash and protected-region geometry.
+
+Use the existing Task 1 serializer for the geometry component rather than
+serializing dataclass reprs:
+
+    def canonical_protected_geometry(evidence: PanelVisualEvidence) -> tuple[str, ...]:
+        serialized = panel_visual_evidence_json(evidence)["protected_regions"]
+        return tuple(
+            json.dumps(region, sort_keys=True, separators=(",", ":"))
+            for region in serialized
+        )
 
 - [ ] **Step 1: Add deterministic fixture tests**
 
-Use PIL-only synthetic fixtures; do not use artwork or external files:
+Use PIL-only synthetic fixtures; do not use artwork or external files. The
+test imports the new focused module and keeps Task 1 evidence construction in
+the existing test helper:
+
+    from math import floor
 
     from PIL import Image, ImageDraw
-    from app.services import visual_scoring
+
+    from app.services import framing_analysis
 
     def colored_gutter(color):
         image = Image.new("RGB", (160, 240), color)
@@ -614,45 +638,116 @@ Use PIL-only synthetic fixtures; do not use artwork or external files:
         ImageDraw.Draw(image).rectangle((45, 80, 115, 210), fill=(230, 230, 230))
         return image
 
-    def test_all_border_colors_use_structure_not_brightness():
-        build = getattr(visual_scoring, "build_color_agnostic_border_mask", None)
-        assert build is not None
-        for color in ((255, 255, 255), (0, 0, 0), (128, 128, 128), (18, 92, 177)):
-            result = build(colored_gutter(color), evidence_for_no_balloon())
+    def source_cell(result, x_ratio, y_ratio):
+        x = min(result.grid_width - 1, floor(x_ratio * result.grid_width))
+        y = min(result.grid_height - 1, floor(y_ratio * result.grid_height))
+        return result.edge_connected_mask[y][x], result.non_discardable_low_information_mask[y][x]
+
+    def test_all_border_colors_and_mild_gradient_use_structure_not_brightness():
+        for image in (
+            colored_gutter((255, 255, 255)),
+            colored_gutter((0, 0, 0)),
+            colored_gutter((128, 128, 128)),
+            colored_gutter((18, 92, 177)),
+            gradient_gutter(),
+        ):
+            result = framing_analysis.build_color_agnostic_border_mask(
+                image, evidence_for_no_balloon()
+            )
             assert result.edge_connected_blank_fraction > 0.20
 
-    def test_meaningful_light_and_dark_art_is_not_border_blank():
-        build = visual_scoring.build_color_agnostic_border_mask
-        image = Image.new("RGB", (160, 240), (245, 245, 245))
-        draw = ImageDraw.Draw(image)
-        draw.ellipse((20, 40, 140, 205), fill=(250, 250, 250), outline=(10, 10, 10), width=5)
-        result = build(image, evidence_for_protected_region((0.1, 0.15, 0.9, 0.9)))
-        assert result.protected_overlap_fraction >= 0.98
-        assert result.internal_blank_fraction == 0.0
+    def test_meaningful_light_and_dark_protected_art_is_retained():
+        for background, fill, outline in (
+            ((245, 245, 245), (250, 250, 250), (10, 10, 10)),
+            ((15, 15, 15), (5, 5, 5), (245, 245, 245)),
+        ):
+            image = Image.new("RGB", (160, 240), background)
+            draw = ImageDraw.Draw(image)
+            draw.ellipse((20, 40, 140, 205), fill=fill, outline=outline, width=5)
+            result = framing_analysis.build_color_agnostic_border_mask(
+                image, evidence_for_protected_region((0.1, 0.15, 0.9, 0.9))
+            )
+            assert result.protected_retained_fraction >= 0.98
+            assert source_cell(result, 0.5, 0.5)[0] is False
 
-    def test_border_flood_fill_does_not_delete_internal_island():
+    def test_sealed_internal_low_information_is_diagnostic_not_discardable():
         image = colored_gutter((20, 20, 20))
         ImageDraw.Draw(image).rectangle((60, 110, 100, 150), fill=(125, 125, 125))
-        result = visual_scoring.build_color_agnostic_border_mask(image, evidence_for_no_balloon())
-        assert result.internal_blank_fraction == 0.0
+        result = framing_analysis.build_color_agnostic_border_mask(
+            image, evidence_for_no_balloon()
+        )
+        edge, internal = source_cell(result, 0.5, 0.54)
+        assert internal is True
+        assert edge is False
+        assert result.non_discardable_low_information_fraction > 0.0
 
-Expected RED: the test bodies fail because the color-agnostic builder and
-telemetry do not exist; fixture construction itself must pass.
+    def test_source_area_mapping_is_integer_exact_and_ratios_are_six_decimals():
+        image = colored_gutter((128, 128, 128))
+        result = framing_analysis.build_color_agnostic_border_mask(
+            image, evidence_for_no_balloon()
+        )
+        areas = []
+        for y in range(result.grid_height):
+            y0 = floor(y * image.height / result.grid_height)
+            y1 = floor((y + 1) * image.height / result.grid_height)
+            for x in range(result.grid_width):
+                x0 = floor(x * image.width / result.grid_width)
+                x1 = floor((x + 1) * image.width / result.grid_width)
+                areas.append((x1 - x0) * (y1 - y0))
+        assert sum(areas) == image.width * image.height
+        edge_area = sum(
+            area
+            for area, row in zip(areas, [cell for row in result.edge_connected_mask for cell in row])
+            if row
+        )
+        assert result.edge_connected_blank_fraction == round(
+            edge_area / (image.width * image.height), 6
+        )
 
-- [ ] **Step 2: Implement the fixed-grid structure detector**
+    def test_mask_hash_is_deterministic_and_changes_with_canonical_mask():
+        image = colored_gutter((18, 92, 177))
+        first = framing_analysis.build_color_agnostic_border_mask(image, evidence_for_no_balloon())
+        second = framing_analysis.build_color_agnostic_border_mask(image, evidence_for_no_balloon())
+        assert first.mask_sha256 == second.mask_sha256
+        assert len(first.mask_sha256) == 64
 
-Add:
+Expected RED: the test bodies fail because framing_analysis.py and its
+detector result do not exist; fixture construction itself must pass.
+
+- [ ] **Step 2: Implement the fixed-grid structure detector in framing_analysis.py**
+
+Use this public record and function signature; `visual_scoring.py` remains the
+owner of `PanelVisualEvidence` parsing and validation:
+
+    import hashlib
+    import json
+    from dataclasses import dataclass
+    from math import floor
+
+    DETECTOR_VERSION = "COLOR_AGNOSTIC_BALLOON_FREE_V1:grid256:structure4"
 
     @dataclass(frozen=True)
     class BorderMaskResult:
         detector_version: str
+        source_width: int
+        source_height: int
         grid_width: int
         grid_height: int
         edge_connected_mask: tuple[tuple[bool, ...], ...]
-        internal_low_information_mask: tuple[tuple[bool, ...], ...]
+        non_discardable_low_information_mask: tuple[tuple[bool, ...], ...]
+        protected_mask: tuple[tuple[bool, ...], ...]
         edge_connected_blank_fraction: float
-        internal_blank_fraction: float
-        protected_overlap_fraction: float
+        non_discardable_low_information_fraction: float
+        protected_retained_fraction: float
+        mask_sha256: str
+
+    def _source_cell_bounds(index, grid_size, source_size):
+        start = floor(index * source_size / grid_size)
+        end = floor((index + 1) * source_size / grid_size)
+        return start, max(start + 1, end)
+
+    def _rounded_fraction(numerator, denominator):
+        return round(numerator / denominator, 6) if denominator else 0.0
 
     def build_color_agnostic_border_mask(
         image: Image.Image,
@@ -660,64 +755,148 @@ Add:
         *,
         grid_long_edge: int = 256,
     ) -> BorderMaskResult:
-        ...
+        if image.width <= 0 or image.height <= 0 or grid_long_edge <= 0:
+            raise ValueError("visual.mask_dimensions_invalid")
+        scale = grid_long_edge / max(image.width, image.height)
+        grid_width = min(image.width, max(1, round(image.width * scale)))
+        grid_height = min(image.height, max(1, round(image.height * scale)))
+        source_cells = tuple(
+            tuple(
+                (
+                    _source_cell_bounds(x, grid_width, image.width),
+                    _source_cell_bounds(y, grid_height, image.height),
+                )
+                for x in range(grid_width)
+            )
+            for y in range(grid_height)
+        )
+        protected_mask = rasterize_protected_regions(evidence, source_cells)
+        low_information_mask = classify_low_information_cells(image, source_cells)
+        edge_connected_mask = flood_border_cells(
+            low_information_mask, protected_mask, connectivity=8
+        )
+        non_discardable_mask = tuple(
+            tuple(low and not edge for low, edge in zip(low_row, edge_row))
+            for low_row, edge_row in zip(low_information_mask, edge_connected_mask)
+        )
+        mask_payload = {
+            "detector_version": DETECTOR_VERSION,
+            "source_dimensions": [image.width, image.height],
+            "grid_dimensions": [grid_width, grid_height],
+            "edge_connected_mask": edge_connected_mask,
+            "non_discardable_low_information_mask": non_discardable_mask,
+            "protected_mask": protected_mask,
+        }
+        mask_sha256 = hashlib.sha256(
+            json.dumps(mask_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return BorderMaskResult(
+            detector_version=DETECTOR_VERSION,
+            source_width=image.width,
+            source_height=image.height,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            edge_connected_mask=edge_connected_mask,
+            non_discardable_low_information_mask=non_discardable_mask,
+            protected_mask=protected_mask,
+            edge_connected_blank_fraction=source_area_fraction(
+                edge_connected_mask, source_cells, image.size
+            ),
+            non_discardable_low_information_fraction=source_area_fraction(
+                non_discardable_mask, source_cells, image.size
+            ),
+            protected_retained_fraction=protected_retained_fraction(
+                protected_mask, source_cells, image.size
+            ),
+            mask_sha256=mask_sha256,
+        )
 
-The implementation must use a fixed-size grid, rank-normalized local
-variance/entropy, gradient and edge density, two-scale texture energy, and
-typed saliency. A cell is low-information when at least three of the four
-structure thresholds are met: variance <= 0.08, entropy <= 0.20, edge
-density <= 0.08, and texture energy <= 0.08. Do not use a raw mean, a
-near-white test, or a black/gray test to classify a cell.
+`source_cells` must use exactly `x0=floor(i*source_width/grid_width)`,
+`x1=floor((i+1)*source_width/grid_width)`, and the analogous y boundaries.
+The grid dimensions are clamped no larger than their source dimensions, so
+each interval is positive without changing the floor mapping. `source_area_fraction`
+sums integer source pixel areas, and rounds only the final ratio to six
+decimals; it never counts grid cells equally.
 
-Perform an eight-neighbor flood fill from top, bottom, left, and right border
-cells. Mark only the connected union as edge_connected_mask. Do not mark
-internal islands. Exclude protected cells from the discardable mask and retain
-the exact original-resolution area for telemetry. The detector version is a
-constant such as "COLOR_AGNOSTIC_BALLOON_FREE_V1:grid256:thresholds080".
-Every ratio is calculated from source-space cell area with deterministic
-rounding to six decimal places.
+`classify_low_information_cells` computes luminance-window variance,
+eight-bit entropy, gradient/edge density, and two-scale texture energy. Each
+metric is normalized by a fixed physical bound or by `max(nonzero_p95,
+epsilon)` and clipped to 0..1; it is never converted to an empirical percentile
+rank. A cell is low-information only when at least three of these thresholds
+are met: variance <= 0.08, entropy <= 0.20, edge density <= 0.08, and texture
+energy <= 0.08. Do not use a raw mean, near-white test, or black/gray test to
+classify a cell.
+
+`rasterize_protected_regions` maps every typed subject, face, action, effect,
+continuity_context, and background polygon/bbox to the same source-cell grid.
+`flood_border_cells` starts from every top, bottom, left, and right border cell,
+uses 8-neighbor connectivity, follows only low-information and unprotected
+cells, and returns the ONLY discardable blank mask. Internal low-information
+components are retained in `non_discardable_low_information_mask` for
+diagnostics and are never cropped as blank. `protected_retained_fraction` is
+retained protected source area divided by total protected source area, rounded
+to six decimals, and is exactly 1.0 when there are no protected cells.
 
 - [ ] **Step 3: Keep the legacy profile=None path unchanged**
 
 In render.py, leave crop_to_vertical and the profile=None branch of
-editorial_frame untouched. prepare_reference_frame calls
-build_color_agnostic_border_mask only when profile is not None. Keep
-_reference_content_stats for legacy tests and for non-profile fallback
+editorial_frame untouched. The profile branch calls
+`framing_analysis.build_color_agnostic_border_mask` only when profile is not
+None. Keep _reference_content_stats for legacy tests and non-profile fallback
 telemetry, but do not use its near-white boolean as the reference hard mask.
-Add a cache-key field for detector_version, mask hash, mask status, and
-protected-region geometry before any candidate is selected.
+Add `from app.services import framing_analysis` at the existing service import
+boundary; do not re-export the detector from visual_scoring.py.
+Extend the existing reference cache payload before candidate selection with
+these exact fields:
+
+    cache_payload.update(
+        detector_version=border_mask.detector_version,
+        mask_sha256=border_mask.mask_sha256,
+        balloon_mask_status=evidence.balloon_mask_status,
+        evidence_hash=evidence.evidence_hash,
+        protected_geometry=framing_analysis.canonical_protected_geometry(evidence),
+    )
+
+The cache key must change when any of those fields changes, while legacy
+profile=None cache keys and output bytes remain unchanged.
 
 - [ ] **Step 4: Run the color and legacy matrix**
 
 Run:
 
     PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_color_agnostic_blank.py tests/test_reference_framing.py tests/test_motion_stability.py tests/test_reference_profile.py -q
-    .venv/bin/ruff check app/services/visual_scoring.py app/services/render.py tests/test_color_agnostic_blank.py
+    .venv/bin/ruff check app/services/framing_analysis.py app/services/render.py tests/test_color_agnostic_blank.py
     .venv/bin/python -m compileall -q app
     git diff --check
 
 Expected GREEN: all color fixtures, meaningful art protections, border flood
 fill, detector hash, legacy framing, and monotonic motion tests pass.
+Also assert that changing detector_version, mask_sha256, balloon mask status,
+evidence_hash, or protected geometry changes the profile-mode cache key while
+the profile=None key remains byte-for-byte unchanged.
 
 - [ ] **Step 5: Update docs, run full non-slow, commit, and push**
 
-Record detector version, threshold metrics, legacy compatibility evidence, and
-Task 3 next in STATUS and CHANGELOG. Run:
+Record detector version, source-area threshold metrics, internal diagnostic
+metrics, mask hash, legacy compatibility evidence, and Task 4 as next in
+STATUS and CHANGELOG. Run:
 
     PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest -q -m "not slow"
 
 Commit only the five owned paths with:
 
-    git add -- app/services/visual_scoring.py app/services/render.py tests/test_color_agnostic_blank.py docs/STATUS.md CHANGELOG.md
+    git add -- app/services/framing_analysis.py app/services/render.py tests/test_color_agnostic_blank.py docs/STATUS.md CHANGELOG.md
     git diff --cached --check
     git commit -m "feat: detect color agnostic border padding"
 
 Push immediately with the exact-history Windows bundle workflow and verify
-GitHub main equals the new SHA. Rollback is this commit.
+GitHub main equals the new SHA. Task 3 starts from baseline
+`940ab42d135626cfb096c3b3b3e7957d549e3923`; rollback is this commit.
 
 ## Task 4: Rank feasible crop candidates with hard balloon exclusion
 
 **Files:**
+- Modify: app/services/framing_analysis.py beside BorderMaskResult and the detector.
 - Modify: app/services/reference_profile.py.
 - Modify: app/services/render.py.
 - Modify: tests/test_reference_framing.py.
@@ -725,8 +904,9 @@ GitHub main equals the new SHA. Rollback is this commit.
 - Modify: CHANGELOG.md.
 
 **Interfaces:**
-- **Consumes:** BorderMaskResult, PanelVisualEvidence, current focus inputs, and ReferenceProfileConfig.
-- **Produces:** FramingTelemetry and PreparedFrame.telemetry while retaining the existing path, crop_box, blank_fraction, and base_zoom fields.
+- **Consumes:** `framing_analysis.BorderMaskResult`, `PanelVisualEvidence`, current focus inputs, and `ReferenceProfileConfig`.
+- **Produces:** `framing_analysis.FramingTelemetry`, `framing_analysis.candidate_is_feasible(...) -> tuple[bool, FramingTelemetry]`, and `render.PreparedFrame.telemetry`, while retaining the existing path, crop_box, blank_fraction, and base_zoom fields.
+- **Import boundary:** `render.py` imports `framing_analysis`; `framing_analysis.py` imports Task 1 visual evidence serializers/validators but never imports render.py, preventing a circular dependency.
 
 - [ ] **Step 1: Add failing candidate tests**
 
@@ -778,16 +958,22 @@ Set the reference instance to:
     framing_mask_grid_long_edge=256
     framing_safe_area_margin=0.03
 
-Add a frozen telemetry record in render.py:
+Add the analysis telemetry record beside the detector in
+app/services/framing_analysis.py. `render.py` imports this record and uses it
+as `PreparedFrame.telemetry`; framing_analysis never imports render.py:
 
     @dataclass(frozen=True)
     class FramingTelemetry:
         contract_version: str
+        detector_version: str
+        mask_sha256: str
         crop_box: tuple[int, int, int, int]
         base_zoom: float
         source_resolution_zoom_cap: float
         protected_region_zoom_cap: float
         edge_connected_blank_fraction: float
+        non_discardable_low_information_fraction: float
+        protected_retained_fraction: float
         balloon_mask_intersection_ratio: float
         subject_coverage: float
         face_coverage: float
@@ -805,14 +991,15 @@ Add a frozen telemetry record in render.py:
         crop_box: tuple[int, int, int, int]
         blank_fraction: float
         base_zoom: float
-        telemetry: FramingTelemetry | None = None
+        telemetry: framing_analysis.FramingTelemetry | None = None
 
 The default keeps existing non-reference callers source-compatible.
 
 - [ ] **Step 3: Implement deterministic candidate feasibility**
 
 Replace only the profile branch of prepare_reference_frame with a candidate
-loop that calls the Task 3 detector. For each 0.02 scale:
+loop that calls the Task 3 detector and then
+`framing_analysis.candidate_is_feasible`. For each 0.02 scale:
 
     def candidate_is_feasible(
         box: tuple[int, int, int, int],
@@ -821,7 +1008,41 @@ loop that calls the Task 3 detector. For each 0.02 scale:
         source_size: tuple[int, int],
         target_size: tuple[int, int],
     ) -> tuple[bool, FramingTelemetry]:
-        ...
+        balloon_ratio = balloon_intersection_ratio(box, evidence)
+        coverages = protected_coverages(box, evidence)
+        source_cap = source_resolution_zoom_cap(source_size, target_size)
+        feasible = (
+            balloon_ratio == 0.0
+            and coverages["subject"] >= 0.98
+            and coverages["face"] >= 0.98
+            and coverages["action"] >= 0.95
+            and coverages["continuity_context"] >= 0.95
+            and coverages["effect"] >= 0.90
+            and base_zoom_for(box, source_size) <= source_cap
+        )
+        telemetry = FramingTelemetry(
+            contract_version="COLOR_AGNOSTIC_BALLOON_FREE_V1",
+            detector_version=border_mask.detector_version,
+            mask_sha256=border_mask.mask_sha256,
+            crop_box=box,
+            base_zoom=base_zoom_for(box, source_size),
+            source_resolution_zoom_cap=source_cap,
+            protected_region_zoom_cap=protected_zoom_cap(coverages),
+            edge_connected_blank_fraction=crop_blank_fraction(box, border_mask),
+            non_discardable_low_information_fraction=border_mask.non_discardable_low_information_fraction,
+            protected_retained_fraction=border_mask.protected_retained_fraction,
+            balloon_mask_intersection_ratio=balloon_ratio,
+            subject_coverage=coverages["subject"],
+            face_coverage=coverages["face"],
+            action_coverage=coverages["action"],
+            effect_coverage=coverages["effect"],
+            continuity_context_coverage=coverages["continuity_context"],
+            mask_confidence=evidence.mask_confidence,
+            mask_source=evidence.evidence_source,
+            fallback_reason="",
+            rejection_code=None if feasible else "visual.crop_candidate_infeasible",
+        )
+        return feasible, telemetry
 
 A candidate is feasible only when balloon_mask_intersection_ratio == 0.0,
 required subject/face retained area is at least 0.98, required action and
@@ -854,15 +1075,15 @@ ASS build still rejects invalid display cues independently of framing.
 Run:
 
     PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_reference_framing.py tests/test_color_agnostic_blank.py tests/test_reference_profile.py tests/test_motion_stability.py -q
-    .venv/bin/ruff check app/services/reference_profile.py app/services/render.py tests/test_reference_framing.py
+    .venv/bin/ruff check app/services/framing_analysis.py app/services/reference_profile.py app/services/render.py tests/test_reference_framing.py
     .venv/bin/python -m compileall -q app
     git diff --check
     PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest -q -m "not slow"
 
 Update STATUS/CHANGELOG with profile hash, telemetry examples, and Task 5.
-Stage only the five owned paths and commit:
+Stage only the six owned paths and commit:
 
-    git add -- app/services/reference_profile.py app/services/render.py tests/test_reference_framing.py docs/STATUS.md CHANGELOG.md
+    git add -- app/services/framing_analysis.py app/services/reference_profile.py app/services/render.py tests/test_reference_framing.py docs/STATUS.md CHANGELOG.md
     git diff --cached --check
     git commit -m "feat: rank balloon free reference crop candidates"
 
@@ -883,7 +1104,7 @@ handoff records and the four source/test paths are the smallest coherent QC
 boundary.
 
 **Interfaces:**
-- **Consumes:** PanelVisualEvidence, FramingTelemetry, candidate evidence mapping, planner citations, and current plan(..., profile=...) signature.
+- **Consumes:** PanelVisualEvidence, `framing_analysis.FramingTelemetry`, candidate evidence mapping, planner citations, and current plan(..., profile=...) signature.
 - **Produces:** alignment reasons, fallback records, stable QC codes, and no speech_bubble target.
 
 - [ ] **Step 1: Add failing fallback and QC tests**
@@ -918,12 +1139,16 @@ Use synthetic candidates with a deterministic evidence map:
         assert all(shot["roi_label"] != "speech_bubble" for shot in planned)
         assert all(shot["camera_intent"] != "speech_bubble" for shot in planned)
 
-Expected RED: plan has no visual_evidence_by_asset parameter, no fallback
-attempt ledger, and quality has no visual framing gate.
+Expected RED: framing_analysis has no candidate feasibility boundary, the
+plan has no visual_evidence_by_asset parameter or fallback attempt ledger, and
+quality has no visual framing gate.
 
 - [ ] **Step 2: Add explicit planner evidence inputs and fallback result**
 
-Extend the reference path without changing the legacy call:
+First extract the current non-profile branch into the private compatibility
+function `def _plan_legacy(span_list: list[object], candidates: list[object]) -> list[dict]`;
+its body and output must remain byte/behavior compatible. Extend the reference
+path without changing the legacy call:
 
     def plan(
         spans: Iterable[object],
@@ -933,7 +1158,17 @@ Extend the reference path without changing the legacy call:
         citation_alignment_reasons_by_section: Mapping[str, Iterable[str]] | None = None,
         visual_evidence_by_asset: Mapping[str, PanelVisualEvidence] | None = None,
     ) -> list[dict]:
-        ...
+        span_list = list(spans)
+        if profile is not None:
+            return _plan_reference(
+                span_list,
+                candidates,
+                profile,
+                cited_asset_ids_by_section,
+                citation_alignment_reasons_by_section,
+                visual_evidence_by_asset,
+            )
+        return _plan_legacy(span_list, candidates)
 
 Before selecting a shot in reference mode, call
 require_reference_ready_visual_evidence for each candidate; it rejects unknown
@@ -959,7 +1194,16 @@ Add a focused helper in quality.py:
         *,
         profile: ReferenceProfileConfig,
     ) -> list[CheckResult]:
-        ...
+        failures: list[CheckResult] = []
+        for asset_id, evidence in sorted(evidence_by_asset.items()):
+            try:
+                require_reference_ready_visual_evidence(evidence)
+            except VisualEvidenceError as error:
+                failures.append(_fail(error.code, CheckSeverity.ERROR, str(error)))
+            if evidence.balloon_mask_status == "known_nonempty":
+                failures.extend(_check_balloon_intersection(asset_id, scenes, evidence))
+        failures.extend(_check_reference_coverage(scenes, profile))
+        return sorted(failures, key=lambda failure: failure.code)
 
 It emits visual.balloon_mask_unknown, visual.balloon_mask_overlap,
 visual.subject_coverage_insufficient, visual.action_coverage_insufficient,
@@ -968,6 +1212,10 @@ for hard failures. editorial_qc.build_report(..., profile=profile) adds the
 same safe codes to its report without changing profile=None behavior. It also
 calls motion_director.audit_camera_sequence so forbidden curves and reversals
 remain blocking.
+
+The helper calls `_check_balloon_intersection`, `_check_reference_coverage`,
+and the existing `_fail(code, severity, message, detail)` boundary; it never
+rewrites a candidate or downgrades an unknown mask to known_empty.
 
 - [ ] **Step 4: Add chronology, rights, and motion regressions**
 
@@ -1109,6 +1357,9 @@ transport clone for audit and rollback.
 | Color-agnostic white/black/gray/arbitrary/gradient detection | Task 3 PIL fixtures |
 | Meaningful light/dark art protection | Task 3 protected-area tests |
 | Border flood fill and internal-background distinction | Task 3 mask topology tests |
+| Exact source-space area mapping and six-decimal ratios | Task 3 floor-boundary and area-accounting test |
+| Internal low-information diagnostic without discard | Task 3 sealed-island mask test |
+| Deterministic detector/cache identity | Task 3 mask_sha256 and cache-key test |
 | Balloon intersection exactly zero | Tasks 4-6 one-pixel and area-overlap failures |
 | Subject/action/effect/continuity minimums | Task 4 candidate feasibility |
 | Dynamic zoom/upscale guard | Task 4 native-resolution tests |

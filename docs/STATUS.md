@@ -21,10 +21,16 @@ Updated: 2026-08-11
 - Implementation planning is complete in
   docs/superpowers/plans/2026-08-11-balloon-free-color-agnostic-framing.md and
   docs/superpowers/plans/2026-08-11-sharp-friend-narrative-identity-v3.md.
-- Task 1 typed states/persistence is green and published at
-  `a45084688ebbe4b2b21ad1ea251b884f1fcee8ab`. The next atomic task is Visual
-  Plan Task 2: provider geometry acquisition with explicit visual-mode pipeline
-  wiring; reference readiness remains blocked until that evidence exists.
+- Visual Plan Tasks 1-2 are green and published through
+  `940ab42d135626cfb096c3b3b3e7957d549e3923`. The next atomic task is Visual
+  Plan Task 3: create the focused `framing_analysis.py` detector with exact
+  source-area accounting; Task 4 will extend that module for candidate
+  feasibility. Reference readiness remains blocked until geometry feasibility
+  exists.
+- The Task 3/4 plan correction isolates detector code from the approximately
+  924-line visual_scoring.py boundary, replaces brightness/percentile-rank
+  assumptions with fixed/robust structure metrics, and makes internal
+  low-information components diagnostic rather than discardable.
 - Voice choice, provider configuration, auditions, audio generation, and
   final voice rendering remain explicitly deferred until the user chooses
   local or API execution. Rights/source checks keep publish_allowed=false.
@@ -144,15 +150,10 @@ A render is review-only until all are true:
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
-Current state: **development / review-only**. Visual Plan Task 2 review
-hardening is green from the `4fbfc4eff478edb3c65554e54ecbcd439e967de4`
-rollback point: RED was 35 collected with 2 body failures and no
-collection/setup failures; focused adapter/pipeline GREEN is 35 passed, the
-evidence/regression set is 54 passed, the expanded matrix is 181 passed, and
-the full non-slow suite is 659 passed with 15 deselected. Scoped Ruff,
-compileall, and diff-check verification pass. The provider remains unable to
-establish `evidence_hash`; local hashing remains authoritative. Task 3
-color-agnostic detection is next, and reference output remains unavailable
+Current state: **development / review-only**. Visual Plan Task 3/4 planning
+correction is based on clean main `940ab42d135626cfb096c3b3b3e7957d549e3923`.
+Task 3 creates `app/services/framing_analysis.py`; Task 4 is the next consumer
+of its mask and feasibility interfaces. Reference output remains unavailable
 until geometry feasibility is fulfilled. VPS GitHub SSH is unavailable, so
 approved commits are published through the isolated Windows transport
 workflow.
