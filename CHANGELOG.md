@@ -4,6 +4,14 @@ Notable changes per release. Dates are ISO 8601.
 
 ## Unreleased - Phase 2 editorial gates
 
+- Amended the balloon-free framing plan into seven ordered tasks. The new
+  Visual Task 4 persists cited PanelRegion IDs, integer bounds, evidence
+  snapshots, and immutable source checksums in TimelineScene, then materializes
+  a deterministic panel crop before reference feasibility. This closes the
+  coordinate-space gap between `_encode_panel_payload(PanelRegion)` and the
+  full SourceAsset render path; legacy profile=None remains unchanged. No
+  production code, tests, media, database, narration, or voice provider was
+  changed in this docs-only checkpoint.
 - Implemented Visual Plan Task 1 typed visual evidence persistence: immutable
   balloon/protected-region records, deterministic canonical hashes, complete
   panel lineage validation, and explicit unknown/affirmative-empty states.

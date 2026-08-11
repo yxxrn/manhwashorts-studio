@@ -34,9 +34,9 @@ Baseline and authority:
 
 - Authoritative checkout: /home/yusronrohmani/manhwashorts through SSH alias google.
 - Baseline for the next implementation work: clean main at
-  a45084688ebbe4b2b21ad1ea251b884f1fcee8ab; GitHub main must be verified at
-  that SHA immediately before transport. The historical planning baseline is
-  retained only as prior checkpoint evidence.
+  e0d8fdf523c095740a984d88798200ed3dd4707e; GitHub main must be verified at
+  that SHA immediately before transport. The historical planning baseline and
+  earlier visual Task 1/2 checkpoints are retained only as prior evidence.
 - Historical checkpoint: 635 passed in the full non-slow suite at f9221dd; it is historical evidence, not a fresh result for this docs-only planning commit.
 - Every PowerShell SSH command in the implementation sequence ends with 2>&1.
 - Existing v2, legacy text-analysis, explicit approval, spoken/display, rights, and provider capability gates remain in force unless a task explicitly selects the new profile.
@@ -50,8 +50,11 @@ Baseline and authority:
 - The visual plan owns app/prompts/balloon_free_visual_evidence_v1.txt and the
   nested visual_evidence observation contract. It is acquired during the
   observation phase and persists balloon_mask_status, balloon/protected-region
-  geometry, confidence, provenance, and lineage. This narrative plan consumes
-  that sidecar exactly as provided; it does not rename, prompt, or infer it.
+  geometry, confidence, provenance, and lineage. Visual Task 4 then persists
+  the cited PanelRegion identity and materializes the panel-coordinate crop
+  before visual readiness/candidate work. This narrative plan consumes that
+  sidecar and lineage snapshot exactly as provided; it does not rename, prompt,
+  or infer them.
 - app/services/pipeline.py defines run_analysis(db, project_id, actor_id=""), generate_script(), build_timeline(), current_script(), and the persisted StoryAnalysis-to-ScriptVersion evidence gate. The public path must not call legacy text analysis or a template generator.
 - app/services/editorial_qc.py defines build_report(..., profile=None) and the existing visual/audio/subtitle/rights checks. app/services/quality.py defines CheckResult and profile-aware quality functions.
 - app/schemas.py defines AnalysisOut, AnalysisStatusOut, ScriptGenerateRequest, SectionIn, and ScriptApproveRequest. SectionIn already carries editorial_role, claim_ids, evidence_panel_ids, and evidence.
@@ -63,6 +66,7 @@ Baseline and authority:
 ## Architecture and dependency graph
 
     ordered PanelRegion observations + visual_evidence sidecars + coverage manifest
+      -> visual Task 4 panel lineage snapshot and materialized crop
       -> visual geometry readiness gate from the visual plan
       -> VisionChapterSynthesisRequest with narrative identity
       -> vision provider structured output
@@ -77,9 +81,10 @@ Baseline and authority:
 Task dependencies:
 
 - Task 1 creates the immutable identity record consumed by all later tasks.
-- Task 2 consumes the visual plan's versioned visual_evidence sidecar, creates
-  the v3 instruction, and carries identity metadata through synthesis. It does
-  not own visual geometry acquisition or change its version.
+- Task 2 consumes the visual plan's versioned visual_evidence sidecar after the
+  visual plan has persisted panel lineage/crop identity, creates the v3
+  instruction, and carries identity metadata through synthesis. It does not
+  own visual geometry acquisition, crop materialization, or version changes.
 - Task 3 extends validation while preserving v2 when no identity is selected.
 - Task 4 adds non-rewriting naturalness screening used by Task 5.
 - Task 5 wires profile selection, persistence, status, and approval-safe pipeline behavior.
@@ -598,16 +603,16 @@ Interfaces produced and consumed:
 | Approved spec section | Visual plan | Narrative plan |
 | --- | --- | --- |
 | Current evidence and baseline | Global constraints, symbol map | Global constraints, symbol map |
-| COLOR_AGNOSTIC_BALLOON_FREE_V1 contract | Tasks 1-5 | Task 5 consumes visual sidecars without changing them |
-| Balloon/subject/action/effect evidence and provenance | Task 1 | Tasks 3 and 5 preserve claim/evidence lineage |
-| Color-agnostic blank detection and feasibility telemetry | Tasks 3-4 | Task 6 reviews the resulting visual evidence only |
-| Deterministic panel/beat fallback and stable motion | Task 5 | Task 5 preserves the timeline and approval boundary |
+| COLOR_AGNOSTIC_BALLOON_FREE_V1 contract | Tasks 1-7 | Task 5 consumes visual sidecars after Task 4 lineage without changing them |
+| Balloon/subject/action/effect evidence and provenance | Tasks 1-2, 4-5 | Tasks 3 and 5 preserve claim/evidence lineage |
+| Color-agnostic blank detection and feasibility telemetry | Tasks 3, 5 | Task 6 reviews the resulting visual evidence only |
+| Deterministic panel/beat fallback and stable motion | Task 4, Tasks 6-7 | Task 5 preserves the timeline and approval boundary |
 | sharp_friend_v1 identity and prompt | Not applicable | Tasks 1-2 |
 | Flexible narration, ending kinds, and evidence validator | Not applicable | Task 3 |
 | Naturalness screening and human-readable QC | Not applicable | Task 4 and Task 6 |
-| Pipeline/API/status persistence | Task 5 consumes approved visual evidence | Task 5 |
-| Spoken/display separation | Task 5 preserves render inputs | Tasks 5-6 |
-| Voice deferral and rights gate | Task 5 no-audio review | Global constraints, Task 6 |
+| Pipeline/API/status persistence | Task 4 consumes approved visual evidence | Task 5 |
+| Spoken/display separation | Task 7 preserves render inputs | Tasks 5-6 |
+| Voice deferral and rights gate | Task 7 no-audio review | Global constraints, Task 6 |
 | Verification, docs, commits, transport, rollback | Every Plan 1 task | Every Plan 2 task |
 
 ## Verification matrix and handoff

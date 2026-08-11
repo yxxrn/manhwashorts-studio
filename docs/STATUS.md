@@ -7,13 +7,14 @@ Updated: 2026-08-11
 - Approved the docs-only design in
   docs/superpowers/specs/2026-08-11-balloon-free-framing-narrative-identity-v3-design.md
   for COLOR_AGNOSTIC_BALLOON_FREE_V1 framing and sharp_friend_v1 narration.
-- Planning baseline is clean main at
-  7fe75cd3c7b19ade96bc39f3f00a84aa2b06865f. The recorded historical full
-  non-slow result is 635 passed; it was not rerun for this docs-only change.
-- The plans are amended at baseline
-  f7c7b065ca9436c86070fd717e99ac55af2819d3. Plan 1 now has six tasks:
-  typed states, provider geometry acquisition, detector, crop, fallback/QC,
-  and silent review. Plan 2 remains six tasks.
+- The current implementation baseline is clean main at
+  e0d8fdf523c095740a984d88798200ed3dd4707e. The historical full non-slow
+  result of 635 passed at f9221dd remains checkpoint evidence; it was not
+  rerun for this docs-only amendment.
+- The visual plan is amended into seven ordered tasks: typed states,
+  provider geometry acquisition, detector, panel lineage/crop materialization,
+  candidate feasibility, fallback/QC, and silent review. Plan 2 remains six
+  narrative tasks.
 - The correction preserves unknown visual geometry for lineage/audit and
   rejects it only at reference readiness. It also adds the missing provider
   prompt, adapter validation, mock, and snapshot acquisition boundary before
@@ -22,11 +23,15 @@ Updated: 2026-08-11
   docs/superpowers/plans/2026-08-11-balloon-free-color-agnostic-framing.md and
   docs/superpowers/plans/2026-08-11-sharp-friend-narrative-identity-v3.md.
 - Visual Plan Tasks 1-3 are green and published through
-  `940ab42d135626cfb096c3b3b3e7957d549e3923`; the Task 3 implementation starts
-  from `ab886dddf3972847b634015ba95e8bb4d88fc73f`. Task 4 is the next atomic
-  task and will extend `framing_analysis.py` with candidate feasibility.
-  Reference readiness remains blocked until that feasibility and the later
-  provider-to-reference evidence path exist.
+  `e0d8fdf523c095740a984d88798200ed3dd4707e`. The amendment adds a standalone
+  panel-lineage boundary because visual evidence coordinates are produced from
+  `_encode_panel_payload(PanelRegion)` crops while TimelineScene and
+  build_render_request currently retain/render only a full SourceAsset.
+  The next unimplemented slice is amended Visual Task 4: persist cited panel
+  identity and materialize the evidence-aligned crop before reference
+  feasibility. The amended sequence still names Visual Task 1 typed
+  states/persistence as its first prerequisite; that contract is already
+  present in the e0 runtime and is retained unchanged.
 - The Task 3/4 plan correction isolates detector code from the approximately
   924-line visual_scoring.py boundary, replaces brightness/percentile-rank
   assumptions with fixed/robust structure metrics, and makes internal
@@ -60,9 +65,10 @@ Updated: 2026-08-11
   version, mask hash, mask status, evidence hash, and serializer-backed
   protected geometry. This slice does not invoke detection from render call
   sites, infer sidecars, or claim reference readiness.
-- Rollback point is the Task 3 commit from clean `ab886dddf3972847b634015ba95e8bb4d88fc73f`;
-  Task 4 is next for candidate feasibility, hard balloon exclusion, and
-  reference fallback/QC integration.
+- Rollback point is `e0d8fdf523c095740a984d88798200ed3dd4707e`. The amended
+  Visual Task 4 is next for panel lineage persistence and deterministic
+  evidence-aligned crops; candidate feasibility is now Visual Task 5 and must
+  consume this crop rather than applying panel coordinates to a full strip.
 
 ## Visual Plan Task 1 - typed visual evidence - 2026-08-11
 
@@ -176,8 +182,9 @@ A render is review-only until all are true:
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
 Current state: **development / review-only**. Visual Plan Task 3 is green at
-the uncommitted implementation baseline from clean main
-`ab886dddf3972847b634015ba95e8bb4d88fc73f`; Task 4 is the next consumer of
-the detector and cache interfaces. Reference output remains unavailable until
-geometry feasibility is fulfilled. VPS GitHub SSH is unavailable, so approved
-commits are published through the isolated Windows transport workflow.
+clean main `e0d8fdf523c095740a984d88798200ed3dd4707e`; the amended Task 4 is
+the next consumer boundary and must preserve panel-coordinate lineage before
+Task 5 detector feasibility. Reference output remains unavailable until
+lineage and geometry feasibility are fulfilled. VPS GitHub SSH is unavailable,
+so approved commits are published through the isolated Windows transport
+workflow.

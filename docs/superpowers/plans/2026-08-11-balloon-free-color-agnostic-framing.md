@@ -4,7 +4,7 @@
 
 **Goal:** Add deterministic color-agnostic, balloon-free reference framing that preserves protected visual evidence, uses an auditable fallback chain, and leaves legacy profile=None behavior unchanged.
 
-**Architecture:** Keep visual_scoring.py as the typed panel-region evidence boundary and add the focused app/services/framing_analysis.py module for deterministic border masks and later candidate feasibility. Extend render.py prepare_reference_frame to consume that module, then let the existing editorial_visual_planner.py and editorial_qc.py enforce fallback and reference gates. Persist evidence as a versioned JSON sidecar inside PanelRegion.observation_json; do not add a migration unless a focused test proves the current JSON boundary cannot represent the required data.
+**Architecture:** Keep visual_scoring.py as the typed panel-region evidence boundary and retain the focused app/services/framing_analysis.py module for deterministic border masks and later candidate feasibility. First carry the PanelRegion coordinate space, evidence, and immutable source checksum through TimelineScene and materialize a deterministic panel crop; only then let render.py prepare reference frames from that crop. The existing editorial_visual_planner.py and editorial_qc.py enforce fallback and reference gates after the lineage boundary. Persist evidence as a versioned JSON sidecar inside PanelRegion.observation_json; add a migration only when the timeline snapshot cannot be represented compatibly by the current schema.
 
 **Tech Stack:** Python 3.11, SQLAlchemy ORM, Pydantic, Pillow, existing OpenCV/Tesseract optional signals, FFmpeg from /home/yusronrohmani/.local/bin, pytest, Ruff, Alembic only if a schema need is proven.
 
@@ -28,6 +28,8 @@ The following requirements are copied from the approved design and apply to ever
 - "preserve monotonic smooth motion and forbidden-shake rules"
 - "no speech_bubble ROI in output selection/motion planning"
 - "full-panel evidence, coverage, provenance, and no random sampling remain mandatory"
+- "panel-normalized visual evidence is applied only to its persisted PanelRegion crop; a full SourceAsset strip is never paired with panel coordinates"
+- "missing, foreign, stale, or malformed panel lineage fails closed with visual.panel_lineage_unavailable"
 - "spoken_text punctuation-bearing and display_text separately derived punctuation-free uppercase one-word cues"
 - "human editorial approval remains mandatory"
 - "voice generation is explicitly deferred until the user chooses local or API execution"
@@ -40,9 +42,9 @@ Baseline and authority:
 
 - Authoritative checkout: /home/yusronrohmani/manhwashorts through SSH alias google.
 - Baseline for this implementation slice: clean main at
-  940ab42d135626cfb096c3b3b3e7957d549e3923, the pushed Task 2 hardening
-  commit. The historical planning baseline remains recorded in the prior
-  checkpoint.
+  e0d8fdf523c095740a984d88798200ed3dd4707e, the published Visual Task 3
+  detector commit. The amendment commit becomes the implementation parent;
+  do not copy a stale historical parent into a task command.
 - Historical checkpoint: 635 passed in the full non-slow suite at f9221dd; it is evidence only and is not a fresh result for this planning commit.
 - Every PowerShell SSH command in this plan ends with 2>&1.
 - Current profile=None crop_to_vertical, legacy editorial_frame compositions, legacy build_ass, and preview behavior are compatibility surfaces. Tests must prove no reference change leaks into them.
@@ -52,16 +54,18 @@ Baseline and authority:
 These are the real baseline symbols inspected before writing this plan:
 
 - app/services/reference_profile.py defines frozen ReferenceProfileConfig, REFERENCE_MATCHED_SHORTS_V1, canonical_profile_json, profile_hash, and resolve_reference_profile. The current reference values include base_frame_zoom_max=1.35 and max_blank_fraction=0.18.
-- app/services/render.py defines crop_to_vertical(src, dest, width, height, focus_x, focus_y), frozen PreparedFrame(path, crop_box, blank_fraction, base_zoom), reference_frame_cache_key(..., profile), prepare_reference_frame(..., profile), editorial_frame(..., profile=None), and build_ass(..., profile=None).
+- app/services/render.py defines crop_to_vertical(src, dest, width, height, focus_x, focus_y), frozen PreparedFrame(path, crop_box, blank_fraction, base_zoom), reference_frame_cache_key(..., profile, *, border_mask=None, evidence=None), prepare_reference_frame(..., profile), editorial_frame(..., profile=None), and build_ass(..., profile=None).
 - prepare_reference_frame currently searches 0.02 scale increments and scores _reference_content_stats. That helper uses a near-white RGB threshold; it is not a hard blank gate.
 - app/services/visual_scoring.py defines PanelScoreWeights, VisualFeatures, PanelCandidate, analyze_panel(data, asset_id="", order_index=0, source_family=""), analyze_assets, selection_reasons, and plan_content_aware_scenes. Its current speech_balloon_dominance and blank_dominance values are heuristics, not masks.
-- app/services/framing_analysis.py does not yet exist. Task 3 creates it as
-  the sole owner of color-agnostic border-mask metrics and Task 4 extends the
-  same focused module with candidate feasibility; it imports Task 1 visual
-  evidence types and does not re-export or duplicate their validators.
+- app/services/framing_analysis.py now exists from Visual Task 3 as the sole
+  owner of color-agnostic border-mask metrics and Task 5 extends the same
+  focused module with candidate feasibility; it imports Task 1 visual evidence
+  types and does not re-export or duplicate their validators.
 - app/services/editorial_visual_planner.py defines plan(spans, candidates, profile=None, cited_asset_ids_by_section=None, citation_alignment_reasons_by_section=None), the reference _plan_reference path, ReferencePlanningError, and _reference_roi_key.
 - app/services/editorial_qc.py defines build_report(..., profile=None); app/services/quality.py defines check_reference_profile, check_repetition_and_motion, check_subtitles, and profile-aware CheckResult values.
-- app/services/pipeline.py defines run_analysis(db, project_id, actor_id=""), generate_script, build_timeline, and current evidence-to-asset mapping through _reference_citation_map. PanelRegion stores bounds, segmentation metadata, observation_json, chunk_index, evidence_refs_json, and coverage_map_hash.
+- app/services/pipeline.py defines run_analysis(db, project_id, actor_id=""), generate_script, build_timeline, build_render_request, and current evidence-to-asset mapping through _reference_citation_map. build_timeline currently creates TimelineScene rows from timeline.SceneSpec without panel lineage; build_render_request currently maps each scene.asset_id back to the full SourceAsset path.
+- app/services/timeline.py defines SceneSpec with asset_id, focus/camera fields, alignment telemetry, and no panel-region snapshot fields. app/services/render.py defines SceneInput with image_path and camera/effect fields, and RenderRequest.profile; neither currently carries panel_id, panel bounds, or typed visual evidence.
+- app/models.py defines PanelRegion.source_asset_id, panel_id, source_order, bounds_json, source_asset_checksum, coverage_map_hash, and observation_json. TimelineScene currently stores only asset_id plus timing, motion, alignment, and overlay fields. app/db.py init_db() contains SQLite compatibility ALTERs for prior timeline/source columns, while Alembic is the migration owner; the live Alembic current revision is a4p0_editorial_voice_visual_contract. The new revision filename/revision ID must be inspected and generated from that live head during Task 4, never guessed in this plan.
 - app/services/vision_adapter.py defines VisionObservationRequest, VisionChapterSynthesisRequest, VisionObservationProvider, VisionRequestInvalid, VisionResponseInvalid, and OpenAICompatibleVisionProvider.observe/synthesize. Its provider request must remain structured and fail-closed.
 - The current vision adapter _build_payload asks for semantic observation keys
   but does not request nested visual geometry. Task 2 is the bounded extension
@@ -77,11 +81,11 @@ These are the real baseline symbols inspected before writing this plan:
       -> balloon_free_visual_evidence_v1 prompt
       -> VisionObservationRequest/OpenAICompatibleVisionProvider.observe
       -> nested visual_evidence validation and PanelRegion persistence
+      -> reference TimelineScene panel snapshot/crop boundary
       -> require_reference_ready_visual_evidence
       -> framing_analysis.build_color_agnostic_border_mask
       -> render.prepare_reference_frame static candidate window
       -> editorial_visual_planner.plan reference fallback
-      -> TimelineScene evidence/alignment telemetry
       -> editorial_qc.build_report and quality checks
       -> stable monotonic FFmpeg motion
       -> review-only output with rights gate
@@ -91,9 +95,10 @@ Task dependencies:
 - Task 1 establishes typed evidence and persistence shape; unknown is persistable.
 - Task 2 acquires that geometry from every ordered vision observation.
 - Task 3 consumes the acquired evidence and produces the color-agnostic border mask in framing_analysis.py.
-- Task 4 extends framing_analysis.py with candidate feasibility and consumes both records and mask telemetry to produce feasible static frames.
-- Task 5 consumes frame feasibility and planner citations to enforce fallback and QC.
-- Task 6 consumes all prior interfaces and proves the isolated real-panel review path.
+- Task 4 binds cited PanelRegions into TimelineScene snapshots and materializes evidence-aligned panel crops in render requests.
+- Task 5 extends framing_analysis.py with candidate feasibility and consumes the materialized crop, evidence, and mask telemetry to produce feasible static frames.
+- Task 6 consumes frame feasibility and planner citations to enforce fallback and QC.
+- Task 7 consumes all prior interfaces and proves the isolated real-panel review path.
 
 Interfaces between tasks:
 
@@ -106,10 +111,11 @@ Interfaces between tasks:
   so visual mode is explicitly requested; adapter compatibility alone is not
   sufficient to activate acquisition.
 - Task 3 produces framing_analysis.BorderMaskResult and framing_analysis.build_color_agnostic_border_mask.
-- Task 4 produces framing_analysis.FramingTelemetry and PreparedFrame.telemetry, while retaining
+- Task 4 produces lineage-bearing timeline.SceneSpec/SceneInput records and a deterministic panel-crop boundary.
+- Task 5 produces framing_analysis.FramingTelemetry and PreparedFrame.telemetry, while retaining
   the existing PreparedFrame.path/crop_box/blank_fraction/base_zoom fields.
-- Task 5 consumes evidence_by_asset and produces stable planner/QC findings.
-- Task 6 consumes all prior sidecars and produces only isolated review artifacts;
+- Task 6 consumes evidence_by_asset and produces stable planner/QC findings.
+- Task 7 consumes all prior sidecars and produces only isolated review artifacts;
   it does not produce audio or publication state.
 
 ## Task 1: Persist typed visual region evidence
@@ -575,7 +581,7 @@ equals the new commit. Never force-push. Rollback is the new commit SHA.
 - [ ] Keep visual_scoring.py focused: it is already about 924 lines after Task
   2. Add only the small versioned prompt loader and reuse the Task 1 canonical
   validators. Task 3 creates app/services/framing_analysis.py for the
-  color-agnostic detector instead of growing this shared file; Task 4 extends
+  color-agnostic detector instead of growing this shared file; Task 5 extends
   that focused module for candidate feasibility.
 
 **GREEN and checkpoint:**
@@ -890,10 +896,486 @@ Commit only the five owned paths with:
     git commit -m "feat: detect color agnostic border padding"
 
 Push immediately with the exact-history Windows bundle workflow and verify
-GitHub main equals the new SHA. Task 3 starts from baseline
-`940ab42d135626cfb096c3b3b3e7957d549e3923`; rollback is this commit.
+GitHub main equals the new SHA. Task 3 is already complete at
+`e0d8fdf523c095740a984d88798200ed3dd4707e`; Task 4 starts from the published
+amendment commit and rollback is the Task 4 commit.
 
-## Task 4: Rank feasible crop candidates with hard balloon exclusion
+## Task 4: Persist panel lineage and materialize evidence-aligned panel crops
+
+**Files:**
+
+- Modify: app/models.py at TimelineScene and its relationships.
+- Modify: app/db.py in the additive SQLite compatibility section of init_db().
+- Create: one new migration file in alembic/versions/. Before editing, run
+  `.venv/bin/alembic current` and inspect the live `a4p0_editorial_voice_visual_contract`
+  head; generate the revision from that head and record the actual filename and
+  revision in STATUS/CHANGELOG. Do not guess a revision ID or overwrite an
+  existing migration.
+- Modify: app/services/timeline.py at SceneSpec.
+- Modify: app/services/pipeline.py at _reference_citation_map, build_timeline,
+  build_render_request, and the existing _panel_region_bounds boundary.
+- Modify: app/services/render.py at SceneInput.
+- Modify: tests/test_vision_migration.py for the additive schema contract.
+- Create: tests/test_panel_lineage_render.py for binding, snapshot, and crop
+  behavior.
+- Modify: tests/test_pipeline.py only for directly affected reference timeline
+  regressions; preserve every legacy assertion and profile=None path.
+- Modify: docs/STATUS.md and CHANGELOG.md.
+
+This is a standalone TDD/commit/push slice. It does not implement the Task 5
+candidate detector, Task 6 fallback planner, Task 7 review render, narration,
+voice, or any media generation.
+
+**Current boundary and failure being corrected:**
+
+- `app/services/pipeline.py::_encode_panel_payload(panel, source_input)` already
+  crops a PanelRegion in the stored slice coordinate system for vision. Its
+  `global_bounds = _panel_region_bounds(panel)` and local translation are the
+  authoritative coordinate semantics.
+- `build_timeline()` currently persists only `TimelineScene.asset_id` and the
+  planned camera/timing fields. `build_render_request()` then resolves that ID
+  to the full SourceAsset path. A panel-normalized balloon or protected mask
+  would therefore be applied to the wrong image space.
+- Task 4 makes the panel crop an explicit, auditable boundary. A reference scene
+  cannot be rendered from a full strip after this task unless it is a legacy
+  `profile=None` scene.
+
+**Interfaces produced and consumed:**
+
+    from collections.abc import Mapping
+    from typing import Any
+    from PIL import Image
+    from app.services import storage, visual_scoring
+
+    # Add these fields to the existing app/services/timeline.py::SceneSpec
+    panel_region_id: str | None = None
+    panel_id: str = ""
+    panel_bounds: tuple[int, int, int, int] | None = None
+    visual_evidence: Mapping[str, Any] | None = None
+    source_asset_checksum: str = ""
+
+    # Add the same fields to app/services/render.py::SceneInput
+    panel_region_id: str | None = None
+    panel_id: str = ""
+    panel_bounds: tuple[int, int, int, int] | None = None
+    visual_evidence: Mapping[str, Any] | None = None
+    source_asset_checksum: str = ""
+
+    # app/services/pipeline.py, private boundary used by build_timeline
+    def _bind_reference_panel_regions(
+        db: Session,
+        project_id: str,
+        script: ScriptVersion,
+        images: Sequence[SourceAsset],
+        planned: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Return planned shots with a real cited PanelRegion snapshot."""
+
+    def _validated_visual_snapshot(region: PanelRegion) -> dict[str, Any]:
+        """Return the canonical nested visual_evidence for one region."""
+
+    # app/services/pipeline.py, private boundary used by build_render_request
+    def _materialize_reference_panel_crop(
+        db: Session,
+        asset: SourceAsset,
+        scene: TimelineScene,
+        destination: Path,
+    ) -> Path:
+        """Validate the snapshot and write one deterministic panel crop."""
+
+    def _scene_panel_bounds(scene: TimelineScene) -> tuple[int, int, int, int]:
+        """Parse panel_bounds_json as global x0, y0, x1, y1 coordinates."""
+
+The helper names above are the planned private boundaries. If the live code
+already has an equivalent helper, extend that helper instead of adding a
+second path. The public `build_timeline(db, project_id, actor_id="")` and
+`build_render_request(db, job)` signatures remain unchanged.
+
+**Timeline snapshot fields:**
+
+Add additive, old-row-compatible fields to `TimelineScene`:
+
+    panel_region_id: Mapped[str | None] = mapped_column(
+        ForeignKey("panel_regions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    panel_id: Mapped[str] = mapped_column(String(80), default="")
+    panel_bounds_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    visual_evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_asset_checksum: Mapped[str] = mapped_column(String(64), default="")
+
+If live SQLite/Alembic inspection proves an FK cannot be added safely to the
+existing table, use a nullable stable `panel_region_id` string with the same
+audited value and document that choice in STATUS; never drop or rewrite old
+scene rows. In either representation, the JSON snapshot remains authoritative
+for stale-lineage detection after a PanelRegion row is removed.
+
+**Reference binding invariants:**
+
+- Read the latest StoryAnalysis PanelRegion rows ordered by
+  `(source_order, panel_id, id)` and the current ScriptVersion sections.
+- For each reference shot, use the section's `evidence_panel_ids` first. If
+  that list is absent, use integer `citations` only as `source_order` values;
+  never interpret an integer citation as a SourceAsset ID. Resolve each cited
+  order through the current PanelRegion rows.
+- Require the chosen `region.source_asset_id == shot["asset_id"]`. A region from
+  another asset, an unknown panel ID, an invalid source-order citation, or a
+  missing current analysis raises `PipelineError` with stable code
+  `visual.panel_lineage_unavailable` before any existing TimelineScene or
+  SubtitleCue row is deleted.
+- When more than one exact cited PanelRegion belongs to the shot asset, select
+  by deterministic ordered cycling within `(section, asset_id)` using
+  `(source_order, panel_id, id)`; never use list position from an unrelated
+  collection, a filename, or random sampling. Preserve the selected panel ID
+  and region ID on the shot.
+- Persist integer bounds in `panel_bounds_json` as
+  `{ "x": x, "y": y, "width": width, "height": height }`, where the values
+  are the same global source coordinates accepted by `_panel_region_bounds`.
+  Require positive integers and bounds inside the current SourceAsset's full
+  dimensions.
+- Persist `source_asset_checksum` as
+  `asset.original_checksum or asset.checksum`, and require the PanelRegion
+  checksum (when present) to agree. Persist the canonical parsed
+  `visual_evidence_json` including its existing evidence hash. Unknown remains
+  unknown; this task never creates `known_empty`, removes balloon regions, or
+  trusts a provider-supplied hash.
+
+**Reference render invariants:**
+
+- In `build_render_request`, resolve the selected profile from the project. For
+  reference mode, every scene must have a nonempty panel region ID, panel ID,
+  bounds, visual evidence snapshot, and source checksum. A missing or malformed
+  snapshot, a current asset checksum mismatch, a current PanelRegion identity
+  mismatch, or a crop outside the asset fails with
+  `PipelineError("visual.panel_lineage_unavailable")` and a safe finding.
+- Structurally parse the snapshot through the Task 1 visual evidence parser.
+  Unknown is allowed to pass this structural boundary and is handed to Task 5;
+  `require_reference_ready_visual_evidence` is not called here.
+- Read the full SourceAsset only to materialize a crop. Translate the persisted
+  global bounds directly into the full asset image coordinate space, verify the
+  cropped dimensions and a deterministic content checksum, save an internal
+  PNG below the job's existing project-scoped render workspace, and set
+  `SceneInput.image_path` to that crop. Use an internal numeric scene index for
+  the filename; never interpolate panel IDs or user filenames into a path.
+- Carry `panel_region_id`, `panel_id`, integer `panel_bounds`, parsed
+  `visual_evidence`, and `source_asset_checksum` on SceneInput for Tasks 5–7.
+  Do not crop per camera frame, mutate the SourceAsset, load a hidden sidecar,
+  or infer lineage from filenames.
+- In legacy/profile=None mode, retain the current full SourceAsset path,
+  SceneInput fields/defaults, render bytes, and preview behavior. No panel
+  snapshot is required for legacy scenes.
+
+- [ ] **Step 1: Add collection-safe body-failing RED tests**
+
+Add `tests/test_panel_lineage_render.py` using existing SQLite/session fixtures,
+PIL temporary images, and real `SourceAsset`, `StoryAnalysis`, `PanelRegion`,
+`ScriptVersion`, and `TimelineScene` models. Do not import a future symbol at
+module import time. Probe new fields/helpers inside test bodies so RED is caused
+by missing lineage behavior, not collection failure.
+
+The first RED tests must prove:
+
+    def test_reference_scene_requires_panel_snapshot_fields():
+        scene = TimelineScene(project_id="p", asset_id="asset-1")
+        assert getattr(scene, "panel_region_id", None) == "region-1"
+
+    def test_reference_binding_does_not_treat_integer_citation_as_asset_id():
+        # A section citation of 3 must resolve a PanelRegion.source_order == 3;
+        # it must not look up SourceAsset.id == "3".
+        result = build_reference_timeline_fixture(citation=3, asset_id="asset-3")
+        assert result[0].panel_id == "panel-source-order-3"
+        assert result[0].asset_id == "asset-3"
+
+    def test_reference_render_materializes_exact_panel_bounds(tmp_path):
+        request = build_reference_render_request_with_two_regions(tmp_path)
+        scene_input = request.scenes[0]
+        assert scene_input.panel_id == "panel-b"
+        with Image.open(scene_input.image_path) as crop:
+            assert crop.size == (80, 120)
+            assert crop.getpixel((0, 0)) == (40, 80, 120)
+
+Also add body-failing cases for a foreign region/asset, stale source checksum,
+missing or malformed snapshot, unknown preservation, and unchanged legacy
+profile=None request construction. The migration tests must collect against the
+current schema and fail in assertions for absent columns/upgrade behavior.
+
+Run the exact RED command before production edits:
+
+    PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_panel_lineage_render.py tests/test_vision_migration.py -q
+
+Expected RED: collection succeeds; failures identify absent TimelineScene/
+SceneSpec/SceneInput lineage fields, missing reference binding/crop validation,
+or missing migration columns. No ImportError, fixture setup error, audio call,
+provider call, or database outside the isolated test database is acceptable.
+
+- [ ] **Step 2: Add the additive model and live-head migration**
+
+Extend `TimelineScene` with the five snapshot fields above using safe defaults
+for existing rows. Inspect the live Alembic head again, create exactly one new
+revision whose `down_revision` is the observed
+`a4p0_editorial_voice_visual_contract` (or the newly observed head if the
+implementation starts after another published commit), and add only the five
+timeline columns/index/FK required by the model. The upgrade must preserve old
+rows with null/empty snapshot values; the downgrade must remove only this
+revision's objects and leave prior motion/alignment columns intact.
+
+Use the repository's existing migration style, for example:
+
+    def upgrade() -> None:
+        with op.batch_alter_table("timeline_scenes") as batch_op:
+            batch_op.add_column(sa.Column("panel_region_id", sa.String(length=32), nullable=True))
+            batch_op.add_column(sa.Column("panel_id", sa.String(length=80), nullable=False, server_default=""))
+            batch_op.add_column(sa.Column("panel_bounds_json", sa.JSON(), nullable=False, server_default="{}"))
+            batch_op.add_column(sa.Column("visual_evidence_json", sa.JSON(), nullable=False, server_default="{}"))
+            batch_op.add_column(sa.Column("source_asset_checksum", sa.String(length=64), nullable=False, server_default=""))
+        op.create_index("ix_timeline_scenes_panel_region_id", "timeline_scenes", ["panel_region_id"])
+
+Do not copy this snippet without checking the live migration dialect and FK
+conventions. The implementation must use the actual generated revision path and
+must not edit an older revision. Add the same additive definitions to the
+SQLite-only compatibility section of `app/db.py::init_db()` so a legacy local
+database opened without Alembic gains the fields safely. No destructive reset,
+autoupgrade of user data, or raw data rewrite is permitted.
+
+- [ ] **Step 3: Carry cited PanelRegion lineage into reference SceneSpec rows**
+
+Add these fields to the existing `SceneSpec` dataclass without changing the
+ordering or defaults of legacy constructor arguments:
+
+    panel_region_id: str | None = None
+    panel_id: str = ""
+    panel_bounds: tuple[int, int, int, int] | None = None
+    visual_evidence: Mapping[str, Any] | None = None
+    source_asset_checksum: str = ""
+
+Implement `_bind_reference_panel_regions` at the pipeline boundary described
+above. It must load the latest analysis and its PanelRegion rows, construct a
+section-to-panel evidence map from `script.sections`, and return a copy of each
+planned shot enriched with the selected region snapshot. The algorithm is:
+
+    section_panel_ids: dict[str, tuple[str, ...]] = {}
+    section_source_orders: dict[str, tuple[int, ...]] = {}
+    for section in script.sections or []:
+        name = str(section.get("section", ""))
+        section_panel_ids[name] = tuple(
+            str(panel_id) for panel_id in section.get("evidence_panel_ids", []) or []
+        )
+        section_source_orders[name] = tuple(
+            citation for citation in section.get("citations", []) or []
+            if isinstance(citation, int) and not isinstance(citation, bool)
+        )
+    regions = sorted(
+        current_regions,
+        key=lambda row: (row.source_order, row.panel_id, row.id),
+    )
+    by_panel_id = {row.panel_id: row for row in regions if row.panel_id}
+    by_source_order = {row.source_order: row for row in regions}
+    assets_by_id = {asset.id: asset for asset in images}
+    cursors: dict[tuple[str, str], int] = {}
+    bound: list[dict[str, Any]] = []
+    for shot in planned:
+        cited_ids = section_panel_ids[shot["section"]]
+        candidates = [
+            by_panel_id[panel_id]
+            for panel_id in cited_ids
+            if panel_id in by_panel_id
+            and by_panel_id[panel_id].source_asset_id == shot["asset_id"]
+        ]
+        if not candidates:
+            candidates = [
+                by_source_order[citation]
+                for citation in section_source_orders[shot["section"]]
+                if citation in by_source_order
+                and by_source_order[citation].source_asset_id == shot["asset_id"]
+            ]
+        if not candidates:
+            raise PipelineError("visual.panel_lineage_unavailable")
+        asset = assets_by_id.get(str(shot["asset_id"]))
+        if asset is None:
+            raise PipelineError("visual.panel_lineage_unavailable")
+        key = (str(shot["section"]), str(shot["asset_id"]))
+        index = cursors.get(key, 0)
+        region = sorted(candidates, key=lambda row: (row.source_order, row.panel_id, row.id))[index % len(candidates)]
+        cursors[key] = index + 1
+        checksum = asset.original_checksum or asset.checksum
+        if region.source_asset_checksum and region.source_asset_checksum != checksum:
+            raise PipelineError("visual.panel_lineage_unavailable")
+        bound.append({
+            **shot,
+            "panel_region_id": region.id,
+            "panel_id": region.panel_id,
+            "panel_bounds": _panel_region_bounds(region),
+            "visual_evidence": _validated_visual_snapshot(region),
+            "source_asset_checksum": checksum,
+        })
+    return bound
+
+The implementation must not use a dict insertion order as an implicit
+selection rule, and it must reject duplicate/ambiguous panel IDs rather than
+silently selecting an unrelated row. `_validated_visual_snapshot` uses the
+Task 1 structural parser and canonical serializer. It checks that the nested
+visual evidence lineage matches `region.panel_id`, `region.source_asset_id`,
+and `region.source_order`, while preserving unknown and its nonempty reason.
+
+Its implementation uses the live Task 1 names and does not invent a second
+parser:
+
+    def _validated_visual_snapshot(region: PanelRegion) -> dict[str, Any]:
+        if not isinstance(region.observation_json, Mapping):
+            raise PipelineError("visual.panel_lineage_unavailable")
+        raw = region.observation_json.get("visual_evidence")
+        if not isinstance(raw, Mapping):
+            raise PipelineError("visual.panel_lineage_unavailable")
+        evidence = visual_scoring.parse_panel_visual_evidence(raw)
+        if (
+            evidence.panel_id != region.panel_id
+            or evidence.source_asset_id != region.source_asset_id
+            or evidence.source_order != region.source_order
+        ):
+            raise PipelineError("visual.panel_lineage_unavailable")
+        visual_scoring.validate_panel_visual_evidence(evidence)
+        return visual_scoring.panel_visual_evidence_json(evidence)
+
+Call this binding after `editorial_visual_planner.plan(...)` succeeds and before
+the current deletion loop for old TimelineScene/SubtitleCue rows. Populate the
+new SceneSpec fields from the bound shot. Then instantiate TimelineScene with
+the panel region ID, panel ID, integer bounds, canonical visual evidence, and
+immutable source checksum. A binding error must leave existing rows untouched
+and surface the stable `visual.panel_lineage_unavailable` code.
+
+- [ ] **Step 4: Materialize and verify the evidence-aligned render crop**
+
+Add the same five lineage fields to `SceneInput`. In reference mode,
+`build_render_request` must validate every persisted scene before creating its
+render request. Use the current SourceAsset storage path and the snapshot's
+integer bounds; do not reuse the full strip after selecting a reference scene.
+
+The core crop operation is deterministic and must have this shape after live
+imports are adjusted to repository style:
+
+    def _materialize_reference_panel_crop(
+        db: Session,
+        asset: SourceAsset,
+        scene: TimelineScene,
+        destination: Path,
+    ) -> Path:
+        expected = _scene_panel_bounds(scene)
+        checksum = asset.original_checksum or asset.checksum
+        if not scene.panel_region_id or not scene.panel_id or not scene.visual_evidence_json:
+            raise PipelineError("visual.panel_lineage_unavailable")
+        if scene.source_asset_checksum != checksum:
+            raise PipelineError("visual.panel_lineage_unavailable")
+        region = db.get(PanelRegion, scene.panel_region_id)
+        if region is None or region.panel_id != scene.panel_id or region.source_asset_id != asset.id:
+            raise PipelineError("visual.panel_lineage_unavailable")
+        if region.source_asset_checksum and region.source_asset_checksum != checksum:
+            raise PipelineError("visual.panel_lineage_unavailable")
+        region_bounds = _panel_region_bounds(region)
+        if region_bounds != expected:
+            raise PipelineError("visual.panel_lineage_unavailable")
+        evidence = visual_scoring.parse_panel_visual_evidence(scene.visual_evidence_json)
+        if (
+            evidence.panel_id != region.panel_id
+            or evidence.source_asset_id != region.source_asset_id
+            or evidence.source_order != region.source_order
+            or visual_scoring.panel_visual_evidence_json(evidence) != scene.visual_evidence_json
+        ):
+            raise PipelineError("visual.panel_lineage_unavailable")
+        with Image.open(storage.path_for(asset.storage_key)) as image:
+            image.load()
+            x0, y0, x1, y1 = expected
+            if x0 < 0 or y0 < 0 or x1 > image.width or y1 > image.height:
+                raise PipelineError("visual.panel_lineage_unavailable")
+            crop = image.convert("RGB").crop((x0, y0, x1, y1))
+            if crop.size != (x1 - x0, y1 - y0):
+                raise PipelineError("visual.panel_lineage_unavailable")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            crop.save(destination, format="PNG")
+        return destination
+
+The exact helper may be split into validation and materialization to match
+current pipeline style, but the public behavior is fixed: current asset ID,
+checksum, panel ID, region ID, bounds, and canonical evidence must all agree.
+The safe destination is the existing project/job render workspace plus a
+numeric scene index. The helper must not include untrusted panel IDs,
+filenames, or storage keys in a filesystem path.
+
+Set `SceneInput.image_path` to this crop and copy the validated lineage fields
+onto SceneInput. Keep the `RenderRequest.profile` and all motion fields intact;
+Task 5 will consume the panel-sized image and evidence. A structurally valid
+unknown mask is carried forward without changing its state. For profile=None,
+retain the current `storage.path_for(asset.storage_key)` assignment and do not
+create a crop or parse visual evidence.
+
+- [ ] **Step 5: Complete the focused lineage and migration GREEN matrix**
+
+Extend `tests/test_panel_lineage_render.py` with these independent assertions:
+
+- Two cited PanelRegions on one SourceAsset bind to the cited panel, not the
+  first or random row; repeated shots cycle in sorted source_order/panel_id
+  order and remain deterministic across two sessions.
+- A panel whose source asset differs from `shot["asset_id"]`, a foreign panel
+  ID, a stale source checksum, a missing snapshot, malformed JSON, or bounds
+  outside the asset raises `PipelineError` with
+  `visual.panel_lineage_unavailable` before old rows are deleted.
+- A known visual snapshot and an explicit unknown snapshot round-trip with the
+  same canonical JSON/hash; no test accepts `[]` as known_empty.
+- The materialized PNG dimensions and corner pixels equal the persisted bounds
+  from the full source image, proving visual coordinates now refer to the crop.
+- Legacy `profile=None` returns the original full-asset SceneInput and does not
+  require panel fields.
+
+Extend `tests/test_vision_migration.py` to run the new migration in an isolated
+SQLite database, assert all five columns exist after upgrade, assert a prior
+scene retains its old values, and assert downgrade removes only the new
+columns. Exercise `app/db.py::init_db()` against a copied legacy schema so its
+additive compatibility path is covered without touching a user database.
+
+Run:
+
+    PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_panel_lineage_render.py tests/test_vision_migration.py tests/test_pipeline.py tests/test_vision_pipeline.py -q
+    .venv/bin/ruff check app/models.py app/db.py app/services/timeline.py app/services/pipeline.py app/services/render.py tests/test_panel_lineage_render.py tests/test_vision_migration.py tests/test_pipeline.py
+    .venv/bin/python -m compileall -q app/models.py app/db.py app/services/timeline.py app/services/pipeline.py app/services/render.py
+    git diff --check
+
+Expected GREEN: collection is clean, every focused lineage/migration assertion
+passes, legacy pipeline assertions remain green, and no provider/TTS/render
+process is started by the unit tests. Record the exact collected/pass count in
+STATUS; do not replace a failing lineage assertion with a skip or fixture-only
+shortcut.
+
+- [ ] **Step 6: Run full verification, document, commit, and push Task 4**
+
+Before committing, run the focused command above plus:
+
+    PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest tests/test_reference_profile.py tests/test_reference_framing.py tests/test_motion_stability.py tests/test_visual_scoring.py tests/test_quality.py tests/test_vision_adapter.py tests/test_vision_synthesis.py tests/test_resolver_vision.py tests/test_vision_pipeline.py -q
+    PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest -q -m "not slow"
+    .venv/bin/python -m compileall -q app
+    git diff --check
+
+Audit the staged diff for secrets, storage paths, image bytes, runtime DBs,
+and files outside the Task 4 allowlist. Update STATUS and CHANGELOG with the
+actual migration filename/revision, focused and full counts, the
+`visual.panel_lineage_unavailable` behavior, legacy compatibility, the next
+Task 5, and this commit's rollback SHA.
+
+Stage exactly the Task 4 paths, including the actual migration filename
+recorded during Step 2:
+
+    migration_path=$(git diff --name-only --diff-filter=A -- alembic/versions)
+    test "$(printf '%s\n' "$migration_path" | wc -l)" -eq 1
+    git add -- app/models.py app/db.py "$migration_path" app/services/timeline.py app/services/pipeline.py app/services/render.py tests/test_vision_migration.py tests/test_panel_lineage_render.py tests/test_pipeline.py docs/STATUS.md CHANGELOG.md
+    git diff --cached --check
+    git commit -m "feat: preserve panel lineage into reference render"
+
+Push the exact commit immediately through the clean Windows transport clone.
+Verify GitHub `main` still equals the VPS parent, import the exact commit,
+fast-forward `main:main` only, and verify HTTPS `ls-remote` equals the new VPS
+SHA. Record the full SHA and leave both VPS and the transport worktree clean.
+Rollback is this reviewed commit; do not reset or rewrite history.
+
+## Task 5: Rank feasible crop candidates with hard balloon exclusion
 
 **Files:**
 - Modify: app/services/framing_analysis.py beside BorderMaskResult and the detector.
@@ -904,9 +1386,33 @@ GitHub main equals the new SHA. Task 3 starts from baseline
 - Modify: CHANGELOG.md.
 
 **Interfaces:**
-- **Consumes:** `framing_analysis.BorderMaskResult`, `PanelVisualEvidence`, current focus inputs, and `ReferenceProfileConfig`.
+- **Consumes:** the Task 4 `SceneInput.image_path` panel crop, its
+  `panel_id`/`panel_region_id`/`panel_bounds`, parsed `visual_evidence`,
+  `source_asset_checksum`, `framing_analysis.BorderMaskResult`, current focus
+  inputs, and `ReferenceProfileConfig`.
 - **Produces:** `framing_analysis.FramingTelemetry`, `framing_analysis.candidate_is_feasible(...) -> tuple[bool, FramingTelemetry]`, and `render.PreparedFrame.telemetry`, while retaining the existing path, crop_box, blank_fraction, and base_zoom fields.
 - **Import boundary:** `render.py` imports `framing_analysis`; `framing_analysis.py` imports Task 1 visual evidence serializers/validators but never imports render.py, preventing a circular dependency.
+
+The Task 5 preparation signature may gain only optional keyword inputs so old
+callers remain compatible:
+
+    def prepare_reference_frame(
+        src: Path,
+        dest: Path,
+        width: int,
+        height: int,
+        focus_x: float,
+        focus_y: float,
+        profile: ReferenceProfileConfig | None,
+        *,
+        evidence: PanelVisualEvidence | None = None,
+        border_mask: BorderMaskResult | None = None,
+    ) -> PreparedFrame:
+
+When `profile` is active, `src` is the Task 4 materialized panel crop and the
+evidence coordinates are in that crop's coordinate space. Passing a full source
+strip with panel-normalized evidence is a stable
+`visual.panel_lineage_unavailable` error, not a candidate to score.
 
 - [ ] **Step 1: Add failing candidate tests**
 
@@ -1053,14 +1559,22 @@ source-resolution crop dimensions are at least target dimensions divided by
     (balloon_zero, protected_area, 1.0 - edge_blank, focus_score,
      -base_zoom, box[1], box[0])
 
-Call require_reference_ready_visual_evidence before candidate ranking; it
-rejects unknown mask status with visual.balloon_mask_unknown. If all candidates meet hard requirements but
+Before detecting masks or ranking a crop, call
+`validate_panel_visual_evidence` at the public
+`build_color_agnostic_border_mask` boundary, then call
+`require_reference_ready_visual_evidence`; it rejects unknown mask status with
+`visual.balloon_mask_unknown`. If all candidates meet hard requirements but
 edge blank is above zero, select the deterministic lowest-blank candidate and
 set fallback_reason to visual.blank_infeasible. If no candidate meets a hard
 requirement, raise RenderError with the stable rejection code and telemetry
 for the last ordered fallback attempt.
 
 Keep the static chosen box in the cache. Do not scan content per camera frame.
+The detector and candidate helper consume the Task 4 panel crop and evidence
+snapshot; they never apply panel-normalized geometry to a full SourceAsset
+strip. A malformed or missing Task 4 snapshot is
+`visual.panel_lineage_unavailable`; an unknown but structurally valid snapshot
+is `visual.balloon_mask_unknown` at this consumer boundary.
 
 - [ ] **Step 4: Test profile hash and legacy behavior**
 
@@ -1080,7 +1594,7 @@ Run:
     git diff --check
     PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest -q -m "not slow"
 
-Update STATUS/CHANGELOG with profile hash, telemetry examples, and Task 5.
+Update STATUS/CHANGELOG with profile hash, telemetry examples, and Task 6.
 Stage only the six owned paths and commit:
 
     git add -- app/services/framing_analysis.py app/services/reference_profile.py app/services/render.py tests/test_reference_framing.py docs/STATUS.md CHANGELOG.md
@@ -1089,7 +1603,7 @@ Stage only the six owned paths and commit:
 
 Push immediately by exact-history fast-forward and record rollback SHA.
 
-## Task 5: Apply panel and beat fallback plus reference QC
+## Task 6: Apply panel and beat fallback plus reference QC
 
 **Files:**
 - Modify: app/services/editorial_visual_planner.py.
@@ -1104,8 +1618,15 @@ handoff records and the four source/test paths are the smallest coherent QC
 boundary.
 
 **Interfaces:**
-- **Consumes:** PanelVisualEvidence, `framing_analysis.FramingTelemetry`, candidate evidence mapping, planner citations, and current plan(..., profile=...) signature.
+- **Consumes:** Task 4 lineage-bearing SceneInput panel crops and snapshots,
+  PanelVisualEvidence, `framing_analysis.FramingTelemetry`, candidate evidence
+  mapping, planner citations, and current plan(..., profile=...) signature.
 - **Produces:** alignment reasons, fallback records, stable QC codes, and no speech_bubble target.
+
+Every fallback record retains `panel_region_id`, `panel_id`, source asset
+checksum, source/beat, crop box, and evidence hash. A stale or absent Task 4
+lineage snapshot emits `visual.panel_lineage_unavailable` before balloon,
+blank, or subject scoring; it is not reported as a balloon error.
 
 - [ ] **Step 1: Add failing fallback and QC tests**
 
@@ -1219,7 +1740,8 @@ rewrites a candidate or downgrades an unknown mask to known_empty.
 
 - [ ] **Step 4: Add chronology, rights, and motion regressions**
 
-Assert every planned shot retains source asset, panel ID, story beat, and
+Assert every planned shot retains source asset, panel ID, panel region ID, crop
+box, story beat, and
 evidence hash; every source order remains covered; repeated assets use distinct
 ROIs and explicit reuse reasons; and no random call is made. Keep rights
 checks and publish_allowed=false untouched. Sample at least 120 frames of each
@@ -1236,7 +1758,7 @@ Run:
     git diff --check
     PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/python -m pytest -q -m "not slow"
 
-Update both docs with exact stable codes, fallback evidence, and Task 6.
+Update both docs with exact stable codes, fallback evidence, and Task 7.
 Commit only the six owned paths:
 
     git add -- app/services/editorial_visual_planner.py app/services/editorial_qc.py app/services/quality.py tests/test_reference_profile_integration.py docs/STATUS.md CHANGELOG.md
@@ -1245,7 +1767,7 @@ Commit only the six owned paths:
 
 Push immediately with the exact-history workflow and record the rollback SHA.
 
-## Task 6: Integrate the isolated real-panel silent review render
+## Task 7: Integrate the isolated real-panel silent review render
 
 **Files:**
 - Modify: app/services/pipeline.py at build_timeline and reference evidence mapping.
@@ -1255,7 +1777,10 @@ Push immediately with the exact-history workflow and record the rollback SHA.
 - Modify: CHANGELOG.md.
 
 **Interfaces:**
-- **Consumes:** approved script section evidence_panel_ids, PanelVisualEvidence, planner fallback results, PreparedFrame telemetry, and RenderRequest.profile.
+- **Consumes:** Task 4 persisted TimelineScene panel snapshots and
+  materialized SceneInput crops, approved script section evidence_panel_ids,
+  PanelVisualEvidence, planner fallback results, PreparedFrame telemetry, and
+  RenderRequest.profile.
 - **Produces:** an untracked silent visual review bundle; no TTS, no audio provider, and no publication approval.
 
 - [ ] **Step 1: Add a body-failing isolated review test**
@@ -1283,31 +1808,37 @@ REFERENCE_MATCHED_SHORTS_V1:
         assert result.audio_stream is False
         assert result.qc["publish_allowed"] is False
 
-Expected RED: the current pipeline does not pass typed visual evidence through
-the reference timeline/render sidecar and no isolated review assertion exists.
+Expected RED: the current render review path does not yet prove the Task 4
+panel snapshot/crop sidecar, and no isolated review assertion exists.
 The test must not call TTS, espeak, a network provider, or write outside
 tmp_path.
 
-- [ ] **Step 2: Add deterministic evidence-to-timeline mapping**
+- [ ] **Step 2: Verify deterministic persisted-lineage render inputs**
 
-At build_timeline, preserve the current _reference_citation_map panel_id
-first and integer source_order second rule. Add a map from renderable asset ID
-to PanelVisualEvidence and pass it to planner.plan as visual_evidence_by_asset.
-Keep the current ordering and no-random behavior:
+Do not duplicate Task 4's panel binding in this task. At build_render_request,
+load the persisted scene snapshots, verify the current source checksum and
+PanelRegion identity, and pass the exact Task 4 crop/evidence fields into the
+render preparation path:
 
-    visual_evidence_by_asset = _reference_visual_evidence_map(
-        db, project_id, script, images
-    ) if profile is not None else None
-    planned = editorial_visual_planner.plan(
-        spans, scored, profile=profile,
-        cited_asset_ids_by_section=citation_map if profile is not None else None,
-        citation_alignment_reasons_by_section=citation_reasons if profile is not None else None,
-        visual_evidence_by_asset=visual_evidence_by_asset,
-    )
+    editorial_profile = reference_profile.resolve_reference_profile(project.template)
+    render_workspace = storage.workspace_dir(job.project_id, "render-panels")
+    for index, scene in enumerate(project_scenes(db, job.project_id)):
+        asset = db.get(SourceAsset, scene.asset_id) if scene.asset_id else None
+        if asset is None:
+            raise PipelineError("visual.panel_lineage_unavailable")
+        if editorial_profile is not None:
+            image_path = _materialize_reference_panel_crop(
+                db, asset, scene, render_workspace / f"scene-{index:04d}.png"
+            )
+            evidence = parse_panel_visual_evidence(scene.visual_evidence_json)
+        else:
+            image_path = storage.path_for(asset.storage_key)
+            evidence = None
 
-Invalid or missing evidence must raise PipelineError with a stable visual code
-before deleting existing TimelineScene or SubtitleCue rows. Legacy profile=None
-continues its current planner invocation.
+Invalid or missing evidence must raise PipelineError with the stable
+`visual.panel_lineage_unavailable` code. Legacy profile=None continues its
+current full-asset path. The review test must assert an integer citation is
+never treated as an asset ID and that a foreign or stale snapshot cannot render.
 
 - [ ] **Step 3: Persist framing telemetry in render QC**
 
@@ -1352,7 +1883,7 @@ transport clone for audit and rollback.
 | Approved spec requirement | Plan task and proving assertion |
 | --- | --- |
 | Typed balloon/background/subject/action/effect records | Task 1 dataclasses, enum validation, JSON round-trip |
-| Unknown versus known-empty masks | Task 1 persistence and Task 4 reference-readiness failures |
+| Unknown versus known-empty masks | Task 1 persistence and Task 5 reference-readiness failures |
 | Provider acquisition of balloon/protected geometry | Task 2 prompt, adapter, mock, and snapshot tests |
 | Color-agnostic white/black/gray/arbitrary/gradient detection | Task 3 PIL fixtures |
 | Meaningful light/dark art protection | Task 3 protected-area tests |
@@ -1360,15 +1891,16 @@ transport clone for audit and rollback.
 | Exact source-space area mapping and six-decimal ratios | Task 3 floor-boundary and area-accounting test |
 | Internal low-information diagnostic without discard | Task 3 sealed-island mask test |
 | Deterministic detector/cache identity | Task 3 mask_sha256 and cache-key test |
-| Balloon intersection exactly zero | Tasks 4-6 one-pixel and area-overlap failures |
-| Subject/action/effect/continuity minimums | Task 4 candidate feasibility |
-| Dynamic zoom/upscale guard | Task 4 native-resolution tests |
-| Exact fallback order and stable visual_unavailable | Task 5 fallback ledger |
-| No speech_bubble selection or motion | Task 5 planner assertions |
-| Stable monotonic motion and no shake | Tasks 4-5 120-frame and filter tests |
-| Full panel/story/claim coverage and rights gate | Tasks 1, 2, 5, and 6 lineage/rights assertions |
-| Legacy profile=None behavior | Tasks 3 and 4 regression snapshots |
-| Silent visual review with no voice/audio | Task 6 RenderRequest and FFprobe assertions |
+| PanelRegion-to-timeline lineage and crop coordinate space | Task 4 cited-panel binding, snapshot, migration, and exact-pixel crop tests |
+| Balloon intersection exactly zero | Tasks 5-7 one-pixel and area-overlap failures |
+| Subject/action/effect/continuity minimums | Task 5 candidate feasibility |
+| Dynamic zoom/upscale guard | Task 5 native-resolution tests |
+| Exact fallback order and stable visual_unavailable | Task 6 fallback ledger |
+| No speech_bubble selection or motion | Task 6 planner assertions |
+| Stable monotonic motion and no shake | Tasks 5-7 120-frame and filter tests |
+| Full panel/story/claim coverage and rights gate | Tasks 1, 2, 4, 6, and 7 lineage/rights assertions |
+| Legacy profile=None behavior | Tasks 3, 4, and 5 regression snapshots |
+| Silent visual review with no voice/audio | Task 7 RenderRequest and FFprobe assertions |
 | STATUS/CHANGELOG progress and immediate push | Every task's final step |
 | No media/DB/credentials/runtime data in Git | Every task's staged allowlist and secret scan |
 
