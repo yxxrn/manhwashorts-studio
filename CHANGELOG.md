@@ -2,6 +2,26 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Follow-up hardening from review parent
+  064453c20c4d4591794fde49b8efcbbb761fb78d: RED was collection-clean with
+  42 focused tests, 35 passing and 7 intended body failures; GREEN is 42
+  focused, 100 related, and 728 non-slow tests with exit 0. Reference QC
+  now validates the exact accepted fallback ledger and complete canonical
+  border-mask snapshot, rejects nonfinite/out-of-range framing fractions,
+  and traverses all ROI phases on an alternate exact panel. The profile=None
+  and transitional candidate bridge remain unchanged; Visual Task 7 is next.
+
+- Hardened Visual Plan Task 6 from review parent
+  064453c20c4d4591794fde49b8efcbbb761fb78d: exact panel identity now drives
+  capacity even when PanelRegions share a SourceAsset; bounds and detector
+  contract failures are explicit; fallback phases are closed and ordered;
+  accepted framing telemetry is embedded per shot; and QC validates scene
+  telemetry for reused panels instead of letting an asset-keyed map override
+  it. RED was 35 collected with 25 passed and 10 intended body failures;
+  GREEN is 35 focused, 93 related, and 721 non-slow tests with exit 0. The
+  transitional None bridge and profile=None behavior remain unchanged. Task 7
+  is next; no pipeline, render, media, DB, voice, or narration changed.
+
 - Implemented Visual Plan Task 6 panel-keyed fallback and QC at rollback
   parent 482ee74eda6b2c0546fcc18c2cc439a5b53b9d5d. RED was collection-clean
   with 23 collected, 17 passed, and 6 intended body failures; GREEN is 25

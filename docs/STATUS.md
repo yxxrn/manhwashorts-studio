@@ -2,6 +2,65 @@
 
 Updated: 2026-08-11
 
+## Visual Task 6 accepted-ledger/QC hardening follow-up - 2026-08-11
+
+- Sol review follow-up RED was collection-clean: 42 focused tests collected,
+  35 passed, and 7 body failures covering accepted fallback-ledger tampering,
+  complete border-mask snapshot tampering, nonfinite/out-of-range framing
+  fractions, and alternate-panel ROI phase traversal.
+- GREEN is 42 focused integration tests and 100 related reference, framing,
+  motion, visual-scoring, editorial-QC, and QC-history tests. The full
+  non-slow collection is 728 tests and exited 0. Ruff, compileall,
+  git diff --check, and the normal/ignore-space-at-eol diff comparison are
+  clean; existing Pillow and Alembic deprecation warnings remain only.
+- QC now requires a list-ordered fallback_attempts ledger with exactly one
+  accepted entry whose panel/evidence/checksum, ROI kind/label/crop,
+  detector/mask identity, and complete embedded telemetry exactly match the
+  scene snapshot. It compares the complete canonical border-mask snapshot
+  with asdict(BorderMaskResult), not only copied identity fields.
+- Reference QC rejects nonfinite and out-of-range framing fractions with the
+  stable visual.panel_lineage_unavailable boundary. Alternate exact panels
+  now run primary, alternate_roi, and tighter_crop phases under the
+  alternate_panel ledger kind before visual.visual_unavailable.
+- Rollback parent: 064453c20c4d4591794fde49b8efcbbb761fb78d. Next atomic task:
+  Visual Task 7 live panel-candidate construction and validation.
+
+## Visual Task 6 exact-panel telemetry hardening - 2026-08-11
+
+- Hardened the published Task 6 boundary from review parent
+  064453c20c4d4591794fde49b8efcbbb761fb78d. RED was collection-clean:
+  35 collected, 25 prior tests passed, and 10 new body failures covering
+  shared-asset panel capacity, bounds, contract error precedence, fallback
+  phase ordering/reasons, shot telemetry, and reused-panel QC tampering.
+- GREEN is 35 focused integration tests and 93 related reference, framing,
+  motion, visual-scoring, editorial-QC, and QC-history tests. The full
+  non-slow collection is 721 tests; the final run exited 0 with no failures.
+  Existing Pillow and Alembic deprecation warnings remain only.
+- Explicit candidates now build an identity-neutral internal timing skeleton
+  and count the exact (source_asset_id, panel_region_id, panel_id) candidates;
+  panels from one SourceAsset are not collapsed and their lineage is never
+  emitted as the internal timing identity. Panel bounds require nonnegative
+  origins and dimensions exactly equal to panel_size.
+- Detector/profile contract mismatches fail with
+  visual.framing_contract_incompatible. Invalid lineage, dimensions, hashes,
+  or snapshots remain visual.panel_lineage_unavailable. The closed fallback
+  phases are primary, alternate_roi, tighter_crop, alternate_panel, and the
+  final planner rejection is visual.visual_unavailable. Caller tuple order
+  cannot reorder these phases; same-panel successes receive precise fallback
+  reasons rather than an alternate-panel label.
+- Each selected shot now carries canonical framing_telemetry with the accepted
+  crop/ROI, evidence and mask identities, candidate count, attempt order, and
+  selection context. QC consumes that scene-exact telemetry for every reuse;
+  the temporary external telemetry map is only an identity cross-check and
+  cannot override a scene's crop or accepted telemetry. Lineage and contract
+  checks precede unknown-balloon/readiness and framing gates.
+- The reference_panel_candidates=None bridge remains the prior reference
+  planner behavior without fabricated lineage or fallback claims, and
+  profile=None behavior/report serialization remains unchanged. No pipeline,
+  render, model, migration, media, database, voice, or narration code changed.
+- Next atomic task: Visual Task 7 live panel-candidate construction and
+  validation. Rollback point: 064453c20c4d4591794fde49b8efcbbb761fb78d.
+
 ## Visual Task 6 panel-keyed fallback/QC implementation - 2026-08-11
 
 - Visual Task 6 is green and implemented at rollback parent

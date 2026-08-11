@@ -648,13 +648,13 @@ def _task6_wrapper(
     assert roi_type is not None and candidate_type is not None
     alternatives = roi_alternatives or (
         roi_type(
-            kind="panel",
+            kind="primary",
             roi_label=f"roi-{panel_id}",
             crop_box=(0, 0, panel_size[0], panel_size[1]),
             focus=(0.5, 0.5, 0.5, 0.5),
         ),
         roi_type(
-            kind="panel",
+            kind="alternate_roi",
             roi_label=f"roi-{panel_id}-reuse",
             crop_box=(0, 0, panel_size[0] - 1, panel_size[1] - 1),
             focus=(0.45, 0.45, 0.55, 0.55),
@@ -890,8 +890,8 @@ def test_task6_fallback_ledger_uses_same_panel_alternatives_before_other_panel(m
     candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
     assert roi_type is not None and candidate_type is not None
     alternatives = (
-        roi_type("panel", "unsafe-first", (0, 0, 100, 200), (0.5, 0.5, 0.5, 0.5)),
-        roi_type("panel", "safe-second", (0, 0, 100, 200), (0.5, 0.5, 0.5, 0.5)),
+        roi_type("primary", "unsafe-first", (0, 0, 100, 200), (0.5, 0.5, 0.5, 0.5)),
+        roi_type("alternate_roi", "safe-second", (0, 0, 100, 200), (0.5, 0.5, 0.5, 0.5)),
     )
     wrappers = _task6_wrappers(
         framing=framing, first_alternatives=alternatives
@@ -946,21 +946,7 @@ def test_task6_unknown_is_structural_but_reference_plan_and_qc_fail_closed():
     mask = unknown.border_mask
     telemetry = _task6_telemetry(framing, evidence, mask)
     results = quality_module.check_reference_framing(
-        [
-            {
-                "source_asset_id": unknown.source_asset_id,
-                "panel_region_id": unknown.panel_region_id,
-                "panel_id": unknown.panel_id,
-                "evidence_hash": unknown.evidence_hash,
-                "source_asset_checksum": unknown.source_asset_checksum,
-                "panel_bounds": list(unknown.panel_bounds),
-                "panel_size": list(unknown.panel_size),
-                "border_mask": {
-                    "detector_version": unknown.border_mask.detector_version,
-                    "mask_sha256": unknown.border_mask.mask_sha256,
-                },
-            }
-        ],
+        [_task6_qc_scene(unknown, telemetry)],
         {(unknown.source_asset_id, unknown.panel_region_id): evidence},
         {(unknown.source_asset_id, unknown.panel_region_id): mask},
         {(unknown.source_asset_id, unknown.panel_region_id): unknown.panel_size},
@@ -969,21 +955,7 @@ def test_task6_unknown_is_structural_but_reference_plan_and_qc_fail_closed():
     )
     assert any(result.code == "visual.balloon_mask_unknown" for result in results)
     editorial_results = editorial_qc.check_reference_framing(
-        [
-            {
-                "source_asset_id": unknown.source_asset_id,
-                "panel_region_id": unknown.panel_region_id,
-                "panel_id": unknown.panel_id,
-                "evidence_hash": unknown.evidence_hash,
-                "source_asset_checksum": unknown.source_asset_checksum,
-                "panel_bounds": list(unknown.panel_bounds),
-                "panel_size": list(unknown.panel_size),
-                "border_mask": {
-                    "detector_version": unknown.border_mask.detector_version,
-                    "mask_sha256": unknown.border_mask.mask_sha256,
-                },
-            }
-        ],
+        [_task6_qc_scene(unknown, telemetry)],
         {(unknown.source_asset_id, unknown.panel_region_id): evidence},
         {(unknown.source_asset_id, unknown.panel_region_id): mask},
         {(unknown.source_asset_id, unknown.panel_region_id): unknown.panel_size},
@@ -1055,3 +1027,379 @@ def test_task6_no_feasible_panel_fails_with_stable_visual_unavailable(monkeypatc
             reference_panel_candidates=wrappers,
         )
     assert caught.value.code == "visual.visual_unavailable"
+
+
+def test_task6_same_asset_panels_fill_exact_capacity(monkeypatch):
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    wrappers = _task6_wrappers(count=16, framing=framing, shared=True)
+
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+        return True, _task6_telemetry(framing, evidence, mask, crop_box)
+
+    monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
+    shots = editorial_visual_planner.plan(
+        _spans(),
+        [wrapper.panel_candidate for wrapper in wrappers],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        reference_panel_candidates=wrappers,
+    )
+    assert len(shots) == 32
+    counts: dict[str, int] = {}
+    for shot in shots:
+        counts[shot["panel_id"]] = counts.get(shot["panel_id"], 0) + 1
+    assert len(counts) == 16
+    assert set(counts) == {wrapper.panel_id for wrapper in wrappers}
+    assert set(counts.values()) == {2}
+    assert sum(shot["asset_id"] == "asset-shared" for shot in shots) == 4
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    (
+        (-1, 0, 100, 200),
+        (0, -1, 100, 200),
+        (0, 0, 99, 200),
+        (0, 0, 100, 199),
+    ),
+)
+def test_task6_rejects_negative_or_dimension_mismatched_panel_bounds(bounds):
+    from dataclasses import replace
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    valid = _task6_wrapper("panel-bounds", "asset-bounds", 1, framing=framing)
+    with pytest.raises(editorial_visual_planner.ReferencePlanningError) as error:
+        replace(valid, panel_bounds=bounds)
+    assert error.value.code == "visual.panel_lineage_unavailable"
+
+
+def test_task6_contract_mismatch_has_dedicated_failure_code():
+    from dataclasses import replace
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    wrappers = _task6_wrappers(count=16, framing=framing)
+    mismatched_profile = replace(
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        framing_contract_version="UNSUPPORTED_REFERENCE_CONTRACT",
+    )
+    with pytest.raises(editorial_visual_planner.ReferencePlanningError) as error:
+        editorial_visual_planner.plan(
+            _spans(),
+            [wrapper.panel_candidate for wrapper in wrappers],
+            profile=mismatched_profile,
+            reference_panel_candidates=wrappers,
+        )
+    assert error.value.code == "visual.framing_contract_incompatible"
+
+
+def _task6_out_of_order_rois(planner):
+    return (
+        planner.ReferenceROIAlternative(
+            kind="tighter_crop",
+            roi_label="tight-first-input",
+            crop_box=(1, 1, 99, 199),
+            focus=(0.45, 0.45, 0.55, 0.55),
+        ),
+        planner.ReferenceROIAlternative(
+            kind="alternate_roi",
+            roi_label="alternate-second-input",
+            crop_box=(0, 0, 99, 200),
+            focus=(0.40, 0.45, 0.60, 0.55),
+        ),
+        planner.ReferenceROIAlternative(
+            kind="primary",
+            roi_label="primary-last-input",
+            crop_box=(0, 0, 100, 200),
+            focus=(0.50, 0.50, 0.50, 0.50),
+        ),
+    )
+
+
+def test_task6_enforces_same_panel_phase_order_and_reason(monkeypatch):
+    from dataclasses import replace
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    wrappers = _task6_wrappers(
+        count=16,
+        framing=framing,
+        first_alternatives=_task6_out_of_order_rois(editorial_visual_planner),
+    )
+
+    first_attempt_state = {"done": False}
+
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+        telemetry = _task6_telemetry(framing, evidence, mask, crop_box)
+        if evidence.panel_id == "panel-0" and not first_attempt_state["done"]:
+            if crop_box == (0, 0, 99, 200):
+                first_attempt_state["done"] = True
+                return True, telemetry
+            return False, replace(telemetry, rejection_code="visual.visual_unavailable")
+        return True, telemetry
+
+    monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
+    shots = editorial_visual_planner.plan(
+        _spans(),
+        [wrapper.panel_candidate for wrapper in wrappers],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        reference_panel_candidates=wrappers,
+    )
+    first = shots[0]
+    assert first["panel_id"] == "panel-0"
+    assert [entry["kind"] for entry in first["fallback_attempts"][:2]] == [
+        "primary",
+        "alternate_roi",
+    ]
+    assert "fallback:alternate_panel_same_beat" not in first["alignment_reasons"]
+    assert "fallback:alternate_roi" in first["alignment_reasons"]
+
+
+def test_task6_enforces_alternate_panel_phase_after_same_panel_attempts(monkeypatch):
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    wrappers = _task6_wrappers(
+        count=16,
+        framing=framing,
+        first_alternatives=_task6_out_of_order_rois(editorial_visual_planner),
+    )
+
+    panel_zero_attempts = {"count": 0}
+
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+        telemetry = _task6_telemetry(framing, evidence, mask, crop_box)
+        if evidence.panel_id == "panel-0" and panel_zero_attempts["count"] < 3:
+            panel_zero_attempts["count"] += 1
+            return False, replace(telemetry, rejection_code="visual.visual_unavailable")
+        return True, telemetry
+
+    from dataclasses import replace
+
+    monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
+    shots = editorial_visual_planner.plan(
+        _spans(),
+        [wrapper.panel_candidate for wrapper in wrappers],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        reference_panel_candidates=wrappers,
+    )
+    first = shots[0]
+    assert first["panel_id"] != "panel-0"
+    assert [entry["kind"] for entry in first["fallback_attempts"][:4]] == [
+        "primary",
+        "alternate_roi",
+        "tighter_crop",
+        "alternate_panel",
+    ]
+    assert "fallback:alternate_panel_same_beat" in first["alignment_reasons"]
+
+
+def test_task6_shot_contains_accepted_telemetry_and_selection_context(monkeypatch):
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    wrappers = _task6_wrappers(count=16, framing=framing)
+
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+        return True, _task6_telemetry(framing, evidence, mask, crop_box)
+
+    monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
+    shots = editorial_visual_planner.plan(
+        _spans(),
+        [wrapper.panel_candidate for wrapper in wrappers],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        reference_panel_candidates=wrappers,
+    )
+    for shot in shots:
+        telemetry = shot["framing_telemetry"]
+        assert telemetry["crop_box"] == shot["roi"]["crop_box"]
+        assert telemetry["mask_sha256"] == shot["border_mask"]["mask_sha256"]
+        assert telemetry["candidate_count"] >= 1
+        assert telemetry["selection_context"]["selected_panel_id"] == shot["panel_id"]
+        assert telemetry["selection_context"]["selected_attempt_order"] >= 0
+
+
+def _task6_qc_scene(candidate, telemetry, *, roi_crop=None, fallback_attempts=None):
+    from dataclasses import asdict
+
+    crop = roi_crop if roi_crop is not None else telemetry.crop_box
+    telemetry_json = asdict(telemetry)
+    telemetry_json["selected_roi"] = {
+        "kind": "primary",
+        "roi_label": "qc-roi",
+        "crop_box": list(crop),
+        "focus": [0.5, 0.5, 0.5, 0.5],
+    }
+    default_attempt = {
+        "attempt_order": 0,
+        "panel_region_id": candidate.panel_region_id,
+        "panel_id": candidate.panel_id,
+        "source_asset_id": candidate.source_asset_id,
+        "source_asset_checksum": candidate.source_asset_checksum,
+        "source_order": candidate.source_order,
+        "panel_size": list(candidate.panel_size),
+        "roi_label": "qc-roi",
+        "crop_box": list(crop),
+        "evidence_hash": candidate.evidence_hash,
+        "detector_version": candidate.border_mask.detector_version,
+        "mask_sha256": candidate.border_mask.mask_sha256,
+        "telemetry": dict(telemetry_json),
+        "kind": "primary",
+        "roi_kind": "primary",
+        "accepted": True,
+        "code": None,
+        "reason": "accepted",
+    }
+    return {
+        "asset_id": candidate.source_asset_id,
+        "source_asset_id": candidate.source_asset_id,
+        "panel_region_id": candidate.panel_region_id,
+        "panel_id": candidate.panel_id,
+        "source_order": candidate.source_order,
+        "panel_bounds": list(candidate.panel_bounds),
+        "panel_size": list(candidate.panel_size),
+        "source_asset_checksum": candidate.source_asset_checksum,
+        "evidence_hash": candidate.evidence_hash,
+        "visual_evidence": visual_scoring.panel_visual_evidence_json(candidate.visual_evidence),
+        "border_mask": asdict(candidate.border_mask),
+        "roi": {"crop_box": list(crop), "roi_label": "qc-roi", "kind": "primary"},
+        "framing_telemetry": telemetry_json,
+        "fallback_attempts": fallback_attempts or [default_attempt],
+    }
+
+
+def test_task6_qc_uses_scene_exact_telemetry_for_reused_panel(monkeypatch):
+    from dataclasses import replace
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    candidate = _task6_wrapper("panel-qc", "asset-qc", 1, framing=framing)
+    good = _task6_telemetry(framing, candidate.visual_evidence, candidate.border_mask)
+    distinct = replace(good, crop_box=(1, 1, 100, 200))
+    key = (candidate.source_asset_id, candidate.panel_region_id)
+    common = (
+        {key: candidate.visual_evidence},
+        {key: candidate.border_mask},
+        {key: candidate.panel_size},
+        {key: good},
+    )
+    valid_results = quality.check_reference_framing(
+        [
+            _task6_qc_scene(candidate, good),
+            _task6_qc_scene(candidate, distinct, roi_crop=distinct.crop_box),
+        ],
+        *common,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert [result.code for result in valid_results] == ["visual.reference_framing"]
+    tampered_results = quality.check_reference_framing(
+        [
+            _task6_qc_scene(candidate, good),
+            _task6_qc_scene(candidate, distinct, roi_crop=good.crop_box),
+        ],
+        *common,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert "visual.panel_lineage_unavailable" in {
+        result.code for result in tampered_results
+    }
+
+
+def test_task6_qc_rejects_tampered_accepted_ledger():
+    from copy import deepcopy
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    candidate = _task6_wrapper("panel-ledger", "asset-ledger", 1, framing=framing)
+    telemetry = _task6_telemetry(framing, candidate.visual_evidence, candidate.border_mask)
+    scene = _task6_qc_scene(candidate, telemetry)
+    tampered = deepcopy(scene)
+    tampered["fallback_attempts"][0]["crop_box"] = [1, 1, 100, 200]
+    key = (candidate.source_asset_id, candidate.panel_region_id)
+    results = quality.check_reference_framing(
+        [tampered],
+        {key: candidate.visual_evidence},
+        {key: candidate.border_mask},
+        {key: candidate.panel_size},
+        {key: telemetry},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert "visual.panel_lineage_unavailable" in {result.code for result in results}
+
+
+def test_task6_qc_compares_complete_border_mask_snapshot():
+    from copy import deepcopy
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    candidate = _task6_wrapper("panel-mask-snapshot", "asset-mask-snapshot", 1, framing=framing)
+    telemetry = _task6_telemetry(framing, candidate.visual_evidence, candidate.border_mask)
+    scene = _task6_qc_scene(candidate, telemetry)
+    tampered = deepcopy(scene)
+    tampered["border_mask"]["grid_width"] = 2
+    key = (candidate.source_asset_id, candidate.panel_region_id)
+    results = quality.check_reference_framing(
+        [tampered],
+        {key: candidate.visual_evidence},
+        {key: candidate.border_mask},
+        {key: candidate.panel_size},
+        {key: telemetry},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert "visual.panel_lineage_unavailable" in {result.code for result in results}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("subject_coverage", float("nan")),
+        ("face_coverage", float("inf")),
+        ("balloon_mask_intersection_ratio", -0.01),
+        ("edge_connected_blank_fraction", 1.01),
+    ),
+)
+def test_task6_qc_rejects_nonfinite_or_out_of_range_telemetry(field, value):
+    from dataclasses import replace
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    candidate = _task6_wrapper("panel-fraction", "asset-fraction", 1, framing=framing)
+    telemetry = _task6_telemetry(framing, candidate.visual_evidence, candidate.border_mask)
+    telemetry = replace(telemetry, **{field: value})
+    scene = _task6_qc_scene(candidate, telemetry)
+    key = (candidate.source_asset_id, candidate.panel_region_id)
+    results = quality.check_reference_framing(
+        [scene],
+        {key: candidate.visual_evidence},
+        {key: candidate.border_mask},
+        {key: candidate.panel_size},
+        {key: telemetry},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert "visual.panel_lineage_unavailable" in {result.code for result in results}
+
+
+def test_task6_alternate_panel_runs_all_roi_phases(monkeypatch):
+    from dataclasses import replace
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    wrappers = _task6_wrappers(
+        count=16,
+        framing=framing,
+        first_alternatives=_task6_out_of_order_rois(editorial_visual_planner),
+    )
+    panel_zero_attempts = {"count": 0}
+    panel_one_primary_failed = {"value": False}
+
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+        telemetry = _task6_telemetry(framing, evidence, mask, crop_box)
+        if evidence.panel_id == "panel-0" and panel_zero_attempts["count"] < 3:
+            panel_zero_attempts["count"] += 1
+            return False, replace(telemetry, rejection_code="visual.visual_unavailable")
+        if evidence.panel_id == "panel-1" and not panel_one_primary_failed["value"]:
+            if crop_box == (0, 0, 100, 200):
+                panel_one_primary_failed["value"] = True
+                return False, replace(telemetry, rejection_code="visual.visual_unavailable")
+            return True, telemetry
+        return True, telemetry
+
+    monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
+    shots = editorial_visual_planner.plan(
+        _spans(),
+        [wrapper.panel_candidate for wrapper in wrappers],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        reference_panel_candidates=wrappers,
+    )
+    first = shots[0]
+    assert first["panel_id"] == "panel-1"
+    assert first["fallback_attempts"][-1]["kind"] == "alternate_panel"
+    assert first["fallback_attempts"][-1]["roi_kind"] == "alternate_roi"

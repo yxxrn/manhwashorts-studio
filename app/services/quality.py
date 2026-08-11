@@ -8,9 +8,10 @@ only gate the publish endpoint trusts.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 
 from app.config import settings
@@ -304,6 +305,61 @@ def _reference_lineage_failure(message: str) -> CheckResult:
     )
 
 
+def _telemetry_field(telemetry: object, key: str, default=None):
+    if isinstance(telemetry, Mapping):
+        return telemetry.get(key, default)
+    return getattr(telemetry, key, default)
+
+
+def _telemetry_float(telemetry: object, key: str, default: float) -> float | None:
+    try:
+        return float(_telemetry_field(telemetry, key, default))
+    except (TypeError, ValueError):
+        return None
+
+
+_REFERENCE_FRACTION_FIELDS = (
+    "balloon_mask_intersection_ratio",
+    "subject_coverage",
+    "face_coverage",
+    "action_coverage",
+    "effect_coverage",
+    "continuity_context_coverage",
+    "edge_connected_blank_fraction",
+    "protected_retained_fraction",
+    "non_discardable_low_information_fraction",
+    "mask_confidence",
+)
+
+
+def _telemetry_fraction(telemetry: object, key: str, default: float) -> float | None:
+    value = _telemetry_float(telemetry, key, default)
+    if value is None or not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        return None
+    return value
+
+
+def _canonical_snapshot(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _canonical_snapshot_matches(left: object, right: object) -> bool:
+    try:
+        if is_dataclass(right):
+            right = asdict(right)
+        return _canonical_snapshot(left) == _canonical_snapshot(right)
+    except (TypeError, ValueError):
+        return False
+
+
+def _reference_contract_failure(message: str) -> CheckResult:
+    return _fail(
+        "visual.framing_contract_incompatible",
+        CheckSeverity.ERROR,
+        message,
+    )
+
+
 def check_reference_framing(
     scenes: Sequence[Mapping[str, object] | object],
     panel_evidence_by_key: Mapping[tuple[str, str], visual_scoring.PanelVisualEvidence],
@@ -317,7 +373,7 @@ def check_reference_framing(
     *,
     profile: object,
 ) -> list[CheckResult]:
-    """Validate exact panel evidence and Task 5 telemetry before reference QC."""
+    """Validate the exact panel snapshot and the scene's accepted telemetry."""
 
     lineage: list[
         tuple[
@@ -326,7 +382,7 @@ def check_reference_framing(
             visual_scoring.PanelVisualEvidence,
             framing_analysis.BorderMaskResult,
             tuple[int, int],
-            framing_analysis.FramingTelemetry,
+            Mapping[str, object],
             str | None,
         ]
     ] = []
@@ -341,9 +397,27 @@ def check_reference_framing(
         evidence = panel_evidence_by_key.get(key)
         mask = panel_border_masks_by_key.get(key)
         panel_size = panel_sizes_by_key.get(key)
-        telemetry = telemetry_by_key.get(key)
+        external_telemetry = telemetry_by_key.get(key)
+        scene_telemetry = _scene_field(scene, "framing_telemetry")
         scene_border_mask = _scene_field(scene, "border_mask")
         scene_panel_size = _scene_field(scene, "panel_size")
+        scene_visual_evidence = _scene_field(scene, "visual_evidence")
+        fallback_attempts = _scene_field(scene, "fallback_attempts")
+        required_telemetry_fields = (
+            "contract_version",
+            "detector_version",
+            "mask_sha256",
+            "crop_box",
+            "balloon_mask_intersection_ratio",
+            "subject_coverage",
+            "face_coverage",
+            "action_coverage",
+            "effect_coverage",
+            "continuity_context_coverage",
+            "edge_connected_blank_fraction",
+            "fallback_reason",
+            "rejection_code",
+        )
         if (
             not source_asset_id
             or not panel_region_id
@@ -351,39 +425,154 @@ def check_reference_framing(
             or evidence is None
             or mask is None
             or panel_size is None
-            or telemetry is None
+            or not isinstance(scene_telemetry, Mapping)
+            or any(field not in scene_telemetry for field in required_telemetry_fields)
+            or not isinstance(scene_border_mask, Mapping)
+            or not isinstance(scene_visual_evidence, Mapping)
+            or not isinstance(fallback_attempts, list)
+            or tuple(scene_panel_size or ()) != tuple(panel_size)
             or not _scene_field(scene, "evidence_hash")
             or not _scene_field(scene, "source_asset_checksum")
+            or not _scene_field(scene, "source_order")
             or not _scene_field(scene, "panel_bounds")
-            or not isinstance(scene_border_mask, Mapping)
-            or tuple(scene_panel_size or ()) != tuple(panel_size)
         ):
             return [_reference_lineage_failure("reference scene snapshot is incomplete")]
         try:
             visual_scoring.validate_panel_visual_evidence(evidence)
             local_hash = visual_scoring.visual_evidence_hash(evidence)
-        except visual_scoring.VisualEvidenceError:
+            snapshot_evidence = visual_scoring.parse_panel_visual_evidence(
+                scene_visual_evidence
+            )
+            visual_scoring.validate_panel_visual_evidence(snapshot_evidence)
+            snapshot_hash = visual_scoring.visual_evidence_hash(snapshot_evidence)
+        except (visual_scoring.VisualEvidenceError, TypeError, ValueError):
             return [_reference_lineage_failure("reference panel evidence is invalid")]
         if (
-            evidence.panel_id != panel_id
+            snapshot_hash != local_hash
+            or snapshot_evidence.panel_id != panel_id
+            or snapshot_evidence.source_asset_id != source_asset_id
+            or snapshot_evidence.source_order != _scene_field(scene, "source_order")
+            or evidence.panel_id != panel_id
             or evidence.source_asset_id != source_asset_id
+            or evidence.source_order != _scene_field(scene, "source_order")
             or _scene_field(scene, "evidence_hash") != local_hash
             or scene_border_mask.get("mask_sha256") != mask.mask_sha256
             or scene_border_mask.get("detector_version") != mask.detector_version
+            or not _canonical_snapshot_matches(scene_border_mask, mask)
             or (mask.source_width, mask.source_height) != tuple(panel_size)
-            or not framing_analysis.detector_contract_matches(
-                profile.framing_contract_version, mask.detector_version
-            )
             or _reference_mask_identity(mask) != mask.mask_sha256
-            or telemetry.mask_sha256 != mask.mask_sha256
-            or telemetry.detector_version != mask.detector_version
-            or telemetry.contract_version != evidence.contract_version
         ):
-            return [
-                _reference_lineage_failure(
-                    "reference panel snapshot does not match evidence"
-                )
-            ]
+            return [_reference_lineage_failure("reference panel snapshot does not match evidence")]
+        try:
+            bounds = tuple(_scene_field(scene, "panel_bounds"))
+            if (
+                len(bounds) != 4
+                or any(isinstance(value, bool) or not isinstance(value, int) for value in bounds)
+                or bounds[0] < 0
+                or bounds[1] < 0
+                or (bounds[2] - bounds[0], bounds[3] - bounds[1]) != tuple(panel_size)
+            ):
+                return [_reference_lineage_failure("reference panel bounds are invalid")]
+        except (TypeError, ValueError):
+            return [_reference_lineage_failure("reference panel bounds are invalid")]
+        if not framing_analysis.detector_contract_matches(
+            profile.framing_contract_version, mask.detector_version
+        ) or not framing_analysis.detector_contract_matches(
+            evidence.contract_version, mask.detector_version
+        ):
+            return [_reference_contract_failure("reference framing contract is incompatible")]
+        scene_contract = _telemetry_field(scene_telemetry, "contract_version")
+        if scene_contract != evidence.contract_version:
+            return [_reference_contract_failure("scene telemetry contract is incompatible")]
+        if (
+            _telemetry_field(scene_telemetry, "mask_sha256") != mask.mask_sha256
+            or _telemetry_field(scene_telemetry, "detector_version") != mask.detector_version
+        ):
+            return [_reference_lineage_failure("scene telemetry mask identity is stale")]
+        roi = _scene_field(scene, "roi")
+        scene_crop = tuple(_telemetry_field(scene_telemetry, "crop_box", ()))
+        if (
+            not isinstance(roi, Mapping)
+            or tuple(roi.get("crop_box", ())) != scene_crop
+        ):
+            return [_reference_lineage_failure("scene telemetry crop does not match ROI")]
+        selected_roi = _telemetry_field(scene_telemetry, "selected_roi")
+        if selected_roi is not None and (
+            not isinstance(selected_roi, Mapping)
+            or tuple(selected_roi.get("crop_box", ())) != scene_crop
+        ):
+            return [_reference_lineage_failure("selected telemetry ROI does not match crop")]
+        if (
+            _telemetry_field(scene_telemetry, "evidence_hash", local_hash) != local_hash
+            or _telemetry_field(
+                scene_telemetry, "source_asset_checksum", _scene_field(scene, "source_asset_checksum")
+            )
+            != _scene_field(scene, "source_asset_checksum")
+            or _telemetry_field(scene_telemetry, "source_order", _scene_field(scene, "source_order"))
+            != _scene_field(scene, "source_order")
+            or tuple(
+                _telemetry_field(scene_telemetry, "panel_size", tuple(panel_size))
+            )
+            != tuple(panel_size)
+        ):
+            return [_reference_lineage_failure("scene telemetry lineage is stale")]
+        if external_telemetry is not None and (
+            _telemetry_field(external_telemetry, "mask_sha256") != mask.mask_sha256
+            or _telemetry_field(external_telemetry, "detector_version") != mask.detector_version
+            or _telemetry_field(external_telemetry, "contract_version")
+            != evidence.contract_version
+        ):
+            return [_reference_lineage_failure("external telemetry identity is stale")]
+        if any(
+            key in scene_telemetry
+            and _telemetry_fraction(scene_telemetry, key, 0.0) is None
+            for key in _REFERENCE_FRACTION_FIELDS
+        ):
+            return [_reference_lineage_failure("reference telemetry contains invalid fractions")]
+        if any(
+            not isinstance(entry, Mapping)
+            or entry.get("attempt_order") != index
+            for index, entry in enumerate(fallback_attempts)
+        ):
+            return [_reference_lineage_failure("reference fallback ledger order is invalid")]
+        accepted_entries = [
+            entry
+            for entry in fallback_attempts
+            if isinstance(entry, Mapping) and entry.get("accepted") is True
+        ]
+        selected_roi_kind = (
+            selected_roi.get("kind") if isinstance(selected_roi, Mapping) else None
+        )
+        selected_roi_label = (
+            selected_roi.get("roi_label") if isinstance(selected_roi, Mapping) else None
+        )
+        scene_roi_label = roi.get("roi_label") if isinstance(roi, Mapping) else None
+        accepted_entry = accepted_entries[0] if len(accepted_entries) == 1 else None
+        expected_attempt_identity = (
+            accepted_entry is not None
+            and isinstance(roi, Mapping)
+            and isinstance(selected_roi, Mapping)
+            and tuple(accepted_entry.get("crop_box", ())) == scene_crop
+            and accepted_entry.get("roi_label") == scene_roi_label == selected_roi_label
+            and accepted_entry.get("roi_kind") == selected_roi_kind
+            and accepted_entry.get("kind") in {selected_roi_kind, "alternate_panel"}
+            and accepted_entry.get("panel_region_id") == panel_region_id
+            and accepted_entry.get("panel_id") == panel_id
+            and accepted_entry.get("source_asset_id") == source_asset_id
+            and accepted_entry.get("source_order") == _scene_field(scene, "source_order")
+            and accepted_entry.get("source_asset_checksum")
+            == _scene_field(scene, "source_asset_checksum")
+            and accepted_entry.get("evidence_hash") == local_hash
+            and accepted_entry.get("detector_version") == mask.detector_version
+            and accepted_entry.get("mask_sha256") == mask.mask_sha256
+            and tuple(accepted_entry.get("panel_size", ())) == tuple(panel_size)
+            and isinstance(accepted_entry.get("telemetry"), Mapping)
+            and _canonical_snapshot_matches(
+                accepted_entry.get("telemetry"), scene_telemetry
+            )
+        )
+        if not expected_attempt_identity:
+            return [_reference_lineage_failure("reference fallback ledger does not match accepted scene snapshot")]
         readiness_code: str | None = None
         try:
             visual_scoring.require_reference_ready_visual_evidence(evidence)
@@ -397,7 +586,7 @@ def check_reference_framing(
                     )
                 ]
         lineage.append(
-            (scene, key, evidence, mask, panel_size, telemetry, readiness_code)
+            (scene, key, evidence, mask, panel_size, scene_telemetry, readiness_code)
         )
 
     results: list[CheckResult] = []
@@ -411,7 +600,16 @@ def check_reference_framing(
                 )
             )
             continue
-        if telemetry.balloon_mask_intersection_ratio > 0.0:
+        balloon = _telemetry_fraction(telemetry, "balloon_mask_intersection_ratio", 1.0)
+        subject = _telemetry_fraction(telemetry, "subject_coverage", 0.0)
+        face = _telemetry_fraction(telemetry, "face_coverage", 0.0)
+        action = _telemetry_fraction(telemetry, "action_coverage", 0.0)
+        continuity = _telemetry_fraction(telemetry, "continuity_context_coverage", 0.0)
+        effect = _telemetry_fraction(telemetry, "effect_coverage", 0.0)
+        blank = _telemetry_fraction(telemetry, "edge_connected_blank_fraction", 1.0)
+        if any(value is None for value in (balloon, subject, face, action, continuity, effect, blank)):
+            results.append(_reference_lineage_failure("reference telemetry contains invalid numeric data"))
+        elif balloon > 0.0:
             results.append(
                 _fail(
                     "visual.balloon_mask_overlap",
@@ -420,11 +618,11 @@ def check_reference_framing(
                 )
             )
         elif (
-            telemetry.subject_coverage < 0.98
-            or telemetry.face_coverage < 0.98
-            or telemetry.action_coverage < 0.95
-            or telemetry.continuity_context_coverage < 0.95
-            or telemetry.effect_coverage < 0.90
+            subject < 0.98
+            or face < 0.98
+            or action < 0.95
+            or continuity < 0.95
+            or effect < 0.90
         ):
             results.append(
                 _fail(
@@ -433,8 +631,8 @@ def check_reference_framing(
                     "Reference crop does not retain required protected visual regions.",
                 )
             )
-        elif telemetry.rejection_code:
-            code = str(telemetry.rejection_code)
+        elif _telemetry_field(telemetry, "rejection_code"):
+            code = str(_telemetry_field(telemetry, "rejection_code"))
             if code == "visual.source_resolution_insufficient":
                 code = "visual.visual_unavailable"
             results.append(
@@ -444,9 +642,9 @@ def check_reference_framing(
                     "Reference crop telemetry contains a hard rejection.",
                 )
             )
-        elif telemetry.edge_connected_blank_fraction > float(
-            profile.framing_blank_target_fraction
-        ) and telemetry.fallback_reason != "visual.blank_infeasible":
+        elif blank > float(profile.framing_blank_target_fraction) and _telemetry_field(
+            telemetry, "fallback_reason"
+        ) != "visual.blank_infeasible":
             results.append(
                 _fail(
                     "visual.blank_infeasible",
@@ -460,7 +658,6 @@ def check_reference_framing(
     for result in results:
         unique[result.code] = result
     return list(unique.values())
-
 
 
 def check_reference_profile(scenes: list, duration: float, profile) -> list[CheckResult]:
