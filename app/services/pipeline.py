@@ -71,6 +71,7 @@ from app.services.vision_adapter import (
     VisionObservationRequest,
     VisionProviderRequestFailed,
     VisionResponseInvalid,
+    validate_visual_evidence_observation,
 )
 
 
@@ -641,13 +642,19 @@ def _panel_transport(
 def _validate_observation_rows(
     value: Any,
     expected_panel_ids: Sequence[str],
+    *,
+    expected_panels: Mapping[str, Mapping[str, Any]] | None = None,
+    require_visual_evidence: bool = False,
 ) -> list[dict[str, Any]]:
     if not isinstance(value, list) or len(value) != len(expected_panel_ids):
         raise _AnalysisBlocked("analysis_observation_missing", stage="observation_reconcile")
     rows: list[dict[str, Any]] = []
     expected_set = set(expected_panel_ids)
+    expected_keys = _VISION_OBSERVATION_KEYS | (
+        {"visual_evidence"} if require_visual_evidence else set()
+    )
     for index, raw_row in enumerate(value):
-        if not isinstance(raw_row, Mapping) or set(raw_row) != _VISION_OBSERVATION_KEYS:
+        if not isinstance(raw_row, Mapping) or set(raw_row) != expected_keys:
             raise _AnalysisBlocked("analysis_observation_missing", stage="observation_reconcile")
         row = dict(raw_row)
         panel_id = row.get("panel_id")
@@ -659,6 +666,21 @@ def _validate_observation_rows(
         refs = row["evidence_refs"]
         if not refs or panel_id not in refs or any(ref not in expected_set for ref in refs):
             raise _AnalysisBlocked("analysis_observation_missing", stage="observation_reconcile")
+        if require_visual_evidence:
+            panel = (expected_panels or {}).get(panel_id)
+            if panel is None:
+                raise _AnalysisBlocked("vision_response_invalid", stage="visual_lineage")
+            try:
+                row["visual_evidence"] = dict(
+                    validate_visual_evidence_observation(
+                        row["visual_evidence"],
+                        expected_panel_id=panel_id,
+                        expected_source_asset_id=str(panel["source_asset_id"]),
+                        expected_source_order=int(panel["source_order"]),
+                    )
+                )
+            except VisionResponseInvalid:
+                raise _AnalysisBlocked("vision_response_invalid", stage="visual_evidence") from None
         rows.append(row)
     return rows
 
@@ -671,6 +693,8 @@ def _observe_chunks(
     analysis_run_id: str,
     instruction_version: str,
     instruction_sha256: str,
+    visual_instruction_version: str | None = None,
+    visual_instruction_sha256: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
     unique: dict[str, dict[str, Any]] = {}
     last_seen: dict[str, int] = {}
@@ -684,6 +708,8 @@ def _observe_chunks(
             instruction_sha256=instruction_sha256,
             chunk_index=chunk_index,
             panels=tuple(panel_transports[panel_id] for panel_id in panel_ids),
+            visual_instruction_version=visual_instruction_version,
+            visual_instruction_sha256=visual_instruction_sha256,
         )
         try:
             response = provider.observe(request)
@@ -695,7 +721,12 @@ def _observe_chunks(
             raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider") from None
         except Exception:
             raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider") from None
-        rows = _validate_observation_rows(response, panel_ids)
+        rows = _validate_observation_rows(
+            response,
+            panel_ids,
+            expected_panels={panel_id: panel_transports[panel_id] for panel_id in panel_ids},
+            require_visual_evidence=visual_instruction_version is not None,
+        )
         for row in rows:
             panel_id = row["panel_id"]
             if panel_id in unique:
@@ -756,7 +787,14 @@ def _enrich_observations(
         }
         semantic_observation = dict(observation)
         if "visual_evidence" in semantic:
-            observation["visual_evidence"] = semantic["visual_evidence"]
+            provider_evidence = semantic["visual_evidence"]
+            if not isinstance(provider_evidence, Mapping):
+                raise _AnalysisBlocked("vision_response_invalid", stage="visual_evidence")
+            observation["visual_evidence"] = {
+                **dict(provider_evidence),
+                "contract_version": visual_scoring.VISUAL_EVIDENCE_CONTRACT_VERSION,
+                "evidence_hash": "",
+            }
         persisted_observation, _ = visual_scoring.ensure_panel_visual_evidence(
             observation,
             panel_id=panel.panel_id,
@@ -889,6 +927,12 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
             )
         except analyzer_contract.AnalyzerContractError:
             raise _AnalysisBlocked("analyzer_contract_invalid", stage="instruction_load") from None
+        try:
+            visual_instruction_version, visual_instruction_sha256, _ = (
+                visual_scoring.load_visual_evidence_instruction()
+            )
+        except Exception:
+            raise _AnalysisBlocked("analyzer_contract_invalid", stage="visual_instruction_load") from None
         row.instruction_version = instruction_version
         row.instruction_sha256 = instruction_sha256
 
@@ -959,6 +1003,8 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
             analysis_run_id=run_id,
             instruction_version=instruction_version,
             instruction_sha256=instruction_sha256,
+            visual_instruction_version=visual_instruction_version,
+            visual_instruction_sha256=visual_instruction_sha256,
         )
         enriched, chain_observations = _enrich_observations(
             panel_regions, semantic, first_chunk, coverage

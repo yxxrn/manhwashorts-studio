@@ -67,6 +67,66 @@ def default_vision_response() -> list[dict]:
     ]
 
 
+def default_visual_vision_response() -> list[dict]:
+    """Return ordered observations with provider-owned visual sidecars."""
+    rows = default_vision_response()
+    sidecars = (
+        {
+            "balloon_mask_status": "known_nonempty",
+            "balloon_regions": [
+                {
+                    "region_id": "balloon-a",
+                    "kind": "speech_balloon",
+                    "normalized_bbox": [0.10, 0.12, 0.48, 0.30],
+                    "normalized_polygon": [],
+                    "confidence": 0.91,
+                    "evidence_source": "vision_geometry_v1",
+                    "mask_status": "known_nonempty",
+                }
+            ],
+            "protected_regions": [
+                {
+                    "region_id": "subject-a",
+                    "kind": "subject",
+                    "normalized_bbox": [0.38, 0.36, 0.86, 0.94],
+                    "normalized_polygon": [],
+                    "confidence": 0.88,
+                    "evidence_source": "vision_geometry_v1",
+                    "required": True,
+                    "minimum_coverage": 0.60,
+                }
+            ],
+            "mask_confidence": 0.91,
+            "evidence_source": "vision_geometry_v1",
+            "mask_reason": "speech geometry is visible in the panel",
+        },
+        {
+            "balloon_mask_status": "known_empty",
+            "balloon_regions": [],
+            "protected_regions": [],
+            "mask_confidence": 0.96,
+            "evidence_source": "vision_geometry_v1",
+            "mask_reason": "the provider explicitly reports no speech region",
+        },
+        {
+            "balloon_mask_status": "unknown",
+            "balloon_regions": [],
+            "protected_regions": [],
+            "mask_confidence": 0.0,
+            "evidence_source": "vision_geometry_unavailable",
+            "mask_reason": "geometry is unavailable for this panel",
+        },
+    )
+    for row, sidecar in zip(rows, sidecars, strict=True):
+        row["visual_evidence"] = {
+            **sidecar,
+            "panel_id": row["panel_id"],
+            "source_asset_id": f"asset-{row['panel_id'][-1]}",
+            "source_order": {"a": 17, "b": 23, "c": 41}[row["panel_id"][-1]],
+        }
+    return rows
+
+
 def reset_vision_state() -> None:
     """Clear captured multimodal requests and restore the default response."""
     global _VISION_RESPONSE_CONTENT

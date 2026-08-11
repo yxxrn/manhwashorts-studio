@@ -13,6 +13,15 @@ Notable changes per release. Dates are ISO 8601.
   evidence_hash, local canonical hashing owns persistence, and pipeline/test
   files explicitly activate and verify visual observation mode while legacy
   adapter callers remain compatible.
+- Implemented Visual Plan Task 2 balloon/protected-region acquisition: the
+  committed visual prompt is versioned and hashed locally, provider sidecars
+  are lineage-checked without trusting provider hashes, and unknown geometry
+  remains parseable for audit while reference consumers can reject it later.
+  Verification is 40 focused tests, 168 amended-regression tests, and 657
+  full non-slow tests passed with 15 deselected. The approved
+  `tests/test_story_evidence.py` fixture update supplies visual sidecars only
+  when production visual mode is requested; no production compatibility
+  fallback was added.
 - Task 1 verification: 7 body-failing RED tests, 58 focused GREEN tests, and
   642 full non-slow tests passed; scoped Ruff, compileall, and diff-check pass.
 - Completed the approved implementation plans for balloon-free color-agnostic

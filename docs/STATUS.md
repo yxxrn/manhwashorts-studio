@@ -89,6 +89,10 @@ Updated: 2026-08-11
 - BYOK encryption and provider discovery.
 - Vision-first analyzer v2 contract with complete chapter evidence gates and
   five-role, word-bounded, evidence-grounded narration.
+- Visual Plan Task 2 now acquires versioned balloon/protected-region sidecars
+  during every production observation, preserves unknown geometry for audit,
+  and computes the local canonical visual evidence hash; providers never
+  supply or establish that hash.
 - Evidence-gated script materialization now requires the latest RECONCILED
   analysis, revalidates persisted panel/claim evidence, and records explicit
   human approval before SCRIPT_APPROVED.
@@ -137,8 +141,16 @@ A render is review-only until all are true:
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
-Current state: **development / review-only**. Task 1 production persistence is
-published and fully verified; Task 2 provider acquisition is the next gated
-slice, and reference output remains unavailable until its geometry contract is
-fulfilled. VPS GitHub SSH is unavailable, so approved commits are published
-through the isolated Windows transport workflow.
+Current state: **development / review-only**. Visual Plan Task 2 is green at
+the `4730022492f0e32cbf53a1e751e52dc2196aa60f` rollback point: RED was 40
+collected with 14 body failures and no collection/setup failures; focused
+GREEN is 40 passed, the amended regression matrix is 168 passed, and the full
+non-slow suite is 657 passed with 15 deselected. Scoped Ruff, compileall,
+prompt-snapshot, and diff-check verification pass. The sole additional test
+path, `tests/test_story_evidence.py`, was authorized to add visual sidecars
+to its local provider spy; this keeps its synthesis-stage assertions valid
+under the production visual-mode gate without adding a production fallback.
+Task 3 color-agnostic detection is next, and reference output remains
+unavailable until geometry feasibility is fulfilled. VPS GitHub SSH is
+unavailable, so approved commits are published through the isolated Windows
+transport workflow.

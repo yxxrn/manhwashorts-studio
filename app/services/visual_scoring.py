@@ -107,6 +107,28 @@ class VisualEvidenceError(ValueError):
         super().__init__(f"{code}: {message}")
 
 
+VISUAL_EVIDENCE_PROMPT_VERSION = "balloon-free-visual-evidence-v1"
+
+
+def load_visual_evidence_instruction() -> tuple[str, str, str]:
+    """Load the committed visual geometry instruction and its local digest."""
+
+    prompt_path = (
+        Path(__file__).resolve().parents[1]
+        / "prompts"
+        / "balloon_free_visual_evidence_v1.txt"
+    )
+    try:
+        text = prompt_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise _visual_error(
+            "visual.prompt_missing", "the visual evidence instruction is unavailable"
+        ) from exc
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n") + "\n"
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return VISUAL_EVIDENCE_PROMPT_VERSION, digest, normalized
+
+
 @dataclass(frozen=True)
 class BalloonRegionEvidence:
     region_id: str

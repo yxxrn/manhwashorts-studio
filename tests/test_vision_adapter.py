@@ -2,6 +2,7 @@ import base64
 import copy
 import importlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -62,6 +63,25 @@ def _request(module):
         chunk_index=4,
         panels=_panels(),
     )
+
+
+def _visual_request(module):
+    scoring = importlib.import_module("app.services.visual_scoring")
+    loader = getattr(scoring, "load_visual_evidence_instruction", None)
+    assert callable(loader), "visual_instruction_loader_missing"
+    version, digest, text = loader()
+    assert version == "balloon-free-visual-evidence-v1"
+    assert len(digest) == 64
+    request = module.VisionObservationRequest(
+        analysis_run_id="run-vision-001",
+        instruction_version="vision-first-story-analyzer-v1",
+        instruction_sha256="a" * 64,
+        chunk_index=4,
+        panels=_panels(),
+        visual_instruction_version=version,
+        visual_instruction_sha256=digest,
+    )
+    return request, version, digest, text
 
 
 def _body_parts(body):
@@ -280,3 +300,111 @@ def test_response_order_is_deterministic_for_a_complete_request(mock_provider_ur
         "panel-b",
         "panel-c",
     ]
+
+
+def _assert_visual_invalid(module, mock_provider_url, content):
+    import mock_provider
+
+    request, _, _, _ = _visual_request(module)
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url=mock_provider_url,
+        model="mock-large",
+        api_key=mock_provider.GOOD_KEY,
+    )
+    try:
+        mock_provider.set_vision_response_content(json.dumps(content))
+        with pytest.raises(module.VisionCapabilityError) as caught:
+            provider.observe(request)
+        assert caught.value.code == "vision_response_invalid"
+    finally:
+        mock_provider.reset_vision_state()
+
+
+def test_visual_request_uses_committed_prompt_and_ordered_provider_sidecars(
+    mock_provider_url,
+):
+    module = _vision_module()
+    import mock_provider
+
+    request, version, digest, prompt = _visual_request(module)
+    mock_provider.reset_vision_state()
+    mock_provider.set_vision_response_content(
+        json.dumps(mock_provider.default_visual_vision_response())
+    )
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url=mock_provider_url,
+        model="mock-large",
+        api_key=mock_provider.GOOD_KEY,
+    )
+    observations = provider.observe(request)
+    body = mock_provider.captured_vision_requests()[0]
+    text = _body_text(body)
+
+    assert [row["panel_id"] for row in observations] == [
+        panel["panel_id"] for panel in _panels()
+    ]
+    assert version in text
+    assert digest in text
+    assert prompt.strip() in text
+    assert "evidence_hash" not in json.dumps(body)
+    for panel, row in zip(_panels(), observations, strict=True):
+        assert set(row) == REQUIRED_OBSERVATION_KEYS | {"visual_evidence"}
+        sidecar = row["visual_evidence"]
+        assert set(sidecar) == {
+            "balloon_mask_status",
+            "balloon_regions",
+            "protected_regions",
+            "mask_confidence",
+            "evidence_source",
+            "mask_reason",
+            "panel_id",
+            "source_asset_id",
+            "source_order",
+        }
+        assert sidecar["panel_id"] == panel["panel_id"]
+        assert sidecar["source_asset_id"] == panel["source_asset_id"]
+        assert sidecar["source_order"] == panel["source_order"]
+        assert "evidence_hash" not in sidecar
+
+
+def test_visual_prompt_snapshot_is_normalized_and_local_hash_owned():
+    scoring = importlib.import_module("app.services.visual_scoring")
+    loader = getattr(scoring, "load_visual_evidence_instruction", None)
+    assert callable(loader), "visual_instruction_loader_missing"
+    version, digest, text = loader()
+    snapshot = Path(__file__).parent / "fixtures" / "visual_evidence_prompt_snapshot.sha256"
+    assert snapshot.exists()
+    assert version == "balloon-free-visual-evidence-v1"
+    assert snapshot.read_text(encoding="utf-8").strip() == digest
+    assert text.endswith("\n")
+    assert "evidence_hash" not in text
+
+
+@pytest.mark.parametrize(
+    "variant",
+    ("missing", "foreign", "malformed", "known_empty_unproven", "duplicate", "ocr_only", "provider_hash"),
+)
+def test_visual_sidecars_fail_closed_without_provider_hash_trust(
+    mock_provider_url, variant
+):
+    module = _vision_module()
+    import mock_provider
+
+    response = copy.deepcopy(mock_provider.default_visual_vision_response())
+    sidecar = response[0]["visual_evidence"]
+    if variant == "missing":
+        response[0].pop("visual_evidence")
+    elif variant == "foreign":
+        sidecar["panel_id"] = "panel-foreign"
+    elif variant == "malformed":
+        sidecar["balloon_regions"][0]["normalized_bbox"] = [0.1, 0.2]
+    elif variant == "known_empty_unproven":
+        sidecar = response[1]["visual_evidence"]
+        sidecar.update(mask_confidence=0.0, evidence_source="", mask_reason="")
+    elif variant == "duplicate":
+        sidecar["balloon_regions"].append(copy.deepcopy(sidecar["balloon_regions"][0]))
+    elif variant == "ocr_only":
+        sidecar["balloon_regions"][0]["evidence_source"] = "ocr_text_only"
+    else:
+        sidecar["evidence_hash"] = "provider-supplied"
+    _assert_visual_invalid(module, mock_provider_url, response)

@@ -10,6 +10,7 @@ import hashlib
 import importlib
 import io
 from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -528,7 +529,10 @@ class _ProviderSpy:
 
     def observe(self, request):
         self.observe_requests.append(request)
-        rows = [_semantic_observation(panel) for panel in request.panels]
+        if request.visual_instruction_version is None:
+            rows = [_semantic_observation(panel) for panel in request.panels]
+        else:
+            rows = [_visual_row(panel) for panel in request.panels]
         self.observed_panel_ids.extend(row["panel_id"] for row in rows)
         if self.mode == "omit_observation" and rows:
             return rows[:-1]
@@ -713,3 +717,186 @@ def test_observe_stage_omission_blocks_before_synthesis(db, monkeypatch):
     assert db.scalars(
         select(ScriptVersion).where(ScriptVersion.project_id == project_id)
     ).all() == []
+
+
+def _visual_loader():
+    scoring = importlib.import_module("app.services.visual_scoring")
+    loader = getattr(scoring, "load_visual_evidence_instruction", None)
+    assert callable(loader), "visual_instruction_loader_missing"
+    return scoring, loader()
+
+
+def _visual_sidecar(panel_id: str, asset_id: str, source_order: int) -> dict[str, Any]:
+    if source_order % 3 == 0:
+        return {
+            "balloon_mask_status": "known_nonempty",
+            "balloon_regions": [
+                {
+                    "region_id": f"balloon-{panel_id}",
+                    "kind": "speech_balloon",
+                    "normalized_bbox": [0.1, 0.1, 0.4, 0.3],
+                    "normalized_polygon": [],
+                    "confidence": 0.9,
+                    "evidence_source": "vision_geometry_v1",
+                    "mask_status": "known_nonempty",
+                }
+            ],
+            "protected_regions": [],
+            "mask_confidence": 0.9,
+            "evidence_source": "vision_geometry_v1",
+            "mask_reason": "provider supplied normalized geometry",
+        }
+    if source_order % 3 == 1:
+        return {
+            "balloon_mask_status": "known_empty",
+            "balloon_regions": [],
+            "protected_regions": [],
+            "mask_confidence": 0.95,
+            "evidence_source": "vision_geometry_v1",
+            "mask_reason": "provider affirmatively found no speech region",
+        }
+    return {
+        "balloon_mask_status": "unknown",
+        "balloon_regions": [],
+        "protected_regions": [],
+        "mask_confidence": 0.0,
+        "evidence_source": "vision_geometry_unavailable",
+        "mask_reason": "geometry could not be determined reliably",
+    }
+
+
+def _visual_row(panel: Mapping[str, Any], *, mode: str = "valid") -> dict[str, Any]:
+    row = _semantic_observation(panel)
+    sidecar = _visual_sidecar(
+        panel["panel_id"], panel["source_asset_id"], panel["source_order"]
+    )
+    if mode == "missing":
+        return row
+    if mode == "foreign":
+        sidecar["panel_id"] = "panel-foreign"
+    elif mode == "malformed":
+        if sidecar["balloon_regions"]:
+            sidecar["balloon_regions"][0]["normalized_bbox"] = [0.1, 0.2]
+    elif mode == "provider_hash":
+        sidecar["evidence_hash"] = "provider-supplied"
+    row["visual_evidence"] = {
+        **sidecar,
+        "panel_id": sidecar.get("panel_id", panel["panel_id"]),
+        "source_asset_id": panel["source_asset_id"],
+        "source_order": panel["source_order"],
+    }
+    return row
+
+
+class _VisualObservationSpy:
+    def __init__(self, mode: str = "valid") -> None:
+        self.mode = mode
+        self.requests = []
+
+    def observe(self, request):
+        self.requests.append(request)
+        return [
+            _visual_row(panel, mode=self.mode)
+            for panel in request.panels
+        ]
+
+
+def _run_visual_observation(module, provider, panels, transports, version, digest):
+    chunks = module.build_observation_chunks(panels)
+    return module._observe_chunks(
+        provider,
+        chunks,
+        transports,
+        analysis_run_id="run-task2-visual",
+        instruction_version="vision-first-story-analyzer-v1",
+        instruction_sha256="a" * 64,
+        visual_instruction_version=version,
+        visual_instruction_sha256=digest,
+    )
+
+
+def test_observe_chunks_activates_visual_prompt_and_locally_hashes_sidecars():
+    module = _pipeline_module()
+    scoring, (version, digest, prompt) = _visual_loader()
+    panels = _panel_regions(3)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"synthetic-image-payload",
+        }
+        for panel in panels
+    }
+    provider = _VisualObservationSpy()
+    semantic, _, first_chunk = _run_visual_observation(
+        module, provider, panels, transports, version, digest
+    )
+
+    assert provider.requests
+    assert all(request.visual_instruction_version == version for request in provider.requests)
+    assert all(request.visual_instruction_sha256 == digest for request in provider.requests)
+    assert [row["panel_id"] for row in semantic.values()] == [panel.panel_id for panel in panels]
+    assert all("visual_evidence" in row for row in semantic.values())
+    assert all("evidence_hash" not in row["visual_evidence"] for row in semantic.values())
+    assert prompt.endswith("\n")
+    assert first_chunk == {panel.panel_id: 0 for panel in panels}
+
+    coverage = SimpleNamespace(version="vision-coverage-v2", map_sha256="map-task2")
+    module._enrich_observations(panels, semantic, first_chunk, coverage)
+    for panel in panels:
+        persisted = panel.observation_json["visual_evidence"]
+        assert persisted["evidence_hash"]
+        parsed = scoring.parse_panel_visual_evidence(persisted)
+        assert scoring.visual_evidence_hash(parsed) == persisted["evidence_hash"]
+
+
+@pytest.mark.parametrize("mode", ("missing", "foreign", "malformed", "provider_hash"))
+def test_observe_chunks_rejects_invalid_visual_sidecars(mode):
+    module = _pipeline_module()
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(3)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"synthetic-image-payload",
+        }
+        for panel in panels
+    }
+    provider = _VisualObservationSpy(mode=mode)
+    with pytest.raises(Exception) as caught:
+        _run_visual_observation(module, provider, panels, transports, version, digest)
+    assert getattr(caught.value, "code", None) in {
+        "vision_response_invalid",
+        "analysis_observation_missing",
+    }
+
+
+def test_legacy_observation_spy_request_without_visual_fields_stays_compatible():
+    module = _pipeline_module()
+    panels = _panel_regions(3)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"synthetic-image-payload",
+        }
+        for panel in panels
+    }
+    provider = _ProviderSpy()
+    semantic, _, _ = module._observe_chunks(
+        provider,
+        module.build_observation_chunks(panels),
+        transports,
+        analysis_run_id="run-legacy-compatible",
+        instruction_version="vision-first-story-analyzer-v1",
+        instruction_sha256="a" * 64,
+    )
+    assert semantic
+    assert all("visual_evidence" not in row for row in semantic.values())

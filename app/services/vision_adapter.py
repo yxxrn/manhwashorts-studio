@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.services import visual_scoring
+
 VISION_REQUEST_TIMEOUT = 30.0
 
 _REQUIRED_OBSERVATION_KEYS = frozenset(
@@ -44,6 +46,43 @@ _REQUIRED_SYNTHESIS_OBSERVATION_KEYS = frozenset(
     }
 )
 
+_PROVIDER_VISUAL_KEYS = frozenset(
+    {
+        "balloon_mask_status",
+        "balloon_regions",
+        "protected_regions",
+        "mask_confidence",
+        "evidence_source",
+        "mask_reason",
+        "panel_id",
+        "source_asset_id",
+        "source_order",
+    }
+)
+_PROVIDER_REGION_KEYS = frozenset(
+    {
+        "region_id",
+        "kind",
+        "normalized_bbox",
+        "normalized_polygon",
+        "confidence",
+        "evidence_source",
+        "mask_status",
+    }
+)
+_PROTECTED_REGION_KEYS = frozenset(
+    {
+        "region_id",
+        "kind",
+        "normalized_bbox",
+        "normalized_polygon",
+        "confidence",
+        "evidence_source",
+        "required",
+        "minimum_coverage",
+    }
+)
+
 
 @dataclass(frozen=True)
 class VisionCapabilityReport:
@@ -63,6 +102,8 @@ class VisionObservationRequest:
     instruction_sha256: str
     chunk_index: int
     panels: tuple[Mapping[str, Any], ...]
+    visual_instruction_version: str | None = None
+    visual_instruction_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -174,7 +215,11 @@ class OpenAICompatibleVisionProvider:
             observations = json.loads(content)
         except (TypeError, ValueError):
             raise VisionResponseInvalid() from None
-        return _validate_observations(observations, panels)
+        return _validate_observations(
+            observations,
+            panels,
+            require_visual_evidence=request.visual_instruction_version is not None,
+        )
 
     def synthesize(
         self, request: VisionChapterSynthesisRequest
@@ -271,6 +316,27 @@ def _validate_request(
     if not request.panels:
         raise VisionRequestInvalid()
 
+    visual_fields_supplied = (
+        request.visual_instruction_version is not None
+        or request.visual_instruction_sha256 is not None
+    )
+    if visual_fields_supplied:
+        if not isinstance(request.visual_instruction_version, str) or not isinstance(
+            request.visual_instruction_sha256, str
+        ):
+            raise VisionRequestInvalid()
+        try:
+            expected_visual_version, expected_visual_sha256, _ = (
+                visual_scoring.load_visual_evidence_instruction()
+            )
+        except Exception:
+            raise VisionRequestInvalid() from None
+        if (
+            request.visual_instruction_version != expected_visual_version
+            or request.visual_instruction_sha256 != expected_visual_sha256
+        ):
+            raise VisionRequestInvalid()
+
     normalized: list[dict[str, Any]] = []
     seen_panel_ids: set[str] = set()
     previous_order = -1
@@ -331,15 +397,27 @@ def _build_payload(
             for panel in panels
         ],
     }
-    instruction = (
-        "Observe every supplied image panel in the ordered manifest. Return only "
-        "a structured JSON list. Each observation must contain panel_id, "
-        "visible_facts, dialogue_or_ocr, inferences, uncertainties, entities, "
-        "state_changes, causal_links, and evidence_refs. Do not write a recap "
-        "or use file labels or list positions as evidence; never infer missing "
-        "panels. Request metadata: "
-        f"{json.dumps(metadata, sort_keys=True, separators=(',', ':'))}"
-    )
+    if request.visual_instruction_version is not None:
+        metadata["visual_instruction_version"] = request.visual_instruction_version
+        metadata["visual_instruction_sha256"] = request.visual_instruction_sha256
+    if request.visual_instruction_version is not None:
+        _, _, visual_prompt = visual_scoring.load_visual_evidence_instruction()
+        instruction = (
+            f"{visual_prompt.rstrip()}\n\n"
+            "Return the existing analyzer observation fields plus exactly one "
+            "visual_evidence object per panel. Request metadata: "
+            f"{json.dumps(metadata, sort_keys=True, separators=(',', ':'))}"
+        )
+    else:
+        instruction = (
+            "Observe every supplied image panel in the ordered manifest. Return only "
+            "a structured JSON list. Each observation must contain panel_id, "
+            "visible_facts, dialogue_or_ocr, inferences, uncertainties, entities, "
+            "state_changes, causal_links, and evidence_refs. Do not write a recap "
+            "or use file labels or list positions as evidence; never infer missing "
+            "panels. Request metadata: "
+            f"{json.dumps(metadata, sort_keys=True, separators=(',', ':'))}"
+        )
     content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
     for panel in panels:
         encoded = base64.b64encode(panel["payload"]).decode("ascii")
@@ -359,9 +437,149 @@ def _build_payload(
     }
 
 
+def validate_visual_evidence_observation(
+    observation: Mapping[str, Any],
+    *,
+    expected_panel_id: str,
+    expected_source_asset_id: str,
+    expected_source_order: int,
+) -> Mapping[str, Any]:
+    """Validate untrusted provider visual geometry without hashing it."""
+
+    try:
+        if not isinstance(observation, Mapping) or set(observation) != _PROVIDER_VISUAL_KEYS:
+            raise VisionResponseInvalid()
+        if (
+            observation.get("panel_id") != expected_panel_id
+            or observation.get("source_asset_id") != expected_source_asset_id
+            or observation.get("source_order") != expected_source_order
+        ):
+            raise VisionResponseInvalid()
+        status = observation.get("balloon_mask_status")
+        if status not in {"unknown", "known_empty", "known_nonempty"}:
+            raise VisionResponseInvalid()
+        confidence = observation.get("mask_confidence")
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 0.0 <= float(confidence) <= 1.0
+        ):
+            raise VisionResponseInvalid()
+        source = observation.get("evidence_source")
+        reason = observation.get("mask_reason")
+        if not isinstance(source, str) or not source.strip() or not isinstance(reason, str) or not reason.strip():
+            raise VisionResponseInvalid()
+
+        balloon_regions = observation.get("balloon_regions")
+        protected_regions = observation.get("protected_regions")
+        if not isinstance(balloon_regions, list) or not isinstance(protected_regions, list):
+            raise VisionResponseInvalid()
+        region_ids: set[str] = set()
+
+        def validate_region(raw: Any, *, protected: bool) -> None:
+            required_keys = _PROTECTED_REGION_KEYS if protected else _PROVIDER_REGION_KEYS
+            if not isinstance(raw, Mapping) or set(raw) != required_keys:
+                raise VisionResponseInvalid()
+            region_id = raw.get("region_id")
+            kind = raw.get("kind")
+            if not isinstance(region_id, str) or not region_id.strip() or region_id in region_ids:
+                raise VisionResponseInvalid()
+            allowed_kinds = {"background", "subject", "face", "action", "effect", "continuity_context"}
+            if not protected:
+                allowed_kinds = {"speech_balloon"}
+            if not isinstance(kind, str) or kind not in allowed_kinds:
+                raise VisionResponseInvalid()
+            region_ids.add(region_id)
+            bbox = raw.get("normalized_bbox")
+            polygon = raw.get("normalized_polygon")
+            if bbox is not None and (
+                not isinstance(bbox, list)
+                or len(bbox) != 4
+                or any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in bbox)
+                or not all(0.0 <= float(item) <= 1.0 for item in bbox)
+                or bbox[2] <= bbox[0]
+                or bbox[3] <= bbox[1]
+            ):
+                raise VisionResponseInvalid()
+            if not isinstance(polygon, list):
+                raise VisionResponseInvalid()
+            if polygon and len(polygon) < 3:
+                raise VisionResponseInvalid()
+            for point in polygon:
+                if (
+                    not isinstance(point, list)
+                    or len(point) != 2
+                    or any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in point)
+                    or not all(0.0 <= float(item) <= 1.0 for item in point)
+                ):
+                    raise VisionResponseInvalid()
+            region_confidence = raw.get("confidence")
+            if (
+                isinstance(region_confidence, bool)
+                or not isinstance(region_confidence, (int, float))
+                or not 0.0 <= float(region_confidence) <= 1.0
+            ):
+                raise VisionResponseInvalid()
+            evidence_source = raw.get("evidence_source")
+            if not isinstance(evidence_source, str) or not evidence_source.strip():
+                raise VisionResponseInvalid()
+            if not protected and raw.get("mask_status") not in {
+                "unknown",
+                "known_nonempty",
+            }:
+                raise VisionResponseInvalid()
+            if protected:
+                required = raw.get("required")
+                minimum_coverage = raw.get("minimum_coverage")
+                if not isinstance(required, bool) or (
+                    isinstance(minimum_coverage, bool)
+                    or not isinstance(minimum_coverage, (int, float))
+                    or not 0.0 <= float(minimum_coverage) <= 1.0
+                ):
+                    raise VisionResponseInvalid()
+            elif raw.get("mask_status") == "known_nonempty" and bbox is None and not polygon:
+                raise VisionResponseInvalid()
+
+        for region in balloon_regions:
+            validate_region(region, protected=False)
+        for region in protected_regions:
+            validate_region(region, protected=True)
+
+        if status == "known_empty" and (
+            balloon_regions or float(confidence) <= 0.0
+        ):
+            raise VisionResponseInvalid()
+        if status == "unknown" and (
+            balloon_regions
+            or not any(
+                marker in source.lower()
+                for marker in ("unavailable", "insufficient", "unknown")
+            )
+        ):
+            raise VisionResponseInvalid()
+        if status == "known_nonempty":
+            if not balloon_regions or any(
+                region.get("mask_status") != "known_nonempty"
+                for region in balloon_regions
+            ):
+                raise VisionResponseInvalid()
+            if source.lower().startswith("ocr") or all(
+                "ocr" in str(region.get("evidence_source", "")).lower()
+                for region in balloon_regions
+            ):
+                raise VisionResponseInvalid()
+        return dict(observation)
+    except VisionResponseInvalid:
+        raise
+    except (KeyError, TypeError, ValueError):
+        raise VisionResponseInvalid() from None
+
+
 def _validate_observations(
     observations: Any,
     panels: tuple[dict[str, Any], ...],
+    *,
+    require_visual_evidence: bool = False,
 ) -> list[Mapping[str, Any]]:
     if not isinstance(observations, list):
         raise VisionResponseInvalid()
@@ -377,11 +595,13 @@ def _validate_observations(
             not isinstance(panel_id, str)
             or panel_id not in requested_set
             or panel_id in by_panel_id
-            or set(observation) != _REQUIRED_OBSERVATION_KEYS
+            or set(observation)
+            != _REQUIRED_OBSERVATION_KEYS
+            | ({"visual_evidence"} if require_visual_evidence else set())
             or any(
                 not isinstance(observation[key], list)
                 for key in observation
-                if key != "panel_id"
+                if key != "panel_id" and key != "visual_evidence"
             )
         ):
             raise VisionResponseInvalid()
@@ -396,7 +616,21 @@ def _validate_observations(
             )
         ):
             raise VisionResponseInvalid()
-        by_panel_id[panel_id] = dict(observation)
+        row = dict(observation)
+        if require_visual_evidence:
+            row["visual_evidence"] = dict(
+                validate_visual_evidence_observation(
+                    row["visual_evidence"],
+                    expected_panel_id=panel_id,
+                    expected_source_asset_id=next(
+                        panel["source_asset_id"] for panel in panels if panel["panel_id"] == panel_id
+                    ),
+                    expected_source_order=next(
+                        panel["source_order"] for panel in panels if panel["panel_id"] == panel_id
+                    ),
+                )
+            )
+        by_panel_id[panel_id] = row
 
     if set(by_panel_id) != requested_set:
         raise VisionResponseInvalid()

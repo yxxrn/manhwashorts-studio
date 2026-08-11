@@ -306,7 +306,24 @@ class _Provider:
 
     def observe(self, request):
         self.observe_requests.append(request)
-        return [_semantic_observation(panel) for panel in request.panels]
+        rows = [_semantic_observation(panel) for panel in request.panels]
+        if (
+            request.visual_instruction_version is not None
+            and request.visual_instruction_sha256 is not None
+        ):
+            for row, panel in zip(rows, request.panels, strict=True):
+                row["visual_evidence"] = {
+                    "balloon_mask_status": "unknown",
+                    "balloon_regions": [],
+                    "protected_regions": [],
+                    "mask_confidence": 0.0,
+                    "evidence_source": "vision_geometry_unavailable",
+                    "mask_reason": "story evidence fixture does not provide geometry",
+                    "panel_id": panel["panel_id"],
+                    "source_asset_id": panel["source_asset_id"],
+                    "source_order": panel["source_order"],
+                }
+        return rows
 
     def synthesize(self, request):
         self.synthesis_requests.append(request)
