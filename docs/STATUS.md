@@ -2,16 +2,19 @@
 
 Updated: 2026-08-11
 
-+## Approved design checkpoint - 2026-08-11
+## Implementation planning checkpoint - 2026-08-11
 
 - Approved the docs-only design in
   docs/superpowers/specs/2026-08-11-balloon-free-framing-narrative-identity-v3-design.md
   for COLOR_AGNOSTIC_BALLOON_FREE_V1 framing and sharp_friend_v1 narration.
-- Checkpoint baseline is main at
-  f9221dd546a24f6c18a7f891b2ded8e1c678c3f2. The recorded historical full
+- Planning baseline is clean main at
+  7fe75cd3c7b19ade96bc39f3f00a84aa2b06865f. The recorded historical full
   non-slow result is 635 passed; it was not rerun for this docs-only change.
-- Next task is Slice A: typed balloon, protected-region, mask-status, and
-  evidence-hash contracts. No production behavior is claimed until its RED,
+- Implementation planning is complete in
+  docs/superpowers/plans/2026-08-11-balloon-free-color-agnostic-framing.md and
+  docs/superpowers/plans/2026-08-11-sharp-friend-narrative-identity-v3.md.
+- Next atomic task is Visual Plan Task 1: typed balloon, protected-region,
+  mask-status, and evidence-hash contracts. No production behavior is claimed until its RED,
   GREEN, full verification, commit, and push gates pass.
 - Voice choice, provider configuration, auditions, audio generation, and
   final voice rendering remain explicitly deferred until the user chooses
