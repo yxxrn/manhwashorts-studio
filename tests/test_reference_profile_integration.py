@@ -557,3 +557,501 @@ def test_reference_timeline_passes_profile_and_section_citations_to_planner(db, 
     assert "3" not in citation_map["hook"]
     assert script.sections[0]["evidence_panel_ids"] == ["panel-3"]
     assert script.sections[0]["citations"] == [3]
+
+
+def _task6_evidence(panel_id, asset_id, source_order, *, status="known_empty"):
+    from dataclasses import replace
+
+    if status == "unknown":
+        evidence = visual_scoring.PanelVisualEvidence(
+            contract_version=visual_scoring.VISUAL_EVIDENCE_CONTRACT_VERSION,
+            panel_id=panel_id,
+            source_asset_id=asset_id,
+            source_order=source_order,
+            balloon_regions=(),
+            protected_regions=(),
+            balloon_mask_status="unknown",
+            mask_confidence=0.0,
+            evidence_source="vision_geometry_unavailable",
+            mask_reason="geometry unavailable for this panel",
+        )
+    else:
+        evidence = visual_scoring.PanelVisualEvidence(
+            contract_version=visual_scoring.VISUAL_EVIDENCE_CONTRACT_VERSION,
+            panel_id=panel_id,
+            source_asset_id=asset_id,
+            source_order=source_order,
+            balloon_regions=(),
+            protected_regions=(),
+            balloon_mask_status="known_empty",
+            mask_confidence=1.0,
+            evidence_source="vision_geometry",
+            mask_reason="vision adapter affirmatively found no speech balloon",
+        )
+    return replace(evidence, evidence_hash=visual_scoring.visual_evidence_hash(evidence))
+
+
+def _task6_mask(framing, panel_size=(100, 200), *, edge=False):
+    edge_mask = ((edge,),)
+    empty_mask = ((False,),)
+    mask_sha256 = framing._mask_hash(
+        panel_size[0], panel_size[1], 1, 1, edge_mask, empty_mask, empty_mask
+    )
+    return framing.BorderMaskResult(
+        detector_version=framing.DETECTOR_VERSION,
+        source_width=panel_size[0],
+        source_height=panel_size[1],
+        grid_width=1,
+        grid_height=1,
+        edge_connected_mask=edge_mask,
+        non_discardable_low_information_mask=empty_mask,
+        protected_mask=empty_mask,
+        edge_connected_blank_fraction=1.0 if edge else 0.0,
+        non_discardable_low_information_fraction=0.0,
+        protected_retained_fraction=1.0,
+        mask_sha256=mask_sha256,
+    )
+
+
+def _task6_wrapper(
+    panel_id,
+    asset_id,
+    source_order,
+    *,
+    framing,
+    status="known_empty",
+    roi_alternatives=None,
+    mask_edge=False,
+):
+    from app.services import editorial_visual_planner as planner
+
+    panel_size = (100, 200)
+    evidence = _task6_evidence(
+        panel_id, asset_id, source_order, status=status
+    )
+    panel_candidate = visual_scoring.PanelCandidate(
+        asset_id=asset_id,
+        order_index=source_order,
+        features=visual_scoring.VisualFeatures(
+            face_visibility=1.0,
+            action_pose=1.0,
+            dramatic_composition=1.0,
+            focal_points=((0.5, 0.5),),
+            visual_signature=f"task6-{panel_id}",
+        ),
+        visual_score=1.0,
+        semantic_score=1.0,
+        source_family="task6-family",
+    )
+    roi_type = getattr(planner, "ReferenceROIAlternative", None)
+    candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
+    assert roi_type is not None and candidate_type is not None
+    alternatives = roi_alternatives or (
+        roi_type(
+            kind="panel",
+            roi_label=f"roi-{panel_id}",
+            crop_box=(0, 0, panel_size[0], panel_size[1]),
+            focus=(0.5, 0.5, 0.5, 0.5),
+        ),
+        roi_type(
+            kind="panel",
+            roi_label=f"roi-{panel_id}-reuse",
+            crop_box=(0, 0, panel_size[0] - 1, panel_size[1] - 1),
+            focus=(0.45, 0.45, 0.55, 0.55),
+        ),
+    )
+    return candidate_type(
+        source_asset_id=asset_id,
+        panel_region_id=f"region-{panel_id}",
+        panel_id=panel_id,
+        source_order=source_order,
+        panel_bounds=(0, 0, panel_size[0], panel_size[1]),
+        panel_size=panel_size,
+        border_mask=_task6_mask(framing, panel_size, edge=mask_edge),
+        source_asset_checksum=f"checksum-{asset_id}",
+        visual_evidence=evidence,
+        evidence_hash=evidence.evidence_hash,
+        eligible_sections=("hook", "setup", "conflict", "twist", "cta"),
+        eligible_beats=(),
+        roi_alternatives=tuple(alternatives),
+        panel_candidate=panel_candidate,
+    )
+
+
+def _task6_telemetry(framing, evidence, mask, crop_box=(0, 0, 100, 200)):
+    return framing.FramingTelemetry(
+        contract_version=evidence.contract_version,
+        detector_version=mask.detector_version,
+        mask_sha256=mask.mask_sha256,
+        crop_box=crop_box,
+        base_zoom=1.0,
+        source_resolution_zoom_cap=1.15,
+        protected_region_zoom_cap=1.15,
+        edge_connected_blank_fraction=mask.edge_connected_blank_fraction,
+        non_discardable_low_information_fraction=0.0,
+        protected_retained_fraction=1.0,
+        balloon_mask_intersection_ratio=0.0,
+        subject_coverage=1.0,
+        face_coverage=1.0,
+        action_coverage=1.0,
+        effect_coverage=1.0,
+        continuity_context_coverage=1.0,
+        mask_confidence=evidence.mask_confidence,
+        mask_source=evidence.evidence_source,
+        fallback_reason="",
+        rejection_code=None,
+    )
+
+
+def _task6_wrappers(count=16, *, framing, shared=False, first_alternatives=None):
+    wrappers = []
+    if shared:
+        wrappers.append(
+            _task6_wrapper(
+                "panel-shared-a",
+                "asset-shared",
+                1,
+                framing=framing,
+                roi_alternatives=first_alternatives,
+            )
+        )
+        wrappers.append(
+            _task6_wrapper(
+                "panel-shared-b",
+                "asset-shared",
+                2,
+                framing=framing,
+                mask_edge=True,
+            )
+        )
+        start = 1
+        total = count - 1
+    else:
+        start = 0
+        total = count
+    for index in range(start, total):
+        wrappers.append(
+            _task6_wrapper(
+                f"panel-{index}",
+                f"asset-{index}",
+                index + (2 if shared else 1),
+                    framing=framing,
+                roi_alternatives=(
+                    first_alternatives if first_alternatives and index == start else None
+                ),
+            )
+        )
+    return tuple(wrappers)
+
+
+def test_task6_panel_keyed_types_are_frozen_and_exact():
+    import importlib
+
+    planner = importlib.import_module("app.services.editorial_visual_planner")
+    roi_type = getattr(planner, "ReferenceROIAlternative", None)
+    candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
+    assert roi_type is not None
+    assert candidate_type is not None
+    assert roi_type.__dataclass_params__.frozen is True
+    assert candidate_type.__dataclass_params__.frozen is True
+    assert tuple(roi_type.__dataclass_fields__) == (
+        "kind",
+        "roi_label",
+        "crop_box",
+        "focus",
+    )
+    assert tuple(candidate_type.__dataclass_fields__) == (
+        "source_asset_id",
+        "panel_region_id",
+        "panel_id",
+        "source_order",
+        "panel_bounds",
+        "panel_size",
+        "border_mask",
+        "source_asset_checksum",
+        "visual_evidence",
+        "evidence_hash",
+        "eligible_sections",
+        "eligible_beats",
+        "roi_alternatives",
+        "panel_candidate",
+    )
+
+
+def test_task6_wrapper_rejects_lineage_mask_hash_and_feasibility_bypass():
+    import importlib
+    from dataclasses import replace
+
+    planner = importlib.import_module("app.services.editorial_visual_planner")
+    framing = importlib.import_module("app.services.framing_analysis")
+    candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
+    assert candidate_type is not None
+    valid = _task6_wrapper("panel-valid", "asset-valid", 1, framing=framing)
+    with pytest.raises(Exception, match="visual.panel_lineage_unavailable"):
+        candidate_type(
+            **{
+                **valid.__dict__,
+                "panel_size": (101, 200),
+            }
+        )
+    with pytest.raises(Exception, match="visual.panel_lineage_unavailable"):
+        candidate_type(
+            **{
+                **valid.__dict__,
+                "evidence_hash": "0" * 64,
+            }
+        )
+    with pytest.raises(Exception, match="visual.panel_lineage_unavailable"):
+        candidate_type(
+            **{
+                **valid.__dict__,
+                "border_mask": replace(valid.border_mask, mask_sha256="0" * 64),
+            }
+        )
+    assert "feasible" not in candidate_type.__dataclass_fields__
+
+
+def test_task6_explicit_panel_path_calls_exact_feasibility_and_returns_lineage_ledger(monkeypatch):
+    import importlib
+
+    planner = importlib.import_module("app.services.editorial_visual_planner")
+    framing = importlib.import_module("app.services.framing_analysis")
+    candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
+    assert candidate_type is not None
+    wrappers = _task6_wrappers(framing=framing)
+    calls = []
+
+    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size):
+        calls.append(
+            (
+                crop_box,
+                evidence.panel_id,
+                border_mask.mask_sha256,
+                panel_size,
+                target_size,
+            )
+        )
+        return True, _task6_telemetry(framing, evidence, border_mask, crop_box)
+
+    monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
+    shots = planner.plan(
+        _spans(),
+        [wrapper.panel_candidate for wrapper in wrappers],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        reference_panel_candidates=wrappers,
+    )
+    assert len(shots) == 32
+    assert calls
+    assert all(call[-1] == (1080, 1920) for call in calls)
+    assert all(call[1] in {wrapper.panel_id for wrapper in wrappers} for call in calls)
+    assert all("panel_region_id" in shot for shot in shots)
+    assert all("panel_id" in shot for shot in shots)
+    assert all(isinstance(shot["fallback_attempts"], list) for shot in shots)
+    assert not hasattr(shots, "fallback_attempts")
+
+
+def test_task6_same_asset_panels_keep_evidence_and_masks_distinct(monkeypatch):
+    import importlib
+
+    planner = importlib.import_module("app.services.editorial_visual_planner")
+    framing = importlib.import_module("app.services.framing_analysis")
+    candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
+    assert candidate_type is not None
+    wrappers = _task6_wrappers(17, framing=framing, shared=True)
+    seen = []
+
+    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size):
+        seen.append((evidence.panel_id, border_mask.mask_sha256))
+        return True, _task6_telemetry(framing, evidence, border_mask, crop_box)
+
+    monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
+    shots = planner.plan(
+        _spans(),
+        [wrapper.panel_candidate for wrapper in wrappers],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        reference_panel_candidates=wrappers,
+    )
+    selected = {shot["panel_id"] for shot in shots}
+    assert {"panel-shared-a", "panel-shared-b"} <= selected
+    mask_by_panel = {
+        wrapper.panel_id: wrapper.border_mask.mask_sha256 for wrapper in wrappers
+    }
+    assert all(mask_by_panel[panel_id] == mask_sha for panel_id, mask_sha in seen)
+    assert any(panel_id == "panel-shared-a" for panel_id, _mask_sha in seen)
+    assert any(panel_id == "panel-shared-b" for panel_id, _mask_sha in seen)
+
+
+def test_task6_fallback_ledger_uses_same_panel_alternatives_before_other_panel(monkeypatch):
+    import importlib
+
+    planner = importlib.import_module("app.services.editorial_visual_planner")
+    framing = importlib.import_module("app.services.framing_analysis")
+    roi_type = getattr(planner, "ReferenceROIAlternative", None)
+    candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
+    assert roi_type is not None and candidate_type is not None
+    alternatives = (
+        roi_type("panel", "unsafe-first", (0, 0, 100, 200), (0.5, 0.5, 0.5, 0.5)),
+        roi_type("panel", "safe-second", (0, 0, 100, 200), (0.5, 0.5, 0.5, 0.5)),
+    )
+    wrappers = _task6_wrappers(
+        framing=framing, first_alternatives=alternatives
+    )
+    attempts = []
+
+    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size):
+        attempts.append((evidence.panel_id, crop_box))
+        telemetry = _task6_telemetry(framing, evidence, border_mask, crop_box)
+        if evidence.panel_id == "panel-0" and len(attempts) == 1:
+            return False, replace(telemetry, rejection_code="visual.balloon_mask_overlap")
+        return True, telemetry
+
+    from dataclasses import replace
+    monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
+    shots = planner.plan(
+        _spans(),
+        [wrapper.panel_candidate for wrapper in wrappers],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        reference_panel_candidates=wrappers,
+    )
+    first = shots[0]
+    assert first["panel_id"] == "panel-0"
+    assert [entry["roi_label"] for entry in first["fallback_attempts"][:2]] == [
+        "unsafe-first",
+        "safe-second",
+    ]
+    assert first["fallback_attempts"][0]["accepted"] is False
+    assert first["fallback_attempts"][1]["accepted"] is True
+    assert attempts[:2] == [("panel-0", (0, 0, 100, 200))] * 2
+
+
+def test_task6_unknown_is_structural_but_reference_plan_and_qc_fail_closed():
+    import importlib
+
+    planner = importlib.import_module("app.services.editorial_visual_planner")
+    quality_module = importlib.import_module("app.services.quality")
+    framing = importlib.import_module("app.services.framing_analysis")
+    candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
+    assert candidate_type is not None
+    unknown = _task6_wrapper(
+        "panel-unknown", "asset-unknown", 1, framing=framing, status="unknown"
+    )
+    with pytest.raises(Exception, match="visual.balloon_mask_unknown"):
+        planner.plan(
+            _spans(),
+            [unknown.panel_candidate],
+            profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            reference_panel_candidates=(unknown,),
+        )
+    evidence = unknown.visual_evidence
+    mask = unknown.border_mask
+    telemetry = _task6_telemetry(framing, evidence, mask)
+    results = quality_module.check_reference_framing(
+        [
+            {
+                "source_asset_id": unknown.source_asset_id,
+                "panel_region_id": unknown.panel_region_id,
+                "panel_id": unknown.panel_id,
+                "evidence_hash": unknown.evidence_hash,
+                "source_asset_checksum": unknown.source_asset_checksum,
+                "panel_bounds": list(unknown.panel_bounds),
+                "panel_size": list(unknown.panel_size),
+                "border_mask": {
+                    "detector_version": unknown.border_mask.detector_version,
+                    "mask_sha256": unknown.border_mask.mask_sha256,
+                },
+            }
+        ],
+        {(unknown.source_asset_id, unknown.panel_region_id): evidence},
+        {(unknown.source_asset_id, unknown.panel_region_id): mask},
+        {(unknown.source_asset_id, unknown.panel_region_id): unknown.panel_size},
+        {(unknown.source_asset_id, unknown.panel_region_id): telemetry},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert any(result.code == "visual.balloon_mask_unknown" for result in results)
+    editorial_results = editorial_qc.check_reference_framing(
+        [
+            {
+                "source_asset_id": unknown.source_asset_id,
+                "panel_region_id": unknown.panel_region_id,
+                "panel_id": unknown.panel_id,
+                "evidence_hash": unknown.evidence_hash,
+                "source_asset_checksum": unknown.source_asset_checksum,
+                "panel_bounds": list(unknown.panel_bounds),
+                "panel_size": list(unknown.panel_size),
+                "border_mask": {
+                    "detector_version": unknown.border_mask.detector_version,
+                    "mask_sha256": unknown.border_mask.mask_sha256,
+                },
+            }
+        ],
+        {(unknown.source_asset_id, unknown.panel_region_id): evidence},
+        {(unknown.source_asset_id, unknown.panel_region_id): mask},
+        {(unknown.source_asset_id, unknown.panel_region_id): unknown.panel_size},
+        {(unknown.source_asset_id, unknown.panel_region_id): telemetry},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert any(
+        result.code == "visual.balloon_mask_unknown" for result in editorial_results
+    )
+
+
+def test_task6_rejects_ambiguous_lineage_and_speech_bubble_roi():
+    import importlib
+    from dataclasses import replace
+
+    planner = importlib.import_module("app.services.editorial_visual_planner")
+    framing = importlib.import_module("app.services.framing_analysis")
+    candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
+    roi_type = getattr(planner, "ReferenceROIAlternative", None)
+    assert candidate_type is not None and roi_type is not None
+    valid = _task6_wrapper("panel-valid-2", "asset-valid-2", 2, framing=framing)
+    for changed in (
+        {"panel_id": ""},
+        {"panel_bounds": (0, 0, 0, 200)},
+        {"source_asset_checksum": ""},
+        {
+            "visual_evidence": _task6_evidence(
+                "foreign-panel", "asset-valid-2", 2
+            ),
+            "evidence_hash": "0" * 64,
+        },
+        {
+            "panel_candidate": replace(
+                valid.panel_candidate, asset_id="foreign-asset"
+            )
+        },
+    ):
+        with pytest.raises(Exception, match="visual.panel_lineage_unavailable"):
+            candidate_type(**{**valid.__dict__, **changed})
+    with pytest.raises(Exception, match="visual.balloon_mask_overlap"):
+        roi_type(
+            kind="speech_bubble",
+            roi_label="speech-bubble",
+            crop_box=(0, 0, 100, 200),
+            focus=(0.5, 0.5, 0.5, 0.5),
+        )
+
+
+def test_task6_no_feasible_panel_fails_with_stable_visual_unavailable(monkeypatch):
+    import importlib
+
+    planner = importlib.import_module("app.services.editorial_visual_planner")
+    framing = importlib.import_module("app.services.framing_analysis")
+    wrappers = _task6_wrappers(framing=framing)
+
+    def reject_all(crop_box, evidence, border_mask, panel_size, target_size):
+        return False, replace(
+            _task6_telemetry(framing, evidence, border_mask, crop_box),
+            rejection_code="visual.balloon_mask_overlap",
+        )
+
+    from dataclasses import replace
+    monkeypatch.setattr(framing, "candidate_is_feasible", reject_all)
+    with pytest.raises(Exception, match="visual.visual_unavailable") as caught:
+        planner.plan(
+            _spans(),
+            [wrapper.panel_candidate for wrapper in wrappers],
+            profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            reference_panel_candidates=wrappers,
+        )
+    assert caught.value.code == "visual.visual_unavailable"

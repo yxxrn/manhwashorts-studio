@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from app.constants import (
 from app.models import Project, RenderJob, ScriptVersion, SourceAsset
 from app.services import (
     editorial_timing,
+    framing_analysis,
     motion_director,
     policy,
     reference_profile,
@@ -270,6 +272,195 @@ def _reference_reuse_checks(scenes: list, profile) -> list[CheckResult]:
     for result in results:
         unique[result.code] = result
     return list(unique.values())
+
+
+
+def _scene_field(scene: object, key: str, default=None):
+    if isinstance(scene, Mapping):
+        return scene.get(key, default)
+    return getattr(scene, key, default)
+
+
+def _reference_mask_identity(mask: framing_analysis.BorderMaskResult) -> str | None:
+    try:
+        return framing_analysis._mask_hash(
+            mask.source_width,
+            mask.source_height,
+            mask.grid_width,
+            mask.grid_height,
+            mask.edge_connected_mask,
+            mask.non_discardable_low_information_mask,
+            mask.protected_mask,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _reference_lineage_failure(message: str) -> CheckResult:
+    return _fail(
+        "visual.panel_lineage_unavailable",
+        CheckSeverity.ERROR,
+        message,
+    )
+
+
+def check_reference_framing(
+    scenes: Sequence[Mapping[str, object] | object],
+    panel_evidence_by_key: Mapping[tuple[str, str], visual_scoring.PanelVisualEvidence],
+    panel_border_masks_by_key: Mapping[
+        tuple[str, str], framing_analysis.BorderMaskResult
+    ],
+    panel_sizes_by_key: Mapping[tuple[str, str], tuple[int, int]],
+    telemetry_by_key: Mapping[
+        tuple[str, str], framing_analysis.FramingTelemetry | None
+    ],
+    *,
+    profile: object,
+) -> list[CheckResult]:
+    """Validate exact panel evidence and Task 5 telemetry before reference QC."""
+
+    lineage: list[
+        tuple[
+            object,
+            tuple[str, str],
+            visual_scoring.PanelVisualEvidence,
+            framing_analysis.BorderMaskResult,
+            tuple[int, int],
+            framing_analysis.FramingTelemetry,
+            str | None,
+        ]
+    ] = []
+    for scene in scenes:
+        source_asset_id = str(
+            _scene_field(scene, "source_asset_id", "")
+            or _scene_field(scene, "asset_id", "")
+        )
+        panel_region_id = str(_scene_field(scene, "panel_region_id", "") or "")
+        panel_id = str(_scene_field(scene, "panel_id", "") or "")
+        key = (source_asset_id, panel_region_id)
+        evidence = panel_evidence_by_key.get(key)
+        mask = panel_border_masks_by_key.get(key)
+        panel_size = panel_sizes_by_key.get(key)
+        telemetry = telemetry_by_key.get(key)
+        scene_border_mask = _scene_field(scene, "border_mask")
+        scene_panel_size = _scene_field(scene, "panel_size")
+        if (
+            not source_asset_id
+            or not panel_region_id
+            or not panel_id
+            or evidence is None
+            or mask is None
+            or panel_size is None
+            or telemetry is None
+            or not _scene_field(scene, "evidence_hash")
+            or not _scene_field(scene, "source_asset_checksum")
+            or not _scene_field(scene, "panel_bounds")
+            or not isinstance(scene_border_mask, Mapping)
+            or tuple(scene_panel_size or ()) != tuple(panel_size)
+        ):
+            return [_reference_lineage_failure("reference scene snapshot is incomplete")]
+        try:
+            visual_scoring.validate_panel_visual_evidence(evidence)
+            local_hash = visual_scoring.visual_evidence_hash(evidence)
+        except visual_scoring.VisualEvidenceError:
+            return [_reference_lineage_failure("reference panel evidence is invalid")]
+        if (
+            evidence.panel_id != panel_id
+            or evidence.source_asset_id != source_asset_id
+            or _scene_field(scene, "evidence_hash") != local_hash
+            or scene_border_mask.get("mask_sha256") != mask.mask_sha256
+            or scene_border_mask.get("detector_version") != mask.detector_version
+            or (mask.source_width, mask.source_height) != tuple(panel_size)
+            or not framing_analysis.detector_contract_matches(
+                profile.framing_contract_version, mask.detector_version
+            )
+            or _reference_mask_identity(mask) != mask.mask_sha256
+            or telemetry.mask_sha256 != mask.mask_sha256
+            or telemetry.detector_version != mask.detector_version
+            or telemetry.contract_version != evidence.contract_version
+        ):
+            return [
+                _reference_lineage_failure(
+                    "reference panel snapshot does not match evidence"
+                )
+            ]
+        readiness_code: str | None = None
+        try:
+            visual_scoring.require_reference_ready_visual_evidence(evidence)
+        except visual_scoring.VisualEvidenceError as exc:
+            if exc.code == "visual.balloon_mask_unknown":
+                readiness_code = exc.code
+            else:
+                return [
+                    _reference_lineage_failure(
+                        "reference panel evidence is not reference-ready"
+                    )
+                ]
+        lineage.append(
+            (scene, key, evidence, mask, panel_size, telemetry, readiness_code)
+        )
+
+    results: list[CheckResult] = []
+    for _scene, _key, _evidence, _mask, _panel_size, telemetry, readiness_code in lineage:
+        if readiness_code == "visual.balloon_mask_unknown":
+            results.append(
+                _fail(
+                    "visual.balloon_mask_unknown",
+                    CheckSeverity.ERROR,
+                    "Reference QC requires known balloon geometry.",
+                )
+            )
+            continue
+        if telemetry.balloon_mask_intersection_ratio > 0.0:
+            results.append(
+                _fail(
+                    "visual.balloon_mask_overlap",
+                    CheckSeverity.ERROR,
+                    "Reference crop intersects a speech-balloon mask.",
+                )
+            )
+        elif (
+            telemetry.subject_coverage < 0.98
+            or telemetry.face_coverage < 0.98
+            or telemetry.action_coverage < 0.95
+            or telemetry.continuity_context_coverage < 0.95
+            or telemetry.effect_coverage < 0.90
+        ):
+            results.append(
+                _fail(
+                    "visual.protected_coverage",
+                    CheckSeverity.ERROR,
+                    "Reference crop does not retain required protected visual regions.",
+                )
+            )
+        elif telemetry.rejection_code:
+            code = str(telemetry.rejection_code)
+            if code == "visual.source_resolution_insufficient":
+                code = "visual.visual_unavailable"
+            results.append(
+                _fail(
+                    code,
+                    CheckSeverity.ERROR,
+                    "Reference crop telemetry contains a hard rejection.",
+                )
+            )
+        elif telemetry.edge_connected_blank_fraction > float(
+            profile.framing_blank_target_fraction
+        ) and telemetry.fallback_reason != "visual.blank_infeasible":
+            results.append(
+                _fail(
+                    "visual.blank_infeasible",
+                    CheckSeverity.ERROR,
+                    "Reference crop retains edge-connected blank area.",
+                )
+            )
+    if not results:
+        return [_pass("visual.reference_framing", "Exact panel framing evidence is valid.")]
+    unique: dict[str, CheckResult] = {}
+    for result in results:
+        unique[result.code] = result
+    return list(unique.values())
+
 
 
 def check_reference_profile(scenes: list, duration: float, profile) -> list[CheckResult]:

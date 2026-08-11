@@ -2,6 +2,40 @@
 
 Updated: 2026-08-11
 
+## Visual Task 6 panel-keyed fallback/QC implementation - 2026-08-11
+
+- Visual Task 6 is green and implemented at rollback parent
+  482ee74eda6b2c0546fcc18c2cc439a5b53b9d5d. The RED run was collection-clean:
+  23 collected, 17 passed, and 6 body failures for the intentionally absent
+  ReferenceROIAlternative and ReferencePanelFallbackCandidate interfaces.
+- The focused Task 6 integration suite now passes 25 tests. The related
+  reference/profile/framing/motion/visual-scoring matrix passes 81 tests.
+  The full non-slow collection is 711 tests; the final run exited 0 with no
+  failures. Existing Pillow and Alembic deprecation warnings remain only.
+- Explicit reference_panel_candidates uses the exact panel-keyed path. Each
+  frozen candidate carries source asset and PanelRegion identity, source order,
+  integer panel bounds, panel size, immutable checksum, locally authoritative
+  evidence hash, typed visual evidence, a distinct BorderMaskResult, and
+  ordered ROI alternatives. No asset-level evidence map or predeclared
+  feasibility flag is accepted.
+- Every ROI attempt calls framing_analysis.candidate_is_feasible with that
+  ROI, its own typed evidence and mask, panel size, and the profile final
+  target. The ordered fallback_attempts ledger retains panel/region identity,
+  evidence hash, detector version, mask hash, crop box, telemetry, accepted
+  status, and stable rejection/reason code. Stable failures include
+  visual.panel_lineage_unavailable, visual.balloon_mask_unknown,
+  visual.balloon_mask_overlap, visual.protected_coverage,
+  visual.visual_unavailable, and visual.blank_infeasible.
+- Panel-keyed QC validates lineage and mask/evidence identity before readiness,
+  coverage, blank, or overlap checks. The transitional
+  reference_panel_candidates=None bridge preserves the prior reference
+  planner output without inventing lineage or fallback ledgers; profile=None
+  remains unchanged. Task 7 must pass exact panel candidates from live
+  PanelRegion rows before planning. No pipeline wiring, media, database,
+  narration, voice, or actual render changed.
+- Next atomic task: Visual Task 7 live panel-candidate construction and
+  validation. Rollback point: 482ee74eda6b2c0546fcc18c2cc439a5b53b9d5d.
+
 ## Visual Task 6 panel-keyed fallback plan correction - 2026-08-11
 
 - Sol review found that an asset-keyed visual evidence map cannot distinguish

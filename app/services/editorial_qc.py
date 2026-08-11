@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -163,6 +164,10 @@ def build_report(
     *, scenes: list[object], cues: list[object], duration: float, job_path: Path | None = None,
     rights_confidence: int = 5, source_cleanliness: int = 5, voice_profile_count: int = 0, minimum_duration: float = 45.0,
     preview: bool = False, profile: object | None = None,
+    panel_evidence_by_key: Mapping[tuple[str, str], object] | None = None,
+    panel_border_masks_by_key: Mapping[tuple[str, str], object] | None = None,
+    panel_sizes_by_key: Mapping[tuple[str, str], tuple[int, int]] | None = None,
+    telemetry_by_key: Mapping[tuple[str, str], object | None] | None = None,
 ) -> EditorialQC:
     average, longest_same, crops, total = _shot_metrics(scenes)
     frozen = _freeze_duration(job_path) if job_path and job_path.is_file() else 0.0
@@ -229,6 +234,18 @@ def build_report(
     report.failures.extend(motion_director.audit_camera_sequence(scenes))
     if profile is not None:
         report.failures.extend(_reference_qc_failures(scenes, duration, profile))
+        if panel_evidence_by_key is not None:
+            panel_results = check_reference_framing(
+                scenes,
+                panel_evidence_by_key,
+                panel_border_masks_by_key or {},
+                panel_sizes_by_key or {},
+                telemetry_by_key or {},
+                profile=profile,
+            )
+            report.failures.extend(
+                result.code for result in panel_results if not result.passed
+            )
     else:
         if duration < minimum_duration or duration > 90:
             report.failures.append("duration_outside_60_90s")
@@ -374,4 +391,26 @@ def _audio_metrics(path: Path | None) -> tuple[float | None, float | None]:
     return lufs, peak
 
 
-__all__ = ["EditorialQC", "build_report"]
+def check_reference_framing(
+    scenes: list[object],
+    panel_evidence_by_key: Mapping[tuple[str, str], object],
+    panel_border_masks_by_key: Mapping[tuple[str, str], object],
+    panel_sizes_by_key: Mapping[tuple[str, str], tuple[int, int]],
+    telemetry_by_key: Mapping[tuple[str, str], object | None],
+    *,
+    profile: object,
+):
+    """Expose the exact panel QC boundary without changing legacy reports."""
+    from app.services import quality
+
+    return quality.check_reference_framing(
+        scenes,
+        panel_evidence_by_key,
+        panel_border_masks_by_key,
+        panel_sizes_by_key,
+        telemetry_by_key,
+        profile=profile,
+    )
+
+
+__all__ = ["EditorialQC", "build_report", "check_reference_framing"]

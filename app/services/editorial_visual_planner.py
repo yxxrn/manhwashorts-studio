@@ -7,9 +7,10 @@ execution. It never re-scores panels.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass, is_dataclass
 
-from app.services import director, motion_director, visual_scoring
+from app.services import director, framing_analysis, motion_director, visual_scoring
 
 _MAX_EDITORIAL_SHOT_SECONDS = 2.8
 _REFERENCE_SHOT_INTERVAL_SECONDS = 1.28
@@ -30,6 +31,10 @@ class ReferencePlanningError(RuntimeError):
     """Raised when the selected reference profile cannot be satisfied safely."""
 
     code = "reference_planning_failed"
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        self.code = code or type(self).code
+        super().__init__(f"{self.code}: {message}")
 
 
 def _reference_group_counts(
@@ -309,6 +314,537 @@ def _reference_roi_key(shot: Mapping[str, object]) -> tuple[object, ...]:
     )
 
 
+
+@dataclass(frozen=True)
+class ReferenceROIAlternative:
+    kind: str
+    roi_label: str
+    crop_box: tuple[int, int, int, int]
+    focus: tuple[float, float, float, float]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, str) or not self.kind.strip():
+            raise ReferencePlanningError(
+                "ROI kind is required", "visual.panel_lineage_unavailable"
+            )
+        if not isinstance(self.roi_label, str) or not self.roi_label.strip():
+            raise ReferencePlanningError(
+                "ROI label is required", "visual.panel_lineage_unavailable"
+            )
+        if "speech_bubble" in f"{self.kind}:{self.roi_label}".lower():
+            raise ReferencePlanningError(
+                "speech-bubble ROI is not renderable", "visual.balloon_mask_overlap"
+            )
+        if (
+            not isinstance(self.crop_box, tuple)
+            or len(self.crop_box) != 4
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in self.crop_box)
+            or self.crop_box[0] < 0
+            or self.crop_box[1] < 0
+            or self.crop_box[2] <= self.crop_box[0]
+            or self.crop_box[3] <= self.crop_box[1]
+        ):
+            raise ReferencePlanningError(
+                "ROI crop_box must be a positive integer box",
+                "visual.panel_lineage_unavailable",
+            )
+        if (
+            not isinstance(self.focus, tuple)
+            or len(self.focus) != 4
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not 0.0 <= float(value) <= 1.0
+                for value in self.focus
+            )
+        ):
+            raise ReferencePlanningError(
+                "ROI focus must contain four normalized values",
+                "visual.panel_lineage_unavailable",
+            )
+
+
+def _mask_identity(mask: framing_analysis.BorderMaskResult) -> str:
+    try:
+        return framing_analysis._mask_hash(
+            mask.source_width,
+            mask.source_height,
+            mask.grid_width,
+            mask.grid_height,
+            mask.edge_connected_mask,
+            mask.non_discardable_low_information_mask,
+            mask.protected_mask,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ReferencePlanningError(
+            "border mask identity cannot be recomputed",
+            "visual.panel_lineage_unavailable",
+        ) from exc
+
+
+def _validate_border_mask(
+    mask: framing_analysis.BorderMaskResult,
+    panel_size: tuple[int, int],
+    contract_version: str,
+) -> None:
+    if not isinstance(mask, framing_analysis.BorderMaskResult):
+        raise ReferencePlanningError(
+            "border mask type is invalid", "visual.panel_lineage_unavailable"
+        )
+    if (
+        not isinstance(panel_size, tuple)
+        or len(panel_size) != 2
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in panel_size)
+        or panel_size[0] <= 0
+        or panel_size[1] <= 0
+        or (mask.source_width, mask.source_height) != panel_size
+        or mask.grid_width <= 0
+        or mask.grid_height <= 0
+        or len(mask.edge_connected_mask) != mask.grid_height
+        or len(mask.non_discardable_low_information_mask) != mask.grid_height
+        or len(mask.protected_mask) != mask.grid_height
+        or any(len(row) != mask.grid_width for row in mask.edge_connected_mask)
+        or any(len(row) != mask.grid_width for row in mask.non_discardable_low_information_mask)
+        or any(len(row) != mask.grid_width for row in mask.protected_mask)
+        or not framing_analysis.detector_contract_matches(
+            contract_version, mask.detector_version
+        )
+        or not isinstance(mask.mask_sha256, str)
+        or mask.mask_sha256 != _mask_identity(mask)
+    ):
+        raise ReferencePlanningError(
+            "border mask dimensions, contract, or hash do not match the panel",
+            "visual.panel_lineage_unavailable",
+        )
+
+
+@dataclass(frozen=True)
+class ReferencePanelFallbackCandidate:
+    source_asset_id: str
+    panel_region_id: str
+    panel_id: str
+    source_order: int
+    panel_bounds: tuple[int, int, int, int]
+    panel_size: tuple[int, int]
+    border_mask: framing_analysis.BorderMaskResult
+    source_asset_checksum: str
+    visual_evidence: visual_scoring.PanelVisualEvidence
+    evidence_hash: str
+    eligible_sections: tuple[str, ...]
+    eligible_beats: tuple[str, ...]
+    roi_alternatives: tuple[ReferenceROIAlternative, ...]
+    panel_candidate: visual_scoring.PanelCandidate
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in (
+                self.source_asset_id,
+                self.panel_region_id,
+                self.panel_id,
+                self.source_asset_checksum,
+                self.evidence_hash,
+            )
+        ):
+            raise ReferencePlanningError(
+                "panel candidate identity is incomplete",
+                "visual.panel_lineage_unavailable",
+            )
+        if (
+            not isinstance(self.source_order, int)
+            or isinstance(self.source_order, bool)
+            or self.source_order <= 0
+            or not isinstance(self.panel_bounds, tuple)
+            or len(self.panel_bounds) != 4
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in self.panel_bounds
+            )
+            or self.panel_bounds[2] <= self.panel_bounds[0]
+            or self.panel_bounds[3] <= self.panel_bounds[1]
+        ):
+            raise ReferencePlanningError(
+                "panel bounds or source order is invalid",
+                "visual.panel_lineage_unavailable",
+            )
+        if (
+            not isinstance(self.panel_size, tuple)
+            or len(self.panel_size) != 2
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in self.panel_size
+            )
+            or self.panel_size[0] <= 0
+            or self.panel_size[1] <= 0
+        ):
+            raise ReferencePlanningError(
+                "panel size is invalid", "visual.panel_lineage_unavailable"
+            )
+        try:
+            evidence = (
+                visual_scoring.parse_panel_visual_evidence(self.visual_evidence)
+                if isinstance(self.visual_evidence, Mapping)
+                else self.visual_evidence
+            )
+            visual_scoring.validate_panel_visual_evidence(evidence)
+            local_hash = visual_scoring.visual_evidence_hash(evidence)
+        except (visual_scoring.VisualEvidenceError, TypeError, ValueError) as exc:
+            raise ReferencePlanningError(
+                "panel visual evidence is invalid",
+                "visual.panel_lineage_unavailable",
+            ) from exc
+        if (
+            evidence.panel_id != self.panel_id
+            or evidence.source_asset_id != self.source_asset_id
+            or evidence.source_order != self.source_order
+            or self.evidence_hash != local_hash
+        ):
+            raise ReferencePlanningError(
+                "panel visual evidence lineage or hash does not match",
+                "visual.panel_lineage_unavailable",
+            )
+        object.__setattr__(self, "visual_evidence", evidence)
+        _validate_border_mask(
+            self.border_mask, self.panel_size, evidence.contract_version
+        )
+        if (
+            not isinstance(self.panel_candidate, visual_scoring.PanelCandidate)
+            or self.panel_candidate.asset_id != self.source_asset_id
+            or self.panel_candidate.order_index != self.source_order
+        ):
+            raise ReferencePlanningError(
+                "render candidate does not match panel lineage",
+                "visual.panel_lineage_unavailable",
+            )
+        if not self.roi_alternatives:
+            raise ReferencePlanningError(
+                "panel candidate has no ROI alternatives",
+                "visual.panel_lineage_unavailable",
+            )
+        for roi in self.roi_alternatives:
+            if (
+                roi.crop_box[2] > self.panel_size[0]
+                or roi.crop_box[3] > self.panel_size[1]
+            ):
+                raise ReferencePlanningError(
+                    "ROI is outside the panel crop",
+                    "visual.panel_lineage_unavailable",
+                )
+
+
+def _border_mask_json(mask: framing_analysis.BorderMaskResult) -> dict:
+    return asdict(mask)
+
+
+def _telemetry_json(telemetry: object) -> dict:
+    if is_dataclass(telemetry):
+        return asdict(telemetry)
+    if isinstance(telemetry, Mapping):
+        return dict(telemetry)
+    return {
+        key: getattr(telemetry, key)
+        for key in (
+            "contract_version",
+            "detector_version",
+            "mask_sha256",
+            "crop_box",
+            "base_zoom",
+            "source_resolution_zoom_cap",
+            "protected_region_zoom_cap",
+            "edge_connected_blank_fraction",
+            "non_discardable_low_information_fraction",
+            "protected_retained_fraction",
+            "balloon_mask_intersection_ratio",
+            "subject_coverage",
+            "face_coverage",
+            "action_coverage",
+            "effect_coverage",
+            "continuity_context_coverage",
+            "mask_confidence",
+            "mask_source",
+            "fallback_reason",
+            "rejection_code",
+        )
+        if hasattr(telemetry, key)
+    }
+
+
+def _roi_key(roi: ReferenceROIAlternative) -> tuple[object, ...]:
+    return (roi.roi_label, roi.crop_box, roi.focus)
+
+
+def _candidate_is_eligible(
+    candidate: ReferencePanelFallbackCandidate,
+    section: str,
+    beat: str,
+) -> bool:
+    return (
+        (not candidate.eligible_sections or section in candidate.eligible_sections)
+        and (not candidate.eligible_beats or beat in candidate.eligible_beats)
+    )
+
+
+def _reference_panel_attempt(
+    candidate: ReferencePanelFallbackCandidate,
+    roi: ReferenceROIAlternative,
+    *,
+    profile: object,
+    attempt_order: int,
+    previously_used: bool,
+    used_rois: set[tuple[object, ...]],
+) -> tuple[bool, object, dict]:
+    evidence = candidate.visual_evidence
+    try:
+        ready = visual_scoring.require_reference_ready_visual_evidence(evidence)
+    except visual_scoring.VisualEvidenceError as exc:
+        if exc.code == "visual.balloon_mask_unknown":
+            raise ReferencePlanningError(str(exc), exc.code) from exc
+        raise ReferencePlanningError(
+            "panel readiness is invalid", "visual.panel_lineage_unavailable"
+        ) from exc
+    if previously_used and _roi_key(roi) in used_rois:
+        telemetry = {
+            "rejection_code": "visual.reuse_roi_duplicate",
+            "crop_box": roi.crop_box,
+        }
+        return False, telemetry, {
+            "attempt_order": attempt_order,
+            "panel_region_id": candidate.panel_region_id,
+            "panel_id": candidate.panel_id,
+            "source_asset_id": candidate.source_asset_id,
+            "source_asset_checksum": candidate.source_asset_checksum,
+            "source_order": candidate.source_order,
+            "panel_size": list(candidate.panel_size),
+            "roi_label": roi.roi_label,
+            "crop_box": list(roi.crop_box),
+            "evidence_hash": candidate.evidence_hash,
+            "detector_version": candidate.border_mask.detector_version,
+            "mask_sha256": candidate.border_mask.mask_sha256,
+            "telemetry": telemetry,
+            "kind": roi.kind,
+            "accepted": False,
+            "code": "visual.reuse_roi_duplicate",
+            "reason": "a repeated panel requires a distinct ROI",
+        }
+    try:
+        feasible, telemetry = framing_analysis.candidate_is_feasible(
+            roi.crop_box,
+            ready,
+            candidate.border_mask,
+            candidate.panel_size,
+            (profile.final_width, profile.final_height),
+        )
+    except framing_analysis.VisualEvidenceError as exc:
+        if exc.code == "visual.balloon_mask_unknown":
+            raise ReferencePlanningError(str(exc), exc.code) from exc
+        telemetry = {
+            "rejection_code": exc.code,
+            "error": str(exc),
+        }
+        feasible = False
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ReferencePlanningError(
+            "candidate feasibility boundary failed",
+            "visual.panel_lineage_unavailable",
+        ) from exc
+    rejection = (
+        getattr(telemetry, "rejection_code", None)
+        if not isinstance(telemetry, Mapping)
+        else telemetry.get("rejection_code")
+    )
+    accepted = bool(feasible)
+    code = None if accepted else rejection or "visual.visual_unavailable"
+    entry = {
+        "attempt_order": attempt_order,
+        "panel_region_id": candidate.panel_region_id,
+        "panel_id": candidate.panel_id,
+        "source_asset_id": candidate.source_asset_id,
+        "source_asset_checksum": candidate.source_asset_checksum,
+        "source_order": candidate.source_order,
+        "panel_size": list(candidate.panel_size),
+        "roi_label": roi.roi_label,
+        "crop_box": list(roi.crop_box),
+        "evidence_hash": candidate.evidence_hash,
+        "detector_version": candidate.border_mask.detector_version,
+        "mask_sha256": candidate.border_mask.mask_sha256,
+        "telemetry": _telemetry_json(telemetry),
+        "kind": roi.kind,
+        "accepted": accepted,
+        "code": code,
+        "reason": "accepted" if accepted else "candidate failed hard framing constraints",
+    }
+    return accepted, telemetry, entry
+
+
+def _plan_reference_panel_candidates(
+    spans: list[object],
+    profile: object,
+    panel_candidates: Sequence[ReferencePanelFallbackCandidate],
+) -> list[dict]:
+    if not panel_candidates:
+        raise ReferencePlanningError(
+            "explicit panel candidate sequence is empty",
+            "visual.panel_lineage_unavailable",
+        )
+    ordered = tuple(
+        sorted(
+            panel_candidates,
+            key=lambda candidate: (
+                candidate.source_order,
+                candidate.panel_id,
+                candidate.panel_region_id,
+            ),
+        )
+    )
+    seen_panel_ids: set[str] = set()
+    seen_region_ids: set[str] = set()
+    for candidate in ordered:
+        if (
+            candidate.panel_id in seen_panel_ids
+            or candidate.panel_region_id in seen_region_ids
+        ):
+            raise ReferencePlanningError(
+                "panel candidate identity is ambiguous",
+                "visual.panel_lineage_unavailable",
+            )
+        seen_panel_ids.add(candidate.panel_id)
+        seen_region_ids.add(candidate.panel_region_id)
+        _validate_border_mask(
+            candidate.border_mask,
+            candidate.panel_size,
+            candidate.visual_evidence.contract_version,
+        )
+        if not framing_analysis.detector_contract_matches(
+            profile.framing_contract_version, candidate.border_mask.detector_version
+        ):
+            raise ReferencePlanningError(
+                "panel mask contract does not match profile",
+                "visual.panel_lineage_unavailable",
+            )
+        try:
+            visual_scoring.require_reference_ready_visual_evidence(
+                candidate.visual_evidence
+            )
+        except visual_scoring.VisualEvidenceError as exc:
+            raise ReferencePlanningError(str(exc), exc.code) from exc
+    unique_by_asset: dict[str, visual_scoring.PanelCandidate] = {}
+    for candidate in ordered:
+        unique_by_asset.setdefault(candidate.source_asset_id, candidate.panel_candidate)
+    if len(unique_by_asset) * profile.max_canonical_panel_uses < profile.shot_min:
+        raise ReferencePlanningError(
+            "the renderable panel pool cannot meet the reuse cap",
+            "visual.visual_unavailable",
+        )
+    base_shots = _plan_reference(
+        spans,
+        list(unique_by_asset.values()),
+        profile,
+        None,
+        None,
+    )
+    uses: dict[str, int] = {}
+    used_rois: dict[str, set[tuple[object, ...]]] = {}
+    last_panel_id = ""
+    selected_shots: list[dict] = []
+    for shot_index, shot in enumerate(base_shots):
+        section = str(shot.get("section", ""))
+        beat = str(shot.get("camera_intent", "") or "")
+        rotated = ordered[shot_index % len(ordered) :] + ordered[: shot_index % len(ordered)]
+        eligible = [
+            candidate
+            for candidate in rotated
+            if _candidate_is_eligible(candidate, section, beat)
+            and uses.get(candidate.panel_id, 0) < profile.max_canonical_panel_uses
+            and candidate.panel_id != last_panel_id
+        ]
+        if not eligible:
+            raise ReferencePlanningError(
+                f"no exact panel candidate is eligible for section {section}",
+                "visual.visual_unavailable",
+            )
+        attempts: list[dict] = []
+        preferred_candidate = eligible[0]
+        accepted_candidate: ReferencePanelFallbackCandidate | None = None
+        accepted_roi: ReferenceROIAlternative | None = None
+        accepted_telemetry: object | None = None
+        for candidate in eligible:
+            previous_uses = uses.get(candidate.panel_id, 0)
+            for roi in candidate.roi_alternatives:
+                accepted, telemetry, entry = _reference_panel_attempt(
+                    candidate,
+                    roi,
+                    profile=profile,
+                    attempt_order=len(attempts),
+                    previously_used=previous_uses > 0,
+                    used_rois=used_rois.get(candidate.panel_id, set()),
+                )
+                attempts.append(entry)
+                if accepted:
+                    accepted_candidate = candidate
+                    accepted_roi = roi
+                    accepted_telemetry = telemetry
+                    break
+            if accepted_candidate is not None:
+                break
+        if accepted_candidate is None or accepted_roi is None or accepted_telemetry is None:
+            raise ReferencePlanningError(
+                f"no feasible exact panel candidate for section {section}",
+                "visual.visual_unavailable",
+            )
+        candidate = accepted_candidate
+        roi = accepted_roi
+        uses[candidate.panel_id] = uses.get(candidate.panel_id, 0) + 1
+        used_rois.setdefault(candidate.panel_id, set()).add(_roi_key(roi))
+        reasons = list(shot.get("alignment_reasons", ()))
+        reasons.extend(
+            (
+                "panel_evidence_alignment",
+                f"panel_lineage:{candidate.panel_id}",
+                f"source_order:{candidate.source_order}",
+            )
+        )
+        if candidate.panel_id != candidate.source_asset_id:
+            reasons.append("panel_keyed_candidate")
+        if uses[candidate.panel_id] > 1:
+            reasons.append(f"reuse_purpose:distinct_roi:{roi.roi_label}")
+        if candidate.panel_id != preferred_candidate.panel_id or any(
+            not attempt["accepted"] for attempt in attempts
+        ):
+            reasons.append("fallback:alternate_panel_same_beat")
+        shot.update(
+            {
+                "asset_id": candidate.source_asset_id,
+                "panel_region_id": candidate.panel_region_id,
+                "panel_id": candidate.panel_id,
+                "source_order": candidate.source_order,
+                "panel_bounds": list(candidate.panel_bounds),
+                "panel_size": list(candidate.panel_size),
+                "border_mask": _border_mask_json(candidate.border_mask),
+                "source_asset_checksum": candidate.source_asset_checksum,
+                "visual_evidence": visual_scoring.panel_visual_evidence_json(
+                    candidate.visual_evidence
+                ),
+                "evidence_hash": candidate.evidence_hash,
+                "roi": {
+                    "kind": roi.kind,
+                    "roi_label": roi.roi_label,
+                    "crop_box": list(roi.crop_box),
+                    "focus": list(roi.focus),
+                },
+                "roi_label": roi.roi_label,
+                "focus_x": roi.focus[0],
+                "focus_y": roi.focus[1],
+                "focus_end_x": roi.focus[2],
+                "focus_end_y": roi.focus[3],
+                "alignment_reasons": sorted(set(reasons)),
+                "fallback_attempts": attempts,
+            }
+        )
+        selected_shots.append(shot)
+        last_panel_id = candidate.panel_id
+    return selected_shots
+
+
 def _plan_reference(
     spans: list[object],
     candidates: list[object],
@@ -505,9 +1041,14 @@ def plan(
     profile: object | None = None,
     cited_asset_ids_by_section: Mapping[str, Iterable[str]] | None = None,
     citation_alignment_reasons_by_section: Mapping[str, Iterable[str]] | None = None,
+    reference_panel_candidates: Sequence[ReferencePanelFallbackCandidate] | None = None,
 ) -> list[dict]:
     """Create a beat-aware, ROI-driven shot list before rendering."""
     span_list = list(spans)
+    if profile is not None and reference_panel_candidates is not None:
+        return _plan_reference_panel_candidates(
+            span_list, profile, tuple(reference_panel_candidates)
+        )
     if profile is not None:
         return _plan_reference(
             span_list,
@@ -594,4 +1135,10 @@ def classify_source_text(text: str) -> dict[str, bool]:
     }
 
 
-__all__ = ["ReferencePlanningError", "classify_source_text", "plan"]
+__all__ = [
+    "ReferencePlanningError",
+    "ReferenceROIAlternative",
+    "ReferencePanelFallbackCandidate",
+    "classify_source_text",
+    "plan",
+]

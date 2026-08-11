@@ -2,6 +2,18 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Implemented Visual Plan Task 6 panel-keyed fallback and QC at rollback
+  parent 482ee74eda6b2c0546fcc18c2cc439a5b53b9d5d. RED was collection-clean
+  with 23 collected, 17 passed, and 6 intended body failures; GREEN is 25
+  focused integration tests, 81 related reference/framing/motion/visual
+  tests, and a 711-test non-slow collection with exit 0. Explicit panel
+  candidates enforce exact PanelRegion/evidence/mask identity, call
+  candidate_is_feasible for every ROI, and record ordered fallback_attempts
+  with stable visual codes. The None bridge preserves pre-Task7 reference
+  planner behavior without fabricated lineage, while profile=None is
+  unchanged. No pipeline wiring, media, DB, narration, voice, or render
+  changed; Visual Task 7 is next.
+
 - Corrected the Visual Task 6/7 design to use exact panel-keyed
   ReferencePanelFallbackCandidate records instead of an ambiguous
   asset-level evidence map. Per-shot fallback_attempts now retain panel
