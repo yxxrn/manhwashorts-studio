@@ -2,6 +2,56 @@
 
 Updated: 2026-08-11
 
+## Visual Task 7 exact-panel silent visual review wiring - 2026-08-11
+
+- Implemented the live reference review boundary from rollback parent
+  21db23590b73e6d9683fd5b0eb5b7a1ec59cab77. The second-pass RED run was
+  collection-clean: 19 tests collected, 11 passed, and 8 intended body
+  failures for unreferenced-panel leakage, duplicate ROI geometry, stale
+  checksum preflight, exact persisted-ROI preparation, accepted-only mask
+  identity, silent cue mutation, publish_allowed enforcement, and compact
+  sidecar identity.
+- The final follow-up RED run was collection-clean: 25 tests collected,
+  22 passed, and 3 intended failures covering a cue crossing a hard-cut
+  boundary in the pipeline and direct renderer plus malformed selected ROI
+  handling. GREEN evidence is 25 Task7 review tests, 127 tests in the
+  focused reference/profile/framing/render/motion/subtitle matrix, 14
+  panel-lineage regressions, and 753/753 tests in the PATH-correct exact
+  non-slow suite. Ruff, compileall, git diff --check, and the normal versus
+  ignore-space-at-eol diff comparison are clean; only existing Pillow and
+  Alembic deprecation warnings remain.
+- Pure panel-keyed candidate construction, eligibility mapping, ROI
+  enumeration, accepted-ledger identity checks, and planned-shot validation
+  now live in app/services/reference_visual_review.py. pipeline.py retains
+  database/image loading, transaction ordering, thin wrappers, and
+  SceneInput orchestration; its current diff is 466 additions/83 deletions
+  (net +383), materially below the pre-extraction addition. The exact live
+  path passes only reference_panel_candidates and never uses an asset-level
+  evidence map.
+- Reference review now excludes unreferenced panels, rejects stale source
+  checksums before planner calls, deduplicates source-space ROIs, validates
+  the selected ROI without reselection, persists the full mask only on the
+  accepted fallback entry, preserves compact mask identity in the sidecar,
+  rejects cue rewriting and publish_allowed=true, and keeps legacy
+  profile=None behavior unchanged. Stable lineage failures remain
+  visual.panel_lineage_unavailable; readiness/coverage failures are not
+  fabricated or repaired.
+- Readiness remains false at
+  data/task7-readiness/task7-readiness-false.json and .txt: both inspected
+  SQLite databases have no current StoryAnalysis/PanelRegion evidence, so no
+  real-panel Task7 render was claimed. No provider, TTS, audio, media, or
+  runtime database was changed.
+- Silent-review cues are now required to be one uppercase alphanumeric
+  word fully contained in one persisted scene interval; the pipeline and
+  direct renderer reject cross-cut cues before any encoder/FFmpeg work and
+  never rewrite SubtitleCue rows. The selected-ROI validator checks its
+  mapping type before dereferencing it. The authorized fixture update in
+  tests/test_reference_profile_integration.py remains limited to truthful
+  lineage-matched synthetic evidence/crops. Sol's release gate is green and
+  this work is released for publication. Next step: exact-object main-only
+  publication; voice remains deferred.
+
+
 ## Visual Task 6 accepted-ledger/QC hardening follow-up - 2026-08-11
 
 - Sol review follow-up RED was collection-clean: 42 focused tests collected,

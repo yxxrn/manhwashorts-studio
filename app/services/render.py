@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import re
 import shutil
 import subprocess
-from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from random import Random
 from typing import TYPE_CHECKING, Any
@@ -81,6 +82,15 @@ class SceneInput:
     panel_bounds: tuple[int, int, int, int] | None = None
     visual_evidence: Mapping[str, Any] | None = None
     source_asset_checksum: str = ""
+    source_asset_id: str = ""
+    source_order: int | None = None
+    panel_size: tuple[int, int] | None = None
+    evidence_hash: str = ""
+    border_mask: Mapping[str, Any] | None = None
+    selected_roi: Mapping[str, Any] | None = None
+    fallback_attempts: list[Mapping[str, Any]] = field(default_factory=list)
+    framing_telemetry: Mapping[str, Any] | None = None
+    publish_allowed: bool = True
 
     @property
     def duration(self) -> float:
@@ -105,6 +115,9 @@ class RenderRequest:
     #: default. An unavailable GPU falls back to CPU rather than failing.
     encoder: str | None = None
     profile: ReferenceProfileConfig | None = None
+    silent_reference_review: bool = False
+    output_override: Path | None = None
+    sidecar_path: Path | None = None
 
 
 @dataclass
@@ -125,6 +138,7 @@ class RenderResult:
     encoder_fell_back: bool = False
     encoder_reason: str = ""
     scratch_bytes: int = 0
+    sidecar_path: Path | None = None
 
 
 def _run(cmd: list[str], timeout: int = 900, step: str = "ffmpeg") -> str:
@@ -368,6 +382,38 @@ def _reference_legacy_box(
     left = max(0, min(left, src_w - crop_w))
     top = max(0, min(top, src_h - crop_h))
     return left, top, left + crop_w, top + crop_h
+
+
+def reference_panel_crop_box(
+    panel_size: tuple[int, int],
+    target_size: tuple[int, int],
+    focus_x: float,
+    focus_y: float,
+    *,
+    scale: float = 1.0,
+) -> tuple[int, int, int, int]:
+    """Return one deterministic panel-local crop box for review planning."""
+    source_width, source_height = (int(panel_size[0]), int(panel_size[1]))
+    target_width, target_height = (int(target_size[0]), int(target_size[1]))
+    if (
+        source_width <= 0
+        or source_height <= 0
+        or target_width <= 0
+        or target_height <= 0
+        or float(scale) <= 0.0
+    ):
+        raise ValueError("reference crop geometry is invalid")
+    ratio = target_width / target_height
+    crop_width = min(source_width, max(1, round(source_height * ratio * float(scale))))
+    crop_height = min(source_height, max(1, round(crop_width / ratio)))
+    if crop_height > source_height:
+        crop_height = source_height
+        crop_width = min(source_width, max(1, round(crop_height * ratio)))
+    centre_x = max(0.0, min(1.0, float(focus_x))) * source_width
+    centre_y = max(0.0, min(1.0, float(focus_y))) * source_height
+    left = max(0, min(round(centre_x - crop_width / 2), source_width - crop_width))
+    top = max(0, min(round(centre_y - crop_height / 2), source_height - crop_height))
+    return left, top, left + crop_width, top + crop_height
 
 
 def _reference_content_stats(
@@ -1051,6 +1097,350 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return header + "\n".join(lines) + "\n"
 
 
+_REFERENCE_TELEMETRY_FIELDS = (
+    "contract_version",
+    "detector_version",
+    "mask_sha256",
+    "crop_box",
+    "base_zoom",
+    "source_resolution_zoom_cap",
+    "protected_region_zoom_cap",
+    "edge_connected_blank_fraction",
+    "non_discardable_low_information_fraction",
+    "protected_retained_fraction",
+    "balloon_mask_intersection_ratio",
+    "subject_coverage",
+    "face_coverage",
+    "action_coverage",
+    "effect_coverage",
+    "continuity_context_coverage",
+    "mask_confidence",
+    "mask_source",
+    "fallback_reason",
+    "rejection_code",
+)
+
+
+def _reference_canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _reference_border_mask_from_mapping(
+    value: framing_analysis.BorderMaskResult | Mapping[str, Any] | None,
+) -> framing_analysis.BorderMaskResult:
+    if isinstance(value, framing_analysis.BorderMaskResult):
+        mask = value
+    elif isinstance(value, Mapping):
+        try:
+            rows = ("edge_connected_mask", "non_discardable_low_information_mask", "protected_mask")
+            parsed_rows: dict[str, tuple[tuple[bool, ...], ...]] = {}
+            for name in rows:
+                raw_rows = value[name]
+                if not isinstance(raw_rows, (list, tuple)):
+                    raise ValueError("mask rows are invalid")
+                converted: list[tuple[bool, ...]] = []
+                for raw_row in raw_rows:
+                    if not isinstance(raw_row, (list, tuple)) or any(
+                        not isinstance(flag, bool) for flag in raw_row
+                    ):
+                        raise ValueError("mask cells are invalid")
+                    converted.append(tuple(raw_row))
+                parsed_rows[name] = tuple(converted)
+            mask = framing_analysis.BorderMaskResult(
+                detector_version=str(value["detector_version"]),
+                source_width=int(value["source_width"]),
+                source_height=int(value["source_height"]),
+                grid_width=int(value["grid_width"]),
+                grid_height=int(value["grid_height"]),
+                edge_connected_mask=parsed_rows[rows[0]],
+                non_discardable_low_information_mask=parsed_rows[rows[1]],
+                protected_mask=parsed_rows[rows[2]],
+                edge_connected_blank_fraction=float(value["edge_connected_blank_fraction"]),
+                non_discardable_low_information_fraction=float(
+                    value["non_discardable_low_information_fraction"]
+                ),
+                protected_retained_fraction=float(value["protected_retained_fraction"]),
+                mask_sha256=str(value["mask_sha256"]),
+            )
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise RenderError(
+                "visual.panel_lineage_unavailable: reference border mask is malformed",
+                code="visual.panel_lineage_unavailable",
+            ) from exc
+    else:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference border mask is missing",
+            code="visual.panel_lineage_unavailable",
+        )
+    try:
+        expected_hash = framing_analysis._mask_hash(
+            mask.source_width,
+            mask.source_height,
+            mask.grid_width,
+            mask.grid_height,
+            mask.edge_connected_mask,
+            mask.non_discardable_low_information_mask,
+            mask.protected_mask,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference border mask identity is invalid",
+            code="visual.panel_lineage_unavailable",
+        ) from exc
+    if mask.mask_sha256 != expected_hash:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference border mask identity is stale",
+            code="visual.panel_lineage_unavailable",
+        )
+    return mask
+
+
+def _reference_telemetry_mapping(value: object) -> Mapping[str, Any]:
+    if hasattr(value, "__dataclass_fields__"):
+        return asdict(value)
+    if isinstance(value, Mapping):
+        return value
+    raise RenderError(
+        "visual.panel_lineage_unavailable: reference framing telemetry is missing",
+        code="visual.panel_lineage_unavailable",
+    )
+
+
+def _prepare_exact_reference_frame(
+    *,
+    scene: SceneInput,
+    dest: Path,
+    width: int,
+    height: int,
+    profile: ReferenceProfileConfig,
+) -> Path:
+    """Prepare the persisted ROI exactly, without candidate search or reselection."""
+    if scene.publish_allowed is not False:
+        raise RenderError(
+            "reference.publish_not_allowed: publish_allowed must be false for silent review scenes",
+            code="reference.publish_not_allowed",
+        )
+    if not scene.image_path or not Path(scene.image_path).is_file():
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference panel crop is missing",
+            code="visual.panel_lineage_unavailable",
+        )
+    try:
+        evidence = (
+            scene.visual_evidence
+            if isinstance(scene.visual_evidence, visual_scoring.PanelVisualEvidence)
+            else visual_scoring.parse_panel_visual_evidence(scene.visual_evidence or {})
+        )
+        evidence = visual_scoring.require_reference_ready_visual_evidence(evidence)
+        local_hash = visual_scoring.visual_evidence_hash(evidence)
+    except visual_scoring.VisualEvidenceError as exc:
+        code = (
+            "visual.balloon_mask_unknown"
+            if exc.code == "visual.balloon_mask_unknown"
+            else "visual.panel_lineage_unavailable"
+        )
+        raise RenderError(f"{code}: reference visual evidence is unavailable", code=code) from exc
+    if not scene.evidence_hash or scene.evidence_hash != local_hash:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference evidence hash is stale",
+            code="visual.panel_lineage_unavailable",
+        )
+    mask = _reference_border_mask_from_mapping(scene.border_mask)
+    try:
+        with Image.open(scene.image_path) as source:
+            source.load()
+            panel = source.convert("RGB")
+    except (OSError, ValueError) as exc:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference panel crop is unreadable",
+            code="visual.panel_lineage_unavailable",
+        ) from exc
+    panel_size = scene.panel_size
+    if (
+        not isinstance(panel_size, tuple)
+        or len(panel_size) != 2
+        or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in panel_size)
+        or panel.size != panel_size
+        or (mask.source_width, mask.source_height) != panel_size
+    ):
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference panel dimensions are stale",
+            code="visual.panel_lineage_unavailable",
+        )
+    if not framing_analysis.detector_contract_matches(
+        profile.framing_contract_version, mask.detector_version
+    ):
+        raise RenderError(
+            "visual.framing_contract_incompatible: detector/profile mismatch",
+            code="visual.framing_contract_incompatible",
+        )
+    try:
+        actual_mask = framing_analysis.build_color_agnostic_border_mask(
+            panel,
+            evidence,
+            grid_long_edge=profile.framing_mask_grid_long_edge,
+        )
+    except (OSError, ValueError, visual_scoring.VisualEvidenceError) as exc:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference border mask cannot be rebuilt",
+            code="visual.panel_lineage_unavailable",
+        ) from exc
+    if _reference_canonical_json(asdict(actual_mask)) != _reference_canonical_json(asdict(mask)):
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference border mask snapshot is stale",
+            code="visual.panel_lineage_unavailable",
+        )
+    selected_roi = scene.selected_roi
+    if not isinstance(selected_roi, Mapping):
+        raise RenderError(
+            "visual.panel_lineage_unavailable: selected reference ROI is missing",
+            code="visual.panel_lineage_unavailable",
+        )
+    if "speech_bubble" in _reference_canonical_json(selected_roi).lower():
+        raise RenderError(
+            "visual.balloon_mask_overlap: speech-bubble ROI is not renderable",
+            code="visual.balloon_mask_overlap",
+        )
+    try:
+        raw_box = selected_roi["crop_box"]
+        if (
+            not isinstance(raw_box, (list, tuple))
+            or len(raw_box) != 4
+            or any(isinstance(item, bool) or not isinstance(item, int) for item in raw_box)
+        ):
+            raise ValueError("selected ROI box is invalid")
+        crop_box = tuple(raw_box)
+        if (
+            crop_box[0] < 0
+            or crop_box[1] < 0
+            or crop_box[2] <= crop_box[0]
+            or crop_box[3] <= crop_box[1]
+            or crop_box[2] > panel.width
+            or crop_box[3] > panel.height
+        ):
+            raise ValueError("selected ROI box is invalid")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: selected reference ROI is invalid",
+            code="visual.panel_lineage_unavailable",
+        ) from exc
+    try:
+        feasible, telemetry = framing_analysis.candidate_is_feasible(
+            crop_box,
+            evidence,
+            mask,
+            panel_size,
+            (width, height),
+        )
+    except visual_scoring.VisualEvidenceError as exc:
+        raise RenderError(str(exc), code=exc.code) from exc
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: persisted ROI feasibility failed",
+            code="visual.panel_lineage_unavailable",
+        ) from exc
+    telemetry_map = _reference_telemetry_mapping(telemetry)
+    if not feasible:
+        rejection_code = telemetry_map.get("rejection_code") or "visual.visual_unavailable"
+        raise RenderError(
+            f"{rejection_code}: persisted reference ROI is no longer feasible",
+            code=str(rejection_code),
+            telemetry=telemetry if isinstance(telemetry, framing_analysis.FramingTelemetry) else None,
+        )
+    persisted_telemetry = _reference_telemetry_mapping(scene.framing_telemetry)
+    for field_name in _REFERENCE_TELEMETRY_FIELDS:
+        if field_name not in persisted_telemetry or field_name not in telemetry_map:
+            raise RenderError(
+                "visual.panel_lineage_unavailable: reference telemetry is incomplete",
+                code="visual.panel_lineage_unavailable",
+            )
+        if _reference_canonical_json(persisted_telemetry[field_name]) != _reference_canonical_json(
+            telemetry_map[field_name]
+        ):
+            raise RenderError(
+                "visual.panel_lineage_unavailable: reference telemetry is stale",
+                code="visual.panel_lineage_unavailable",
+            )
+    persisted_selected = persisted_telemetry.get("selected_roi")
+    if persisted_selected is not None:
+        for field_name in ("kind", "roi_label", "crop_box"):
+            if persisted_selected.get(field_name) != selected_roi.get(field_name):
+                raise RenderError(
+                    "visual.panel_lineage_unavailable: reference telemetry ROI is stale",
+                    code="visual.panel_lineage_unavailable",
+                )
+    output_size = (_reference_even(round(width * 1.15)), _reference_even(round(height * 1.15)))
+    prepared = panel.crop(crop_box).resize(output_size, Image.Resampling.LANCZOS)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    prepared.save(dest, "JPEG", quality=94)
+    return dest
+
+
+def _compact_border_mask_identity(value: object) -> dict[str, Any]:
+    if isinstance(value, framing_analysis.BorderMaskResult):
+        value = asdict(value)
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        key: value.get(key)
+        for key in ("detector_version", "mask_sha256", "source_width", "source_height")
+    }
+
+
+def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -> dict[str, Any]:
+    if request.profile is None:
+        raise RenderError(
+            "silent reference review requires the reference profile",
+            code="reference.silent_profile_required",
+        )
+    shots: list[dict[str, Any]] = []
+    for index, scene in enumerate(request.scenes):
+        if scene.publish_allowed is not False:
+            raise RenderError(
+                "reference.publish_not_allowed: publish_allowed must be false for silent review scenes",
+                code="reference.publish_not_allowed",
+            )
+        attempts: list[dict[str, Any]] = []
+        for attempt in scene.fallback_attempts:
+            if not isinstance(attempt, Mapping):
+                raise RenderError(
+                    "visual.panel_lineage_unavailable: fallback ledger is malformed",
+                    code="visual.panel_lineage_unavailable",
+                )
+            compact = dict(attempt)
+            compact.pop("border_mask", None)
+            attempts.append(compact)
+        shots.append(
+            {
+                "order_index": index,
+                "start_time": scene.start_time,
+                "end_time": scene.end_time,
+                "source_asset_id": scene.source_asset_id,
+                "source_order": scene.source_order,
+                "panel_region_id": scene.panel_region_id,
+                "panel_id": scene.panel_id,
+                "panel_size": scene.panel_size,
+                "source_asset_checksum": scene.source_asset_checksum,
+                "evidence_hash": scene.evidence_hash,
+                "border_mask": _compact_border_mask_identity(scene.border_mask),
+                "selected_roi": scene.selected_roi,
+                "fallback_attempts": attempts,
+                "framing_telemetry": scene.framing_telemetry,
+                "reason": scene.motion_reason,
+                "rejection_code": None,
+            }
+        )
+    return {
+        "schema_version": "reference_visual_review_v1",
+        "project_id": request.project_id,
+        "profile_id": request.profile.profile_id,
+        "publish_allowed": False,
+        "audio_stream_expected": False,
+        "audio_stream_present": bool(info.get("has_audio")),
+        "shots": shots,
+    }
+
+
 def _escape_filter_path(path: Path) -> str:
     """Escape a path for use inside an FFmpeg filter argument."""
     text = str(path)
@@ -1063,6 +1453,58 @@ def _escape_filter_path(path: Path) -> str:
 
 
 # --- main entry point ------------------------------------------------------
+
+
+def validate_silent_reference_cues(
+    cues: Sequence[CueSpec],
+    scenes: Sequence[SceneInput],
+    *,
+    media_duration: float | None = None,
+) -> None:
+    """Fail closed when a silent-review cue crosses a persisted hard cut."""
+    if not scenes:
+        raise RenderError(
+            "reference.subtitle_invalid: silent review has no scenes",
+            code="reference.subtitle_invalid",
+        )
+    epsilon = 1e-9
+    duration = (
+        float(media_duration)
+        if media_duration is not None
+        else max(float(scene.end_time) for scene in scenes)
+    )
+    for cue in cues:
+        text = str(cue.text or "")
+        try:
+            start_time = float(cue.start_time)
+            end_time = float(cue.end_time)
+        except (TypeError, ValueError) as exc:
+            raise RenderError(
+                "reference.subtitle_invalid: persisted display cues are invalid",
+                code="reference.subtitle_invalid",
+            ) from exc
+        if (
+            not text
+            or text != text.upper()
+            or not text.isalnum()
+            or len(text) > MAX_SUBTITLE_CHARS_PER_LINE
+            or start_time < -epsilon
+            or end_time <= start_time
+            or end_time > duration + epsilon
+        ):
+            raise RenderError(
+                "reference.subtitle_invalid: persisted display cues are invalid",
+                code="reference.subtitle_invalid",
+            )
+        if not any(
+            float(scene.start_time) - epsilon <= start_time
+            and end_time <= float(scene.end_time) + epsilon
+            for scene in scenes
+        ):
+            raise RenderError(
+                "reference.subtitle_invalid: cue crosses a scene boundary",
+                code="reference.subtitle_invalid",
+            )
 
 
 def render_video(request: RenderRequest, progress=None) -> RenderResult:
@@ -1083,6 +1525,8 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         raise RenderError("video dimensions must be even for H.264", code="bad_dimensions")
     if not request.scenes:
         raise RenderError("nothing to render: the timeline has no scenes", code="no_scenes")
+    if request.silent_reference_review and request.profile is not None:
+        validate_silent_reference_cues(request.cues, request.scenes)
 
     def report(pct: int, stage: str) -> None:
         if progress:
@@ -1111,6 +1555,11 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         scene_evidence: PanelVisualEvidence | None = None
         scene_border_mask: framing_analysis.BorderMaskResult | None = None
         if request.profile is not None:
+            if request.silent_reference_review and scene.publish_allowed is not False:
+                raise RenderError(
+                    "reference.publish_not_allowed: publish_allowed must be false for silent review scenes",
+                    code="reference.publish_not_allowed",
+                )
             if not scene.image_path or not Path(scene.image_path).is_file() or scene.visual_evidence is None:
                 raise RenderError(
                     f"reference scene {i + 1} is missing panel visual lineage",
@@ -1123,12 +1572,17 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                     else visual_scoring.parse_panel_visual_evidence(scene.visual_evidence)
                 )
                 scene_evidence = visual_scoring.require_reference_ready_visual_evidence(scene_evidence)
-                with Image.open(scene.image_path) as panel_image:
-                    scene_border_mask = framing_analysis.build_color_agnostic_border_mask(
-                        panel_image,
-                        scene_evidence,
-                        grid_long_edge=request.profile.framing_mask_grid_long_edge,
-                    )
+                if request.silent_reference_review:
+                    scene_border_mask = _reference_border_mask_from_mapping(scene.border_mask)
+                else:
+                    with Image.open(scene.image_path) as panel_image:
+                        scene_border_mask = framing_analysis.build_color_agnostic_border_mask(
+                            panel_image,
+                            scene_evidence,
+                            grid_long_edge=request.profile.framing_mask_grid_long_edge,
+                        )
+            except RenderError:
+                raise
             except visual_scoring.VisualEvidenceError as exc:
                 code = (
                     "visual.balloon_mask_unknown"
@@ -1149,21 +1603,34 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 border_mask=scene_border_mask,
                 evidence=scene_evidence,
             ),
-            scene.motion_mode, scene.motion_intensity, tuple(sorted(scene.disabled_effects)),
+            scene.motion_mode,
+            scene.motion_intensity,
+            tuple(sorted(scene.disabled_effects)),
+            _reference_canonical_json(scene.selected_roi) if request.silent_reference_review else "",
+            _reference_canonical_json(scene.framing_telemetry) if request.silent_reference_review else "",
         )
         cached = prepared_cache.get(cache_key)
         if cached and cached.is_file():
             shutil.copyfile(cached, prepared)
         elif scene.image_path and Path(scene.image_path).is_file():
             try:
-                editorial_frame(
-                    Path(scene.image_path), prepared, width, height,
-                    scene.focus_x, scene.focus_y, scene.focus_end_x, scene.focus_end_y,
-                    scene.motion_mode,
-                    profile=request.profile,
-                    evidence=scene_evidence,
-                    border_mask=scene_border_mask,
-                )
+                if request.silent_reference_review:
+                    _prepare_exact_reference_frame(
+                        scene=scene,
+                        dest=prepared,
+                        width=width,
+                        height=height,
+                        profile=request.profile,
+                    )
+                else:
+                    editorial_frame(
+                        Path(scene.image_path), prepared, width, height,
+                        scene.focus_x, scene.focus_y, scene.focus_end_x, scene.focus_end_y,
+                        scene.motion_mode,
+                        profile=request.profile,
+                        evidence=scene_evidence,
+                        border_mask=scene_border_mask,
+                    )
             except RenderError:
                 raise
             except Exception as exc:
@@ -1174,7 +1641,9 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 ) from exc
         else:
             placeholder_image(prepared, width, height, scene.overlay_text or "no image")
-        effects = local_effects(scene.motion_mode, scene.disabled_effects, request.profile)
+        effects = [] if request.silent_reference_review else local_effects(
+            scene.motion_mode, scene.disabled_effects, request.profile
+        )
         if effects:
             with Image.open(prepared) as prepared_image:
                 effected = apply_local_effects(
@@ -1290,6 +1759,25 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     shutil.move(str(tmp_out), str(output))
 
     info = probe(output)
+    sidecar_path: Path | None = None
+    if request.silent_reference_review:
+        if request.profile is None:
+            raise RenderError(
+                "silent reference review requires the reference profile",
+                code="reference.silent_profile_required",
+            )
+        if info.get("has_audio"):
+            raise RenderError(
+                "silent reference review unexpectedly contains audio",
+                code="reference.audio_unexpected",
+            )
+        sidecar_path = request.sidecar_path or output.with_suffix(".review.json")
+        sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+        sidecar = _reference_review_sidecar(request, info)
+        sidecar_path.write_text(
+            json.dumps(sidecar, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
     thumbnail = None
     try:
         thumbnail = output.with_suffix(".jpg")
@@ -1335,6 +1823,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         encoder_fell_back=selection.fell_back,
         encoder_reason=selection.reason,
         scratch_bytes=scratch_bytes,
+        sidecar_path=sidecar_path,
     )
 
 

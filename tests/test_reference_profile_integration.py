@@ -410,7 +410,9 @@ def test_new_project_form_submits_reference_profile_explicitly():
     assert "|| 41" in javascript
 
 
-def _add_reference_project(db, duration: float, with_asset: bool = False) -> tuple[Project, ScriptVersion]:
+def _add_reference_project(
+    db, duration: float, with_asset: bool = False
+) -> tuple[Project, ScriptVersion]:
     user = User(email=f"reference-{duration}-{with_asset}@example.com")
     workspace = Workspace(owner=user)
     project = Project(
@@ -446,11 +448,28 @@ def _add_reference_project(db, duration: float, with_asset: bool = False) -> tup
             )
         )
     if with_asset:
+        import io
+
+        from PIL import Image
+
+        from app.services import storage
+
+        image_bytes = io.BytesIO()
+        Image.new("RGB", (1080, 1920), (34, 44, 58)).save(image_bytes, format="PNG")
+        stored = storage.put_bytes(
+            "projects/reference-profile", "synthetic.png", image_bytes.getvalue()
+        )
         asset = SourceAsset(
             project_id=project.id,
             type=AssetType.IMAGE,
             original_filename="synthetic.png",
-            storage_key="projects/reference/synthetic.png",
+            storage_key=stored.storage_key,
+            mime_type="image/png",
+            size_bytes=stored.size_bytes,
+            checksum=stored.checksum,
+            original_checksum=stored.checksum,
+            original_width=1080,
+            original_height=1920,
             width=1080,
             height=1920,
         )
@@ -465,9 +484,11 @@ def _add_reference_project(db, duration: float, with_asset: bool = False) -> tup
         )
         db.add(analysis)
         db.flush()
+        evidence = _task6_evidence("panel-3", asset.id, 3)
         panel = PanelRegion(
             story_analysis_id=analysis.id,
             source_asset_id=asset.id,
+            source_asset_checksum=stored.checksum,
             strip_region_id="strip-3",
             panel_id="panel-3",
             source_order=3,
@@ -475,16 +496,20 @@ def _add_reference_project(db, duration: float, with_asset: bool = False) -> tup
             original_height=1920,
             bounds_json={"x": 0, "y": 0, "width": 1080, "height": 1920},
             coverage_map_hash="a" * 64,
+            observation_json={
+                "visual_evidence": visual_scoring.panel_visual_evidence_json(evidence)
+            },
         )
         db.add(panel)
         db.flush()
-        sections = list(script.sections)
-        sections[0] = {
-            **sections[0],
-            "evidence_panel_ids": [panel.panel_id],
-            "citations": [3],
-        }
-        script.sections = sections
+        script.sections = [
+            {
+                **section,
+                "evidence_panel_ids": [panel.panel_id],
+                "citations": [3],
+            }
+            for section in script.sections
+        ]
     db.flush()
     return project, script
 
@@ -552,9 +577,11 @@ def test_reference_timeline_passes_profile_and_section_citations_to_planner(db, 
     with pytest.raises(StopPlanning):
         pipeline.build_timeline(db, project.id)
     assert captured["profile"] is reference_profile.REFERENCE_MATCHED_SHORTS_V1
-    citation_map = captured["cited_asset_ids_by_section"]
-    assert project.assets[0].id in citation_map["hook"]
-    assert "3" not in citation_map["hook"]
+    exact_candidates = captured["reference_panel_candidates"]
+    assert exact_candidates
+    assert all(candidate.source_order == 3 for candidate in exact_candidates)
+    assert captured["cited_asset_ids_by_section"] is None
+    assert captured["citation_alignment_reasons_by_section"] is None
     assert script.sections[0]["evidence_panel_ids"] == ["panel-3"]
     assert script.sections[0]["citations"] == [3]
 

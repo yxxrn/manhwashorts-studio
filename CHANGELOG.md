@@ -2,6 +2,26 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Implemented the Visual Task 7 exact-panel silent visual review boundary from
+  rollback parent 21db23590b73e6d9683fd5b0eb5b7a1ec59cab77. The second-pass
+  RED run was collection-clean with 19 collected, 11 passing, and 8
+  intended failures for exact panel registry, ROI, ledger, silent-render,
+  and readiness guards. The final follow-up RED was collection-clean with
+  25 collected, 22 passing, and 3 intended failures for a cue crossing a
+  hard-cut boundary in the pipeline/direct renderer and malformed selected
+  ROI handling. GREEN is 25 Task7 review tests, 127 focused
+  reference/profile/framing/render/motion/subtitle tests, 14 panel-lineage
+  regressions, and 753/753 PATH-correct non-slow tests. Silent-review cues
+  must be one uppercase alphanumeric word fully contained in one persisted
+  scene interval; both paths reject cross-cut cues before encoder/FFmpeg
+  work without rewriting SubtitleCue rows. Pure panel-keyed construction,
+  ROI geometry, evidence/mask/ledger validation, and planned-shot validation
+  remain isolated in app/services/reference_visual_review.py. Real review
+  remains blocked by the readiness=false report because current databases
+  contain no StoryAnalysis/PanelRegion evidence. Sol's release gate is green
+  and this work is released for exact-object publication; voice remains
+  deferred.
+
 - Follow-up hardening from review parent
   064453c20c4d4591794fde49b8efcbbb761fb78d: RED was collection-clean with
   42 focused tests, 35 passing and 7 intended body failures; GREEN is 42

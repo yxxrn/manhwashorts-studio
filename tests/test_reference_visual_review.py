@@ -1,0 +1,941 @@
+from __future__ import annotations
+
+import inspect
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from PIL import Image, ImageDraw
+
+from app.services import pipeline, reference_profile, render, visual_scoring
+
+
+def _evidence(panel_id: str, asset_id: str, source_order: int):
+    return visual_scoring.PanelVisualEvidence(
+        contract_version="COLOR_AGNOSTIC_BALLOON_FREE_V1",
+        panel_id=panel_id,
+        source_asset_id=asset_id,
+        source_order=source_order,
+        balloon_regions=(),
+        protected_regions=(),
+        balloon_mask_status="known_empty",
+        mask_confidence=0.96,
+        evidence_source="vision_geometry_v1",
+        mask_reason="provider confirmed no speech balloon geometry",
+    )
+
+
+def _region(panel_id: str, region_id: str, asset_id: str, source_order: int, bounds, checksum: str):
+    evidence = _evidence(panel_id, asset_id, source_order)
+    return SimpleNamespace(
+        id=region_id,
+        panel_id=panel_id,
+        source_asset_id=asset_id,
+        source_order=source_order,
+        source_asset_checksum=checksum,
+        bounds_json={
+            "x": bounds[0],
+            "y": bounds[1],
+            "width": bounds[2] - bounds[0],
+            "height": bounds[3] - bounds[1],
+        },
+        observation_json={"visual_evidence": visual_scoring.panel_visual_evidence_json(evidence)},
+    )
+
+
+def _candidate(asset_id: str, source_order: int, signature: str):
+    return visual_scoring.PanelCandidate(
+        asset_id=asset_id,
+        order_index=source_order,
+        features=visual_scoring.VisualFeatures(
+            face_visibility=0.9,
+            action_pose=0.8,
+            dramatic_composition=0.9,
+            focal_points=((0.5, 0.5),),
+            visual_signature=signature,
+        ),
+        visual_score=1.0,
+        semantic_score=1.0,
+    )
+
+
+def _crop(color: tuple[int, int, int], mark: bool) -> Image.Image:
+    image = Image.new("RGB", (100, 200), color)
+    if mark:
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((10, 20, 85, 80), fill=(250, 250, 250))
+        draw.line((5, 190, 95, 100), fill=(0, 0, 0), width=5)
+    return image
+
+
+def _builder_inputs():
+    regions = (
+        _region("panel-a", "region-a", "asset-a", 3, (0, 0, 100, 200), "asset-a-checksum"),
+        _region("panel-b", "region-b", "asset-a", 3, (100, 0, 200, 200), "asset-a-checksum"),
+    )
+    crops = {
+        "region-a": _crop((40, 60, 100), True),
+        "region-b": _crop((110, 40, 40), False),
+    }
+    candidates = {
+        "region-a": _candidate("asset-a", 3, "a"),
+        "region-b": _candidate("asset-a", 3, "b"),
+    }
+    return regions, crops, candidates
+
+
+def test_panel_candidate_builder_keeps_same_asset_regions_distinct():
+    builder = pipeline._build_reference_panel_fallback_candidates
+    regions, crops, candidates = _builder_inputs()
+    result = builder(
+        panel_regions=regions,
+        panel_candidates_by_region_id=candidates,
+        panel_crops_by_region_id=crops,
+        section_evidence_panel_ids={"hook": ("panel-a", "panel-b")},
+        section_citations={},
+        beats_by_section={"hook": ("action",)},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert [candidate.panel_region_id for candidate in result] == ["region-a", "region-b"]
+    assert {candidate.panel_id for candidate in result} == {"panel-a", "panel-b"}
+    assert len({candidate.border_mask.mask_sha256 for candidate in result}) == 2
+    assert all(candidate.panel_size == (100, 200) for candidate in result)
+
+
+def test_panel_candidate_builder_fans_out_integer_citation_by_source_order():
+    builder = pipeline._build_reference_panel_fallback_candidates
+    regions, crops, candidates = _builder_inputs()
+    result = builder(
+        panel_regions=regions,
+        panel_candidates_by_region_id=candidates,
+        panel_crops_by_region_id=crops,
+        section_evidence_panel_ids={"hook": ()},
+        section_citations={"hook": (3,)},
+        beats_by_section={"hook": ("action",)},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert {candidate.panel_id for candidate in result} == {"panel-a", "panel-b"}
+    assert all("hook" in candidate.eligible_sections for candidate in result)
+
+
+@pytest.mark.parametrize("panel_ids", (("missing-panel",), ("panel-a", "foreign-panel")))
+def test_panel_candidate_builder_rejects_missing_or_foreign_explicit_ids(panel_ids):
+    builder = pipeline._build_reference_panel_fallback_candidates
+    regions, crops, candidates = _builder_inputs()
+    with pytest.raises(pipeline.PipelineError, match="visual.panel_lineage_unavailable"):
+        builder(
+            panel_regions=regions,
+            panel_candidates_by_region_id=candidates,
+            panel_crops_by_region_id=crops,
+            section_evidence_panel_ids={"hook": panel_ids},
+            section_citations={},
+            beats_by_section={"hook": ("action",)},
+            profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        )
+
+
+def test_reference_scene_input_carries_exact_panel_review_identity():
+    scene = render.SceneInput(
+        image_path=None,
+        start_time=0.0,
+        end_time=1.0,
+        source_asset_id="asset-a",
+        source_order=3,
+        panel_size=(100, 200),
+        evidence_hash="evidence-hash",
+        border_mask={"mask_sha256": "mask-hash"},
+        selected_roi={"kind": "primary", "crop_box": [0, 0, 100, 200]},
+        fallback_attempts=[{"accepted": True}],
+        framing_telemetry={"crop_box": [0, 0, 100, 200]},
+        publish_allowed=False,
+    )
+    assert scene.source_asset_id == "asset-a"
+    assert scene.publish_allowed is False
+
+
+def test_silent_reference_request_is_explicit_and_audio_free():
+    request = render.RenderRequest(
+        project_id="project",
+        scenes=[],
+        audio_path=None,
+        silent_reference_review=True,
+        output_override=None,
+    )
+    assert request.silent_reference_review is True
+    assert request.audio_path is None
+
+
+def test_bind_reference_requires_exact_planner_registry():
+    binder = pipeline._bind_reference_panel_regions
+    assert "candidate_registry" in inspect.signature(binder).parameters
+
+
+def test_reference_review_result_can_expose_sidecar():
+    result = render.RenderResult(
+        output_path=Path("review.mp4"),
+        subtitle_path=None,
+        thumbnail_path=None,
+        duration=1.0,
+        width=1080,
+        height=1920,
+        checksum="",
+        size_bytes=0,
+        sidecar_path=Path("review.json"),
+    )
+    assert result.sidecar_path.name == "review.json"
+
+
+class _EmptyScalars:
+    def __iter__(self):
+        return iter(())
+
+    def first(self):
+        return None
+
+
+class _TimelineDb:
+    def __init__(self):
+        self.deleted = []
+
+    def scalars(self, _statement):
+        return _EmptyScalars()
+
+    def delete(self, item):
+        self.deleted.append(item)
+
+    def add(self, _item):
+        return None
+
+    def flush(self):
+        return None
+
+
+def test_reference_timeline_passes_only_exact_panel_candidates_to_planner(monkeypatch):
+    from app.services import editorial_visual_planner
+
+    regions, crops, candidates = _builder_inputs()
+    candidate_tuple = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id=candidates,
+        panel_crops_by_region_id=crops,
+        section_evidence_panel_ids={"hook": ("panel-a", "panel-b")},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    captured = {}
+
+    def fake_plan(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    project = SimpleNamespace(id="project", template=reference_profile.REFERENCE_MATCHED_SHORTS_V1.profile_id)
+    asset = SimpleNamespace(id="asset-a", type="image")
+    segment = SimpleNamespace(end_time=40.901)
+    span = SimpleNamespace(section="hook", start_time=0.0, end_time=40.901)
+    script = SimpleNamespace(id="script", sections=[{"section": "hook", "evidence_panel_ids": ["panel-a"]}])
+    monkeypatch.setattr(pipeline, "get_project", lambda *_args: project)
+    monkeypatch.setattr(pipeline, "current_script", lambda *_args: script)
+    monkeypatch.setattr(pipeline, "_script_for_media", lambda *_args: script)
+    monkeypatch.setattr(pipeline, "audio_segments", lambda *_args: [segment])
+    monkeypatch.setattr(pipeline, "project_assets", lambda *_args: [asset])
+    monkeypatch.setattr(pipeline, "image_assets", lambda _assets: [asset])
+    monkeypatch.setattr(pipeline, "spans_from_segments", lambda _segments: [span])
+    monkeypatch.setattr(pipeline.visual_scoring, "analyze_assets", lambda *_args: [object()])
+    monkeypatch.setattr(pipeline, "_load_reference_panel_fallback_candidates", lambda *_args: candidate_tuple)
+    monkeypatch.setattr(pipeline, "_bind_reference_panel_regions", lambda *args, **kwargs: [])
+    monkeypatch.setattr(pipeline, "project_scenes", lambda *_args: [])
+    monkeypatch.setattr(pipeline, "project_cues", lambda *_args: [])
+    monkeypatch.setattr(pipeline.timeline_svc, "build_cues", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(pipeline.director_svc, "audit_sequence", lambda _planned: [])
+    monkeypatch.setattr(pipeline, "audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(editorial_visual_planner, "plan", fake_plan)
+    pipeline.build_timeline(_TimelineDb(), "project")
+    assert captured["reference_panel_candidates"] == candidate_tuple
+    assert captured["cited_asset_ids_by_section"] is None
+    assert captured["citation_alignment_reasons_by_section"] is None
+
+
+def test_reference_planning_failure_happens_before_scene_deletion(monkeypatch):
+    from app.services import editorial_visual_planner
+
+    regions, crops, candidates = _builder_inputs()
+    candidate_tuple = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id=candidates,
+        panel_crops_by_region_id=crops,
+        section_evidence_panel_ids={"hook": ("panel-a", "panel-b")},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    project = SimpleNamespace(id="project", template=reference_profile.REFERENCE_MATCHED_SHORTS_V1.profile_id)
+    asset = SimpleNamespace(id="asset-a", type="image")
+    segment = SimpleNamespace(end_time=40.901)
+    span = SimpleNamespace(section="hook", start_time=0.0, end_time=40.901)
+    script = SimpleNamespace(id="script", sections=[{"section": "hook", "evidence_panel_ids": ["panel-a"]}])
+    db = _TimelineDb()
+    monkeypatch.setattr(pipeline, "get_project", lambda *_args: project)
+    monkeypatch.setattr(pipeline, "current_script", lambda *_args: script)
+    monkeypatch.setattr(pipeline, "_script_for_media", lambda *_args: script)
+    monkeypatch.setattr(pipeline, "audio_segments", lambda *_args: [segment])
+    monkeypatch.setattr(pipeline, "project_assets", lambda *_args: [asset])
+    monkeypatch.setattr(pipeline, "image_assets", lambda _assets: [asset])
+    monkeypatch.setattr(pipeline, "spans_from_segments", lambda _segments: [span])
+    monkeypatch.setattr(pipeline.visual_scoring, "analyze_assets", lambda *_args: [object()])
+    monkeypatch.setattr(pipeline, "_load_reference_panel_fallback_candidates", lambda *_args: candidate_tuple)
+    monkeypatch.setattr(pipeline, "project_scenes", lambda *_args: [object()])
+    monkeypatch.setattr(pipeline, "project_cues", lambda *_args: [])
+    monkeypatch.setattr(pipeline, "audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(editorial_visual_planner, "plan", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        editorial_visual_planner.ReferencePlanningError(
+            "no feasible panel", "visual.visual_unavailable"
+        )
+    ))
+    with pytest.raises(pipeline.PipelineError, match="visual.visual_unavailable"):
+        pipeline.build_timeline(db, "project")
+    assert db.deleted == []
+
+
+def test_silent_reference_build_never_reads_script_or_calls_tts(monkeypatch, tmp_path):
+    project = SimpleNamespace(
+        id="project",
+        template=reference_profile.REFERENCE_MATCHED_SHORTS_V1.profile_id,
+        title="hidden",
+    )
+    job = SimpleNamespace(project_id="project", render_profile="Auto", encoder_requested="")
+    db = SimpleNamespace(flush=lambda: None)
+    scene = SimpleNamespace(end_time=40.901)
+    scene_input = render.SceneInput(
+        image_path=tmp_path / "panel.png",
+        start_time=0.0,
+        end_time=40.901,
+        panel_region_id="region-a",
+        panel_id="panel-a",
+        source_asset_id="asset-a",
+        source_order=3,
+        publish_allowed=False,
+    )
+    monkeypatch.setattr(pipeline, "get_project", lambda *_args: project)
+    monkeypatch.setattr(pipeline, "project_scenes", lambda *_args: [scene])
+    monkeypatch.setattr(pipeline, "_reference_scene_inputs", lambda *_args, **_kwargs: [scene_input])
+    monkeypatch.setattr(pipeline, "project_cues", lambda *_args: [])
+    monkeypatch.setattr(pipeline.storage, "output_path", lambda *_args: tmp_path / "review.mp4")
+    monkeypatch.setattr(pipeline, "current_script", lambda *_args: (_ for _ in ()).throw(AssertionError("script read")))
+    monkeypatch.setattr(pipeline, "audio_segments", lambda *_args: (_ for _ in ()).throw(AssertionError("audio read")))
+    monkeypatch.setattr(pipeline.tts_svc, "concat_audio", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("tts called")))
+    request = pipeline.build_render_request(
+        db,
+        job,
+        silent_reference_review=True,
+        output_override=tmp_path / "isolated-review.mp4",
+    )
+    assert request.audio_path is None
+    assert request.music_path is None
+    assert request.silent_reference_review is True
+    assert request.title_text == ""
+    assert request.output_path == tmp_path / "isolated-review.mp4"
+
+
+
+def test_panel_candidate_builder_excludes_unreferenced_regions():
+    regions, crops, candidates = _builder_inputs()
+    regions = regions + (
+        _region("panel-c", "region-c", "asset-a", 4, (0, 0, 100, 200), "asset-a-checksum"),
+    )
+    crops["region-c"] = _crop((80, 80, 80), False)
+    candidates["region-c"] = _candidate("asset-a", 4, "c")
+    result = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id=candidates,
+        panel_crops_by_region_id=crops,
+        section_evidence_panel_ids={"hook": ("panel-a",)},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert [candidate.panel_region_id for candidate in result] == ["region-a"]
+
+
+def test_reference_roi_alternatives_have_distinct_source_geometry():
+    alternatives = pipeline._reference_roi_alternatives(
+        (100, 200),
+        _candidate("asset-a", 3, "single-focus"),
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    geometry = {(item.crop_box, item.focus) for item in alternatives}
+    assert len(geometry) == len(alternatives)
+    assert len({item.crop_box for item in alternatives}) >= 2
+    assert not any(
+        item.kind == "alternate_roi" and item.crop_box == alternatives[0].crop_box
+        for item in alternatives
+    )
+
+
+def test_stale_panel_checksum_fails_before_candidate_builder(monkeypatch):
+    import io
+
+    region = _region("panel-a", "region-a", "asset-a", 3, (0, 0, 100, 200), "stale")
+    asset = SimpleNamespace(
+        id="asset-a",
+        storage_key="asset-a.png",
+        checksum="current",
+        original_checksum="current",
+        source_family="family-a",
+    )
+    image_bytes = io.BytesIO()
+    _crop((40, 60, 100), True).save(image_bytes, format="PNG")
+    db = SimpleNamespace(scalars=lambda _statement: [region])
+    script = SimpleNamespace(
+        sections=[{"section": "hook", "evidence_panel_ids": ["panel-a"], "citations": [3]}]
+    )
+    called = False
+
+    def builder(**_kwargs):
+        nonlocal called
+        called = True
+        return ()
+
+    monkeypatch.setattr(pipeline, "latest_analysis", lambda *_args: SimpleNamespace(id="analysis"))
+    monkeypatch.setattr(pipeline.storage, "read_bytes", lambda _key: image_bytes.getvalue())
+    monkeypatch.setattr(pipeline, "_build_reference_panel_fallback_candidates", builder)
+    with pytest.raises(pipeline.PipelineError, match="visual.panel_lineage_unavailable"):
+        pipeline._load_reference_panel_fallback_candidates(
+            db,
+            "project",
+            script,
+            [asset],
+            reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        )
+    assert called is False
+
+
+def test_exact_reference_preparation_uses_persisted_roi_pixels(monkeypatch, tmp_path):
+    import importlib
+    from dataclasses import asdict
+
+    framing = importlib.import_module("app.services.framing_analysis")
+    source = Image.new("RGB", (100, 200), (20, 20, 180))
+    ImageDraw.Draw(source).rectangle((0, 0, 49, 199), fill=(220, 30, 30))
+    source_path = tmp_path / "panel.png"
+    source.save(source_path)
+    evidence = _evidence("panel-a", "asset-a", 3)
+    mask = framing.build_color_agnostic_border_mask(source, evidence)
+    selected_box = (0, 0, 50, 200)
+    telemetry = framing.FramingTelemetry(
+        contract_version=reference_profile.REFERENCE_MATCHED_SHORTS_V1.framing_contract_version,
+        detector_version=mask.detector_version,
+        mask_sha256=mask.mask_sha256,
+        crop_box=selected_box,
+        base_zoom=1.0,
+        source_resolution_zoom_cap=1.35,
+        protected_region_zoom_cap=1.35,
+        edge_connected_blank_fraction=0.0,
+        non_discardable_low_information_fraction=0.0,
+        protected_retained_fraction=1.0,
+        balloon_mask_intersection_ratio=0.0,
+        subject_coverage=1.0,
+        face_coverage=1.0,
+        action_coverage=1.0,
+        effect_coverage=1.0,
+        continuity_context_coverage=1.0,
+        mask_confidence=0.96,
+        mask_source="vision_geometry_v1",
+    )
+    calls = []
+
+    def feasible(box, *_args):
+        calls.append(box)
+        return True, telemetry
+
+    monkeypatch.setattr(framing, "candidate_is_feasible", feasible)
+    scene = render.SceneInput(
+        image_path=source_path,
+        start_time=0.0,
+        end_time=1.0,
+        panel_region_id="region-a",
+        panel_id="panel-a",
+        source_asset_id="asset-a",
+        source_order=3,
+        panel_size=(100, 200),
+        evidence_hash=visual_scoring.visual_evidence_hash(evidence),
+        visual_evidence=visual_scoring.panel_visual_evidence_json(evidence),
+        border_mask=asdict(mask),
+        selected_roi={"kind": "primary", "roi_label": "selected", "crop_box": list(selected_box)},
+        framing_telemetry=asdict(telemetry),
+        publish_allowed=False,
+    )
+    assert hasattr(render, "_prepare_exact_reference_frame")
+    destination = tmp_path / "prepared.jpg"
+    render._prepare_exact_reference_frame(
+        scene=scene,
+        dest=destination,
+        width=1080,
+        height=1920,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert calls == [selected_box]
+    with Image.open(destination) as prepared:
+        red, _green, blue = prepared.convert("RGB").getpixel((prepared.width // 2, prepared.height // 2))
+    assert red > blue
+
+
+def test_reference_ledger_keeps_full_mask_only_on_accepted_attempt():
+    import importlib
+    from dataclasses import asdict
+
+    review = importlib.import_module("app.services.reference_visual_review")
+    framing = importlib.import_module("app.services.framing_analysis")
+    _regions, crops, candidates = _builder_inputs()
+    candidate = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=_regions[:1],
+        panel_candidates_by_region_id={"region-a": candidates["region-a"]},
+        panel_crops_by_region_id={"region-a": crops["region-a"]},
+        section_evidence_panel_ids={"hook": ("panel-a",)},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )[0]
+    shot = {
+        "panel_region_id": candidate.panel_region_id,
+        "fallback_attempts": [
+            {"accepted": False, "panel_region_id": candidate.panel_region_id, "mask_sha256": candidate.border_mask.mask_sha256},
+            {"accepted": True, "panel_region_id": candidate.panel_region_id},
+        ],
+    }
+    assert hasattr(review, "attach_accepted_mask_snapshot")
+    ledger = review.attach_accepted_mask_snapshot(shot, {candidate.panel_region_id: candidate})
+    assert "border_mask" not in ledger[0]
+    assert ledger[1]["border_mask"] == asdict(candidate.border_mask)
+    assert ledger[1]["detector_version"] == framing.DETECTOR_VERSION
+
+
+def test_silent_request_rejects_invalid_cue_without_mutating_persistence(monkeypatch):
+    project = SimpleNamespace(id="project")
+    job = SimpleNamespace(project_id="project", encoder_requested="")
+    scene = render.SceneInput(
+        image_path=Path("panel.png"),
+        start_time=0.0,
+        end_time=1.0,
+        source_asset_id="asset-a",
+        panel_region_id="region-a",
+        panel_id="panel-a",
+        publish_allowed=False,
+    )
+    persisted = SimpleNamespace(order_index=0, text="TWO WORDS", start_time=-1.0, end_time=5.0)
+    db = SimpleNamespace(flush=lambda: pytest.fail("silent review mutated persistence"))
+    monkeypatch.setattr(pipeline, "project_scenes", lambda *_args: [SimpleNamespace(end_time=1.0)])
+    monkeypatch.setattr(pipeline, "_reference_scene_inputs", lambda *_args, **_kwargs: [scene])
+    monkeypatch.setattr(pipeline, "project_cues", lambda *_args: [persisted])
+    with pytest.raises(pipeline.PipelineError, match="reference.subtitle_invalid"):
+        pipeline._build_silent_reference_request(
+            db, job, project, reference_profile.REFERENCE_MATCHED_SHORTS_V1, output_override=None
+        )
+    assert persisted.start_time == -1.0
+    assert persisted.end_time == 5.0
+
+
+def test_silent_request_requires_publish_false(monkeypatch):
+    project = SimpleNamespace(id="project")
+    job = SimpleNamespace(project_id="project", encoder_requested="")
+    scene = render.SceneInput(
+        image_path=Path("panel.png"),
+        start_time=0.0,
+        end_time=1.0,
+        source_asset_id="asset-a",
+        panel_region_id="region-a",
+        panel_id="panel-a",
+        publish_allowed=True,
+    )
+    persisted = SimpleNamespace(order_index=0, text="WORD", start_time=0.0, end_time=1.0)
+    db = SimpleNamespace(flush=lambda: None)
+    monkeypatch.setattr(pipeline, "project_scenes", lambda *_args: [SimpleNamespace(end_time=1.0)])
+    monkeypatch.setattr(pipeline, "_reference_scene_inputs", lambda *_args, **_kwargs: [scene])
+    monkeypatch.setattr(pipeline, "project_cues", lambda *_args: [persisted])
+    with pytest.raises(pipeline.PipelineError, match="publish_allowed"):
+        pipeline._build_silent_reference_request(
+            db, job, project, reference_profile.REFERENCE_MATCHED_SHORTS_V1, output_override=None
+        )
+
+
+def test_silent_sidecar_contains_mask_identity_not_full_grids():
+    scene = render.SceneInput(
+        image_path=Path("panel.png"),
+        start_time=0.0,
+        end_time=1.0,
+        source_asset_id="asset-a",
+        source_order=3,
+        panel_region_id="region-a",
+        panel_id="panel-a",
+        panel_size=(100, 200),
+        evidence_hash="evidence",
+        border_mask={
+            "detector_version": "detector",
+            "mask_sha256": "mask",
+            "source_width": 100,
+            "source_height": 200,
+            "edge_connected_mask": [[True]],
+        },
+        selected_roi={"kind": "primary", "crop_box": [0, 0, 100, 200]},
+        fallback_attempts=[],
+        framing_telemetry={"mask_sha256": "mask"},
+        publish_allowed=False,
+    )
+    request = SimpleNamespace(
+        project_id="project",
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        scenes=[scene],
+    )
+    assert hasattr(render, "_reference_review_sidecar")
+    sidecar = render._reference_review_sidecar(
+        request, {"has_audio": False, "duration": 1.0, "width": 1080, "height": 1920}
+    )
+    assert "edge_connected_mask" not in str(sidecar)
+    assert sidecar["shots"][0]["border_mask"] == {
+        "detector_version": "detector",
+        "mask_sha256": "mask",
+        "source_width": 100,
+        "source_height": 200,
+    }
+
+
+def test_reference_ledger_rejects_tampered_mask_and_nonfinite_telemetry():
+    import copy
+    from dataclasses import asdict
+
+    from app.services import framing_analysis, reference_visual_review
+
+    regions, crops, candidates = _builder_inputs()
+    candidate = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions[:1],
+        panel_candidates_by_region_id={"region-a": candidates["region-a"]},
+        panel_crops_by_region_id={"region-a": crops["region-a"]},
+        section_evidence_panel_ids={"hook": ("panel-a",)},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )[0]
+    _feasible, telemetry = framing_analysis.candidate_is_feasible(
+        candidate.roi_alternatives[0].crop_box,
+        candidate.visual_evidence,
+        candidate.border_mask,
+        candidate.panel_size,
+        (
+            reference_profile.REFERENCE_MATCHED_SHORTS_V1.final_width,
+            reference_profile.REFERENCE_MATCHED_SHORTS_V1.final_height,
+        ),
+    )
+    selected_roi = {
+        "kind": candidate.roi_alternatives[0].kind,
+        "roi_label": candidate.roi_alternatives[0].roi_label,
+        "crop_box": list(candidate.roi_alternatives[0].crop_box),
+    }
+    telemetry_json = asdict(telemetry)
+    telemetry_json["selected_roi"] = selected_roi
+    entry = {
+        "accepted": True,
+        "panel_region_id": candidate.panel_region_id,
+        "panel_id": candidate.panel_id,
+        "source_asset_id": candidate.source_asset_id,
+        "source_asset_checksum": candidate.source_asset_checksum,
+        "source_order": candidate.source_order,
+        "panel_size": list(candidate.panel_size),
+        "evidence_hash": candidate.evidence_hash,
+        "border_mask": asdict(candidate.border_mask),
+        "detector_version": candidate.border_mask.detector_version,
+        "mask_sha256": candidate.border_mask.mask_sha256,
+        "roi_label": selected_roi["roi_label"],
+        "crop_box": selected_roi["crop_box"],
+        "telemetry": telemetry_json,
+    }
+    tampered_mask = copy.deepcopy(entry)
+    edge_rows = [list(row) for row in tampered_mask["border_mask"]["edge_connected_mask"]]
+    edge_rows[0][0] = not edge_rows[0][0]
+    tampered_mask["border_mask"]["edge_connected_mask"] = tuple(tuple(row) for row in edge_rows)
+    with pytest.raises(reference_visual_review.ReferenceReviewError):
+        reference_visual_review.validate_accepted_fallback_ledger(
+            [tampered_mask],
+            panel_region_id=candidate.panel_region_id,
+            panel_id=candidate.panel_id,
+            source_asset_id=candidate.source_asset_id,
+            source_asset_checksum=candidate.source_asset_checksum,
+            source_order=candidate.source_order,
+            panel_size=candidate.panel_size,
+            evidence=candidate.visual_evidence,
+            border_mask=candidate.border_mask,
+            selected_roi=selected_roi,
+            framing_telemetry=telemetry_json,
+        )
+    tampered_telemetry = copy.deepcopy(entry)
+    tampered_telemetry["telemetry"]["edge_connected_blank_fraction"] = float("nan")
+    with pytest.raises(reference_visual_review.ReferenceReviewError):
+        reference_visual_review.validate_accepted_fallback_ledger(
+            [tampered_telemetry],
+            panel_region_id=candidate.panel_region_id,
+            panel_id=candidate.panel_id,
+            source_asset_id=candidate.source_asset_id,
+            source_asset_checksum=candidate.source_asset_checksum,
+            source_order=candidate.source_order,
+            panel_size=candidate.panel_size,
+            evidence=candidate.visual_evidence,
+            border_mask=candidate.border_mask,
+            selected_roi=selected_roi,
+            framing_telemetry=tampered_telemetry["telemetry"],
+        )
+
+
+def test_reference_planner_tries_all_roi_phases_on_alternate_panel(monkeypatch):
+    from dataclasses import replace
+
+    from app.services import editorial_visual_planner, framing_analysis
+
+    regions, crops, candidates = _builder_inputs()
+    regions = (
+        regions[0],
+        _region("panel-b", "region-b", "asset-a", 3, (0, 0, 200, 200), "asset-a-checksum"),
+    )
+    crops = {
+        "region-a": crops["region-a"],
+        "region-b": Image.new("RGB", (200, 200), (110, 40, 40)),
+    }
+    candidate_b = replace(
+        candidates["region-b"],
+        features=replace(
+            candidates["region-b"].features,
+            focal_points=((0.5, 0.5), (0.9, 0.5)),
+        ),
+    )
+    candidate_tuple = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id={"region-a": candidates["region-a"], "region-b": candidate_b},
+        panel_crops_by_region_id=crops,
+        section_evidence_panel_ids={"hook": ("panel-a", "panel-b")},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    candidate_b_record = next(item for item in candidate_tuple if item.panel_id == "panel-b")
+    alternate_box = next(
+        item.crop_box for item in candidate_b_record.roi_alternatives if item.kind == "alternate_roi"
+    )
+    real_feasible = framing_analysis.candidate_is_feasible
+
+    def fake_feasible(box, evidence, mask, panel_size, target_size):
+        _accepted, telemetry = real_feasible(box, evidence, mask, panel_size, target_size)
+        return box == alternate_box, replace(telemetry, rejection_code=None if box == alternate_box else "visual.visual_unavailable")
+
+    monkeypatch.setattr(framing_analysis, "candidate_is_feasible", fake_feasible)
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_plan_reference",
+        lambda *_args, **_kwargs: [
+            {
+                "order_index": 0,
+                "section": "hook",
+                "start_time": 0.0,
+                "end_time": 40.901,
+                "camera_intent": "neutral",
+                "effect": "static",
+                "asset_id": "unused",
+                "focus_x": 0.5,
+                "focus_y": 0.5,
+                "focus_end_x": 0.5,
+                "focus_end_y": 0.5,
+            }
+        ],
+    )
+    result = editorial_visual_planner._plan_reference_panel_candidates(
+        [object()],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        candidate_tuple,
+    )
+    accepted = next(item for item in result[0]["fallback_attempts"] if item["accepted"] is True)
+    assert result[0]["panel_id"] == "panel-b"
+    assert accepted["kind"] == "alternate_panel"
+    assert accepted["roi_kind"] == "alternate_roi"
+
+
+def test_silent_render_video_uses_persisted_roi_without_reselection(monkeypatch, tmp_path):
+    from dataclasses import asdict
+
+    from app.services import framing_analysis, storage
+
+    source = Image.new("RGB", (100, 200), (20, 20, 180))
+    ImageDraw.Draw(source).rectangle((0, 0, 49, 199), fill=(220, 30, 30))
+    source_path = tmp_path / "panel.png"
+    source.save(source_path)
+    evidence = _evidence("panel-a", "asset-a", 3)
+    mask = framing_analysis.build_color_agnostic_border_mask(source, evidence)
+    scene = render.SceneInput(
+        image_path=source_path,
+        start_time=0.0,
+        end_time=1.0,
+        panel_region_id="region-a",
+        panel_id="panel-a",
+        source_asset_id="asset-a",
+        source_order=3,
+        panel_size=(100, 200),
+        evidence_hash=visual_scoring.visual_evidence_hash(evidence),
+        visual_evidence=visual_scoring.panel_visual_evidence_json(evidence),
+        border_mask=asdict(mask),
+        selected_roi={"kind": "primary", "roi_label": "persisted", "crop_box": [0, 0, 50, 200]},
+        framing_telemetry={},
+        publish_allowed=False,
+    )
+    request = render.RenderRequest(
+        project_id="project",
+        scenes=[scene],
+        audio_path=None,
+        output_path=tmp_path / "review.mp4",
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        silent_reference_review=True,
+    )
+    exact_calls = []
+
+    def exact_prepare(*, scene, dest, width, height, profile):
+        exact_calls.append(tuple(scene.selected_roi["crop_box"]))
+        Image.new("RGB", (width, height), (1, 2, 3)).save(dest, "JPEG")
+        return dest
+
+    monkeypatch.setattr(render, "_prepare_exact_reference_frame", exact_prepare)
+    monkeypatch.setattr(render, "editorial_frame", lambda *_args, **_kwargs: pytest.fail("reselected ROI"))
+    monkeypatch.setattr(render, "_validate_reference_encoder", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(storage, "workspace_dir", lambda *_args: tmp_path / "work")
+    monkeypatch.setattr(render, "render_scene_clip", lambda _scene, _prepared, dest, *_args, **_kwargs: dest.write_bytes(b"clip") or dest)
+    monkeypatch.setattr(render, "join_scene_clips", lambda _clips, _scenes, dest, *_args, **_kwargs: dest.write_bytes(b"joined") or dest)
+    monkeypatch.setattr(render, "validate_reference_output", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(render, "probe", lambda _path: {"duration": 1.0, "width": 1080, "height": 1920, "fps": 30.0, "codec": "h264", "profile": "High", "pix_fmt": "yuv420p", "has_audio": False})
+    monkeypatch.setattr(render, "_run", lambda command, **_kwargs: Path(command[-1]).write_bytes(b"artifact") or "")
+    result = render.render_video(request)
+    assert exact_calls == [(0, 0, 50, 200)]
+    assert result.sidecar_path is not None
+
+
+
+def test_silent_request_rejects_cue_crossing_scene_boundary(monkeypatch):
+    project = SimpleNamespace(id="project")
+    job = SimpleNamespace(project_id="project", encoder_requested="")
+    scene_inputs = [
+        render.SceneInput(
+            image_path=Path("panel-a.png"),
+            start_time=0.0,
+            end_time=1.0,
+            source_asset_id="asset-a",
+            panel_region_id="region-a",
+            panel_id="panel-a",
+            publish_allowed=False,
+        ),
+        render.SceneInput(
+            image_path=Path("panel-b.png"),
+            start_time=1.0,
+            end_time=2.0,
+            source_asset_id="asset-b",
+            panel_region_id="region-b",
+            panel_id="panel-b",
+            publish_allowed=False,
+        ),
+    ]
+    persisted = SimpleNamespace(
+        order_index=0, text="WORD", start_time=0.8, end_time=1.2
+    )
+    db = SimpleNamespace(flush=lambda: pytest.fail("silent review mutated persistence"))
+    monkeypatch.setattr(
+        pipeline, "project_scenes", lambda *_args: [
+            SimpleNamespace(start_time=0.0, end_time=1.0),
+            SimpleNamespace(start_time=1.0, end_time=2.0),
+        ]
+    )
+    monkeypatch.setattr(pipeline, "_reference_scene_inputs", lambda *_args, **_kwargs: scene_inputs)
+    monkeypatch.setattr(pipeline, "project_cues", lambda *_args: [persisted])
+    with pytest.raises(pipeline.PipelineError, match="reference.subtitle_invalid"):
+        pipeline._build_silent_reference_request(
+            db, job, project, reference_profile.REFERENCE_MATCHED_SHORTS_V1, output_override=None
+        )
+
+
+def test_silent_render_rejects_cue_crossing_scene_boundary_before_encoder(monkeypatch):
+    scenes = [
+        render.SceneInput(
+            image_path=None, start_time=0.0, end_time=1.0, publish_allowed=False
+        ),
+        render.SceneInput(
+            image_path=None, start_time=1.0, end_time=2.0, publish_allowed=False
+        ),
+    ]
+    request = render.RenderRequest(
+        project_id="project",
+        scenes=scenes,
+        audio_path=None,
+        cues=[render.CueSpec(order_index=0, text="WORD", start_time=0.8, end_time=1.2)],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        silent_reference_review=True,
+    )
+    monkeypatch.setattr(
+        render.encoders, "select", lambda *_args: pytest.fail("encoder selected before cue validation")
+    )
+    with pytest.raises(render.RenderError, match="reference.subtitle_invalid"):
+        render.render_video(request)
+
+
+def test_reference_ledger_rejects_non_mapping_selected_roi():
+    from dataclasses import asdict
+
+    from app.services import framing_analysis, reference_visual_review
+
+    regions, crops, candidates = _builder_inputs()
+    candidate = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions[:1],
+        panel_candidates_by_region_id={"region-a": candidates["region-a"]},
+        panel_crops_by_region_id={"region-a": crops["region-a"]},
+        section_evidence_panel_ids={"hook": ("panel-a",)},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )[0]
+    _accepted, telemetry = framing_analysis.candidate_is_feasible(
+        candidate.roi_alternatives[0].crop_box,
+        candidate.visual_evidence,
+        candidate.border_mask,
+        candidate.panel_size,
+        (
+            reference_profile.REFERENCE_MATCHED_SHORTS_V1.final_width,
+            reference_profile.REFERENCE_MATCHED_SHORTS_V1.final_height,
+        ),
+    )
+    selected_roi = {
+        "kind": candidate.roi_alternatives[0].kind,
+        "roi_label": candidate.roi_alternatives[0].roi_label,
+        "crop_box": list(candidate.roi_alternatives[0].crop_box),
+    }
+    telemetry_json = asdict(telemetry)
+    telemetry_json["selected_roi"] = selected_roi
+    entry = {
+        "accepted": True,
+        "panel_region_id": candidate.panel_region_id,
+        "panel_id": candidate.panel_id,
+        "source_asset_id": candidate.source_asset_id,
+        "source_asset_checksum": candidate.source_asset_checksum,
+        "source_order": candidate.source_order,
+        "panel_size": list(candidate.panel_size),
+        "evidence_hash": candidate.evidence_hash,
+        "border_mask": asdict(candidate.border_mask),
+        "detector_version": candidate.border_mask.detector_version,
+        "mask_sha256": candidate.border_mask.mask_sha256,
+        "roi_label": selected_roi["roi_label"],
+        "crop_box": selected_roi["crop_box"],
+        "telemetry": telemetry_json,
+    }
+    with pytest.raises(reference_visual_review.ReferenceReviewError):
+        reference_visual_review.validate_accepted_fallback_ledger(
+            [entry],
+            panel_region_id=candidate.panel_region_id,
+            panel_id=candidate.panel_id,
+            source_asset_id=candidate.source_asset_id,
+            source_asset_checksum=candidate.source_asset_checksum,
+            source_order=candidate.source_order,
+            panel_size=candidate.panel_size,
+            evidence=candidate.visual_evidence,
+            border_mask=candidate.border_mask,
+            selected_roi=None,
+            framing_telemetry=telemetry_json,
+        )
