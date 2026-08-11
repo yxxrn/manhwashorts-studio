@@ -435,6 +435,34 @@ Updated: 2026-08-11
 - OmniVoice Studio remains an external voice experiment. It is not a core
   dependency, default provider, or release gate.
 
+## Codex manual-vision preview checkpoint
+
+- Sol visually inspected every ordered source panel through all six complete
+  contact sheets. Coverage is source orders 0..23 with no random sampling;
+  source order 0 is a title page and is the only panel excluded from the
+  timeline.
+- The VPS generated a new isolated 23-shot silent preview at
+  `data/codex-vision-preview-20260811/codex-vision-preview-silent.mp4`.
+  FFprobe reports H.264 video-only, 1080x1920, 30 FPS, and 36.033 seconds.
+  SHA-256 is
+  `2392a66cca39086cd69e0654a496a4ef1672b3025a7966518d885b4013b83ee9`;
+  the downloaded Windows copy has exact hash parity.
+- Every shot uses a manually reviewed close crop intended to remove visible
+  speech balloons and edge padding, followed by a deterministic
+  low-amplitude unidirectional pan. A 23-midpoint contact-sheet review found
+  no visible speech-balloon text or edge-connected white padding; the first
+  render was rejected because one balloon tail remained and was re-rendered
+  with a corrected crop. FFmpeg black-frame detection emitted no findings.
+- Captions are English uppercase phrases without punctuation. There is no
+  voice or audio stream. The crop/source checksum ledger and provenance live
+  at
+  `data/codex-vision-preview-20260811/codex-manual-vision-review.json`.
+- This checkpoint is honestly labelled `codex_manual_vision_review_v1`. It is
+  a user-review preview, not provider-generated visual evidence, not a
+  persisted StoryAnalysis/PanelRegion production run, and not proof that the
+  Task 7 readiness gate is satisfied. `publish_allowed` remains false and the
+  source rights remain internal-review-only.
+
 ## Not complete
 
 - A real, clean panel source with verified publication rights.

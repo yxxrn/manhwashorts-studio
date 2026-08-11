@@ -2,6 +2,19 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added a review-only Codex manual-vision preview checkpoint for the existing
+  24-panel sample chapter. Sol inspected all six ordered contact sheets and
+  all source orders 0..23; title panel 0 is documented but excluded from the
+  23-shot timeline. The isolated VPS render is 36.033 seconds, 1080x1920,
+  30 FPS H.264, video-only, uses deterministic low-amplitude unidirectional
+  pans and punctuation-free English display captions, and records every
+  manual crop plus source checksum in
+  data/codex-vision-preview-20260811/codex-manual-vision-review.json. The final
+  MP4 SHA-256 is 2392a66cca39086cd69e0654a496a4ef1672b3025a7966518d885b4013b83ee9.
+  This is explicitly codex_manual_vision_review_v1, not provider-generated
+  StoryAnalysis/PanelRegion evidence, not a production Task 7 readiness pass,
+  and not publishable; voice remains deferred.
+
 - Implemented the Visual Task 7 exact-panel silent visual review boundary from
   rollback parent 21db23590b73e6d9683fd5b0eb5b7a1ec59cab77. The second-pass
   RED run was collection-clean with 19 collected, 11 passing, and 8
