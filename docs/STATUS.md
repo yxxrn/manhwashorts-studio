@@ -21,10 +21,10 @@ Updated: 2026-08-11
 - Implementation planning is complete in
   docs/superpowers/plans/2026-08-11-balloon-free-color-agnostic-framing.md and
   docs/superpowers/plans/2026-08-11-sharp-friend-narrative-identity-v3.md.
-- Next atomic task is Visual Plan Task 1: typed balloon states and persistence,
-  including unknown versus affirmative known_empty. No production behavior is
-  claimed until its RED,
-  GREEN, full verification, commit, and push gates pass.
+- Task 1 typed states/persistence is green and published at
+  `a45084688ebbe4b2b21ad1ea251b884f1fcee8ab`. The next atomic task is Visual
+  Plan Task 2: provider geometry acquisition with explicit visual-mode pipeline
+  wiring; reference readiness remains blocked until that evidence exists.
 - Voice choice, provider configuration, auditions, audio generation, and
   final voice rendering remain explicitly deferred until the user chooses
   local or API execution. Rights/source checks keep publish_allowed=false.
@@ -55,9 +55,14 @@ Updated: 2026-08-11
   ordered vision observation. This slice intentionally does not add that
   provider prompt/adapter acquisition, and therefore does not claim reference
   framing readiness or visual acceptance.
-- Rollback point before Task 1 is the clean parent
-  `1dff696f1dc7f2bcc59b337d4cc38f53fee54434`; the resulting Task 1 commit is
-  the next review/push checkpoint.
+- Task 2 planning has been corrected before implementation: provider output no
+  longer requests or trusts `evidence_hash`; the local serializer owns it, and
+  the production pipeline plus `tests/test_vision_pipeline.py` explicitly opt
+  into and verify visual observation mode. The current implementation baseline
+  is `a45084688ebbe4b2b21ad1ea251b884f1fcee8ab`.
+- Rollback point for Task 2 is the clean published Task 1 commit
+  `a45084688ebbe4b2b21ad1ea251b884f1fcee8ab`; its parent is
+  `1dff696f1dc7f2bcc59b337d4cc38f53fee54434`.
 
 ## Implemented
 
@@ -132,7 +137,8 @@ A render is review-only until all are true:
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
-Current state: **development / review-only**. This checkpoint is documentation
-only; production behavior remains unchanged until the approved slices pass.
-VPS GitHub SSH is unavailable, so approved commits are published through the
-isolated Windows transport workflow.
+Current state: **development / review-only**. Task 1 production persistence is
+published and fully verified; Task 2 provider acquisition is the next gated
+slice, and reference output remains unavailable until its geometry contract is
+fulfilled. VPS GitHub SSH is unavailable, so approved commits are published
+through the isolated Windows transport workflow.

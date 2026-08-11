@@ -33,7 +33,10 @@ The following requirements are copied from the approved design and apply to ever
 Baseline and authority:
 
 - Authoritative checkout: /home/yusronrohmani/manhwashorts through SSH alias google.
-- Baseline: clean main at 7fe75cd3c7b19ade96bc39f3f00a84aa2b06865f; GitHub main must be verified at that SHA immediately before transport.
+- Baseline for the next implementation work: clean main at
+  a45084688ebbe4b2b21ad1ea251b884f1fcee8ab; GitHub main must be verified at
+  that SHA immediately before transport. The historical planning baseline is
+  retained only as prior checkpoint evidence.
 - Historical checkpoint: 635 passed in the full non-slow suite at f9221dd; it is historical evidence, not a fresh result for this docs-only planning commit.
 - Every PowerShell SSH command in the implementation sequence ends with 2>&1.
 - Existing v2, legacy text-analysis, explicit approval, spoken/display, rights, and provider capability gates remain in force unless a task explicitly selects the new profile.

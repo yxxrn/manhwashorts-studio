@@ -39,7 +39,9 @@ The following requirements are copied from the approved design and apply to ever
 Baseline and authority:
 
 - Authoritative checkout: /home/yusronrohmani/manhwashorts through SSH alias google.
-- Baseline: clean main at 7fe75cd3c7b19ade96bc39f3f00a84aa2b06865f.
+- Baseline for this implementation slice: clean main at
+  a45084688ebbe4b2b21ad1ea251b884f1fcee8ab, the pushed Task 1 commit. The
+  historical planning baseline remains recorded in the prior checkpoint.
 - Historical checkpoint: 635 passed in the full non-slow suite at f9221dd; it is evidence only and is not a fresh result for this planning commit.
 - Every PowerShell SSH command in this plan ends with 2>&1.
 - Current profile=None crop_to_vertical, legacy editorial_frame compositions, legacy build_ass, and preview behavior are compatibility surfaces. Tests must prove no reference change leaks into them.
@@ -94,7 +96,9 @@ Interfaces between tasks:
   validate_panel_visual_evidence, require_reference_ready_visual_evidence,
   and panel_visual_evidence_json.
 - Task 2 produces the versioned visual-evidence prompt/hash and the adapter
-  observation contract consumed by run_analysis.
+  observation contract consumed by run_analysis. It also updates the caller
+  so visual mode is explicitly requested; adapter compatibility alone is not
+  sufficient to activate acquisition.
 - Task 3 produces BorderMaskResult and build_color_agnostic_border_mask.
 - Task 4 produces FramingTelemetry and PreparedFrame.telemetry, while retaining
   the existing PreparedFrame.path/crop_box/blank_fraction/base_zoom fields.
@@ -412,9 +416,12 @@ equals the new commit. Never force-push. Rollback is the new commit SHA.
 
 **Files:**
 - Modify: app/services/vision_adapter.py at VisionObservationRequest, _build_payload, and _validate_observations.
+- Modify: app/services/pipeline.py at _observe_chunks and the observation
+  reconciliation/persistence boundary.
 - Modify: app/services/visual_scoring.py at the Task 1 visual contract loader/validator.
 - Create: app/prompts/balloon_free_visual_evidence_v1.txt.
-- Modify: tests/mock_provider.py and tests/test_vision_adapter.py.
+- Modify: tests/mock_provider.py, tests/test_vision_adapter.py, and
+  tests/test_vision_pipeline.py.
 - Create: tests/fixtures/visual_evidence_prompt_snapshot.sha256.
 - Modify: docs/STATUS.md.
 - Modify: CHANGELOG.md.
@@ -443,54 +450,134 @@ equals the new commit. Never force-push. Rollback is the new commit SHA.
         expected_source_asset_id: str,
         expected_source_order: int,
     ) -> Mapping[str, Any]:
-        ...
+        """Validate provider geometry and return locally normalized evidence."""
+
+    def _observe_chunks(
+        provider: VisionObservationProvider,
+        chunks: Sequence[Sequence[PanelRegion]],
+        panel_transports: Mapping[str, Mapping[str, Any]],
+        *,
+        analysis_run_id: str,
+        instruction_version: str,
+        instruction_sha256: str,
+        visual_instruction_version: str,
+        visual_instruction_sha256: str,
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+        """Production analysis opts into visual mode for every ordered chunk."""
+        pass
 
 - [ ] Preserve the existing five top-level analyzer observation keys and add only a nested visual_evidence mapping in the visual-observation mode. A v2 request without visual_instruction_version remains byte/behavior compatible.
 - [ ] Require visual_evidence in every ordered panel observation when the visual contract is requested. Its lineage must equal the request panel_id, source_asset_id, and source_order; no filename or list position may substitute for lineage.
-- [ ] Preserve unknown as a valid provider result. The nested mapping must include balloon_mask_status, balloon_regions, protected_regions, mask_confidence, evidence_source, mask_reason, and evidence_hash.
+- [ ] Preserve unknown as a valid provider result. The provider nested mapping
+  includes balloon_mask_status, balloon_regions, protected_regions,
+  mask_confidence, evidence_source, mask_reason, panel_id, source_asset_id, and
+  source_order. It does not request or require evidence_hash. After structural
+  validation, the local Task 1 serializer computes and attaches evidence_hash.
+  A provider-supplied nonempty evidence_hash is rejected as an unexpected
+  provider field; it is never trusted as proof.
+- [ ] Keep the provider schema separate from the persisted schema: the adapter
+  validates exact legacy analyzer keys plus visual_evidence in visual mode, and
+  the pipeline calls the local serializer before writing PanelRegion JSON.
+  Legacy adapter callers with both visual instruction fields absent retain the
+  old exact key set and byte/behavior compatibility.
+- [ ] Add app/services/pipeline.py and tests/test_vision_pipeline.py to this
+  task. The pipeline must load the committed visual instruction version/hash,
+  populate both request fields for every chunk, require exactly one nested
+  visual_evidence mapping per ordered panel, preserve the old top-level keys
+  and panel order, and fail closed on missing, foreign, or malformed sidecars.
 - [ ] Accept balloon_mask_status unknown with empty geometry only when evidence_source states an unavailable/insufficient geometry result. Accept known_empty only when the provider affirmatively reports reliable empty geometry with nonzero confidence and provenance. Accept known_nonempty only with valid normalized bbox or polygon geometry.
 - [ ] Reject malformed claimed-known geometry, out-of-range coordinates, duplicate region IDs, blank provenance, confidence outside 0..1, lineage mismatch, and a text-only OCR result presented as known geometry. OCR boxes may be included as optional evidence_source metadata but OCR text alone never upgrades unknown.
 - [ ] Keep visual evidence acquisition separate from the later sharp_friend narrative prompt. The v3 narrative plan consumes the persisted visual_evidence sidecar and does not rename, own, or replace this contract.
 
 **RED:**
 
-- [ ] Add a valid three-panel multimodal mock response with visual_evidence for each panel, including one known_nonempty panel, one affirmative known_empty panel, and one explicit unknown panel. Assert ordered request metadata, exact panel lineage, and preservation of nested records.
+- [ ] Add a valid three-panel multimodal mock response with visual_evidence for each panel, including one known_nonempty panel, one affirmative known_empty panel, and one explicit unknown panel. Assert ordered request metadata, exact panel lineage, preservation of nested records, and absence of provider evidence_hash.
 - [ ] Add a provider request assertion that the visual instruction version/hash are present and that the payload explicitly asks for balloon regions, protected subject/face/action/effect regions, normalized geometry, mask status, confidence, provenance, and lineage.
 - [ ] Add invalid response cases for missing visual_evidence, foreign panel lineage, malformed known_nonempty bbox/polygon, known_empty without affirmative confidence/provenance, duplicate region IDs, and OCR-only geometry.
 - [ ] Add a snapshot assertion for the normalized prompt SHA-256 and ensure the mock provider captures the prompt without secrets. Do not use a live network call.
+- [ ] Add pipeline regressions proving every _observe_chunks request carries the
+  committed visual instruction version/hash, every response contains exactly
+  one lineage-matching visual_evidence mapping, old analyzer keys remain
+  present and ordered, and locally serialized evidence_hash is deterministic.
+  Include missing-sidecar, foreign-lineage, malformed-sidecar, and provider
+  nonempty-hash rejection cases. A legacy adapter-only request with both visual
+  fields omitted must continue to pass its existing v2 tests.
 - [ ] Run:
 
-      PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_vision_adapter.py tests/test_balloon_evidence.py -q
+      PATH=/home/yusronrohmani/.local/bin:$PATH .venv/bin/pytest tests/test_vision_adapter.py tests/test_balloon_evidence.py tests/test_vision_pipeline.py -q
 
-  Expected RED: the current adapter has no visual prompt fields and the mock observations have no nested visual evidence. Existing v2 observe/synthesis cases must remain collection-clean.
+  Expected RED: the current adapter has no visual prompt fields, the current
+  pipeline does not request visual mode, and the mock observations have no
+  nested visual evidence. Existing v2 observe/synthesis cases must remain
+  collection-clean.
 
 **Implementation:**
 
-- [ ] Add load_visual_evidence_instruction beside the Task 1 canonical serializer. Read app/prompts/balloon_free_visual_evidence_v1.txt, normalize CRLF to LF with one trailing LF, and hash UTF-8 bytes. The snapshot is generated from this normalized content, never guessed.
+- [ ] Add load_visual_evidence_instruction beside the Task 1 canonical serializer. Read app/prompts/balloon_free_visual_evidence_v1.txt, normalize CRLF to LF with one trailing LF, and hash UTF-8 bytes. The snapshot is generated from this normalized content, never guessed. The prompt must not contain evidence_hash as a provider output requirement.
 - [ ] Add the two defaulted request fields shown above. When either visual field is supplied, require the exact committed version/hash pair before any HTTP call; when both are absent, keep the existing v2 payload path.
 - [ ] Extend _build_payload to add the exact visual prompt as a separate structured instruction before images. The prompt must say:
 
     Observe every supplied panel in source order before any story writing.
     Return one observation for every requested panel.
     Include visual_evidence with balloon_mask_status, balloon_regions,
-    protected_regions, mask_confidence, evidence_source, evidence_hash,
+    protected_regions, mask_confidence, evidence_source, mask_reason,
     panel_id, source_asset_id, and source_order.
     Classify geometry as unknown when the provider cannot reliably determine it.
     Never infer known_empty from an empty list and never use OCR text alone
     as geometry. Do not omit, sample, randomize, or use filenames as evidence.
 
 - [ ] Extend _validate_observations with a require_visual_evidence flag. Validate the existing top-level key set first, then call validate_visual_evidence_observation for each row when the flag is true. Return the nested mapping unchanged except for deterministic tuple/list normalization required by existing JSON persistence.
+- [ ] Define the provider visual key set without evidence_hash:
+
+      _PROVIDER_VISUAL_KEYS = frozenset({
+          "balloon_mask_status", "balloon_regions", "protected_regions",
+          "mask_confidence", "evidence_source", "mask_reason",
+          "panel_id", "source_asset_id", "source_order",
+      })
+
+  Require `set(visual_evidence) == _PROVIDER_VISUAL_KEYS` in visual mode.
+  If a provider sends a nonempty evidence_hash, fail with the stable response
+  error rather than accepting it. Construct the Task 1 record with an empty
+  hash, call `validate_panel_visual_evidence`, and persist the result from
+  `panel_visual_evidence_json`, which computes the local SHA-256.
+- [ ] Update _observe_chunks and its call site in pipeline.py exactly as
+  follows:
+
+      visual_version, visual_sha256, _ = (
+          visual_scoring.load_visual_evidence_instruction()
+      )
+      request = VisionObservationRequest(
+          analysis_run_id=analysis_run_id,
+          instruction_version=instruction_version,
+          instruction_sha256=instruction_sha256,
+          chunk_index=chunk_index,
+          panels=tuple(panel_transports[panel_id] for panel_id in panel_ids),
+          visual_instruction_version=visual_version,
+          visual_instruction_sha256=visual_sha256,
+      )
+
+  Call `_validate_observation_rows(response, panel_ids, require_visual_evidence=True)`
+  in the production path. Reconcile the returned rows in the same source order,
+  then call `ensure_panel_visual_evidence`/`panel_visual_evidence_json` with
+  the real panel ID, source asset ID, and source order before assigning
+  `PanelRegion.observation_json`. The pipeline must never call the reference
+  readiness gate here; unknown remains parseable until a later reference
+  consumer.
 - [ ] Call the Task 1 structural validator for nested geometry, not require_reference_ready_visual_evidence. This keeps unknown parseable and lets reference crop/planner/QC be the only consumer gate.
 - [ ] Update tests/mock_provider.py so its multimodal response has deterministic visual_evidence by panel ID and preserves existing BYOK/TTS behavior. The mock must never fabricate known_empty for an unknown case.
 - [ ] Keep vision adapter exceptions safe and machine-readable: malformed geometry is VisionResponseInvalid with a stable detail code such as visual.balloon_geometry_invalid; no prompt, image payload, API key, or raw provider response is included.
+- [ ] Keep visual_scoring.py focused: it is already about 902 lines after Task
+  1. Add only the small versioned prompt loader and reuse the Task 1 canonical
+  validators. Task 3 must place the color-agnostic detector in a focused module
+  or otherwise avoid growing this shared file past a healthy boundary.
 
 **GREEN and checkpoint:**
 
-- [ ] Run the focused adapter/evidence tests, Task 7A synthesis, Task 7B pipeline, resolver vision, analyzer v1/v2, and BYOK tests with PATH=/home/yusronrohmani/.local/bin:$PATH.
-- [ ] Run .venv/bin/ruff check app/services/vision_adapter.py app/services/visual_scoring.py tests/mock_provider.py tests/test_vision_adapter.py and .venv/bin/python -m compileall -q app/services/vision_adapter.py app/services/visual_scoring.py.
+- [ ] Run the focused adapter/evidence/pipeline tests, Task 7A synthesis, Task 7B pipeline, resolver vision, analyzer v1/v2, and BYOK tests with PATH=/home/yusronrohmani/.local/bin:$PATH.
+- [ ] Run .venv/bin/ruff check app/services/vision_adapter.py app/services/visual_scoring.py app/services/pipeline.py tests/mock_provider.py tests/test_vision_adapter.py tests/test_vision_pipeline.py and .venv/bin/python -m compileall -q app/services/vision_adapter.py app/services/visual_scoring.py app/services/pipeline.py.
 - [ ] Run git diff --check and compare the snapshot file to load_visual_evidence_instruction().
 - [ ] Update STATUS/CHANGELOG with the provider acquisition contract, unknown-versus-known_empty behavior, and exact focused results.
-- [ ] Stage only the listed implementation, prompt, mock, test, snapshot, and doc paths; commit feat: acquire balloon visual evidence; run the full non-slow suite; export/push the exact commit through the Windows transport. Rollback is this commit. Do not start Task 3 until GitHub SHA and VPS status are verified.
+- [ ] Stage only these Task 2 paths: app/services/vision_adapter.py, app/services/visual_scoring.py, app/services/pipeline.py, app/prompts/balloon_free_visual_evidence_v1.txt, tests/mock_provider.py, tests/test_vision_adapter.py, tests/test_vision_pipeline.py, tests/fixtures/visual_evidence_prompt_snapshot.sha256, docs/STATUS.md, and CHANGELOG.md. Commit `feat: acquire balloon visual evidence`; run the full non-slow suite; export/push the exact commit through the Windows transport. Rollback is this commit. Do not start Task 3 until GitHub SHA and VPS status are verified.
 
 ## Task 3: Detect color-agnostic border-connected low-information padding
 

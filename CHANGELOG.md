@@ -9,6 +9,10 @@ Notable changes per release. Dates are ISO 8601.
   panel lineage validation, and explicit unknown/affirmative-empty states.
   Unknown geometry remains auditable but blocks only reference readiness with
   `visual.balloon_mask_unknown`; Task 2 provider acquisition is still pending.
+- Corrected the Visual Task 2 plan so provider geometry excludes trusted
+  evidence_hash, local canonical hashing owns persistence, and pipeline/test
+  files explicitly activate and verify visual observation mode while legacy
+  adapter callers remain compatible.
 - Task 1 verification: 7 body-failing RED tests, 58 focused GREEN tests, and
   642 full non-slow tests passed; scoped Ruff, compileall, and diff-check pass.
 - Completed the approved implementation plans for balloon-free color-agnostic
