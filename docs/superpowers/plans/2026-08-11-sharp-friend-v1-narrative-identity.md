@@ -277,8 +277,8 @@ def test_v3_prompt_resource_is_lf_utf8_and_normative():
     )
     for fragment in required:
         assert fragment in lowered, fragment
-    assert lowered.index("observe every ordered panel") < lowered.index("four to six")
-    assert lowered.index("four to six") < lowered.index("ending_kind")
+    assert lowered.index("observe every ordered panel") < lowered.index("ending_kind")
+    assert lowered.index("ending_kind") < lowered.index("four to six")
 ~~~
 
 - [ ] **Step 2: Run the Task 1 RED command.**
