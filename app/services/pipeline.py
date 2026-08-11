@@ -13,6 +13,7 @@ Stage order:
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import resource
@@ -2252,6 +2253,17 @@ def project_cues(db: Session, project_id: str) -> list[SubtitleCue]:
     )
 
 
+def _reference_rgb_content_hash(image: Image.Image) -> str:
+    """Hash only normalized RGB dimensions and bytes, never PNG metadata."""
+    rgb = image.convert("RGB")
+    payload = (
+        rgb.width.to_bytes(8, "big", signed=False)
+        + rgb.height.to_bytes(8, "big", signed=False)
+        + rgb.tobytes()
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _materialize_reference_panel_crop(
     db: Session,
     asset: SourceAsset,
@@ -2336,7 +2348,26 @@ def _materialize_reference_panel_crop(
                 raise PipelineError(
                     "visual.panel_lineage_unavailable: panel crop dimensions changed"
                 )
+            expected_hash = _reference_rgb_content_hash(cropped)
             cropped.save(destination, format="PNG")
+            try:
+                with Image.open(destination) as written:
+                    written.load()
+                    normalized = written.convert("RGB")
+                    if normalized.size != expected_size:
+                        raise PipelineError(
+                            "visual.panel_lineage_unavailable: materialized panel dimensions changed"
+                        )
+                    if _reference_rgb_content_hash(normalized) != expected_hash:
+                        raise PipelineError(
+                            "visual.panel_lineage_unavailable: materialized panel checksum mismatch"
+                        )
+            except PipelineError:
+                raise
+            except (OSError, UnidentifiedImageError, ValueError):
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: materialized panel integrity check failed"
+                ) from None
     except PipelineError:
         raise
     except (OSError, UnidentifiedImageError, ValueError):
@@ -2658,7 +2689,7 @@ def build_render_request(db: Session, job: RenderJob):
                 raise PipelineError(
                     "visual.panel_lineage_unavailable: reference scene asset is unavailable"
                 )
-        elif editorial_profile is not None and scene.asset_id is not None:
+        elif editorial_profile is not None:
             raise PipelineError(
                 "visual.panel_lineage_unavailable: reference scene has no source asset"
             )

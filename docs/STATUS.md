@@ -57,6 +57,36 @@ Updated: 2026-08-11
   transport clone; runtime data, media, databases, credentials, and review
   artifacts remain outside Git.
 
+## Visual Task 4 hardening - 2026-08-11
+
+- Post-review hardening closes two fail-open paths. In reference mode, a
+  missing or empty `TimelineScene.asset_id` now raises the stable
+  `visual.panel_lineage_unavailable` error before a `SceneInput` can be
+  produced. Legacy `profile=None` scenes retain their existing assetless
+  behavior.
+- Materialized reference panel PNGs are now reopened and normalized to RGB;
+  their dimensions and raw RGB bytes are checked against a local canonical
+  SHA-256 computed before save. Save/read mismatch or corruption fails closed
+  with `visual.panel_lineage_unavailable`; no sidecar or schema field was
+  added.
+- RED was collection-clean: 14 panel-lineage tests ran, 12 passed, and the
+  two new behavioral regressions failed for the expected missing asset guard
+  and missing written-crop integrity check. GREEN passed 28 focused
+  reference/panel tests, 52 tests across the Task4 panel/migration/vision/
+  reference-render matrix, and 171 related adapter/synthesis/analyzer/
+  resolver/profile/framing/motion/scoring/QC tests. Scoped Ruff,
+  `compileall`, and `git diff --check` passed. The full non-slow suite passed
+  686 selected tests with 15 deselected.
+- Sol authorized the single directly affected fixture expansion in
+  `tests/test_reference_render_surface.py`: its reference-profile test now
+  creates a real `SourceAsset`, `PanelRegion`, canonical unknown visual
+  snapshot, and materializable crop instead of bypassing the new lineage
+  contract. No other out-of-scope test or production path was changed.
+- The rollback parent for this hardening slice is
+  `41fc8a139d92e05f06e2bb3957f0f1a8d9992007`. Task 5 remains next; this slice
+  does not consume balloon readiness, render media, voice, narration, or
+  credentials.
+
 ## Visual Plan Task 3 - color-agnostic border analysis - 2026-08-11
 
 - RED was collection-clean: `tests/test_color_agnostic_blank.py` collected 12

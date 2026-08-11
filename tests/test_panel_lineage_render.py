@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 from dataclasses import fields
 from pathlib import Path
@@ -96,6 +97,105 @@ def _shot(section: str, asset_id: str, order_index: int) -> dict:
         "start_time": float(order_index),
         "end_time": float(order_index + 1),
     }
+
+
+def _build_render_request_fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pipeline = importlib.import_module("app.services.pipeline")
+    project = SimpleNamespace(
+        id="project-render",
+        template="reference_matched_shorts_v1",
+        title="Reference project",
+    )
+    scene = SimpleNamespace(
+        asset_id=None,
+        start_time=0.0,
+        end_time=1.0,
+        motion_mode="hold",
+        camera_curve="static",
+        camera_intent="dialogue",
+        focus_x=0.5,
+        focus_y=0.5,
+        focus_end_x=0.5,
+        focus_end_y=0.5,
+        motion_intensity=0.0,
+        motion_reason="test hold",
+        effect=None,
+        disabled_effects=[],
+        transition=None,
+        overlay_text="",
+        panel_region_id=None,
+        panel_id="",
+        panel_bounds_json=None,
+        visual_evidence_json=None,
+        source_asset_checksum="",
+    )
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"voice")
+    db = SimpleNamespace(flush=lambda: None)
+    job = SimpleNamespace(
+        project_id=project.id,
+        kind="final",
+        render_profile=None,
+        encoder_requested=None,
+    )
+
+    monkeypatch.setattr(pipeline, "get_project", lambda _db, _project_id: project)
+    monkeypatch.setattr(
+        pipeline,
+        "current_script",
+        lambda _db, _project_id: SimpleNamespace(id="script-render"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "audio_segments",
+        lambda _db, _script_id: [SimpleNamespace(storage_key="voice.wav")],
+    )
+    monkeypatch.setattr(pipeline, "project_scenes", lambda _db, _project_id: [scene])
+    monkeypatch.setattr(pipeline, "project_cues", lambda _db, _project_id: [])
+    monkeypatch.setattr(pipeline, "project_assets", lambda _db, _project_id: [])
+    monkeypatch.setattr(pipeline.storage, "path_for", lambda _key: audio_path)
+    monkeypatch.setattr(
+        pipeline.storage,
+        "workspace_dir",
+        lambda _project_id, kind: tmp_path / kind,
+    )
+    monkeypatch.setattr(
+        pipeline.storage,
+        "output_path",
+        lambda _project_id, filename: tmp_path / filename,
+    )
+    monkeypatch.setattr(
+        pipeline.tts_svc,
+        "concat_audio",
+        lambda _paths, destination, gap=0.18: (
+            destination.parent.mkdir(parents=True, exist_ok=True),
+            destination.write_bytes(b"joined voice"),
+        ),
+    )
+    monkeypatch.setattr(pipeline.tts_svc, "probe_duration", lambda _path: 1.0)
+    return pipeline, project, scene, db, job
+
+
+def test_reference_build_render_request_rejects_assetless_scene(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pipeline, _project, _scene, db, job = _build_render_request_fixtures(tmp_path, monkeypatch)
+
+    with pytest.raises(pipeline.PipelineError, match="visual\\.panel_lineage_unavailable"):
+        pipeline.build_render_request(db, job)
+
+
+def test_legacy_build_render_request_keeps_assetless_scene_compatible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pipeline, project, _scene, db, job = _build_render_request_fixtures(tmp_path, monkeypatch)
+    project.template = "classic"
+
+    request = pipeline.build_render_request(db, job)
+
+    assert request.profile is None
+    assert request.scenes[0].image_path is None
+    assert request.title_text == project.title
 
 
 def test_timeline_scene_and_transport_records_expose_panel_lineage_fields():
@@ -214,6 +314,79 @@ def test_reference_crop_materializes_exact_global_bounds(tmp_path: Path, monkeyp
         assert cropped.size == (3, 2)
         assert cropped.getpixel((0, 0)) == image.getpixel((2, 1))
         assert cropped.getpixel((2, 1)) == image.getpixel((4, 2))
+
+
+def _canonical_rgb_content_hash(path: Path) -> str:
+    with Image.open(path) as image:
+        rgb = image.convert("RGB")
+        payload = (
+            rgb.width.to_bytes(8, "big")
+            + rgb.height.to_bytes(8, "big")
+            + rgb.tobytes()
+        )
+    return hashlib.sha256(payload).hexdigest()
+
+
+def test_reference_crop_is_deterministic_in_canonical_rgb_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pipeline = importlib.import_module("app.services.pipeline")
+    source = tmp_path / "source-deterministic.png"
+    image = Image.new("RGBA", (8, 6), (20, 30, 40, 255))
+    image.putpixel((3, 2), (220, 120, 60, 255))
+    image.save(source)
+
+    asset = _asset("asset-deterministic")
+    region = _region("region-deterministic", "panel-deterministic", asset.id, 1, x=2, y=1, width=3, height=2)
+    scene = SimpleNamespace(
+        panel_region_id=region.id,
+        panel_id=region.panel_id,
+        panel_bounds_json=region.bounds_json,
+        visual_evidence_json=region.observation_json["visual_evidence"],
+        source_asset_checksum=asset.original_checksum,
+    )
+    db = SimpleNamespace(get=lambda _model, key: region if key == region.id else None)
+    monkeypatch.setattr(pipeline.storage, "path_for", lambda _key: source)
+    materialize = pipeline._materialize_reference_panel_crop
+
+    first = materialize(db, asset, scene, tmp_path / "scene-first.png")
+    second = materialize(db, asset, scene, tmp_path / "scene-second.png")
+
+    assert _canonical_rgb_content_hash(first) == _canonical_rgb_content_hash(second)
+    with Image.open(first) as first_image, Image.open(second) as second_image:
+        assert first_image.convert("RGB").tobytes() == second_image.convert("RGB").tobytes()
+
+
+def test_reference_crop_rejects_tampered_written_png(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pipeline = importlib.import_module("app.services.pipeline")
+    source = tmp_path / "source-tampered.png"
+    Image.new("RGB", (8, 6), (80, 90, 100)).save(source)
+
+    asset = _asset("asset-tampered")
+    region = _region("region-tampered", "panel-tampered", asset.id, 1, x=1, y=1, width=3, height=2)
+    scene = SimpleNamespace(
+        panel_region_id=region.id,
+        panel_id=region.panel_id,
+        panel_bounds_json=region.bounds_json,
+        visual_evidence_json=region.observation_json["visual_evidence"],
+        source_asset_checksum=asset.original_checksum,
+    )
+    db = SimpleNamespace(get=lambda _model, key: region if key == region.id else None)
+    monkeypatch.setattr(pipeline.storage, "path_for", lambda _key: source)
+    original_save = Image.Image.save
+
+    def tampered_save(self, fp, *args, **kwargs):
+        original_save(self, fp, *args, **kwargs)
+        Path(fp).write_bytes(b"not a valid png")
+
+    monkeypatch.setattr(Image.Image, "save", tampered_save)
+
+    with pytest.raises(pipeline.PipelineError, match="visual\\.panel_lineage_unavailable"):
+        pipeline._materialize_reference_panel_crop(
+            db, asset, scene, tmp_path / "scene-tampered.png"
+        )
 
 
 def test_reference_crop_rejects_stale_lineage_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

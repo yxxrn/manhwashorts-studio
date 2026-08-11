@@ -4,6 +4,17 @@ Notable changes per release. Dates are ISO 8601.
 
 ## Unreleased - Phase 2 editorial gates
 
+- Hardened the Visual Task 4 reference crop boundary: missing or empty scene
+  asset IDs fail closed with `visual.panel_lineage_unavailable`, and every
+  materialized PNG is reopened and checked against a canonical RGB
+  dimension-plus-byte SHA-256. Legacy `profile=None` behavior remains
+  unchanged. RED was 12 passed plus 2 intended failures; GREEN was 28
+  focused panel/reference tests, 52 in the Task4 matrix, 171 related
+  regressions, and 686 full non-slow tests passed with 15 deselected. Sol
+  authorized the directly affected `tests/test_reference_render_surface.py`
+  fixture to seed a real SourceAsset/PanelRegion snapshot; no other paths,
+  media, DB, voice, or credentials changed. Rollback parent:
+  `41fc8a139d92e05f06e2bb3957f0f1a8d9992007`.
 - Implemented Visual Task 4 panel lineage persistence: reference timeline
   scenes retain cited PanelRegion identity, global integer bounds, canonical
   visual evidence, and immutable source checksums, while render requests use

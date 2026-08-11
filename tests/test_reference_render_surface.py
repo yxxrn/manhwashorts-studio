@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 
 def _reference_scene(**overrides):
@@ -113,7 +114,8 @@ def test_reference_motion_uses_profile_caps_and_disables_procedural_effects():
 
 
 def test_build_render_request_carries_selected_reference_profile(monkeypatch, tmp_path):
-    from app.services import pipeline, reference_profile
+    from app.models import PanelRegion, SourceAsset
+    from app.services import pipeline, reference_profile, visual_scoring
 
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
     project = SimpleNamespace(
@@ -123,9 +125,49 @@ def test_build_render_request_carries_selected_reference_profile(monkeypatch, tm
     )
     script = SimpleNamespace(id="script-a")
     segment = SimpleNamespace(storage_key="clip.wav")
-    scene = _reference_scene()
     audio_path = tmp_path / "clip.wav"
     audio_path.write_bytes(b"audio")
+    panel_path = tmp_path / "panel.png"
+    Image.new("RGB", (8, 6), (40, 50, 60)).save(panel_path)
+    asset = SourceAsset(
+        id="asset-reference",
+        project_id=project.id,
+        type="image",
+        storage_key="panel.png",
+        checksum="asset-checksum",
+        original_checksum="asset-checksum",
+        width=8,
+        height=6,
+        original_width=8,
+        original_height=6,
+    )
+    evidence = visual_scoring.unknown_visual_evidence(
+        panel_id="panel-reference",
+        source_asset_id=asset.id,
+        source_order=1,
+        reason="provider geometry is unavailable for this render-surface fixture",
+    )
+    evidence_json = visual_scoring.panel_visual_evidence_json(evidence)
+    region = PanelRegion(
+        id="region-reference",
+        story_analysis_id="analysis-reference",
+        source_asset_id=asset.id,
+        source_asset_checksum=asset.original_checksum,
+        original_width=8,
+        original_height=6,
+        panel_id="panel-reference",
+        source_order=1,
+        bounds_json={"x": 0, "y": 0, "width": 8, "height": 6},
+        observation_json={"visual_evidence": evidence_json},
+    )
+    scene = _reference_scene(
+        asset_id=asset.id,
+        panel_region_id=region.id,
+        panel_id=region.panel_id,
+        panel_bounds_json=region.bounds_json,
+        visual_evidence_json=evidence_json,
+        source_asset_checksum=asset.original_checksum,
+    )
 
     monkeypatch.setattr(pipeline, "get_project", lambda _db, _id: project)
     monkeypatch.setattr(pipeline, "current_script", lambda _db, _id: script)
@@ -135,7 +177,16 @@ def test_build_render_request_carries_selected_reference_profile(monkeypatch, tm
     monkeypatch.setattr(pipeline, "cue_specs", lambda _cues: [])
     monkeypatch.setattr(pipeline, "project_assets", lambda _db, _id: [])
     monkeypatch.setattr(pipeline.storage, "workspace_dir", lambda *_args: tmp_path)
-    monkeypatch.setattr(pipeline.storage, "path_for", lambda _key: audio_path)
+    monkeypatch.setattr(
+        pipeline.storage,
+        "path_for",
+        lambda key: panel_path if key == asset.storage_key else audio_path,
+    )
+    monkeypatch.setattr(
+        pipeline.storage,
+        "exists",
+        lambda key: key in {asset.storage_key, segment.storage_key},
+    )
     monkeypatch.setattr(
         pipeline.tts_svc,
         "concat_audio",
@@ -149,7 +200,14 @@ def test_build_render_request_carries_selected_reference_profile(monkeypatch, tm
         render_profile="Auto",
         encoder_requested="cpu",
     )
-    db = SimpleNamespace(flush=lambda: None)
+    def get(model, key):
+        if model is SourceAsset and key == asset.id:
+            return asset
+        if model is PanelRegion and key == region.id:
+            return region
+        return None
+
+    db = SimpleNamespace(flush=lambda: None, get=get)
     request = pipeline.build_render_request(db, job)
     assert request.profile is profile
     assert request.profile.profile_id == "reference_matched_shorts_v1"
