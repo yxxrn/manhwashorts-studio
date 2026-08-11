@@ -1923,6 +1923,167 @@ def _reference_citation_map(
     return mapped, reasons
 
 
+def _panel_bounds_json(bounds: tuple[int, int, int, int]) -> dict[str, int]:
+    return {
+        "x": bounds[0],
+        "y": bounds[1],
+        "width": bounds[2] - bounds[0],
+        "height": bounds[3] - bounds[1],
+    }
+
+
+def _validated_visual_snapshot(region: PanelRegion) -> dict[str, Any]:
+    """Return the locally canonical visual sidecar for a persisted region."""
+    observation = region.observation_json
+    raw = observation.get("visual_evidence") if isinstance(observation, Mapping) else None
+    if not isinstance(raw, Mapping):
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: panel visual evidence is missing"
+        )
+    try:
+        evidence = visual_scoring.parse_panel_visual_evidence(raw)
+        if (
+            evidence.panel_id != region.panel_id
+            or evidence.source_asset_id != region.source_asset_id
+            or evidence.source_order != region.source_order
+        ):
+            raise visual_scoring.VisualEvidenceError(
+                "visual.lineage_mismatch", "visual evidence lineage does not match panel region"
+            )
+        return visual_scoring.panel_visual_evidence_json(evidence)
+    except visual_scoring.VisualEvidenceError as exc:
+        raise PipelineError(f"visual.panel_lineage_unavailable: {exc.code}") from exc
+
+
+def _bind_reference_panel_regions(
+    db: Session,
+    project_id: str,
+    script: ScriptVersion,
+    images: list[SourceAsset],
+    planned: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Bind every reference shot to its cited, persisted panel region."""
+    analysis = latest_analysis(db, project_id)
+    if analysis is None:
+        raise PipelineError("visual.panel_lineage_unavailable: no approved panel analysis")
+    regions = list(
+        db.scalars(
+            select(PanelRegion)
+            .where(PanelRegion.story_analysis_id == analysis.id)
+            .order_by(PanelRegion.source_order, PanelRegion.panel_id, PanelRegion.id)
+        )
+    )
+    by_panel: dict[str, PanelRegion] = {}
+    by_source_order: dict[int, PanelRegion] = {}
+    for region in regions:
+        if not region.panel_id or region.panel_id in by_panel:
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: duplicate panel evidence identity"
+            )
+        if region.source_order in by_source_order:
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: duplicate panel source order"
+            )
+        by_panel[region.panel_id] = region
+        by_source_order[region.source_order] = region
+
+    assets_by_id = {asset.id: asset for asset in images}
+    sections: dict[str, list[PanelRegion]] = {}
+    for section in script.sections or []:
+        section_name = str(section.get("section", ""))
+        panel_ids = list(section.get("evidence_panel_ids") or [])
+        citations = list(section.get("citations") or [])
+        candidates: list[PanelRegion] = []
+        if panel_ids:
+            if len(set(map(str, panel_ids))) != len(panel_ids):
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: duplicate cited panel identity"
+                )
+            for panel_id in panel_ids:
+                region = by_panel.get(str(panel_id))
+                if region is None or region.source_asset_id not in assets_by_id:
+                    raise PipelineError(
+                        "visual.panel_lineage_unavailable: cited panel is missing or foreign"
+                    )
+                candidates.append(region)
+        else:
+            if any(isinstance(citation, bool) or not isinstance(citation, int) for citation in citations):
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: citation is not a source order"
+                )
+            if len(set(citations)) != len(citations):
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: duplicate source-order citation"
+                )
+            for citation in citations:
+                region = by_source_order.get(citation)
+                if region is None or region.source_asset_id not in assets_by_id:
+                    raise PipelineError(
+                        "visual.panel_lineage_unavailable: source-order citation is missing"
+                    )
+                candidates.append(region)
+        if not candidates:
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: section has no panel evidence"
+            )
+        sections[section_name] = sorted(
+            candidates, key=lambda region: (region.source_order, region.panel_id, region.id)
+        )
+
+    cursors: dict[tuple[str, str], int] = {}
+    bound: list[dict[str, Any]] = []
+    for shot in planned:
+        section_name = str(shot.get("section", ""))
+        asset_id = shot.get("asset_id")
+        if not isinstance(asset_id, str) or asset_id not in assets_by_id or section_name not in sections:
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: planned shot has no cited panel"
+            )
+        candidates = [
+            region for region in sections[section_name] if region.source_asset_id == asset_id
+        ]
+        if not candidates:
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: cited panel belongs to another asset"
+            )
+        cursor_key = (section_name, asset_id)
+        cursor = cursors.get(cursor_key, 0)
+        region = candidates[cursor % len(candidates)]
+        cursors[cursor_key] = cursor + 1
+        asset = assets_by_id[asset_id]
+        bounds = _panel_region_bounds(region)
+        source_width = int(asset.original_width or asset.width or 0)
+        source_height = int(asset.original_height or asset.height or 0)
+        if (
+            source_width <= 0
+            or source_height <= 0
+            or bounds[0] < 0
+            or bounds[1] < 0
+            or bounds[2] > source_width
+            or bounds[3] > source_height
+        ):
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: panel bounds are outside source asset"
+            )
+        asset_checksum = asset.original_checksum or asset.checksum
+        if region.source_asset_checksum and region.source_asset_checksum != asset_checksum:
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: source asset checksum changed"
+            )
+        snapshot = _validated_visual_snapshot(region)
+        bound.append(
+            {
+                **shot,
+                "panel_region_id": region.id,
+                "panel_id": region.panel_id,
+                "panel_bounds": bounds,
+                "visual_evidence": snapshot,
+                "source_asset_checksum": asset_checksum,
+            }
+        )
+    return bound
+
+
 # --- stage: timeline and subtitles ----------------------------------------
 
 
@@ -1968,6 +2129,9 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
     except editorial_visual_planner.ReferencePlanningError as exc:
         raise PipelineError(f"{exc.code}: {exc}") from exc
 
+    if profile is not None:
+        planned = _bind_reference_panel_regions(db, project_id, script, images, planned)
+
     for old in db.scalars(select(TimelineScene).where(TimelineScene.project_id == project_id)):
         db.delete(old)
     for old_cue in db.scalars(select(SubtitleCue).where(SubtitleCue.project_id == project_id)):
@@ -2005,6 +2169,11 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             alignment_reasons=shot.get("alignment_reasons", []),
             rejected_candidates=shot.get("rejected_candidates", []),
             visual_signature=shot.get("visual_signature", ""),
+            panel_region_id=shot.get("panel_region_id"),
+            panel_id=shot.get("panel_id", ""),
+            panel_bounds=shot.get("panel_bounds"),
+            visual_evidence=shot.get("visual_evidence"),
+            source_asset_checksum=shot.get("source_asset_checksum", ""),
         )
         for shot in planned
     ]
@@ -2036,6 +2205,13 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             alignment_reasons=getattr(spec, "alignment_reasons", []),
             rejected_candidates=getattr(spec, "rejected_candidates", []),
             visual_signature=getattr(spec, "visual_signature", ""),
+            panel_region_id=spec.panel_region_id,
+            panel_id=spec.panel_id,
+            panel_bounds_json=_panel_bounds_json(spec.panel_bounds)
+            if spec.panel_bounds is not None
+            else {},
+            visual_evidence_json=dict(spec.visual_evidence or {}),
+            source_asset_checksum=spec.source_asset_checksum,
         )
         db.add(scene)
         scenes.append(scene)
@@ -2074,6 +2250,100 @@ def project_cues(db: Session, project_id: str) -> list[SubtitleCue]:
             .order_by(SubtitleCue.order_index)
         )
     )
+
+
+def _materialize_reference_panel_crop(
+    db: Session,
+    asset: SourceAsset,
+    scene: TimelineScene,
+    destination: Path,
+) -> Path:
+    """Materialize a persisted panel snapshot in its original source space."""
+    region_id = getattr(scene, "panel_region_id", None)
+    panel_id = getattr(scene, "panel_id", "")
+    scene_bounds = getattr(scene, "panel_bounds_json", None)
+    scene_evidence = getattr(scene, "visual_evidence_json", None)
+    scene_checksum = getattr(scene, "source_asset_checksum", "")
+    if not region_id or not panel_id or not isinstance(scene_bounds, Mapping):
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: scene panel snapshot is incomplete"
+        )
+    try:
+        bounds = (
+            int(scene_bounds["x"]),
+            int(scene_bounds["y"]),
+            int(scene_bounds["x"]) + int(scene_bounds["width"]),
+            int(scene_bounds["y"]) + int(scene_bounds["height"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: scene panel bounds are malformed"
+        ) from None
+    if bounds[0] < 0 or bounds[1] < 0 or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: scene panel bounds are invalid"
+        )
+
+    region = db.get(PanelRegion, region_id)
+    if region is None or region.id != region_id or region.panel_id != panel_id:
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: panel region snapshot is stale"
+        )
+    asset_checksum = asset.original_checksum or asset.checksum
+    if region.source_asset_id != asset.id or not scene_checksum or scene_checksum != asset_checksum:
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: source asset lineage is stale"
+        )
+    if region.source_asset_checksum and region.source_asset_checksum != asset_checksum:
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: persisted asset checksum is stale"
+        )
+    if _panel_region_bounds(region) != bounds:
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: panel bounds snapshot is stale"
+        )
+    current_snapshot = _validated_visual_snapshot(region)
+    if not isinstance(scene_evidence, Mapping):
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: visual evidence snapshot is missing"
+        )
+    try:
+        stored_evidence = visual_scoring.parse_panel_visual_evidence(scene_evidence)
+        stored_snapshot = visual_scoring.panel_visual_evidence_json(stored_evidence)
+    except visual_scoring.VisualEvidenceError as exc:
+        raise PipelineError(f"visual.panel_lineage_unavailable: {exc.code}") from exc
+    if stored_snapshot != current_snapshot:
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: visual evidence snapshot is stale"
+        )
+    source_path = storage.path_for(asset.storage_key)
+    if not source_path.is_file():
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: source asset file is unavailable"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with Image.open(source_path) as source:
+            source.load()
+            source_width, source_height = source.size
+            if bounds[2] > source_width or bounds[3] > source_height:
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: panel exceeds source dimensions"
+                )
+            cropped = source.convert("RGB").crop(bounds)
+            expected_size = (bounds[2] - bounds[0], bounds[3] - bounds[1])
+            if cropped.size != expected_size:
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: panel crop dimensions changed"
+                )
+            cropped.save(destination, format="PNG")
+    except PipelineError:
+        raise
+    except (OSError, UnidentifiedImageError, ValueError):
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: source panel crop failed"
+        ) from None
+    return destination
 
 
 def cue_specs(cues: list[SubtitleCue]) -> list[timeline_svc.CueSpec]:
@@ -2354,7 +2624,13 @@ def build_render_request(db: Session, job: RenderJob):
     audio_assets = [asset for asset in project_assets(db, job.project_id) if asset.type in {"audio", "music"} and asset.is_publishable and storage.exists(asset.storage_key)]
     if audio_assets:
         music_path = storage.path_for(audio_assets[0].storage_key)
+    editorial_profile = reference_profile.resolve_reference_profile(project.template)
     profile = job.render_profile or "Auto"
+    panel_workspace = (
+        storage.workspace_dir(job.project_id, "reference-panels")
+        if editorial_profile is not None
+        else None
+    )
     for index, scene in enumerate(scenes):
         end_time = scene.end_time
         if index == len(scenes) - 1:
@@ -2371,6 +2647,21 @@ def build_render_request(db: Session, job: RenderJob):
             asset = db.get(SourceAsset, scene.asset_id)
             if asset and storage.exists(asset.storage_key):
                 image_path = storage.path_for(asset.storage_key)
+                if editorial_profile is not None:
+                    image_path = _materialize_reference_panel_crop(
+                        db,
+                        asset,
+                        scene,
+                        panel_workspace / f"scene-{index:04d}.png",
+                    )
+            elif editorial_profile is not None:
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: reference scene asset is unavailable"
+                )
+        elif editorial_profile is not None and scene.asset_id is not None:
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: reference scene has no source asset"
+            )
         scene_inputs.append(
             render_svc.SceneInput(
                 image_path=image_path,
@@ -2388,10 +2679,32 @@ def build_render_request(db: Session, job: RenderJob):
                 disabled_effects=scene.disabled_effects,
                 transition=scene.transition,
                 overlay_text=scene.overlay_text,
+                panel_region_id=getattr(scene, "panel_region_id", None)
+                if editorial_profile
+                else None,
+                panel_id=getattr(scene, "panel_id", "") if editorial_profile else "",
+                panel_bounds=(
+                    (
+                        int(scene.panel_bounds_json["x"]),
+                        int(scene.panel_bounds_json["y"]),
+                        int(scene.panel_bounds_json["x"])
+                        + int(scene.panel_bounds_json["width"]),
+                        int(scene.panel_bounds_json["y"])
+                        + int(scene.panel_bounds_json["height"]),
+                    )
+                    if editorial_profile
+                    and isinstance(getattr(scene, "panel_bounds_json", None), Mapping)
+                    else None
+                ),
+                visual_evidence=getattr(scene, "visual_evidence_json", None)
+                if editorial_profile
+                else None,
+                source_asset_checksum=getattr(scene, "source_asset_checksum", "")
+                if editorial_profile
+                else "",
             )
         )
 
-    editorial_profile = reference_profile.resolve_reference_profile(project.template)
     filename = "preview.mp4" if job.kind == "preview" else "final.mp4"
     return render_svc.RenderRequest(
         project_id=job.project_id,

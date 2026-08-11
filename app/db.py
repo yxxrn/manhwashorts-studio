@@ -120,6 +120,11 @@ def init_db() -> None:
                 "alignment_reasons": "JSON NOT NULL DEFAULT '[]'",
                 "rejected_candidates": "JSON NOT NULL DEFAULT '[]'",
                 "visual_signature": "VARCHAR(128) NOT NULL DEFAULT ''",
+                "panel_region_id": "VARCHAR(32)",
+                "panel_id": "VARCHAR(80) NOT NULL DEFAULT ''",
+                "panel_bounds_json": "JSON NOT NULL DEFAULT '{}'",
+                "visual_evidence_json": "JSON NOT NULL DEFAULT '{}'",
+                "source_asset_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
             }.items():
                 if name not in scene_columns:
                     connection.exec_driver_sql(f"ALTER TABLE timeline_scenes ADD COLUMN {name} {definition}")

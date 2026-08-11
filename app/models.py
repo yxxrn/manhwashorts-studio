@@ -411,6 +411,13 @@ class TimelineScene(Base, TimestampMixin):
     alignment_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
     rejected_candidates: Mapped[list[dict]] = mapped_column(JSON, default=list)
     visual_signature: Mapped[str] = mapped_column(String(128), default="")
+    # Reference-mode snapshots preserve the exact panel/evidence lineage used
+    # to plan a shot. These remain nullable/defaulted for historical scenes.
+    panel_region_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    panel_id: Mapped[str] = mapped_column(String(80), default="")
+    panel_bounds_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    visual_evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_asset_checksum: Mapped[str] = mapped_column(String(64), default="")
 
     project: Mapped[Project] = relationship(back_populates="scenes")
     asset: Mapped[SourceAsset | None] = relationship()

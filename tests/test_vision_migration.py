@@ -60,6 +60,14 @@ PANEL_REGION_FIELDS = (
     "updated_at",
 )
 
+TIMELINE_SNAPSHOT_FIELDS = (
+    "panel_region_id",
+    "panel_id",
+    "panel_bounds_json",
+    "visual_evidence_json",
+    "source_asset_checksum",
+)
+
 
 def _load_module(module_name: str):
     try:
@@ -304,5 +312,52 @@ def test_downgrade_removes_only_the_vision_boundary_objects(tmp_path, monkeypatc
         )
         assert {"story_analyses", "source_assets", "projects"} <= set(inspector.get_table_names())
         assert {"characters", "checksum", "width", "height"} <= story_columns | source_columns
+    finally:
+        engine.dispose()
+
+
+def _task4_revision(config):
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(config)
+    candidates = [
+        revision
+        for revision in script.walk_revisions()
+        if "panel lineage" in (revision.doc or "").lower()
+    ]
+    assert len(candidates) == 1, (
+        "timeline_lineage_migration_missing: expected one migration documenting panel lineage"
+    )
+    revision = candidates[0]
+    assert revision.down_revision == TARGET_REVISION, (
+        "timeline_lineage_migration_parent_invalid: "
+        f"expected {TARGET_REVISION}, got {revision.down_revision}"
+    )
+    return revision
+
+
+def test_panel_lineage_migration_is_a_child_of_repository_head_and_reversible(
+    tmp_path, monkeypatch
+):
+    config, database_url = _migration_config(tmp_path, monkeypatch)
+    revision = _task4_revision(config)
+    from sqlalchemy import create_engine, inspect
+
+    from alembic import command
+
+    command.upgrade(config, revision.revision)
+    engine = create_engine(database_url)
+    try:
+        columns = {column["name"] for column in inspect(engine).get_columns("timeline_scenes")}
+        assert set(TIMELINE_SNAPSHOT_FIELDS) <= columns, (
+            "timeline_lineage_schema_missing: "
+            f"{sorted(set(TIMELINE_SNAPSHOT_FIELDS) - columns)}"
+        )
+        command.downgrade(config, TARGET_REVISION)
+        columns = {column["name"] for column in inspect(engine).get_columns("timeline_scenes")}
+        assert not set(TIMELINE_SNAPSHOT_FIELDS) & columns, (
+            "timeline_lineage_downgrade_leak: "
+            f"{sorted(set(TIMELINE_SNAPSHOT_FIELDS) & columns)}"
+        )
     finally:
         engine.dispose()

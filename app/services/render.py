@@ -20,10 +20,11 @@ import hashlib
 import re
 import shutil
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from random import Random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
@@ -68,6 +69,11 @@ class SceneInput:
     disabled_effects: list[str] = field(default_factory=list)
     transition: str = "cut"
     overlay_text: str = ""
+    panel_region_id: str | None = None
+    panel_id: str = ""
+    panel_bounds: tuple[int, int, int, int] | None = None
+    visual_evidence: Mapping[str, Any] | None = None
+    source_asset_checksum: str = ""
 
     @property
     def duration(self) -> float:

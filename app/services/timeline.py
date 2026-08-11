@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from functools import cache
+from typing import Any
 
 from app.constants import (
     MAX_SUBTITLE_CHARS_PER_LINE,
@@ -48,6 +49,11 @@ class SceneSpec:
     alignment_reasons: list[str] = field(default_factory=list)
     rejected_candidates: list[dict] = field(default_factory=list)
     visual_signature: str = ""
+    panel_region_id: str | None = None
+    panel_id: str = ""
+    panel_bounds: tuple[int, int, int, int] | None = None
+    visual_evidence: dict[str, Any] | None = None
+    source_asset_checksum: str = ""
 
     @property
     def duration(self) -> float:

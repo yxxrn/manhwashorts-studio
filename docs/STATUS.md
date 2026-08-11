@@ -7,8 +7,8 @@ Updated: 2026-08-11
 - Approved the docs-only design in
   docs/superpowers/specs/2026-08-11-balloon-free-framing-narrative-identity-v3-design.md
   for COLOR_AGNOSTIC_BALLOON_FREE_V1 framing and sharp_friend_v1 narration.
-- The current implementation baseline is clean main at
-  e0d8fdf523c095740a984d88798200ed3dd4707e. The historical full non-slow
+- The current implementation baseline for this slice is clean main at
+  aa11bdbd500beca00ad7481b85731f17297e8e58. The historical full non-slow
   result of 635 passed at f9221dd remains checkpoint evidence; it was not
   rerun for this docs-only amendment.
 - The visual plan is amended into seven ordered tasks: typed states,
@@ -22,16 +22,17 @@ Updated: 2026-08-11
 - Implementation planning is complete in
   docs/superpowers/plans/2026-08-11-balloon-free-color-agnostic-framing.md and
   docs/superpowers/plans/2026-08-11-sharp-friend-narrative-identity-v3.md.
-- Visual Plan Tasks 1-3 are green and published through
-  `e0d8fdf523c095740a984d88798200ed3dd4707e`. The amendment adds a standalone
+- Visual Plan Tasks 1-3 are green and published before the current parent
+  `aa11bdbd500beca00ad7481b85731f17297e8e58`. The amendment adds a standalone
   panel-lineage boundary because visual evidence coordinates are produced from
   `_encode_panel_payload(PanelRegion)` crops while TimelineScene and
-  build_render_request currently retain/render only a full SourceAsset.
-  The next unimplemented slice is amended Visual Task 4: persist cited panel
-  identity and materialize the evidence-aligned crop before reference
-  feasibility. The amended sequence still names Visual Task 1 typed
-  states/persistence as its first prerequisite; that contract is already
-  present in the e0 runtime and is retained unchanged.
+  build_render_request previously retained/rendered only a full SourceAsset.
+  Visual Task 4 now persists cited panel identity and materializes the
+  evidence-aligned crop before reference feasibility. The next slice is
+  Visual Task 5 candidate feasibility; it must consume the persisted crop and
+  reject unknown balloon geometry at reference readiness. The amended sequence
+  still names Visual Task 1 typed states/persistence as its first prerequisite;
+  that contract is already present and retained unchanged.
 - The Task 3/4 plan correction isolates detector code from the approximately
   924-line visual_scoring.py boundary, replaces brightness/percentile-rank
   assumptions with fixed/robust structure metrics, and makes internal
@@ -39,6 +40,18 @@ Updated: 2026-08-11
 - Voice choice, provider configuration, auditions, audio generation, and
   final voice rendering remain explicitly deferred until the user chooses
   local or API execution. Rights/source checks keep publish_allowed=false.
+- Visual Task 4 verification: RED collected 11 with 7 intended body failures
+  and 4 existing migration tests passing. GREEN focused panel-lineage and
+  migration tests are 15 passed; the combined panel/migration/vision-pipeline/
+  reference-render matrix is 48 passed. The adapter/synthesis/analyzer/resolver
+  matrix is 126 passed, the reference profile/framing/motion/scoring/QC matrix
+  is 62 passed, and the mandated non-slow run is 682 passed with 15 deselected.
+  Scoped Ruff, compileall, and diff-check pass. Migration
+  `7776011fa52f` (`alembic/versions/7776011fa52f_persist_panel_lineage_into_reference_render.py`)
+  is a linear child of `b7c4d8e91f20`; `panel_region_id` is an auditable stable
+  nullable reference rather than a new FK so legacy SQLite upgrades remain
+  additive. The rollback point is parent
+  `aa11bdbd500beca00ad7481b85731f17297e8e58`; Task 5 is next.
 - Source and test execution remains VPS-only. Because VPS GitHub SSH auth is
   unavailable, exact history is published through the isolated Windows
   transport clone; runtime data, media, databases, credentials, and review

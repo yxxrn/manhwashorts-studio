@@ -4,6 +4,16 @@ Notable changes per release. Dates are ISO 8601.
 
 ## Unreleased - Phase 2 editorial gates
 
+- Implemented Visual Task 4 panel lineage persistence: reference timeline
+  scenes retain cited PanelRegion identity, global integer bounds, canonical
+  visual evidence, and immutable source checksums, while render requests use
+  deterministic numeric panel crops instead of full source strips. Unknown
+  visual geometry remains structurally preserved for the later Task 5
+  readiness gate; legacy profile=None rendering is unchanged. RED was 7/11
+  intended failures, the focused Task4 matrix passed 48 tests, and the full
+  non-slow run passed 682 with 15 deselected. Migration
+  `7776011fa52f` extends repository head `b7c4d8e91f20`; no media, DB, voice,
+  or credentials were changed.
 - Amended the balloon-free framing plan into seven ordered tasks. The new
   Visual Task 4 persists cited PanelRegion IDs, integer bounds, evidence
   snapshots, and immutable source checksums in TimelineScene, then materializes
