@@ -11,13 +11,19 @@ import hashlib
 import json
 import math
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import floor
 from typing import Any
 
 from PIL import Image
 
-from app.services.visual_scoring import PanelVisualEvidence, panel_visual_evidence_json
+from app.services.visual_scoring import (
+    PanelVisualEvidence,
+    VisualEvidenceError,
+    panel_visual_evidence_json,
+    require_reference_ready_visual_evidence,
+    validate_panel_visual_evidence,
+)
 
 DETECTOR_VERSION = "COLOR_AGNOSTIC_BALLOON_FREE_V1:grid256:structure4"
 _LOW_INFORMATION_THRESHOLDS = (0.08, 0.20, 0.08, 0.08)
@@ -47,6 +53,32 @@ class BorderMaskResult:
     non_discardable_low_information_fraction: float
     protected_retained_fraction: float
     mask_sha256: str
+
+
+@dataclass(frozen=True)
+class FramingTelemetry:
+    """Auditable result for one deterministic reference crop candidate."""
+
+    contract_version: str
+    detector_version: str
+    mask_sha256: str
+    crop_box: tuple[int, int, int, int]
+    base_zoom: float
+    source_resolution_zoom_cap: float
+    protected_region_zoom_cap: float
+    edge_connected_blank_fraction: float
+    non_discardable_low_information_fraction: float
+    protected_retained_fraction: float
+    balloon_mask_intersection_ratio: float
+    subject_coverage: float
+    face_coverage: float
+    action_coverage: float
+    effect_coverage: float
+    continuity_context_coverage: float
+    mask_confidence: float
+    mask_source: str
+    fallback_reason: str = ""
+    rejection_code: str | None = None
 
 
 def _source_cell_bounds(index: int, grid_size: int, source_size: int) -> tuple[int, int]:
@@ -281,13 +313,208 @@ def _mask_hash(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _reference_evidence(evidence: PanelVisualEvidence | Any) -> PanelVisualEvidence:
+    if evidence is None:
+        raise VisualEvidenceError(
+            "visual.panel_lineage_unavailable",
+            "reference framing requires persisted panel visual evidence",
+        )
+    try:
+        if isinstance(evidence, PanelVisualEvidence):
+            validate_panel_visual_evidence(evidence)
+            return require_reference_ready_visual_evidence(evidence)
+        return require_reference_ready_visual_evidence(evidence)
+    except VisualEvidenceError as exc:
+        if exc.code == "visual.balloon_mask_unknown":
+            raise
+        raise VisualEvidenceError(
+            "visual.panel_lineage_unavailable",
+            "panel visual evidence is not valid for reference framing",
+        ) from exc
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise VisualEvidenceError(
+            "visual.panel_lineage_unavailable",
+            "panel visual evidence is not valid for reference framing",
+        ) from exc
+
+
+def _region_area(box: tuple[float, float, float, float]) -> float:
+    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+
+
+def _intersection_area(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    return max(0.0, min(first[2], second[2]) - max(first[0], second[0])) * max(
+        0.0, min(first[3], second[3]) - max(first[1], second[1])
+    )
+
+
+def _normalised_box(
+    crop_box: tuple[int, int, int, int], source_size: tuple[int, int]
+) -> tuple[float, float, float, float]:
+    source_width, source_height = source_size
+    left, top, right, bottom = crop_box
+    return (
+        left / source_width,
+        top / source_height,
+        right / source_width,
+        bottom / source_height,
+    )
+
+
+def _protected_coverage(
+    evidence: PanelVisualEvidence,
+    crop_box: tuple[int, int, int, int],
+    source_size: tuple[int, int],
+) -> dict[str, float]:
+    crop = _normalised_box(crop_box, source_size)
+    coverage: dict[str, float] = {
+        "subject": 1.0,
+        "face": 1.0,
+        "action": 1.0,
+        "effect": 1.0,
+        "continuity_context": 1.0,
+    }
+    for region in evidence.protected_regions:
+        if region.kind not in coverage:
+            continue
+        region_box = _region_bounds(region)
+        if region_box is None:
+            coverage[region.kind] = 0.0
+            continue
+        area = _region_area(region_box)
+        retained = _intersection_area(region_box, crop)
+        coverage[region.kind] = min(coverage[region.kind], retained / area if area else 0.0)
+    return coverage
+
+
+def _balloon_intersection_ratio(
+    evidence: PanelVisualEvidence,
+    crop_box: tuple[int, int, int, int],
+    source_size: tuple[int, int],
+) -> float:
+    crop = _normalised_box(crop_box, source_size)
+    crop_area = _region_area(crop)
+    overlap = sum(
+        _intersection_area(region_box, crop)
+        for region in evidence.balloon_regions
+        if (region_box := _region_bounds(region)) is not None
+    )
+    return min(1.0, overlap / crop_area) if crop_area else 1.0
+
+
+def _mask_crop_fraction(
+    border_mask: BorderMaskResult,
+    crop_box: tuple[int, int, int, int],
+) -> float:
+    left, top, right, bottom = crop_box
+    crop_area = max(1, (right - left) * (bottom - top))
+    total = 0
+    for y, row in enumerate(border_mask.edge_connected_mask):
+        cell_y0, cell_y1 = _source_cell_bounds(y, border_mask.grid_height, border_mask.source_height)
+        for x, enabled in enumerate(row):
+            if not enabled:
+                continue
+            cell_x0, cell_x1 = _source_cell_bounds(x, border_mask.grid_width, border_mask.source_width)
+            total += max(0, min(right, cell_x1) - max(left, cell_x0)) * max(
+                0, min(bottom, cell_y1) - max(top, cell_y0)
+            )
+    return _rounded_fraction(total, crop_area)
+
+
+def _reference_base_dimensions(
+    source_size: tuple[int, int], target_size: tuple[int, int]
+) -> tuple[int, int]:
+    source_width, source_height = source_size
+    target_width, target_height = target_size
+    target_ratio = target_width / target_height
+    if source_width / source_height > target_ratio:
+        return max(2, round(source_height * target_ratio)), source_height
+    return source_width, max(2, round(source_width / target_ratio))
+
+
+def candidate_is_feasible(
+    crop_box: tuple[int, int, int, int],
+    evidence: PanelVisualEvidence,
+    border_mask: BorderMaskResult,
+    source_size: tuple[int, int],
+    target_size: tuple[int, int],
+) -> tuple[bool, FramingTelemetry]:
+    """Evaluate one static crop against the hard reference framing contract."""
+    parsed = _reference_evidence(evidence)
+    source_width, source_height = source_size
+    target_width, target_height = target_size
+    left, top, right, bottom = crop_box
+    crop_width = right - left
+    crop_height = bottom - top
+    if (
+        border_mask.source_width != source_width
+        or border_mask.source_height != source_height
+        or left < 0
+        or top < 0
+        or right > source_width
+        or bottom > source_height
+        or crop_width <= 0
+        or crop_height <= 0
+    ):
+        raise VisualEvidenceError(
+            "visual.panel_lineage_unavailable",
+            "framing candidate does not match its panel source",
+        )
+    source_cap = min(
+        source_width / max(1.0, target_width / 1.15),
+        source_height / max(1.0, target_height / 1.15),
+    )
+    base_width, base_height = _reference_base_dimensions(source_size, target_size)
+    base_zoom = max(base_width / crop_width, base_height / crop_height)
+    coverage = _protected_coverage(parsed, crop_box, source_size)
+    balloon_ratio = _balloon_intersection_ratio(parsed, crop_box, source_size)
+    telemetry = FramingTelemetry(
+        contract_version=parsed.contract_version,
+        detector_version=border_mask.detector_version,
+        mask_sha256=border_mask.mask_sha256,
+        crop_box=crop_box,
+        base_zoom=round(base_zoom, 6),
+        source_resolution_zoom_cap=round(source_cap, 6),
+        protected_region_zoom_cap=round(source_cap, 6),
+        edge_connected_blank_fraction=_mask_crop_fraction(border_mask, crop_box),
+        non_discardable_low_information_fraction=border_mask.non_discardable_low_information_fraction,
+        protected_retained_fraction=border_mask.protected_retained_fraction,
+        balloon_mask_intersection_ratio=round(balloon_ratio, 6),
+        subject_coverage=round(coverage["subject"], 6),
+        face_coverage=round(coverage["face"], 6),
+        action_coverage=round(coverage["action"], 6),
+        effect_coverage=round(coverage["effect"], 6),
+        continuity_context_coverage=round(coverage["continuity_context"], 6),
+        mask_confidence=round(parsed.mask_confidence, 6),
+        mask_source=parsed.evidence_source,
+    )
+    if balloon_ratio > 0.0:
+        return False, replace(telemetry, rejection_code="visual.balloon_mask_overlap")
+    if base_zoom > source_cap + 1e-9 or crop_width < target_width / 1.15 or crop_height < target_height / 1.15:
+        return False, replace(telemetry, rejection_code="visual.source_resolution_insufficient")
+    for kind, minimum in (
+        ("subject", 0.98),
+        ("face", 0.98),
+        ("action", 0.95),
+        ("continuity_context", 0.95),
+        ("effect", 0.90),
+    ):
+        if coverage[kind] < minimum:
+            return False, replace(telemetry, rejection_code=f"visual.protected_{kind}_coverage")
+    return True, telemetry
+
+
 def build_color_agnostic_border_mask(
     image: Image.Image,
-    evidence: PanelVisualEvidence,
+    evidence: PanelVisualEvidence | Any,
     *,
     grid_long_edge: int = 256,
 ) -> BorderMaskResult:
     """Build deterministic source-area masks for reference framing telemetry."""
+    evidence = _reference_evidence(evidence)
     if image.width <= 0 or image.height <= 0 or grid_long_edge <= 0:
         raise ValueError("visual.mask_dimensions_invalid")
     scale = grid_long_edge / max(image.width, image.height)

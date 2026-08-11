@@ -29,6 +29,11 @@ SPEC_CANONICAL_KEYS = (
     "impact_zoom_max",
     "base_frame_zoom_max",
     "max_blank_fraction",
+    "framing_contract_version",
+    "framing_blank_target_fraction",
+    "framing_balloon_intersection_max",
+    "framing_mask_grid_long_edge",
+    "framing_safe_area_margin",
     "caption_words_per_cue",
     "caption_uppercase",
     "caption_unicode_punctuation_allowed",
@@ -97,6 +102,11 @@ def test_reference_profile_has_the_complete_approved_contract():
         "impact_zoom_max": 1.14,
         "base_frame_zoom_max": 1.35,
         "max_blank_fraction": 0.18,
+        "framing_contract_version": "COLOR_AGNOSTIC_BALLOON_FREE_V1",
+        "framing_blank_target_fraction": 0.0,
+        "framing_balloon_intersection_max": 0.0,
+        "framing_mask_grid_long_edge": 256,
+        "framing_safe_area_margin": 0.03,
         "caption_words_per_cue": 1,
         "caption_uppercase": True,
         "caption_unicode_punctuation_allowed": False,
@@ -185,6 +195,19 @@ def test_reference_profile_hash_is_stable_and_sensitive_to_each_field_category()
     }
     assert all(value != expected_hash for value in changed_hashes.values())
     assert len(set(changed_hashes.values())) == len(changed_hashes)
+
+    framing_changes = (
+        ("framing_contract_version", "OTHER_CONTRACT"),
+        ("framing_blank_target_fraction", 0.01),
+        ("framing_balloon_intersection_max", 0.01),
+        ("framing_mask_grid_long_edge", 128),
+        ("framing_safe_area_margin", 0.04),
+    )
+    assert all(
+        module.profile_hash(dataclasses.replace(profile, **{field: value}))
+        != expected_hash
+        for field, value in framing_changes
+    )
 
 
 def _resolve_legacy_selector(module, selector):

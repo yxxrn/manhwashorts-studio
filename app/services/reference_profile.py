@@ -28,6 +28,11 @@ class ReferenceProfileConfig:
     impact_zoom_max: float
     base_frame_zoom_max: float
     max_blank_fraction: float
+    framing_contract_version: str
+    framing_blank_target_fraction: float
+    framing_balloon_intersection_max: float
+    framing_mask_grid_long_edge: int
+    framing_safe_area_margin: float
     caption_words_per_cue: int
     caption_uppercase: bool
     caption_unicode_punctuation_allowed: bool
@@ -81,6 +86,11 @@ REFERENCE_MATCHED_SHORTS_V1 = ReferenceProfileConfig(
     impact_zoom_max=1.14,
     base_frame_zoom_max=1.35,
     max_blank_fraction=0.18,
+    framing_contract_version="COLOR_AGNOSTIC_BALLOON_FREE_V1",
+    framing_blank_target_fraction=0.0,
+    framing_balloon_intersection_max=0.0,
+    framing_mask_grid_long_edge=256,
+    framing_safe_area_margin=0.03,
     caption_words_per_cue=1,
     caption_uppercase=True,
     caption_unicode_punctuation_allowed=False,

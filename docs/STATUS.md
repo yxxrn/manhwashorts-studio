@@ -188,6 +188,40 @@ Updated: 2026-08-11
   or rules when vision capability is unavailable.
 - Full test, lint, compile, and real-FFmpeg validation on Google execution host.
 
+## Visual Plan Task 5 checkpoint
+
+- Visual Task 5 is green on VPS at the uncommitted rollback parent
+  8f7f15bf44e525760948d9614be6f5099c1f7347: 45 passed in the focused
+  framing/color-mask/profile/motion matrix, and 698 passed in the exact
+  non-slow suite.
+- The reference profile now includes the five framing fields
+  (COLOR_AGNOSTIC_BALLOON_FREE_V1, zero blank target, zero balloon
+  intersection, 256-cell long edge, and 0.03 safe-area margin). Its current
+  canonical SHA-256 is
+  3db66724059a502127852f613809e26e7792895f7bd974a94c2f34306b02208b.
+- FramingTelemetry records the static crop box, base/source zoom caps,
+  detector and mask hashes, protected-region coverage, balloon overlap,
+  blank fractions, mask provenance, and stable fallback/rejection codes.
+  Example uniform-panel telemetry is
+  edge_connected_blank_fraction=1.0 with fallback_reason=visual.blank_infeasible;
+  any nonzero balloon overlap remains a hard rejection.
+- The directly affected tests/test_reference_profile.py canonical-field
+  and per-field hash assertions were expanded because the published Task 5
+  file list omitted that required profile-contract test. The real-panel
+  smoke uses lineage-matched structural known-empty evidence as a test
+  fixture; it does not claim provider geometry for production data.
+- An earlier GREEN patch was authored in the Windows transport before the
+  boundary correction. Only its production hunks were mechanically applied
+  to VPS; all subsequent fixture, profile-test, and documentation work was
+  performed directly on VPS. No media, DB, credentials, or runtime artifacts
+  changed.
+- The broader related pipeline command still exposes 13 unchanged slow legacy
+  public-draft failures at the vision-only gate; the required non-slow suite
+  is fully green and no compatibility fallback was added.
+- Next atomic task: Visual Plan Task 6 fallback/QC integration consuming the
+  persisted panel crop, typed evidence, and Task 5 feasibility telemetry.
+  Rollback point: 8f7f15bf44e525760948d9614be6f5099c1f7347.
+
 ## Current runtime boundary
 
 - Production execution target: Google VPS through the `google` SSH alias.
@@ -224,10 +258,10 @@ A render is review-only until all are true:
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
-Current state: **development / review-only**. Visual Plan Task 3 is green at
-clean main `e0d8fdf523c095740a984d88798200ed3dd4707e`; the amended Task 4 is
-the next consumer boundary and must preserve panel-coordinate lineage before
-Task 5 detector feasibility. Reference output remains unavailable until
-lineage and geometry feasibility are fulfilled. VPS GitHub SSH is unavailable,
-so approved commits are published through the isolated Windows transport
-workflow.
+Current state: **development / review-only**. Visual Plan Task 5 is green
+at the uncommitted rollback parent 8f7f15bf44e525760948d9614be6f5099c1f7347;
+Task 6 is the next fallback/QC consumer of panel lineage and feasibility
+telemetry. Reference output remains unavailable until all lineage, balloon,
+protected-region, and rights gates are fulfilled. VPS GitHub SSH is
+unavailable, so approved commits are published through the isolated Windows
+transport workflow.

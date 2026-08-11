@@ -69,23 +69,269 @@ def _result_path(result) -> Path:
     return path
 
 
+def _visual_evidence(
+    *,
+    balloon_regions=(),
+    protected_regions=(),
+    status="known_empty",
+    panel_id="panel-framing",
+    source_asset_id="asset-framing",
+    source_order=1,
+):
+    from app.services import visual_scoring
+
+    evidence = visual_scoring.PanelVisualEvidence(
+        contract_version="COLOR_AGNOSTIC_BALLOON_FREE_V1",
+        panel_id=panel_id,
+        source_asset_id=source_asset_id,
+        source_order=source_order,
+        balloon_regions=tuple(balloon_regions),
+        protected_regions=tuple(protected_regions),
+        balloon_mask_status=status,
+        mask_confidence=0.96,
+        evidence_source="vision_geometry_v1",
+        mask_reason="affirmative visual geometry result",
+        evidence_hash="",
+    )
+    return visual_scoring.parse_panel_visual_evidence(
+        visual_scoring.panel_visual_evidence_json(evidence)
+    )
+
+
+def _balloon(bbox):
+    from app.services import visual_scoring
+
+    return visual_scoring.BalloonRegionEvidence(
+        region_id="balloon-framing",
+        kind="speech_balloon",
+        normalized_bbox=bbox,
+        normalized_polygon=(),
+        confidence=0.99,
+        evidence_source="vision_geometry_v1",
+        mask_status="known_nonempty",
+    )
+
+
+def _protected(kind, bbox, minimum_coverage):
+    from app.services import visual_scoring
+
+    return visual_scoring.ProtectedRegionEvidence(
+        region_id=f"protected-{kind}",
+        kind=kind,
+        normalized_bbox=bbox,
+        normalized_polygon=(),
+        confidence=0.99,
+        evidence_source="vision_regions_v1",
+        required=True,
+        minimum_coverage=minimum_coverage,
+    )
+
+
 def test_reference_profile_declares_content_framing_and_hashes_every_field():
     from app.services import reference_profile
 
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
     assert profile.base_frame_zoom_max == pytest.approx(1.35)
     assert profile.max_blank_fraction == pytest.approx(0.18)
+    framing_fields = {
+        "framing_contract_version": "OTHER_CONTRACT",
+        "framing_blank_target_fraction": 0.1,
+        "framing_balloon_intersection_max": 0.01,
+        "framing_mask_grid_long_edge": 128,
+        "framing_safe_area_margin": 0.05,
+    }
+    assert profile.framing_contract_version == "COLOR_AGNOSTIC_BALLOON_FREE_V1"
+    assert profile.framing_blank_target_fraction == pytest.approx(0.0)
+    assert profile.framing_balloon_intersection_max == pytest.approx(0.0)
+    assert profile.framing_mask_grid_long_edge == 256
+    assert profile.framing_safe_area_margin == pytest.approx(0.03)
     canonical = reference_profile.canonical_profile_json(profile)
     fields = asdict(profile)
     assert set(json.loads(canonical)) == set(fields)
     assert canonical.count('"base_frame_zoom_max"') == 1
     assert canonical.count('"max_blank_fraction"') == 1
+    for field in framing_fields:
+        assert canonical.count(f'"{field}"') == 1
     assert reference_profile.profile_hash(profile) != reference_profile.profile_hash(
         replace(profile, max_blank_fraction=0.17)
     )
     assert reference_profile.profile_hash(profile) != reference_profile.profile_hash(
         replace(profile, base_frame_zoom_max=1.21)
     )
+    for field, value in framing_fields.items():
+        assert reference_profile.profile_hash(profile) != reference_profile.profile_hash(
+            replace(profile, **{field: value})
+        )
+
+
+def test_candidate_rejects_any_nonzero_balloon_overlap():
+    from app.services import framing_analysis
+
+    image = Image.new("RGB", (1000, 1000), (40, 50, 60))
+    evidence = _visual_evidence(
+        balloon_regions=(_balloon((0.1, 0.1, 0.101, 0.101)),),
+        status="known_nonempty",
+    )
+    mask = framing_analysis.build_color_agnostic_border_mask(
+        image, evidence, grid_long_edge=64
+    )
+
+    feasible, telemetry = framing_analysis.candidate_is_feasible(
+        (0, 0, 200, 200),
+        evidence,
+        mask,
+        image.size,
+        (100, 100),
+    )
+
+    assert feasible is False
+    assert telemetry.balloon_mask_intersection_ratio > 0.0
+    assert telemetry.rejection_code == "visual.balloon_mask_overlap"
+
+
+@pytest.mark.parametrize(
+    ("kind", "telemetry_field", "minimum"),
+    (
+        ("subject", "subject_coverage", 0.98),
+        ("face", "face_coverage", 0.98),
+        ("action", "action_coverage", 0.95),
+        ("continuity_context", "continuity_context_coverage", 0.95),
+        ("effect", "effect_coverage", 0.90),
+    ),
+)
+def test_candidate_enforces_required_protected_coverage(kind, telemetry_field, minimum):
+    from app.services import framing_analysis
+
+    image = Image.new("RGB", (1000, 1000), (40, 50, 60))
+    evidence = _visual_evidence(
+        protected_regions=(_protected(kind, (0.75, 0.75, 0.95, 0.95), minimum),)
+    )
+    mask = framing_analysis.build_color_agnostic_border_mask(
+        image, evidence, grid_long_edge=64
+    )
+
+    feasible, telemetry = framing_analysis.candidate_is_feasible(
+        (0, 0, 400, 400),
+        evidence,
+        mask,
+        image.size,
+        (100, 100),
+    )
+
+    assert feasible is False
+    assert getattr(telemetry, telemetry_field) < minimum
+    assert telemetry.rejection_code == f"visual.protected_{kind}_coverage"
+
+
+def test_candidate_rejects_crop_below_native_resolution_guard():
+    from app.services import framing_analysis
+
+    image = Image.new("RGB", (180, 180), (40, 50, 60))
+    evidence = _visual_evidence()
+    mask = framing_analysis.build_color_agnostic_border_mask(
+        image, evidence, grid_long_edge=64
+    )
+
+    feasible, telemetry = framing_analysis.candidate_is_feasible(
+        (0, 0, 100, 100),
+        evidence,
+        mask,
+        image.size,
+        (180, 180),
+    )
+
+    assert feasible is False
+    assert telemetry.base_zoom > telemetry.source_resolution_zoom_cap
+    assert telemetry.rejection_code == "visual.source_resolution_insufficient"
+
+
+def test_reference_preparation_reports_blank_infeasible_telemetry(tmp_path):
+    from app.services import framing_analysis, reference_profile, render
+
+    source = tmp_path / "uniform-source.png"
+    Image.new("RGB", (900, 2400), (64, 64, 64)).save(source)
+    evidence = _visual_evidence()
+    with Image.open(source) as image:
+        mask = framing_analysis.build_color_agnostic_border_mask(
+            image, evidence, grid_long_edge=64
+        )
+
+    prepared = render.prepare_reference_frame(
+        source,
+        tmp_path / "uniform-prepared.jpg",
+        TARGET_WIDTH,
+        TARGET_HEIGHT,
+        0.5,
+        0.5,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        evidence=evidence,
+        border_mask=mask,
+    )
+
+    assert prepared.telemetry is not None
+    assert prepared.telemetry.edge_connected_blank_fraction > 0.0
+    assert prepared.telemetry.fallback_reason == "visual.blank_infeasible"
+
+
+@pytest.mark.parametrize("evidence", (None, {"malformed": True}), ids=("missing", "malformed"))
+def test_reference_preparation_rejects_missing_or_malformed_evidence(tmp_path, evidence):
+    from app.services import reference_profile, render
+
+    source = tmp_path / "missing-evidence-source.png"
+    Image.new("RGB", (900, 2400), (64, 64, 64)).save(source)
+
+    with pytest.raises(render.RenderError, match="visual\\.panel_lineage_unavailable"):
+        render.prepare_reference_frame(
+            source,
+            tmp_path / "missing-evidence-prepared.jpg",
+            TARGET_WIDTH,
+            TARGET_HEIGHT,
+            0.5,
+            0.5,
+            profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            evidence=evidence,
+        )
+
+
+def test_reference_preparation_rejects_structurally_valid_unknown_evidence(tmp_path):
+    from app.services import reference_profile, render, visual_scoring
+
+    source = tmp_path / "unknown-evidence-source.png"
+    Image.new("RGB", (900, 2400), (64, 64, 64)).save(source)
+    evidence = visual_scoring.unknown_visual_evidence(
+        panel_id="panel-framing",
+        source_asset_id="asset-framing",
+        source_order=1,
+        reason="provider geometry was unavailable",
+    )
+
+    with pytest.raises(render.RenderError, match="visual\\.balloon_mask_unknown"):
+        render.prepare_reference_frame(
+            source,
+            tmp_path / "unknown-evidence-prepared.jpg",
+            TARGET_WIDTH,
+            TARGET_HEIGHT,
+            0.5,
+            0.5,
+            profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            evidence=evidence,
+        )
+
+
+def test_detector_public_boundary_rejects_unknown_and_malformed_evidence():
+    from app.services import framing_analysis, visual_scoring
+
+    image = Image.new("RGB", (160, 240), (64, 64, 64))
+    unknown = visual_scoring.unknown_visual_evidence(
+        panel_id="panel-framing",
+        source_asset_id="asset-framing",
+        source_order=1,
+        reason="provider geometry was unavailable",
+    )
+    with pytest.raises(visual_scoring.VisualEvidenceError, match="visual\\.balloon_mask_unknown"):
+        framing_analysis.build_color_agnostic_border_mask(image, unknown)
+    with pytest.raises(visual_scoring.VisualEvidenceError, match="visual\\.panel_lineage_unavailable"):
+        framing_analysis.build_color_agnostic_border_mask(image, None)
 
 
 def test_reference_preparation_rejects_blank_gutter_and_preserves_focused_artwork(tmp_path):
@@ -93,6 +339,7 @@ def test_reference_preparation_rejects_blank_gutter_and_preserves_focused_artwor
 
     source = tmp_path / "white-top-artwork.png"
     _write_gutter_fixture(source)
+    evidence = _visual_evidence()
     legacy = tmp_path / "legacy.jpg"
     render.crop_to_vertical(source, legacy, TARGET_WIDTH, TARGET_HEIGHT, 0.5, 0.2)
     assert _blank_fraction(legacy) > reference_profile.REFERENCE_MATCHED_SHORTS_V1.max_blank_fraction
@@ -105,17 +352,30 @@ def test_reference_preparation_rejects_blank_gutter_and_preserves_focused_artwor
         0.5,
         0.82,
         profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        evidence=evidence,
     )
     output = _result_path(prepared)
     with Image.open(output) as image:
         assert image.size == OVERSAMPLE_SIZE
-    assert prepared.blank_fraction <= reference_profile.REFERENCE_MATCHED_SHORTS_V1.max_blank_fraction
+    telemetry = prepared.telemetry
+    assert telemetry is not None
+    assert prepared.blank_fraction == pytest.approx(
+        telemetry.edge_connected_blank_fraction
+    )
+    assert prepared.blank_fraction > 0.0
+    assert telemetry.fallback_reason == 'visual.blank_infeasible'
+    assert telemetry.rejection_code is None
+    assert telemetry.balloon_mask_intersection_ratio == pytest.approx(0.0)
+    assert telemetry.subject_coverage >= 0.98
+    assert telemetry.face_coverage >= 0.98
+    assert telemetry.action_coverage >= 0.95
+    assert telemetry.continuity_context_coverage >= 0.95
+    assert telemetry.effect_coverage >= 0.90
     assert prepared.base_zoom <= reference_profile.REFERENCE_MATCHED_SHORTS_V1.base_frame_zoom_max
     left, top, right, bottom = prepared.crop_box
     assert 0 <= left < right <= 900
     assert 0 <= top < bottom <= 2400
     assert top <= 0.82 * 2400 <= bottom
-    assert _blank_fraction(output) <= reference_profile.REFERENCE_MATCHED_SHORTS_V1.max_blank_fraction
 
 
 def test_reference_focus_changes_static_roi_and_same_inputs_are_deterministic(tmp_path):
@@ -125,6 +385,7 @@ def test_reference_focus_changes_static_roi_and_same_inputs_are_deterministic(tm
     _write_focus_fixture(source)
     helper = _framing_helper()
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    evidence = _visual_evidence()
 
     upper = helper(
         source,
@@ -134,6 +395,7 @@ def test_reference_focus_changes_static_roi_and_same_inputs_are_deterministic(tm
         0.5,
         0.28,
         profile=profile,
+        evidence=evidence,
     )
     lower = helper(
         source,
@@ -143,6 +405,7 @@ def test_reference_focus_changes_static_roi_and_same_inputs_are_deterministic(tm
         0.5,
         0.80,
         profile=profile,
+        evidence=evidence,
     )
     upper_repeat = helper(
         source,
@@ -152,6 +415,7 @@ def test_reference_focus_changes_static_roi_and_same_inputs_are_deterministic(tm
         0.5,
         0.28,
         profile=profile,
+        evidence=evidence,
     )
     assert upper.crop_box != lower.crop_box
     assert Path(upper.path).read_bytes() != Path(lower.path).read_bytes()
@@ -211,6 +475,7 @@ def test_reference_preparation_does_not_mutate_source(tmp_path):
 
     source = tmp_path / "immutable-source.png"
     _write_focus_fixture(source)
+    evidence = _visual_evidence()
     before = hashlib.sha256(source.read_bytes()).hexdigest()
     _framing_helper()(
         source,
@@ -220,6 +485,7 @@ def test_reference_preparation_does_not_mutate_source(tmp_path):
         0.5,
         0.8,
         profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        evidence=evidence,
     )
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before
 
@@ -243,11 +509,16 @@ def test_real_task9c1_panels_have_auditable_reference_preparation_smoke(tmp_path
     helper = _framing_helper()
     metrics = []
     prepared_paths = []
-    for index, (_asset_id, source_order, storage_key, width, height) in enumerate(rows):
+    for index, (asset_id, source_order, storage_key, width, height) in enumerate(rows):
         source = (storage_root / storage_key).resolve()
         assert source.is_file()
         with Image.open(source) as image:
             assert image.size == (width, height)
+        evidence = _visual_evidence(
+            panel_id=f"panel-{asset_id}",
+            source_asset_id=asset_id,
+            source_order=source_order,
+        )
         result = helper(
             source,
             tmp_path / f"prepared-{index:03d}.jpg",
@@ -256,18 +527,22 @@ def test_real_task9c1_panels_have_auditable_reference_preparation_smoke(tmp_path
             0.5,
             0.56,
             profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            evidence=evidence,
         )
         prepared_path = _result_path(result)
-        assert prepared_path.is_file()
         prepared_paths.append(prepared_path)
+        assert result.telemetry is not None
+        assert result.telemetry.mask_source == "vision_geometry_v1"
         metrics.append(
             {
                 "source_order": source_order,
                 "blank_fraction": result.blank_fraction,
                 "base_zoom": result.base_zoom,
                 "crop_box": list(result.crop_box),
+                "edge_connected_blank_fraction": result.telemetry.edge_connected_blank_fraction,
             }
         )
+
     columns = 4
     tile_width, tile_height = 444, 780
     sheet = Image.new(
@@ -276,7 +551,9 @@ def test_real_task9c1_panels_have_auditable_reference_preparation_smoke(tmp_path
         (24, 24, 30),
     )
     draw = ImageDraw.Draw(sheet)
-    for index, (metric, prepared_path) in enumerate(zip(metrics, prepared_paths, strict=True)):
+    for index, (metric, prepared_path) in enumerate(
+        zip(metrics, prepared_paths, strict=True)
+    ):
         x = (index % columns) * tile_width
         y = (index // columns) * tile_height
         draw.text(
@@ -290,11 +567,6 @@ def test_real_task9c1_panels_have_auditable_reference_preparation_smoke(tmp_path
             sheet.paste(thumb, (x + 15, y + 36))
     contact_sheet = tmp_path / "prepared-frame-contact-sheet.jpg"
     sheet.save(contact_sheet, "JPEG", quality=94)
-    infeasible = [
-        metric["source_order"]
-        for metric in metrics
-        if metric["blank_fraction"] > reference_profile.REFERENCE_MATCHED_SHORTS_V1.max_blank_fraction
-    ]
     report = tmp_path / "reference-panel-smoke.json"
     report.write_text(
         json.dumps(
@@ -302,9 +574,12 @@ def test_real_task9c1_panels_have_auditable_reference_preparation_smoke(tmp_path
                 "asset_count": len(metrics),
                 "blank_fraction_min": min(metric["blank_fraction"] for metric in metrics),
                 "blank_fraction_max": max(metric["blank_fraction"] for metric in metrics),
-                "blank_fraction_mean": sum(metric["blank_fraction"] for metric in metrics) / len(metrics),
-                "max_blank_fraction": reference_profile.REFERENCE_MATCHED_SHORTS_V1.max_blank_fraction,
-                "infeasible_source_orders": infeasible,
+                "blank_fraction_mean": sum(
+                    metric["blank_fraction"] for metric in metrics
+                ) / len(metrics),
+                "max_blank_fraction": (
+                    reference_profile.REFERENCE_MATCHED_SHORTS_V1.max_blank_fraction
+                ),
                 "contact_sheet": str(contact_sheet),
                 "metrics": metrics,
             },

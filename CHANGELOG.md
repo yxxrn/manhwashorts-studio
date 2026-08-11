@@ -4,6 +4,18 @@ Notable changes per release. Dates are ISO 8601.
 
 ## Unreleased - Phase 2 editorial gates
 
+- Implemented Visual Plan Task 5 candidate feasibility on the exact
+  8f7f15bf44e525760948d9614be6f5099c1f7347 rollback parent: hard-zero
+  balloon overlap, protected subject/face/action/context/effect thresholds,
+  native-resolution guards, deterministic blank-infeasible telemetry, and
+  reference-only evidence/mask cache identity. The focused matrix passed 45
+  tests and the exact non-slow suite passed 698 tests. Profile hash:
+  3db66724059a502127852f613809e26e7792895f7bd974a94c2f34306b02208b.
+  The Task 5 plan omitted the directly required profile-contract test, so
+  tests/test_reference_profile.py was explicitly authorized and expanded.
+  Task 6 is next; no media, DB, voice, credentials, or actual render changed.
+  Rollback parent: 8f7f15bf44e525760948d9614be6f5099c1f7347.
+
 - Hardened the Visual Task 4 reference crop boundary: missing or empty scene
   asset IDs fail closed with `visual.panel_lineage_unavailable`, and every
   materialized PNG is reopened and checked against a canonical RGB

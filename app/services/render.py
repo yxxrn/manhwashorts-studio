@@ -21,7 +21,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from random import Random
 from typing import TYPE_CHECKING, Any
@@ -30,7 +30,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from app.config import settings
 from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
-from app.services import encoders, framing_analysis, motion_director
+from app.services import encoders, framing_analysis, motion_director, visual_scoring
 from app.services.reference_profile import ReferenceProfileConfig, profile_hash
 from app.services.timeline import CueSpec, wrap_caption
 
@@ -44,10 +44,17 @@ _SECTION_TRANSITION_MAX = 0.18
 class RenderError(RuntimeError):
     """Raised when a render step fails. Message is safe to show the user."""
 
-    def __init__(self, message: str, code: str = "render_failed", log_tail: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        code: str = "render_failed",
+        log_tail: str = "",
+        telemetry: framing_analysis.FramingTelemetry | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.log_tail = log_tail
+        self.telemetry = telemetry
 
 
 @dataclass
@@ -289,6 +296,7 @@ class PreparedFrame:
     crop_box: tuple[int, int, int, int]
     blank_fraction: float
     base_zoom: float
+    telemetry: framing_analysis.FramingTelemetry | None = None
 
 
 def reference_frame_cache_key(
@@ -429,30 +437,65 @@ def prepare_reference_frame(
     focus_x: float,
     focus_y: float,
     profile: ReferenceProfileConfig | None,
+    *,
+    evidence: PanelVisualEvidence | Mapping[str, Any] | None = None,
+    border_mask: framing_analysis.BorderMaskResult | None = None,
 ) -> PreparedFrame:
     """Select one static content-aware frame for the reference profile."""
     if profile is None:
         return _reference_prepare_fallback(src, dest, width, height, focus_x, focus_y)
+    if evidence is None:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference framing requires panel visual evidence",
+            code="visual.panel_lineage_unavailable",
+        )
+    try:
+        if isinstance(evidence, visual_scoring.PanelVisualEvidence):
+            parsed_evidence = evidence
+            visual_scoring.validate_panel_visual_evidence(parsed_evidence)
+        else:
+            parsed_evidence = visual_scoring.parse_panel_visual_evidence(evidence)
+        parsed_evidence = visual_scoring.require_reference_ready_visual_evidence(parsed_evidence)
+    except visual_scoring.VisualEvidenceError as exc:
+        code = (
+            "visual.balloon_mask_unknown"
+            if exc.code == "visual.balloon_mask_unknown"
+            else "visual.panel_lineage_unavailable"
+        )
+        raise RenderError(
+            f"{code}: reference framing evidence is unavailable",
+            code=code,
+        ) from exc
     try:
         with Image.open(src) as original:
             image = original.convert("RGB")
             src_w, src_h = image.size
             if src_w < 2 or src_h < 2:
                 raise ValueError("degenerate source geometry")
+            if border_mask is None:
+                border_mask = framing_analysis.build_color_agnostic_border_mask(
+                    image,
+                    parsed_evidence,
+                    grid_long_edge=profile.framing_mask_grid_long_edge,
+                )
+            elif border_mask.source_width != src_w or border_mask.source_height != src_h:
+                raise RenderError(
+                    "reference framing mask does not match panel source",
+                    code="visual.panel_lineage_unavailable",
+                )
             target_ratio = width / height
             if src_w / src_h > target_ratio:
-                base_w = int(round(src_h * target_ratio))
+                base_w = max(2, min(src_w, int(round(src_h * target_ratio))))
                 base_h = src_h
             else:
                 base_w = src_w
-                base_h = int(round(src_w / target_ratio))
-            base_w = max(2, min(base_w, src_w))
-            base_h = max(2, min(base_h, src_h))
+                base_h = max(2, min(src_h, int(round(src_w / target_ratio))))
             output_size = (
                 _reference_even(round(width * 1.15)),
                 _reference_even(round(height * 1.15)),
             )
-            candidates: list[tuple[float, float, tuple[int, int, int, int]]] = []
+            candidates: list[tuple[tuple[float, ...], framing_analysis.FramingTelemetry]] = []
+            last_telemetry: framing_analysis.FramingTelemetry | None = None
             focus_x = max(0.0, min(1.0, float(focus_x)))
             focus_y = max(0.0, min(1.0, float(focus_y)))
             for scale in _reference_scales(profile.base_frame_zoom_max):
@@ -465,12 +508,6 @@ def prepare_reference_frame(
                 left = max(0, min(left, src_w - crop_w))
                 top = max(0, min(top, src_h - crop_h))
                 box = (left, top, left + crop_w, top + crop_h)
-                cropped = image.crop(box)
-                local_focus_x = (focus_x * src_w - left) / crop_w
-                local_focus_y = (focus_y * src_h - top) / crop_h
-                blank, content, focus_content = _reference_content_stats(
-                    cropped, local_focus_x, local_focus_y
-                )
                 box_centre_x = (left + crop_w / 2) / src_w
                 box_centre_y = (top + crop_h / 2) / src_h
                 focus_distance = min(
@@ -478,36 +515,64 @@ def prepare_reference_frame(
                     ((box_centre_x - focus_x) ** 2 + (box_centre_y - focus_y) ** 2) ** 0.5,
                 )
                 focus_score = 1.0 - focus_distance
-                feasible_bonus = 0.75 if blank <= profile.max_blank_fraction else -blank
-                scale_penalty = (scale - 1.0) / max(0.01, profile.base_frame_zoom_max - 1.0)
-                score = (
-                    feasible_bonus
-                    + content * 0.56
-                    + focus_content * 0.24
-                    + focus_score * 0.15
-                    + (1.0 - min(1.0, scale_penalty)) * 0.05
+                feasible, telemetry = framing_analysis.candidate_is_feasible(
+                    box,
+                    parsed_evidence,
+                    border_mask,
+                    (src_w, src_h),
+                    (width, height),
                 )
-                candidates.append((score, scale, box))
+                last_telemetry = telemetry
+                if feasible:
+                    blank_target_met = (
+                        telemetry.edge_connected_blank_fraction
+                        <= profile.framing_blank_target_fraction + 1e-9
+                    )
+                    rank = (
+                        1.0 if blank_target_met else 0.0,
+                        -telemetry.edge_connected_blank_fraction,
+                        focus_score,
+                        telemetry.base_zoom,
+                        -float(top),
+                        -float(left),
+                    )
+                    candidates.append((rank, telemetry))
             if not candidates:
-                raise ValueError("no deterministic framing candidates")
-            _score, scale, box = max(candidates, key=lambda item: (item[0], item[1], item[2][1], item[2][0]))
+                rejection_code = (
+                    last_telemetry.rejection_code
+                    if last_telemetry is not None and last_telemetry.rejection_code
+                    else "visual.crop_candidate_infeasible"
+                )
+                raise RenderError(
+                    f"{rejection_code}: no reference framing candidate satisfies protected geometry",
+                    code=rejection_code,
+                    telemetry=last_telemetry,
+                )
+            _rank, telemetry = max(candidates, key=lambda item: item[0])
+            box = telemetry.crop_box
+            if telemetry.edge_connected_blank_fraction > profile.framing_blank_target_fraction + 1e-9:
+                telemetry = replace(telemetry, fallback_reason="visual.blank_infeasible")
             prepared = image.crop(box).resize(output_size, Image.Resampling.LANCZOS)
             dest.parent.mkdir(parents=True, exist_ok=True)
             prepared.save(dest, "JPEG", quality=94)
             with Image.open(dest) as saved:
-                blank_fraction, _content, _focus_content = _reference_content_stats(
-                    saved, 0.5, 0.5
-                )
-            actual_zoom = max(
-                (box[2] - box[0]) and base_w / (box[2] - box[0]),
-                (box[3] - box[1]) and base_h / (box[3] - box[1]),
-            )
+                saved.load()
             return PreparedFrame(
                 dest,
                 box,
-                blank_fraction,
-                round(min(float(profile.base_frame_zoom_max), actual_zoom), 3),
+                telemetry.edge_connected_blank_fraction,
+                round(min(float(profile.base_frame_zoom_max), telemetry.base_zoom), 3),
+                telemetry,
             )
+    except RenderError:
+        raise
+    except visual_scoring.VisualEvidenceError as exc:
+        code = (
+            "visual.balloon_mask_unknown"
+            if exc.code == "visual.balloon_mask_unknown"
+            else "visual.panel_lineage_unavailable"
+        )
+        raise RenderError(f"{code}: reference framing evidence is unavailable", code=code) from exc
     except (OSError, ValueError, ZeroDivisionError):
         return _reference_prepare_fallback(src, dest, width, height, focus_x, focus_y)
 
@@ -516,11 +581,22 @@ def editorial_frame(
     src: Path, dest: Path, width: int, height: int,
     focus_x: float, focus_y: float, end_x: float, end_y: float, mode: str,
     profile: ReferenceProfileConfig | None = None,
+    *,
+    evidence: PanelVisualEvidence | Mapping[str, Any] | None = None,
+    border_mask: framing_analysis.BorderMaskResult | None = None,
 ) -> Path:
     """Build deterministic CPU compositing without altering panel geometry."""
     if profile is not None:
         return prepare_reference_frame(
-            src, dest, width, height, focus_x, focus_y, profile
+            src,
+            dest,
+            width,
+            height,
+            focus_x,
+            focus_y,
+            profile,
+            evidence=evidence,
+            border_mask=border_mask,
         ).path
     if mode not in {"split_focus", "panel_stack"}:
         return crop_to_vertical(src, dest, width, height, focus_x, focus_y)
@@ -1018,6 +1094,34 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     prepared_cache: dict[tuple, Path] = {}
     for i, scene in enumerate(request.scenes):
         prepared = work / f"img{i:03d}.jpg"
+        scene_evidence: PanelVisualEvidence | None = None
+        scene_border_mask: framing_analysis.BorderMaskResult | None = None
+        if request.profile is not None:
+            if not scene.image_path or not Path(scene.image_path).is_file() or scene.visual_evidence is None:
+                raise RenderError(
+                    f"reference scene {i + 1} is missing panel visual lineage",
+                    code="visual.panel_lineage_unavailable",
+                )
+            try:
+                scene_evidence = (
+                    scene.visual_evidence
+                    if isinstance(scene.visual_evidence, visual_scoring.PanelVisualEvidence)
+                    else visual_scoring.parse_panel_visual_evidence(scene.visual_evidence)
+                )
+                scene_evidence = visual_scoring.require_reference_ready_visual_evidence(scene_evidence)
+                with Image.open(scene.image_path) as panel_image:
+                    scene_border_mask = framing_analysis.build_color_agnostic_border_mask(
+                        panel_image,
+                        scene_evidence,
+                        grid_long_edge=request.profile.framing_mask_grid_long_edge,
+                    )
+            except visual_scoring.VisualEvidenceError as exc:
+                code = (
+                    "visual.balloon_mask_unknown"
+                    if exc.code == "visual.balloon_mask_unknown"
+                    else "visual.panel_lineage_unavailable"
+                )
+                raise RenderError("reference scene visual evidence is unavailable", code=code) from exc
         cache_key = (
             reference_frame_cache_key(
                 Path(scene.image_path) if scene.image_path else Path(""),
@@ -1028,6 +1132,8 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 scene.focus_end_x,
                 scene.focus_end_y,
                 request.profile,
+                border_mask=scene_border_mask,
+                evidence=scene_evidence,
             ),
             scene.motion_mode, scene.motion_intensity, tuple(sorted(scene.disabled_effects)),
         )
@@ -1041,7 +1147,11 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                     scene.focus_x, scene.focus_y, scene.focus_end_x, scene.focus_end_y,
                     scene.motion_mode,
                     profile=request.profile,
+                    evidence=scene_evidence,
+                    border_mask=scene_border_mask,
                 )
+            except RenderError:
+                raise
             except Exception as exc:
                 raise RenderError(
                     f"could not process image for scene {i + 1} "
