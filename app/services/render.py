@@ -23,14 +23,18 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from random import Random
+from typing import TYPE_CHECKING
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from app.config import settings
 from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
-from app.services import encoders, motion_director
+from app.services import encoders, framing_analysis, motion_director
 from app.services.reference_profile import ReferenceProfileConfig, profile_hash
 from app.services.timeline import CueSpec, wrap_caption
+
+if TYPE_CHECKING:
+    from app.services.visual_scoring import PanelVisualEvidence
 
 _SECTION_TRANSITION_MIN = 0.12
 _SECTION_TRANSITION_MAX = 0.18
@@ -290,9 +294,12 @@ def reference_frame_cache_key(
     end_x: float,
     end_y: float,
     profile: ReferenceProfileConfig | None,
+    *,
+    border_mask: framing_analysis.BorderMaskResult | None = None,
+    evidence: PanelVisualEvidence | None = None,
 ) -> tuple:
     """Return a deterministic key for all inputs to static frame preparation."""
-    return (
+    base_key = (
         str(image_path),
         int(width),
         int(height),
@@ -303,6 +310,19 @@ def reference_frame_cache_key(
         profile_hash(profile) if profile is not None else None,
         profile.base_frame_zoom_max if profile is not None else None,
         profile.max_blank_fraction if profile is not None else None,
+    )
+    if profile is None:
+        return base_key
+    if (border_mask is None) != (evidence is None):
+        raise ValueError("visual.cache_identity_incomplete")
+    if border_mask is None or evidence is None:
+        return base_key
+    return base_key + (
+        border_mask.detector_version,
+        border_mask.mask_sha256,
+        evidence.balloon_mask_status,
+        evidence.evidence_hash,
+        framing_analysis.canonical_protected_geometry(evidence),
     )
 
 

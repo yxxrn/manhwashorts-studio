@@ -36,6 +36,14 @@ Notable changes per release. Dates are ISO 8601.
   extends that module for candidate feasibility. The legacy profile=None path,
   provider hash ownership, balloon hard-zero rule, and Task 3 as the next
   implementation slice remain explicit.
+- Implemented Visual Plan Task 3 from clean `ab886dddf3972847b634015ba95e8bb4d88fc73f`:
+  12 focused tests and a 33-test framing/motion/profile matrix pass, with 671
+  selected non-slow tests passing. The new
+  `COLOR_AGNOSTIC_BALLOON_FREE_V1:grid256:structure4` detector uses robust
+  structure metrics, exact source-area accounting, protected-region masks,
+  diagnostic internal components, and local mask SHA-256 cache identity.
+  Legacy/profile=None framing and current render call sites remain unchanged;
+  Task 4 candidate feasibility is still pending.
 - Task 1 verification: 7 body-failing RED tests, 58 focused GREEN tests, and
   642 full non-slow tests passed; scoped Ruff, compileall, and diff-check pass.
 - Completed the approved implementation plans for balloon-free color-agnostic

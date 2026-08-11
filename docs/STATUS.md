@@ -21,12 +21,12 @@ Updated: 2026-08-11
 - Implementation planning is complete in
   docs/superpowers/plans/2026-08-11-balloon-free-color-agnostic-framing.md and
   docs/superpowers/plans/2026-08-11-sharp-friend-narrative-identity-v3.md.
-- Visual Plan Tasks 1-2 are green and published through
-  `940ab42d135626cfb096c3b3b3e7957d549e3923`. The next atomic task is Visual
-  Plan Task 3: create the focused `framing_analysis.py` detector with exact
-  source-area accounting; Task 4 will extend that module for candidate
-  feasibility. Reference readiness remains blocked until geometry feasibility
-  exists.
+- Visual Plan Tasks 1-3 are green and published through
+  `940ab42d135626cfb096c3b3b3e7957d549e3923`; the Task 3 implementation starts
+  from `ab886dddf3972847b634015ba95e8bb4d88fc73f`. Task 4 is the next atomic
+  task and will extend `framing_analysis.py` with candidate feasibility.
+  Reference readiness remains blocked until that feasibility and the later
+  provider-to-reference evidence path exist.
 - The Task 3/4 plan correction isolates detector code from the approximately
   924-line visual_scoring.py boundary, replaces brightness/percentile-rank
   assumptions with fixed/robust structure metrics, and makes internal
@@ -38,6 +38,31 @@ Updated: 2026-08-11
   unavailable, exact history is published through the isolated Windows
   transport clone; runtime data, media, databases, credentials, and review
   artifacts remain outside Git.
+
+## Visual Plan Task 3 - color-agnostic border analysis - 2026-08-11
+
+- RED was collection-clean: `tests/test_color_agnostic_blank.py` collected 12
+  tests and reported 12 body failures because `app/services/framing_analysis.py`
+  and the extended cache identity did not exist.
+- GREEN passed 12 focused detector tests and 33 tests across the Task 3 color,
+  reference-framing, motion-stability, and reference-profile matrix. Scoped
+  Ruff, `python -m compileall -q app`, `git diff --check`, and the key-shaped
+  secret scan passed. The full `-m 'not slow'` run passed 671 selected tests.
+- `DETECTOR_VERSION` is
+  `COLOR_AGNOSTIC_BALLOON_FREE_V1:grid256:structure4`; the deterministic
+  16x24/grid-8 audit example produced mask SHA-256
+  `5a633ce9cebb5fc9c508a5e2361b78653b78e35b66b5c5da347c39c0ce79b21a`.
+  Source-area fractions use integer floor cells and six-decimal final ratios;
+  protected regions are retained and sealed internal low-information cells are
+  diagnostic only.
+- `render.reference_frame_cache_key` preserves the existing profile=None and
+  profile-without-evidence tuples. Profile-mode evidence keys include detector
+  version, mask hash, mask status, evidence hash, and serializer-backed
+  protected geometry. This slice does not invoke detection from render call
+  sites, infer sidecars, or claim reference readiness.
+- Rollback point is the Task 3 commit from clean `ab886dddf3972847b634015ba95e8bb4d88fc73f`;
+  Task 4 is next for candidate feasibility, hard balloon exclusion, and
+  reference fallback/QC integration.
 
 ## Visual Plan Task 1 - typed visual evidence - 2026-08-11
 
@@ -150,10 +175,9 @@ A render is review-only until all are true:
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 
-Current state: **development / review-only**. Visual Plan Task 3/4 planning
-correction is based on clean main `940ab42d135626cfb096c3b3b3e7957d549e3923`.
-Task 3 creates `app/services/framing_analysis.py`; Task 4 is the next consumer
-of its mask and feasibility interfaces. Reference output remains unavailable
-until geometry feasibility is fulfilled. VPS GitHub SSH is unavailable, so
-approved commits are published through the isolated Windows transport
-workflow.
+Current state: **development / review-only**. Visual Plan Task 3 is green at
+the uncommitted implementation baseline from clean main
+`ab886dddf3972847b634015ba95e8bb4d88fc73f`; Task 4 is the next consumer of
+the detector and cache interfaces. Reference output remains unavailable until
+geometry feasibility is fulfilled. VPS GitHub SSH is unavailable, so approved
+commits are published through the isolated Windows transport workflow.
