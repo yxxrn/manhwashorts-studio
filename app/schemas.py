@@ -67,7 +67,7 @@ class ProjectCreate(BaseModel):
     cta_text: str = Field(default="", max_length=500)
     banned_words: list[str] = Field(default_factory=list)
     pronunciations: dict[str, str] = Field(default_factory=dict)
-    template: str = Field(default="reference_matched_shorts_v1", max_length=60)
+    template: str = Field(default="reference_matched_shorts_v2", max_length=60)  # New projects use the 60 FPS profile.
 
 
 class ProjectUpdate(BaseModel):

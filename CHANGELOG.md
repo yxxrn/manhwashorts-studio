@@ -2,6 +2,24 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Changed the project default render contract to 60 FPS. New projects resolve
+  the versioned `reference_matched_shorts_v2` profile while the 30 FPS v1
+  profile and historical artifacts remain resolvable and unchanged. The
+  54.2-second Codex manual preview was rerendered at 60 FPS with H.264 High,
+  1080x1920, `yuv420p`, no audio, and 69 deterministic audit frames. Its
+  SHA-256 is `3a71492527bcfe568e334daa5e889b1acfb7cfdc6ab863ba2931a90294a325e8`.
+  The default profile hash is
+  `b19ce34537481428cc2c423ab35ab65fed1ff1941e2e753d04c018b7b392a870`.
+  The historical v2 preview remains documented separately at 30 FPS.
+  Subtitles explicitly load the project-standard `Barber Chop` font from
+  `assets/fonts/BarberChop.otf`; provenance is manual inspection, rights stay
+  internal-review-only, and publication remains blocked.
+
+- Historical record: the local Codex manual-vision preview v2 slice produced a
+  54.2-second silent MP4 from the same 23 chronological panels at 30 FPS. The
+  historical SHA-256 is `54c282e30ceb9d668df37d2e70238f27980b07ccd55a4b4d4691159ded025f46`.
+  The project-standard Barber Chop font and review-only gates remain the same.
+
 - Completed the local Codex manual-vision preview v2 slice. The generic
   renderer and TDD validator produce a 54.2-second silent MP4 from the same 23
   chronological content panels exactly once, with H.264 High, 1080x1920,
@@ -208,7 +226,8 @@ Notable changes per release. Dates are ISO 8601.
 - Enforced per-asset reuse caps, four-mode normal motion diversity, hard action
   cuts, bounded section transitions, uppercase punctuation-free one-word display
   cues, and media-end clamping while preserving spoken TTS punctuation.
-- Final renders use the fixed 1080x1920/30fps H.264 High yuv420p path and
+- Historical final renders use the fixed 1080x1920/30fps H.264 High yuv420p path;
+  new/default renders use 60fps and the versioned profile contract. Both paths
   normalize audio toward -14 LUFS with a -1.5 dBTP true-peak ceiling.
 - Rights/source checks remain hard blockers; unlicensed music and SFX are not
   selected for render.

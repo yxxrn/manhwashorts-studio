@@ -42,7 +42,7 @@ def valid_plan():
         "random_sampling": False,
         "publish_allowed": False,
         "rights_status": "internal review only",
-        "fps": 30,
+        "fps": 60,
         "width": 1080,
         "height": 1920,
         "shots": [
@@ -58,6 +58,13 @@ def valid_plan():
             {"start_shot": 0, "end_shot": 2, "text": "THE BATTLEFIELD IS COLLAPSING"},
         ],
     }
+
+
+def test_accepts_legacy_30_fps_plan_for_reproducibility():
+    plan = valid_plan()
+    plan["fps"] = 30
+    validated = module().validate_edit_plan(plan, manifest())
+    assert validated.fps == 30
 
 
 def test_accepts_exact_542_second_chronological_plan():

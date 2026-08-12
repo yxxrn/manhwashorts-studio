@@ -222,6 +222,15 @@ def _resolve_legacy_selector(module, selector):
     return ("value", resolved)
 
 
+def test_reference_profile_v2_is_the_60_fps_default_contract():
+    module = _profile_module()
+    profile = module.REFERENCE_MATCHED_SHORTS_V2
+    assert profile.profile_id == "reference_matched_shorts_v2"
+    assert profile.version == "2.0.0"
+    assert profile.final_fps == 60
+    assert module.resolve_reference_profile(profile.profile_id) is profile
+
+
 def test_reference_profile_resolution_is_explicit_and_legacy_safe():
     module = _profile_module()
     profile = module.REFERENCE_MATCHED_SHORTS_V1

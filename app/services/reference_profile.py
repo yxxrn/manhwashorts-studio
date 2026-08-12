@@ -1,6 +1,6 @@
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -121,6 +121,14 @@ REFERENCE_MATCHED_SHORTS_V1 = ReferenceProfileConfig(
 )
 
 
+REFERENCE_MATCHED_SHORTS_V2 = replace(
+    REFERENCE_MATCHED_SHORTS_V1,
+    profile_id="reference_matched_shorts_v2",
+    version="2.0.0",
+    final_fps=60,
+)
+
+
 def canonical_profile_json(profile: ReferenceProfileConfig) -> str:
     return json.dumps(
         asdict(profile),
@@ -141,4 +149,6 @@ def resolve_reference_profile(
 ) -> ReferenceProfileConfig | None:
     if profile_id == REFERENCE_MATCHED_SHORTS_V1.profile_id:
         return REFERENCE_MATCHED_SHORTS_V1
+    if profile_id == REFERENCE_MATCHED_SHORTS_V2.profile_id:
+        return REFERENCE_MATCHED_SHORTS_V2
     return None

@@ -113,7 +113,7 @@ class Project(Base, TimestampMixin):
     banned_words: Mapped[list[str]] = mapped_column(JSON, default=list)
     pronunciations: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     voice_id: Mapped[str] = mapped_column(String(80), default=DEFAULT_ENGLISH_VOICE_ID)
-    template: Mapped[str] = mapped_column(String(60), default="reference_matched_shorts_v1")
+    template: Mapped[str] = mapped_column(String(60), default="reference_matched_shorts_v2")
 
     error_message: Mapped[str] = mapped_column(Text, default="")
     archived: Mapped[bool] = mapped_column(Boolean, default=False)

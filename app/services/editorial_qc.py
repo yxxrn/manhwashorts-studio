@@ -17,7 +17,7 @@ from app.services import motion_director
 class EditorialQC:
     duration: float = 0.0
     resolution: str = "1080x1920"
-    fps: int = 30
+    fps: int = 60
     average_shot_duration: float = 0.0
     longest_static_segment: float = 0.0
     same_panel_same_crop_max: float = 0.0
@@ -202,6 +202,7 @@ def build_report(
     )
     report = EditorialQC(
         duration=round(duration, 3),
+        fps=int(getattr(profile, "final_fps", settings.video_fps)),
         average_shot_duration=round(average, 3),
         longest_static_segment=round(frozen, 3),
         same_panel_same_crop_max=round(longest_same, 3),
@@ -307,7 +308,8 @@ def build_report(
     report.full_playback_verified = bool(job_path and job_path.is_file() and _decode_ok(job_path))
     if not report.full_playback_verified:
         report.failures.append("full_playback_not_verified")
-    if report.audio_video_drift > (1 / 30):
+    expected_fps = report.fps or settings.video_fps
+    if report.audio_video_drift > (1 / expected_fps):
         report.failures.append("audio_video_drift_over_one_frame")
     if report.black_frame_duration > 0.4:
         report.failures.append("unintended_black_frame")

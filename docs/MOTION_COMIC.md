@@ -9,7 +9,7 @@ code that exists now; planning history belongs in Git history, not here.
 - Default text: English.
 - Default voice: American English, `en-US`, `the-explainer-american`.
 - Timeline clock: measured narration audio.
-- Output: `1080×1920`, `30 FPS`, H.264/AAC.
+- Output: `1080×1920`, `60 FPS` by default, H.264/AAC.
 - Target duration: `60–90s`; ideal `70–85s`.
 - Publication: explicit approval + rights + QC.
 - Determinism: identical input and seed produce the same plan.

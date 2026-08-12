@@ -107,7 +107,7 @@ Pillow prepares vertical crops and effects. FFmpeg composes the timeline and mux
 the audio master. Output contract:
 
 ```text
-1080×1920 · 30 FPS · H.264 · AAC
+1080×1920 · 60 FPS default · H.264 · AAC
 ```
 
 Scene failure fails the job. A concat-graph failure may use a hard-cut fallback;

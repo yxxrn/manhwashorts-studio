@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # --- Video defaults ---
     video_width: int = 1080
     video_height: int = 1920
-    video_fps: int = 30
+    video_fps: int = 60
     max_short_seconds: int = 90
     default_target_seconds: int = 75
 

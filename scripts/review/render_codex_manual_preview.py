@@ -17,6 +17,7 @@ MAX_DURATION_SECONDS = 60.0
 CAPTION_PATTERN = re.compile(r"[A-Z0-9]+(?: [A-Z0-9]+)*\Z")
 PREPARED_SIZE = (1296, 2304)
 OUTPUT_SIZE = (1080, 1920)
+SUPPORTED_FPS = (30, 60)
 
 
 @dataclass(frozen=True)
@@ -87,8 +88,8 @@ def validate_edit_plan(
         height = int(plan["height"])
     except (KeyError, TypeError, ValueError):
         raise _fail("preview.output_contract_invalid", "output geometry is invalid") from None
-    if (fps, width, height) != (30, *OUTPUT_SIZE):
-        raise _fail("preview.output_contract_invalid", "expected 1080x1920 at 30 fps")
+    if fps not in SUPPORTED_FPS or (width, height) != OUTPUT_SIZE:
+        raise _fail("preview.output_contract_invalid", "expected 1080x1920 at 30 or 60 fps")
 
     assets = _assets_by_order(manifest)
     if tuple(sorted(assets)) != tuple(range(24)):
