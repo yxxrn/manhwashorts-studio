@@ -1,6 +1,57 @@
 # Current status
 
-Updated: 2026-08-11
+Updated: 2026-08-12
+
+## Codex preview motion variants - 2026-08-12
+
+- Added deterministic mixed motion intents to the manual preview renderer and
+  edit plan: `push_in`, `pan_right`, `hold`, `pan_up`, `diagonal`, `pan_left`,
+  `pan_down`, and `pull_out`. Each shot has one monotonic intent; no reversal,
+  oscillation, shake, random motion, or crossfade was added.
+- Rendered comparison output at
+  `data/codex-vision-preview-motion-v4/codex-vision-preview-54s-silent.mp4`:
+  54.2 seconds, 60 FPS, H.264 High, 1080x1920, yuv420p, video-only, 69 audit
+  frames, and no blackdetect findings. Push/pull use real centered zoom via
+  `scale`+`crop`; pans move a visible 60px. SHA-256:
+  `68115f8379079144b697201fd56f48fe862739a73e10556eca77fb110e4c2750`.
+- This remains a manual review artifact with `publish_allowed=false` and
+  `rights_status=internal review only`; the previous v3 output remains intact
+  for comparison.
+
+## Codex manual-vision preview v2 - 2026-08-12
+
+- Completed the approved local review-only slice with the generic renderer at
+  `scripts/review/render_codex_manual_preview.py` and regression coverage in
+  `tests/test_codex_manual_preview.py`. The validator enforces the v2 contract,
+  exact source orders 1..23, normalized crops, uppercase punctuation-free
+  captions, 50-60 second duration, no random sampling, and
+  `publish_allowed=false`.
+- Historical v2 output remains at
+  `data/codex-vision-preview-50-60s-v2/codex-vision-preview-54s-silent.mp4`:
+  54.2 seconds, 23 chronological shots, video-only, H.264 High, 1080x1920,
+  30 FPS, and `yuv420p`. FFmpeg black-frame detection produced no findings.
+  This plan remains accepted as a historical v2 contract and is still
+  replayable by the renderer.
+- The new default-rate rerender is
+  `data/codex-vision-preview-60fps-v3/codex-vision-preview-54s-silent.mp4`:
+  54.2 seconds, 23 chronological shots, video-only, H.264 High, 1080x1920,
+  60 FPS, and `yuv420p`. Its SHA-256 is
+  `3a71492527bcfe568e334daa5e889b1acfb7cfdc6ab863ba2931a90294a325e8`;
+  black-frame detection produced no findings and the audit contains 69 frames.
+  New/default renders use the 60 FPS profile hash
+  `b19ce34537481428cc2c423ab35ab65fed1ff1941e2e753d04c018b7b392a870`.
+- The mandatory visual audit contains 69 deterministic start/mid/end frames
+  and a contact sheet. The v2 sidecar records the exact SHA-256
+  `54c282e30ceb9d668df37d2e70238f27980b07ccd55a4b4d4691159ded025f46`, manual
+  provenance from all six ordered contact sheets. Subtitles use the
+  project-standard `Barber Chop` font loaded explicitly from
+  `assets/fonts/BarberChop.otf`; `rights_status` remains
+  `internal review only`, and `publish_allowed=false`.
+- This is local execution against explicitly copied prepared JPGs; runtime
+  media, audit frames, contact sheets, manifests, and sidecars remain under
+  ignored `data/` and are not committed. The result is not provider-generated
+  StoryAnalysis/PanelRegion evidence, not a readiness claim, and not
+  publishable. Human visual acceptance remains a separate review boundary.
 
 ## Visual Task 7 exact-panel silent visual review wiring - 2026-08-11
 
@@ -342,7 +393,7 @@ Updated: 2026-08-11
 - Spoken narration keeps punctuation for TTS prosody while display subtitles
   are separate uppercase, punctuation-free, one-word Unicode-alphanumeric cues
   with source-word timing preserved through SRT, edits, and render inputs.
-- CPU FFmpeg render: 1080×1920, 30 FPS, H.264/AAC.
+- CPU FFmpeg render: 1080×1920, 60 FPS by default, H.264/AAC.
 - Persisted QC report, immutable override history, render leases, stale-job
   recovery, resource metrics, and cleanup.
 - Phase 2 editorial gates: deterministic panel penalties and asset reuse caps,
@@ -493,7 +544,8 @@ A render is review-only until all are true:
 4. Playback, codecs, dimensions, duration, audio, subtitle pixels, drift, and
    black-frame checks pass.
 5. Publication is explicitly confirmed by the user.
-6. Final delivery uses 1080x1920 30fps H.264 High/yuv420p with final audio
+6. Final delivery uses 1080x1920 60fps by default (or the explicitly selected
+   historical profile FPS) H.264 High/yuv420p with final audio
    normalization toward -14 LUFS and true peak at or below -1.5 dBTP.
 7. No unlicensed music or SFX is attached; rights/source checks remain hard blockers.
 

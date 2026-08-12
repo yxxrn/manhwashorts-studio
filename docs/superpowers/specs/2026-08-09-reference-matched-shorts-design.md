@@ -336,7 +336,7 @@ Acceptance requires all of the following:
 6. Every visible caption is exactly one uppercase punctuation-free lexical word, mapped to spoken timing, centered in the specified safe region, with the required styling, and no top sentence caption.
 7. Motion is subject-aware, smooth, monotonic per shot, bounded at 1.06/1.08 zoom, free of forbidden oscillation/shake modes, and passes frame telemetry QC.
 8. Four English auditions precede a missing-profile final render; a selected immutable voice profile is reused later; auditions are explicitly not chapter coverage.
-9. Final media is 1080x1920, 30fps, H.264, yuv420p, normalized toward -14 LUFS with true peak <= -1.5 dBTP, with no unlicensed music/SFX and rights/source gates unchanged.
+9. Final media is 1080x1920, 60fps by default (or the explicitly selected historical profile FPS), H.264, yuv420p, normalized toward -14 LUFS with true peak <= -1.5 dBTP, with no unlicensed music/SFX and rights/source gates unchanged.
 10. The isolated artifact set is complete and human review records remain separate from automated QC.
 11. A rights failure keeps publish_allowed=false even when all similarity and technical gates pass.
 

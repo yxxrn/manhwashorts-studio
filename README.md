@@ -26,7 +26,7 @@ authorized material → analysis → English script → American English VO
 - Five-beat commentary: hook, setup, conflict, twist, CTA.
 - Deterministic camera motion, crop, transitions, effects, and panel cooldown.
 - Audio is the timeline clock; subtitles follow measured speech.
-- CPU-first FFmpeg render: `1080×1920`, `30 FPS`, H.264/AAC.
+- CPU-first FFmpeg render: `1080×1920`, `60 FPS` by default, H.264/AAC.
 - Human approval before publication. Rights failures block release.
 - Offline defaults. BYOK LLM/TTS providers are optional.
 

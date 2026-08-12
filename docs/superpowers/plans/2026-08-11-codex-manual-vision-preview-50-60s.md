@@ -34,8 +34,8 @@
 ## Baseline Evidence
 
 - Current preview: `data/codex-vision-preview-20260811/codex-vision-preview-silent.mp4`
-- Current duration: `36.033333` seconds
-- Current dimensions/rate: `1080x1920`, H.264, `30/1` FPS, video-only
+- Historical v1 duration: `36.033333` seconds
+- Historical v1 dimensions/rate: `1080x1920`, H.264, `30/1` FPS, video-only
 - Current SHA-256: `2392a66cca39086cd69e0654a496a4ef1672b3025a7966518d885b4013b83ee9`
 - Current full-panel review: six ordered contact sheets covering source orders `0..23`
 - Current timeline: 23 chronological shots using source orders `1..23`
@@ -146,7 +146,7 @@ MAX_DURATION_SECONDS = 60.0
 CAPTION_PATTERN = re.compile(r"[A-Z0-9]+(?: [A-Z0-9]+)*\Z")
 ```
 
-The renderer must read crop coordinates and durations from the plan, use Pillow `ImageOps.fit(..., (1296, 2304))`, render each shot at 30 FPS, and concatenate with hard cuts. Motion must use a single linear crop direction per shot with a maximum displacement of 48 prepared-image pixels and no random module calls.
+The renderer must read crop coordinates and durations from the plan, use Pillow `ImageOps.fit(..., (1296, 2304))`, render each shot at 60 FPS, and concatenate with hard cuts. Motion must use a single linear crop direction per shot with a maximum displacement of 48 prepared-image pixels and no random module calls.
 
 - [ ] **Step 4: Run GREEN and static checks**
 
@@ -199,7 +199,7 @@ Copy the 23 normalized crops from the v1 ledger in chronological order. Pair the
   "random_sampling": false,
   "publish_allowed": false,
   "rights_status": "internal review only",
-  "fps": 30,
+  "fps": 60,
   "width": 1080,
   "height": 1920,
   "shots": [],
@@ -251,7 +251,7 @@ ffmpeg -v warning \
 sha256sum data/codex-vision-preview-50-60s-v2/codex-vision-preview-54s-silent.mp4
 ```
 
-Acceptance: one H.264 video stream, zero audio streams, 1080x1920, 30 FPS, duration within 50-60 seconds, no blackdetect findings.
+Acceptance: one H.264 video stream, zero audio streams, 1080x1920, 60 FPS for the default v3 rerender (the historical v2 artifact remains 30 FPS), duration within 50-60 seconds, no blackdetect findings.
 
 - [ ] **Step 3: Extract 10 percent, midpoint, and 90 percent frame from every shot**
 
@@ -339,7 +339,7 @@ Copy `.env` or credentials only through a separate secure process if actually ne
 - [ ] All 69 start/mid/end audit frames are balloon-free and padding-free.
 - [ ] English captions contain no punctuation and do not cross hard cuts.
 - [ ] Motion is monotonic, unidirectional, and free of visible shake.
-- [ ] Output is 1080x1920, 30 FPS, H.264, video-only, with no black frames.
+- [ ] Output is 1080x1920, 60 FPS by default, H.264, video-only, with no black frames.
 - [ ] Manual provenance, crop corrections, source checksums, and final hash are recorded.
 - [ ] `publish_allowed=false` and voice remains deferred.
 - [ ] Focused tests, non-slow tests, Ruff, compile, and diff checks pass.

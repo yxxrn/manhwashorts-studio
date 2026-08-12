@@ -104,7 +104,7 @@ def check_reference_output_profile(info: dict, profile) -> list[CheckResult]:
             _fail(
                 "reference.output_fps",
                 CheckSeverity.ERROR,
-                "Reference output frame rate is not 30 fps.",
+                f"Reference output frame rate is not {profile.final_fps} fps.",
                 {"expected": profile.final_fps, "actual": actual_fps},
             )
         )

@@ -2950,7 +2950,7 @@ def build_render_request(
     tts_svc.concat_audio(clip_paths, voice_path, gap=0.18)
     audio_duration = tts_svc.probe_duration(voice_path)
 
-    # Each scene clip is rendered as a rounded number of 30fps frames. Clamp
+    # Each scene clip is rendered as a rounded number of configured-FPS frames. Clamp
     # subtitles to that actual joined-media duration, not only the audio probe;
     # otherwise a final partial frame can leave a cue past the MP4 end.
     scene_end_times = [scene.end_time for scene in scenes]
