@@ -3,10 +3,11 @@
 Notable changes per release. Dates are ISO 8601.
 
 - Added deterministic mixed motion intents to the 60 FPS Codex manual preview:
-  `push_in`, directional pans, `hold`, `diagonal`, and `pull_out`. The new
+  `push_in`, directional pans, `hold`, `diagonal`, and `pull_out`. Push/pull
+  use centered `scale`+`crop` zoom; pans use a visible 60px displacement. The
   comparison render keeps hard cuts, Barber Chop subtitles, video-only output,
   69 audit frames, and review-only rights gates. Output SHA-256:
-  `96e053fb492aae4728ef5360ce03841d2473ed0e2e9382ebed36b13d1ebdc54f`.
+  `68115f8379079144b697201fd56f48fe862739a73e10556eca77fb110e4c2750`.
   No reversal, oscillation, shake, random motion, or publication behavior was
   added.
 
