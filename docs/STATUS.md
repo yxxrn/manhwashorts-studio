@@ -11,8 +11,9 @@ Updated: 2026-08-12
 - Rendered comparison output at
   `data/codex-vision-preview-motion-v4/codex-vision-preview-54s-silent.mp4`:
   54.2 seconds, 60 FPS, H.264 High, 1080x1920, yuv420p, video-only, 69 audit
-  frames, and no blackdetect findings. SHA-256:
-  `96e053fb492aae4728ef5360ce03841d2473ed0e2e9382ebed36b13d1ebdc54f`.
+  frames, and no blackdetect findings. Push/pull use real centered zoom via
+  `scale`+`crop`; pans move a visible 60px. SHA-256:
+  `68115f8379079144b697201fd56f48fe862739a73e10556eca77fb110e4c2750`.
 - This remains a manual review artifact with `publish_allowed=false` and
   `rights_status=internal review only`; the previous v3 output remains intact
   for comparison.

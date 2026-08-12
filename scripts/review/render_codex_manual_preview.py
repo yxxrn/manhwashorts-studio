@@ -187,24 +187,28 @@ def build_motion_filter(motion: str, duration: float) -> str:
     if duration <= 0.0:
         raise _fail("preview.motion_invalid", "motion duration must be positive")
     if motion == "hold":
-        x_expr, y_expr, width_expr, height_expr = "108", "192", "1080", "1920"
-    elif motion == "pan_left":
-        x_expr, y_expr, width_expr, height_expr = f"144-36*t/{duration}", "192", "1080", "1920"
-    elif motion == "pan_right":
-        x_expr, y_expr, width_expr, height_expr = f"72+36*t/{duration}", "192", "1080", "1920"
-    elif motion == "pan_up":
-        x_expr, y_expr, width_expr, height_expr = "108", f"228-36*t/{duration}", "1080", "1920"
-    elif motion == "pan_down":
-        x_expr, y_expr, width_expr, height_expr = "108", f"156+36*t/{duration}", "1080", "1920"
-    elif motion == "diagonal":
-        x_expr, y_expr, width_expr, height_expr = f"72+36*t/{duration}", f"156+36*t/{duration}", "1080", "1920"
-    elif motion == "push_in":
-        x_expr, y_expr = f"72+72*t/{duration}", f"144+96*t/{duration}"
-        width_expr, height_expr = "1080", "1920"
-    else:
-        x_expr, y_expr = f"144-72*t/{duration}", f"288-96*t/{duration}"
-        width_expr, height_expr = "1080", "1920"
-    return f"crop=w={width_expr}:h={height_expr}:x='{x_expr}':y='{y_expr}',format=yuv420p"
+        return "crop=1080:1920:108:192,format=yuv420p"
+    if motion == "pan_left":
+        return f"crop=1080:1920:x='144-60*t/{duration}':y=192,format=yuv420p"
+    if motion == "pan_right":
+        return f"crop=1080:1920:x='72+60*t/{duration}':y=192,format=yuv420p"
+    if motion == "pan_up":
+        return f"crop=1080:1920:x=108:y='228-60*t/{duration}',format=yuv420p"
+    if motion == "pan_down":
+        return f"crop=1080:1920:x=108:y='156+60*t/{duration}',format=yuv420p"
+    if motion == "diagonal":
+        return f"crop=1080:1920:x='72+60*t/{duration}':y='156+60*t/{duration}',format=yuv420p"
+    if motion == "push_in":
+        return (
+            f"scale=w='2*floor((1296+130*t/{duration})/2)':"
+            f"h='2*floor((2304+230*t/{duration})/2)':eval=frame,"
+            "crop=1080:1920:(iw-1080)/2:(ih-1920)/2,format=yuv420p"
+        )
+    return (
+        f"scale=w='2*floor((1426-130*t/{duration})/2)':"
+        f"h='2*floor((2534-230*t/{duration})/2)':eval=frame,"
+        "crop=1080:1920:(iw-1080)/2:(ih-1920)/2,format=yuv420p"
+    )
 
 
 def _run(command: Sequence[str]) -> None:
