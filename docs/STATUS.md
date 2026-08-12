@@ -2,6 +2,21 @@
 
 Updated: 2026-08-12
 
+## Codex preview motion variants - 2026-08-12
+
+- Added deterministic mixed motion intents to the manual preview renderer and
+  edit plan: `push_in`, `pan_right`, `hold`, `pan_up`, `diagonal`, `pan_left`,
+  `pan_down`, and `pull_out`. Each shot has one monotonic intent; no reversal,
+  oscillation, shake, random motion, or crossfade was added.
+- Rendered comparison output at
+  `data/codex-vision-preview-motion-v4/codex-vision-preview-54s-silent.mp4`:
+  54.2 seconds, 60 FPS, H.264 High, 1080x1920, yuv420p, video-only, 69 audit
+  frames, and no blackdetect findings. SHA-256:
+  `96e053fb492aae4728ef5360ce03841d2473ed0e2e9382ebed36b13d1ebdc54f`.
+- This remains a manual review artifact with `publish_allowed=false` and
+  `rights_status=internal review only`; the previous v3 output remains intact
+  for comparison.
+
 ## Codex manual-vision preview v2 - 2026-08-12
 
 - Completed the approved local review-only slice with the generic renderer at

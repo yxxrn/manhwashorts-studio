@@ -18,6 +18,16 @@ CAPTION_PATTERN = re.compile(r"[A-Z0-9]+(?: [A-Z0-9]+)*\Z")
 PREPARED_SIZE = (1296, 2304)
 OUTPUT_SIZE = (1080, 1920)
 SUPPORTED_FPS = (30, 60)
+SUPPORTED_MOTIONS = (
+    "hold",
+    "pan_left",
+    "pan_right",
+    "pan_up",
+    "pan_down",
+    "diagonal",
+    "push_in",
+    "pull_out",
+)
 
 
 @dataclass(frozen=True)
@@ -114,8 +124,8 @@ def validate_edit_plan(
         x0, y0, x1, y1 = crop_values
         if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
             raise _fail("preview.crop_invalid", "crop must be normalized and ordered")
-        if duration <= 0.0 or not motion:
-            raise _fail("preview.shot_invalid", "duration and motion are required")
+        if duration <= 0.0 or motion not in SUPPORTED_MOTIONS:
+            raise _fail("preview.motion_invalid", "duration or motion intent is invalid")
         if source_order not in assets:
             raise _fail("preview.source_order_coverage_invalid", "shot references unknown source order")
         shots.append(ValidatedShot(source_order, duration, crop_values, motion))
@@ -171,6 +181,32 @@ def _resolve_asset_path(asset: Mapping[str, object], manifest_path: Path) -> Pat
     raise FileNotFoundError(f"no local source for order {asset['source_order']}")
 
 
+def build_motion_filter(motion: str, duration: float) -> str:
+    if motion not in SUPPORTED_MOTIONS:
+        raise _fail("preview.motion_invalid", f"unsupported motion intent: {motion}")
+    if duration <= 0.0:
+        raise _fail("preview.motion_invalid", "motion duration must be positive")
+    if motion == "hold":
+        x_expr, y_expr, width_expr, height_expr = "108", "192", "1080", "1920"
+    elif motion == "pan_left":
+        x_expr, y_expr, width_expr, height_expr = f"144-36*t/{duration}", "192", "1080", "1920"
+    elif motion == "pan_right":
+        x_expr, y_expr, width_expr, height_expr = f"72+36*t/{duration}", "192", "1080", "1920"
+    elif motion == "pan_up":
+        x_expr, y_expr, width_expr, height_expr = "108", f"228-36*t/{duration}", "1080", "1920"
+    elif motion == "pan_down":
+        x_expr, y_expr, width_expr, height_expr = "108", f"156+36*t/{duration}", "1080", "1920"
+    elif motion == "diagonal":
+        x_expr, y_expr, width_expr, height_expr = f"72+36*t/{duration}", f"156+36*t/{duration}", "1080", "1920"
+    elif motion == "push_in":
+        x_expr, y_expr = f"72+72*t/{duration}", f"144+96*t/{duration}"
+        width_expr, height_expr = "1080", "1920"
+    else:
+        x_expr, y_expr = f"144-72*t/{duration}", f"288-96*t/{duration}"
+        width_expr, height_expr = "1080", "1920"
+    return f"crop=w={width_expr}:h={height_expr}:x='{x_expr}':y='{y_expr}',format=yuv420p"
+
+
 def _run(command: Sequence[str]) -> None:
     subprocess.run(list(command), check=True)
 
@@ -198,10 +234,7 @@ def render_preview(
             prepared_path = prepared_dir / f"shot-{index:02d}-order-{shot.source_order:02d}.jpg"
             prepared.save(prepared_path, quality=96, subsampling=0)
         output = shots_dir / f"shot-{index:02d}.mp4"
-        direction = 1 if index % 2 else -1
-        x_expr = f"108+{direction * 36}*t/{shot.duration}"
-        y_expr = "192"
-        vf = f"crop=1080:1920:x='{x_expr}':y='{y_expr}',format=yuv420p"
+        vf = build_motion_filter(shot.motion, shot.duration)
         _run([ffmpeg, "-y", "-v", "error", "-loop", "1", "-i", str(prepared_path), "-t", str(shot.duration), "-vf", vf, "-r", str(plan.fps), "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "18", str(output)])
         shot_paths.append(output)
     concat = output_dir / "concat.txt"

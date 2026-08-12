@@ -2,6 +2,15 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added deterministic mixed motion intents to the 60 FPS Codex manual preview:
+  `push_in`, directional pans, `hold`, `diagonal`, and `pull_out`. The new
+  comparison render keeps hard cuts, Barber Chop subtitles, video-only output,
+  69 audit frames, and review-only rights gates. Output SHA-256:
+  `96e053fb492aae4728ef5360ce03841d2473ed0e2e9382ebed36b13d1ebdc54f`.
+  No reversal, oscillation, shake, random motion, or publication behavior was
+  added.
+
+
 - Changed the project default render contract to 60 FPS. New projects resolve
   the versioned `reference_matched_shorts_v2` profile while the 30 FPS v1
   profile and historical artifacts remain resolvable and unchanged. The

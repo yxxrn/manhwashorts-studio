@@ -60,6 +60,20 @@ def valid_plan():
     }
 
 
+def test_supported_motion_filters_are_distinct_and_hold_is_stable():
+    loaded = module()
+    motions = loaded.SUPPORTED_MOTIONS
+    assert {"hold", "pan_left", "pan_right", "pan_up", "pan_down", "diagonal", "push_in", "pull_out"} <= set(motions)
+    filters = {motion: loaded.build_motion_filter(motion, 2.0) for motion in motions}
+    assert filters["hold"] == filters["hold"]
+    assert len(set(filters.values())) == len(filters)
+
+
+def test_rejects_unknown_motion_intent():
+    with pytest.raises(ValueError, match="preview.motion_invalid"):
+        module().build_motion_filter("shake", 2.0)
+
+
 def test_accepts_legacy_30_fps_plan_for_reproducibility():
     plan = valid_plan()
     plan["fps"] = 30
