@@ -1,6 +1,29 @@
 # Current status
 
-Updated: 2026-08-11
+Updated: 2026-08-12
+
+## Codex manual-vision preview v2 - 2026-08-12
+
+- Completed the approved local review-only slice with the generic renderer at
+  `scripts/review/render_codex_manual_preview.py` and regression coverage in
+  `tests/test_codex_manual_preview.py`. The validator enforces the v2 contract,
+  exact source orders 1..23, normalized crops, uppercase punctuation-free
+  captions, 50-60 second duration, no random sampling, and
+  `publish_allowed=false`.
+- The local output is
+  `data/codex-vision-preview-50-60s-v2/codex-vision-preview-54s-silent.mp4`:
+  54.2 seconds, 23 chronological shots, video-only, H.264 High, 1080x1920,
+  30 FPS, and `yuv420p`. FFmpeg black-frame detection produced no findings.
+- The mandatory visual audit contains 69 deterministic start/mid/end frames
+  and a contact sheet. The v2 sidecar records the exact SHA-256
+  `653dca216f1f36c1baaa8b188341c92846c2ee44a4b34170dbf2a0d1b31408da`, manual
+  provenance from all six ordered contact sheets, `rights_status` as
+  `internal review only`, and `publish_allowed=false`.
+- This is local execution against explicitly copied prepared JPGs; runtime
+  media, audit frames, contact sheets, manifests, and sidecars remain under
+  ignored `data/` and are not committed. The result is not provider-generated
+  StoryAnalysis/PanelRegion evidence, not a readiness claim, and not
+  publishable. Human visual acceptance remains a separate review boundary.
 
 ## Visual Task 7 exact-panel silent visual review wiring - 2026-08-11
 

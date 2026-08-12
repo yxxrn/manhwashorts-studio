@@ -2,6 +2,17 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Completed the local Codex manual-vision preview v2 slice. The generic
+  renderer and TDD validator produce a 54.2-second silent MP4 from the same 23
+  chronological content panels exactly once, with H.264 High, 1080x1920,
+  30 FPS, and `yuv420p`. The review package includes 69 deterministic
+  start/mid/end audit frames, a contact sheet, no blackdetect findings, and
+  SHA-256 `653dca216f1f36c1baaa8b188341c92846c2ee44a4b34170dbf2a0d1b31408da`.
+  Provenance is manual inspection of all six ordered contact sheets;
+  `publish_allowed=false` and `rights_status=internal review only` remain
+  enforced. Runtime media and audit artifacts stay under ignored `data/`; no
+  provider evidence, readiness, voice, or publication claim was added.
+
 - Added the next-agent implementation plan for a reproducible 50-60 second
   Codex manual-vision preview. The plan targets 54.2 seconds across the same
   23 chronological, non-repeated content panels; extracts a generic committed
