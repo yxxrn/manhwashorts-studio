@@ -16,8 +16,10 @@ Updated: 2026-08-12
   30 FPS, and `yuv420p`. FFmpeg black-frame detection produced no findings.
 - The mandatory visual audit contains 69 deterministic start/mid/end frames
   and a contact sheet. The v2 sidecar records the exact SHA-256
-  `653dca216f1f36c1baaa8b188341c92846c2ee44a4b34170dbf2a0d1b31408da`, manual
-  provenance from all six ordered contact sheets, `rights_status` as
+  `54c282e30ceb9d668df37d2e70238f27980b07ccd55a4b4d4691159ded025f46`, manual
+  provenance from all six ordered contact sheets. Subtitles use the
+  project-standard `Barber Chop` font loaded explicitly from
+  `assets/fonts/BarberChop.otf`; `rights_status` remains
   `internal review only`, and `publish_allowed=false`.
 - This is local execution against explicitly copied prepared JPGs; runtime
   media, audit frames, contact sheets, manifests, and sidecars remain under

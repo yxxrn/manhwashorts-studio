@@ -211,7 +211,7 @@ def render_preview(
     lines = [
         "[Script Info]\\nScriptType: v4.00+\\nPlayResX: 1080\\nPlayResY: 1920\\n",
         "[V4+ Styles]\\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\\n",
-        "Style: Main,Arial,82,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,-1,0,0,0,100,100,1,0,1,7,2,2,80,80,260,1\\n",
+        "Style: Main,Barber Chop,82,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,-1,0,0,0,100,100,1,0,1,7,2,2,80,80,260,1\\n",
         "[Events]\\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\\n",
     ]
     for caption in plan.captions:
@@ -227,7 +227,9 @@ def render_preview(
     ass.write_text("".join(lines).replace("\\n", "\n"), encoding="utf-8")
     final = output_dir / "codex-vision-preview-54s-silent.mp4"
     ass_filter = str(ass.resolve()).replace("\\", "/").replace(":", "\\:")
-    _run([ffmpeg, "-y", "-v", "error", "-i", str(assembled), "-vf", f"ass='{ass_filter}',format=yuv420p", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-color_range", "tv", "-preset", "medium", "-crf", "18", str(final)])
+    font_dir = (Path(__file__).parents[2] / "assets" / "fonts").resolve()
+    font_dir_filter = str(font_dir).replace("\\", "/").replace(":", "\\:")
+    _run([ffmpeg, "-y", "-v", "error", "-i", str(assembled), "-vf", f"ass='{ass_filter}':fontsdir='{font_dir_filter}',format=yuv420p", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-color_range", "tv", "-preset", "medium", "-crf", "18", str(final)])
     return final
 
 

@@ -7,8 +7,10 @@ Notable changes per release. Dates are ISO 8601.
   chronological content panels exactly once, with H.264 High, 1080x1920,
   30 FPS, and `yuv420p`. The review package includes 69 deterministic
   start/mid/end audit frames, a contact sheet, no blackdetect findings, and
-  SHA-256 `653dca216f1f36c1baaa8b188341c92846c2ee44a4b34170dbf2a0d1b31408da`.
-  Provenance is manual inspection of all six ordered contact sheets;
+  SHA-256 `54c282e30ceb9d668df37d2e70238f27980b07ccd55a4b4d4691159ded025f46`.
+  Subtitles explicitly load the project-standard `Barber Chop` font from
+  `assets/fonts/BarberChop.otf`. Provenance is manual inspection of all six
+  ordered contact sheets;
   `publish_allowed=false` and `rights_status=internal review only` remain
   enforced. Runtime media and audit artifacts stay under ignored `data/`; no
   provider evidence, readiness, voice, or publication claim was added.
