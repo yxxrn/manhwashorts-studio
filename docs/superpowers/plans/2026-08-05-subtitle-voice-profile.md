@@ -13,6 +13,7 @@
 - Implement docs/superpowers/specs/2026-08-05-vision-first-editorial-story-engine-design.md and the interfaces from Plan 1; do not redesign the story engine.
 - spoken_text retains Unicode punctuation for TTS. display_text removes every Unicode punctuation code point, including apostrophes, quotation marks, em dashes, and hyphens, while retaining the same word sequence and timing token alignment.
 - Every displayed, burned, SRT, and ASS string is derived from display_text and contains no Unicode punctuation. The TTS request receives spoken_text.
+- When voice is implemented, burned subtitles must use karaoke highlighting: the word currently being spoken is highlighted yellow while the remaining visible words stay white. Highlight timing must follow measured word timings from the selected voice audio, not guessed cue fractions; it must preserve the same display-word/source-word mapping and never alter spoken_text.
 - Four equal-length English audition samples use identical text, candidate settings, speed normalization, loudness normalization, and a persisted manifest. Candidate characters are fixed: calm documentarian, conversational analyst, cinematic storyteller, and sharp mystery narrator.
 - Auditions are required when no approved profile exists, and again only after explicit user request or configuration invalidation. A selected profile is immutable and reusable for later chapters/renders.
 - Final render is blocked without a selected approved profile. A profile selection cannot silently happen through a default candidate.
@@ -113,6 +114,7 @@ The profile gate returns a stable machine-readable reason such as voice_profile_
 - [ ] Assert punctuation removal uses unicodedata.category(character).startswith("P") for all Unicode punctuation categories, not a small ASCII replacement list.
 - [ ] Assert each display word maps to one source word index and keeps the original start/end timing. A deleted punctuation character must never shift a word boundary.
 - [ ] Assert TTS payload tests retain the original punctuation while subtitle payload tests receive display_text.
+- [ ] Add a karaoke timing regression fixture: the active spoken display word is yellow, inactive words are white, and each highlight transition matches measured word start/end times.
 - [ ] Run:
 
     cd /home/yusronrohmani/manhwashorts
@@ -169,6 +171,7 @@ Use a single transform at the timeline boundary:
 
   Expected RED: at least one current displayed/burned/exported string contains punctuation or loses a timing index.
 - [ ] Keep spoken_text on the cue and TTS payload. Derive display_text once and pass only display_text to build_ass, SRT, API subtitle responses, and any burned-text filter.
+- [ ] Build the ASS karaoke surface from measured word timings: active word yellow, already-spoken and upcoming words white, with deterministic transitions and no punctuation reintroduced into display text.
 - [ ] Preserve cue timing and source indexes while cleaning each word. Do not split or merge words as a side effect of punctuation removal.
 - [ ] Make validate_display_text return the exact offending Unicode code point categories and cue identifier. The validator is blocking for display/export paths.
 - [ ] Keep existing 47 word and two-line cue constraints. Run the projects current semantic-boundary logic after punctuation cleaning so display output does not create a new dangling token.
@@ -384,6 +387,7 @@ Implement:
 
   Expected GREEN: only intended source/tests/docs are staged; runtime audio, databases, user data, credentials, and OmniVoice files are absent.
 - [ ] Record the audition manifest, four runtime audio paths, measured durations, loudness, true peaks, candidate validity, and user-selection state. The samples compare voice characteristics only and do not represent chapter coverage.
+- [ ] Record the selected voice's measured word timings as the provenance for karaoke transitions; if word timings are unavailable or invalid, block karaoke burn-in rather than guessing highlight timing.
 - [ ] Stop and wait for explicit user selection. Do not begin a final chapter render or select a default candidate.
 - [ ] Commit the independently reviewable Plan 2 slice:
 
