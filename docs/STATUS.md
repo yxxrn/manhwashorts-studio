@@ -1,6 +1,64 @@
 # Current status
 
-Updated: 2026-08-13
+Updated: 2026-08-14
+
+## Real chapter Sharp Friend reference review - software green, editorial review pending - 2026-08-14
+
+- Executed the approved plan
+  `docs/superpowers/plans/2026-08-13-real-chapter-narrative-review.md` on
+  `codex/real-chapter-narrative-review-impl`. The implementation checkpoints
+  are `dfc0b689`, `8192cfc`, `53df791`, `9f4747e`, `241d618`, `efd7c7f`, and
+  `a14e06f`; all are local-only review tooling and validation changes. The
+  branch is pushed; this handoff is ready for the authorized fast-forward to
+  `main`.
+- The exact input is
+  `data/panel-review-9c1-20260809/manifest.json`. Every local panel image was
+  opened individually in order: source order `0` is title/front matter and is
+  excluded with reason `title_front_matter`; story orders `1..23` were all
+  examined exactly once. The immutable ledger has 24 entries and internal
+  canonical SHA-256
+  `4f49b408c451c453e9246848aff16da75cf0ac35b09963484a8a4250bc263de5`.
+- The ignored review bundle is
+  `B:/Project/manhwashorts-studio/data/real-chapter-narrative-review-20260814`.
+  Its key artifact hashes are: `source_ledger.json`
+  `2b7bf563f44476cb7ebaea7dd98144da4f3a839be2c5b043beb68fb6ebbea4cc`,
+  `narrative_review.json`
+  `637d826245dea321b534e14371cc339cd553432f937960d5c9fac5ad8cb03fef`,
+  `qc_report.json`
+  `b5b53616053dea24f9d89ddcccf96458eab6a66f793d28fff0db281962b8033c`,
+  `narration_spoken.txt`
+  `7fa9299d2982108bf6ce0e9cb1c63dd70b57e8a37e7751c2e80c13cf29588515`, and
+  `display_cues.json`
+  `c64eee7bbd655434f305065db0036102860da80cdf21fdf5217a8958ebc3dc31`.
+- The sanitized review is labeled exactly
+  `codex_manual_vision_reference_v1`; `production_evidence=false`,
+  `publish_allowed=false`, rights are `internal review only`, and
+  `approval_state=PENDING_EDITORIAL_REVIEW`. It contains seven causal beats,
+  five Sharp Friend passages, `ending_kind=open_question`, and a punctuated
+  English spoken script. `display_cues.json` independently derives 125
+  uppercase, punctuation-free one-word cues; the spoken file is unchanged.
+- Deterministic QC has zero blocking findings and one explicit advisory,
+  `narrative.word_count_target_warning`: the QC tokenizer reports 128 words
+  because apostrophes are split, while the spoken/display whitespace token
+  count is 125. The report records 51.2 seconds estimated duration, five
+  passages, report SHA-256
+  `18bc6edd687c0a1a0178f33ae5b3d0e6272feae77e28a2eccdeaa02c81726121`, and
+  remains pending human editorial review rather than being marked approved.
+- Verification after the real bundle workflow fix: the focused manual,
+  runner, and preview matrix is `42/42` passed; the Sharp Friend/v1/v2/v3
+  compatibility matrix is `131/131` passed; the current non-slow suite is
+  `859` selected (`15` slow tests deselected), `858` passed, `1` existing
+  Task9C1 real-panel skip, and `0` failed. Ruff, `compileall`,
+  `git diff --check`, no-churn comparison, and staged secret-scope review are
+  clean. Tests used the disposable external environment
+  `C:/Users/yxxrn/Documents/AutoManhwa/sharp-friend-v1-verify-venv` plus its
+  external Windows compatibility shim; neither is in Git.
+- No provider/network vision call, production `vision_evidence_v2` record,
+  voice/TTS/audio, subtitle/video render, UI, DB/schema/migration, source
+  image/media commit, publication, or deployment occurred. The next action
+  is Sol/user human review of the ordered images, sanitized observations,
+  spoken script, display cues, and QC report. Voice generation remains
+  explicitly deferred until that review and a separate provider decision.
 
 ## Slice E Task 5 - pipeline identity persistence - 2026-08-13
 

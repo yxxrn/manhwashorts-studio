@@ -2,6 +2,22 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Completed the local manual Sharp Friend reference-review boundary for the
+  existing 24-entry chapter ledger. Every image was opened in chronological
+  order: title/front matter order `0` is explicitly excluded and story orders
+  `1..23` are covered exactly once. The ignored bundle is
+  `data/real-chapter-narrative-review-20260814`; it carries provenance
+  `codex_manual_vision_reference_v1`, five evidence-linked passages,
+  punctuation-bearing `narration_spoken.txt`, independently derived
+  punctuation-free one-word `display_cues.json`, and deterministic QC with
+  zero blockers plus one advisory word-count warning. Approval remains
+  `PENDING_EDITORIAL_REVIEW`, `production_evidence=false`, and
+  `publish_allowed=false`. Focused review tests are 42/42, the Sharp Friend
+  compatibility matrix is 131/131, and the current non-slow suite is 859
+  selected with 858 passed, 1 existing skip, and 0 failures. No provider,
+  voice/TTS, audio, render, DB, UI, source-media commit, or publication work
+  was performed.
+
 - Added Slice E Task 6 review-only coverage for the Sharp Friend narrative
   gate. Explicit approval accepts consequence and open-question endings,
   reruns screening after edits, preserves ordered panel evidence and
