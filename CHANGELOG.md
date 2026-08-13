@@ -2,6 +2,15 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added Slice E Task 6 review-only coverage for the Sharp Friend narrative
+  gate. Explicit approval accepts consequence and open-question endings,
+  reruns screening after edits, preserves ordered panel evidence and
+  punctuation-bearing spoken text, and rejects CTA, hype, copied dialogue,
+  missing evidence, unqualified interpretation, and ending mismatches before
+  approval. The isolated parent RED was 12/12 intended failures and GREEN is
+  12/12. No provider, voice, audio, timeline, subtitle, render, UI, DB, or
+  migration behavior was added.
+
 - Added Slice E Task 5 pipeline integration for the explicitly selected
   `sharp_friend_v1` identity. Analysis requests, persisted reconciliation,
   script materialization, approval, and safe status now carry verified profile

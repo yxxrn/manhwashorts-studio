@@ -31,6 +31,26 @@ Updated: 2026-08-13
   database/schema/migration, voice/TTS, subtitle, audio, render, or UI
   behavior was added.
 
+## Slice E Task 6 - narrative review gate - 2026-08-13
+
+- Added `tests/test_narrative_review.py` for the final review boundary. It
+  proves consequence and open-question endings can be explicitly approved,
+  user edits are screened again, all ordered panel evidence remains linked,
+  and invalid CTA, generic-hype, copied-dialogue, claim, qualification, and
+  ending contracts fail before a `ScriptVersion` is materialized or approved.
+- Spoken passage text remains punctuation-bearing and does not gain a
+  `display_text` field. Display derivation remains the later timeline
+  representation; this slice does not invoke voice generation, TTS, timeline,
+  rendering, or any provider.
+- Task 6 TDD RED was run in an isolated detached checkout at parent `d26606d`:
+  12 collected, 0 passed, 12 intended body failures, collection clean. GREEN
+  is 12/12 in the live worktree. The combined Slice E/analyzer/vision/API
+  matrix is 327/327 passed; the final non-slow suite is 825 collected,
+  824 passed, 1 existing Task9C1 real-panel skip, 0 failed. No provider,
+  credential, DB/schema/migration, media, subtitle, voice, or audio behavior
+  was added. The next approved boundary is deferred provider/voice work only
+  after a separate product decision; publish rights remain blocked.
+
 ## Sharp Friend v1 narrative identity - implementation closed - 2026-08-13
 
 - Completed the committed Slice D plan on
@@ -66,10 +86,9 @@ Updated: 2026-08-13
   `00084ab`, and `b2f1fef`; the default-profile gate correction and this status
   closure are included in the release closure commit. The rollback point for the Sharp Friend
   implementation is `5eafd18c4e29819a11bdfbbf55834ce7a022ef47`.
-- No provider call, pipeline/vision-adapter wiring, database/schema/migration,
-  API, voice/TTS, subtitle, audio, or render behavior was added. Slice E remains
-  the next approved boundary for advisory naturalness metrics, synthesis/API
-  wiring, and explicit human-review integration; voice generation remains
+- No provider call, database/schema/migration, voice/TTS, subtitle, audio, or
+  render behavior was added in Slice D. Slice E Task 5/6 synthesis/API and
+  explicit human-review wiring is recorded above; voice generation remains
   deferred.
 
 ## Slice E Task 4 - naturalness screening - 2026-08-13
