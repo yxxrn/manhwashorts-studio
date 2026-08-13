@@ -6,12 +6,12 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from PIL import Image
-
 
 PROVENANCE_KIND = "codex_manual_vision_reference_v1"
 INTERNAL_REVIEW_RIGHTS = "internal review only"
@@ -59,6 +59,35 @@ class ManualReviewLedger:
     rights_status: str
     entries: tuple[SourceLedgerEntry, ...]
     ledger_sha256: str
+
+
+@dataclass(frozen=True)
+class ManualPanelObservation:
+    source_order: int
+    source_asset_id: str
+    panel_id: str
+    visible_summary: str
+    visible_entities: tuple[str, ...]
+    actions: tuple[str, ...]
+    setting_or_continuity: str
+    dialogue_present: bool
+    dialogue_paraphrase: str
+    uncertainties: tuple[str, ...]
+    confidence: str
+    evidence_status: str = "manual_visual_review"
+    region_bounds: tuple[int, int, int, int] = (0, 0, 1, 1)
+    dialogue_or_ocr: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ManualNarrativeReview:
+    panel_observations: tuple[ManualPanelObservation, ...]
+    chapter_map: Mapping[str, object]
+    passages: tuple[Mapping[str, object], ...]
+    ending_kind: str
+    unresolved_question: str
+    spoken_text: str
+    claims: tuple[Mapping[str, object], ...] = ()
 
 
 def _fail(code: str, message: str = "manual review input is invalid") -> None:
@@ -345,10 +374,8 @@ def _write_atomic(path: Path, text: str) -> None:
         temporary.write_text(text, encoding="utf-8", newline="\n")
         temporary.replace(path)
     except OSError:
-        try:
+        with suppress(OSError):
             temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
         _fail("review.bundle_write_failed")
 
 
@@ -447,3 +474,388 @@ def read_review_bundle(root: Path, *, ledger: ManualReviewLedger) -> dict[str, o
         "display_cues": display_cues,
         "qc_report": qc_report,
     }
+
+
+def _string_tuple(value: Any, code: str, *, allow_empty: bool = True) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        _fail(code)
+    result = tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
+    if len(result) != len(value) or (not allow_empty and not result):
+        _fail(code)
+    return result
+
+
+def validate_panel_observations(
+    ledger: ManualReviewLedger,
+    observations: Sequence[Mapping[str, object]],
+) -> tuple[ManualPanelObservation, ...]:
+    """Validate one cautious, manual observation for every immutable ledger entry."""
+
+    if not isinstance(observations, Sequence) or isinstance(observations, (str, bytes)):
+        _fail("review.panel_coverage_invalid")
+    if len(observations) != len(ledger.entries):
+        _fail("review.panel_coverage_invalid")
+    result: list[ManualPanelObservation] = []
+    for index, raw_value in enumerate(observations):
+        raw = _mapping(raw_value, "review.panel_observation_invalid")
+        entry = ledger.entries[index]
+        if raw.get("source_order") != entry.source_order:
+            _fail("review.panel_coverage_invalid")
+        if raw.get("source_asset_id") != entry.source_asset_id:
+            _fail("review.panel_lineage_invalid")
+        if raw.get("panel_id") != entry.panel_id:
+            _fail("review.evidence_foreign")
+        summary = _nonempty(raw.get("visible_summary"), "review.observation_summary_missing")
+        entities = _string_tuple(raw.get("visible_entities", []), "review.observation_entities_invalid")
+        actions = _string_tuple(raw.get("actions", []), "review.observation_actions_invalid")
+        setting = _nonempty(
+            raw.get("setting_or_continuity"), "review.observation_continuity_missing"
+        )
+        dialogue_present = raw.get("dialogue_present")
+        if not isinstance(dialogue_present, bool):
+            _fail("review.observation_dialogue_invalid")
+        dialogue_paraphrase = str(raw.get("dialogue_paraphrase", ""))
+        if dialogue_present and not dialogue_paraphrase.strip():
+            _fail("review.dialogue_paraphrase_missing")
+        if not dialogue_present and dialogue_paraphrase.strip():
+            _fail("review.source_text_leak")
+        uncertainties = _string_tuple(
+            raw.get("uncertainties", []), "review.observation_uncertainty_invalid"
+        )
+        confidence = _nonempty(raw.get("confidence"), "review.observation_confidence_invalid")
+        if confidence not in {"high", "medium", "low"}:
+            _fail("review.observation_confidence_invalid")
+        evidence_status = raw.get("evidence_status")
+        if evidence_status != "manual_visual_review":
+            _fail("review.evidence_status_invalid")
+        dialogue_or_ocr = _string_tuple(
+            raw.get("dialogue_or_ocr", []), "review.dialogue_evidence_invalid"
+        )
+        if index == 0:
+            if entry.included_in_story or entry.exclusion_reason != "title_front_matter":
+                _fail("review.title_scope_invalid")
+        elif not actions:
+            _fail("review.observation_actions_missing")
+        result.append(
+            ManualPanelObservation(
+                source_order=entry.source_order,
+                source_asset_id=entry.source_asset_id,
+                panel_id=entry.panel_id,
+                visible_summary=summary,
+                visible_entities=entities,
+                actions=actions,
+                setting_or_continuity=setting,
+                dialogue_present=dialogue_present,
+                dialogue_paraphrase=dialogue_paraphrase.strip(),
+                uncertainties=uncertainties,
+                confidence=confidence,
+                region_bounds=(0, 0, entry.width, entry.height),
+                dialogue_or_ocr=dialogue_or_ocr,
+            )
+        )
+    if tuple(item.source_order for item in result) != EXPECTED_SOURCE_ORDERS:
+        _fail("review.panel_coverage_invalid")
+    return tuple(result)
+
+
+def _positive_orders(value: Any, code: str) -> tuple[int, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        _fail(code)
+    orders = tuple(value)
+    if not orders or any(isinstance(item, bool) or not isinstance(item, int) for item in orders):
+        _fail(code)
+    if len(set(orders)) != len(orders) or any(item not in range(1, 24) for item in orders):
+        _fail(code)
+    return orders
+
+
+def _panel_id_tuple(
+    value: Any, expected: set[str], code: str
+) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        _fail(code)
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item in expected:
+            result.append(item)
+        elif isinstance(item, int) and not isinstance(item, bool) and 0 <= item < 24:
+            candidate = f"panel-{item:02d}"
+            if candidate not in expected:
+                _fail(code)
+            result.append(candidate)
+        else:
+            _fail(code)
+    if not result or len(set(result)) != len(result):
+        _fail(code)
+    return tuple(result)
+
+
+def validate_chapter_map(
+    observations: Sequence[ManualPanelObservation],
+    chapter_map: Mapping[str, object],
+) -> None:
+    """Require a qualified causal map covering every story order exactly once."""
+
+    if not isinstance(chapter_map, Mapping):
+        _fail("review.chapter_map_invalid")
+    beats = chapter_map.get("beats")
+    if not isinstance(beats, list) or not beats:
+        _fail("review.chapter_map_invalid")
+    beat_ids: set[str] = set()
+    covered: list[int] = []
+    for raw_value in beats:
+        beat = _mapping(raw_value, "review.chapter_map_invalid")
+        beat_id = _nonempty(beat.get("beat_id"), "review.chapter_map_invalid")
+        if beat_id in beat_ids:
+            _fail("review.chapter_map_invalid")
+        beat_ids.add(beat_id)
+        orders = _positive_orders(beat.get("panel_orders"), "review.chapter_map_invalid")
+        evidence_refs = _positive_orders(beat.get("evidence_refs"), "review.chapter_map_invalid")
+        if not set(orders) <= set(evidence_refs):
+            _fail("review.chapter_map_invalid")
+        for field in ("visible_change", "stakes", "qualification"):
+            _nonempty(beat.get(field), "review.chapter_map_invalid")
+        covered.extend(orders)
+    if set(covered) != set(range(1, 24)):
+        _fail("review.chapter_map_invalid")
+    story_spine = _mapping(chapter_map.get("story_spine"), "review.chapter_map_invalid")
+    for field in (
+        "who_wants_what",
+        "obstacle",
+        "decision",
+        "consequence",
+        "changed_stakes",
+        "unresolved_question",
+    ):
+        _nonempty(story_spine.get(field), "review.chapter_map_invalid")
+    causal_chain = chapter_map.get("causal_chain")
+    if not isinstance(causal_chain, list) or not causal_chain:
+        _fail("review.chapter_map_invalid")
+    for raw_value in causal_chain:
+        link = _mapping(raw_value, "review.chapter_map_invalid")
+        if link.get("from_beat") not in beat_ids or link.get("to_beat") not in beat_ids:
+            _fail("review.chapter_map_invalid")
+        _nonempty(link.get("relationship"), "review.chapter_map_invalid")
+        _positive_orders(link.get("evidence_refs"), "review.chapter_map_invalid")
+    coverage = _mapping(chapter_map.get("coverage"), "review.chapter_map_invalid")
+    if tuple(coverage.get("story_orders_required", ())) != tuple(range(1, 24)):
+        _fail("review.chapter_map_invalid")
+    if tuple(coverage.get("story_orders_covered", ())) != tuple(range(1, 24)):
+        _fail("review.chapter_map_invalid")
+
+
+def _passage_text(passage: Mapping[str, object]) -> str:
+    return _nonempty(passage.get("text", passage.get("spoken_text")), "narrative.text_invalid")
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", text.casefold(), flags=re.UNICODE)
+
+
+def _has_four_word_sequence(left: str, right: str) -> bool:
+    left_words = _words(left)
+    right_words = _words(right)
+    ngrams = {
+        tuple(right_words[index : index + 4])
+        for index in range(max(0, len(right_words) - 3))
+    }
+    return any(
+        tuple(left_words[index : index + 4]) in ngrams
+        for index in range(max(0, len(left_words) - 3))
+    )
+
+
+def build_manual_analyzer_projection(
+    observations: Sequence[ManualPanelObservation],
+    chapter_map: Mapping[str, object],
+    review: ManualNarrativeReview,
+) -> dict[str, object]:
+    """Build a sanitized six-key v3 document for local validation only."""
+
+    expected = tuple(item.panel_id for item in observations)
+    if len(expected) != 24 or len(set(expected)) != 24:
+        _fail("review.panel_lineage_invalid")
+    coverage_hash = hashlib.sha256("|".join(expected).encode("utf-8")).hexdigest()
+    projected_observations = []
+    for index, observation in enumerate(observations):
+        projected_observations.append(
+            {
+                "panel_id": observation.panel_id,
+                "source_asset_id": observation.source_asset_id,
+                "strip_region_id": observation.panel_id,
+                "source_index": index,
+                "region_bounds": {
+                    "x": observation.region_bounds[0],
+                    "y": observation.region_bounds[1],
+                    "width": observation.region_bounds[2],
+                    "height": observation.region_bounds[3],
+                },
+                "coverage_map_version": PROVENANCE_KIND,
+                "coverage_map_hash": coverage_hash,
+                "visible_facts": [observation.visible_summary, *observation.actions],
+                "dialogue_or_ocr": list(observation.dialogue_or_ocr),
+                "inferences": [observation.setting_or_continuity],
+                "uncertainties": list(observation.uncertainties),
+                "evidence_refs": list(expected),
+            }
+        )
+    claims = [dict(claim) for claim in review.claims]
+    if not claims:
+        _fail("review.evidence_missing")
+    for claim in claims:
+        if set(claim) != {
+            "claim_id",
+            "claim_type",
+            "text",
+            "qualification",
+            "evidence_panel_ids",
+        }:
+            _fail("review.evidence_missing")
+    causal_links = []
+    for link in chapter_map["causal_chain"]:
+        refs = list(link["evidence_refs"])
+        causal_links.append(
+            {
+                "from_panel_id": expected[refs[0]],
+                "to_panel_id": expected[refs[-1]],
+                "reason": link["relationship"],
+                "evidence_panel_ids": [expected[ref] for ref in refs],
+            }
+        )
+    entities = []
+    for entity_index, observation in enumerate(observations):
+        name = observation.visible_entities[0] if observation.visible_entities else "visible subject"
+        entities.append(
+            {
+                "entity_id": f"manual-entity-{entity_index}",
+                "canonical_name": name,
+                "aliases": [],
+                "panel_ids": list(expected),
+            }
+        )
+    passages = []
+    for passage in review.passages:
+        passages.append(
+            {
+                "passage_id": passage["passage_id"],
+                "editorial_role": passage["editorial_role"],
+                "text": _passage_text(passage),
+                "claim_ids": list(passage["claim_ids"]),
+                "evidence_panel_ids": list(passage["evidence_panel_ids"]),
+            }
+        )
+    return {
+        "observations": projected_observations,
+        "continuity_ledger": {
+            "chunks": [{"chunk_id": "manual-all-panels", "panel_ids": list(expected)}],
+            "entities": entities,
+            "motives": [],
+            "state_changes": [],
+            "causal_links": causal_links,
+            "reconciled_after_final_chunk": True,
+        },
+        "evidence_graph": {"claims": claims},
+        "coverage_manifest": {
+            "total_panels": 24,
+            "processed_panels": 24,
+            "panel_ids": list(expected),
+            "source_content_coverage_ratio": 1.0,
+            "unresolved_material_area": 0,
+            "material_unresolved_regions": [],
+            "reconciliation_complete": True,
+        },
+        "narrative_outline": {
+            "story_spine": dict(chapter_map["story_spine"]),
+            "ending_kind": review.ending_kind,
+        },
+        "script_passages": passages,
+    }
+
+
+def validate_manual_narrative(
+    review: ManualNarrativeReview,
+    *,
+    ledger: ManualReviewLedger,
+) -> None:
+    """Validate the manual narrative through the explicit Sharp Friend v3 contract."""
+
+    observations = review.panel_observations
+    if len(observations) != 24 or tuple(item.source_order for item in observations) != EXPECTED_SOURCE_ORDERS:
+        _fail("review.panel_coverage_invalid")
+    validate_chapter_map(observations, review.chapter_map)
+    if not 4 <= len(review.passages) <= 6:
+        _fail("narrative.passage_count_invalid")
+    if len({passage.get("passage_id") for passage in review.passages}) != len(review.passages):
+        _fail("narrative.passage_invalid")
+    if len({passage.get("editorial_role") for passage in review.passages}) != len(review.passages):
+        _fail("narrative.passage_invalid")
+    claim_map = {str(claim.get("claim_id")): claim for claim in review.claims}
+    if len(claim_map) != len(review.claims) or not claim_map:
+        _fail("narrative.unsupported_claim")
+    for claim in review.claims:
+        claim_type = claim.get("claim_type")
+        _nonempty(claim.get("text"), "narrative.unsupported_claim")
+        claim_refs = claim.get("evidence_panel_ids")
+        if not claim_refs:
+            _fail("review.evidence_missing")
+        _panel_id_tuple(claim_refs, {item.panel_id for item in observations}, "review.evidence_foreign")
+        if claim_type == "interpretation" and not str(claim.get("qualification", "")).strip():
+            _fail("narrative.interpretation_unqualified")
+    passage_texts = []
+    for passage in review.passages:
+        text = _passage_text(passage)
+        passage_texts.append(text)
+        claim_ids = _string_tuple(passage.get("claim_ids"), "review.evidence_missing", allow_empty=False)
+        raw_evidence_refs = passage.get("evidence_panel_ids")
+        if not raw_evidence_refs:
+            _fail("review.evidence_missing")
+        evidence_refs = _panel_id_tuple(
+            raw_evidence_refs,
+            {item.panel_id for item in observations},
+            "review.evidence_foreign",
+        )
+        if not set(claim_ids) <= set(claim_map):
+            _fail("narrative.unsupported_claim")
+        required = set().union(*(set(claim_map[item]["evidence_panel_ids"]) for item in claim_ids))
+        if not required <= set(evidence_refs):
+            _fail("review.evidence_missing")
+    for observation in observations:
+        if any(_has_four_word_sequence(text, dialogue) for text in passage_texts for dialogue in observation.dialogue_or_ocr):
+            _fail("narrative.balloon_dialogue_copied")
+    spoken_text = _nonempty(review.spoken_text, "narrative.text_invalid")
+    if spoken_text != " ".join(passage_texts):
+        _fail("narrative.display_derivation_invalid")
+    lowered = spoken_text.casefold()
+    if re.search(r"\b(?:subscribe|follow for more|please like|comment below)\b", lowered):
+        _fail("narrative.cta")
+    if any(marker in lowered for marker in ("epic battle", "unstoppable attack", "insane power")):
+        _fail("narrative.generic_hype")
+    final_text = passage_texts[-1].rstrip()
+    unresolved = _nonempty(review.unresolved_question, "narrative.ending_invalid")
+    if review.ending_kind == "open_question":
+        if not final_text.endswith("?"):
+            _fail("narrative.ending_invalid")
+    elif (
+        review.ending_kind not in {"cliffhanger", "consequence", "open_question"}
+        or (
+            review.ending_kind in {"cliffhanger", "consequence"}
+            and final_text.endswith("?")
+        )
+    ):
+        _fail("narrative.ending_invalid")
+    if not derive_display_cues(spoken_text):
+        _fail("narrative.display_derivation_invalid")
+    projection = build_manual_analyzer_projection(observations, review.chapter_map, review)
+    projection["narrative_outline"]["story_spine"]["unresolved_question"] = unresolved
+    try:
+        from app.services.analyzer_contract import validate_analyzer_output
+
+        validate_analyzer_output(
+            projection,
+            expected_panel_ids=tuple(item.panel_id for item in observations),
+            narrative_profile_id="sharp_friend_v1",
+        )
+    except Exception as exc:
+        if isinstance(exc, ManualReviewError):
+            raise
+        _fail("narrative.contract_invalid")
