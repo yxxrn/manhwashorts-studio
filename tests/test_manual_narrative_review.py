@@ -106,6 +106,25 @@ def test_valid_ledger_requires_title_and_all_story_orders(valid_manifest):
     assert ledger.publish_allowed is False
 
 
+def test_manifest_accepts_structured_source_coverage(valid_manifest, tmp_path):
+    module = _module()
+    manifest_path, review_root = valid_manifest
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    orders = list(range(24))
+    manifest["source_order_coverage"] = {
+        "first": 0,
+        "last": 23,
+        "expected": orders,
+        "actual": orders,
+        "complete": True,
+    }
+    structured_path = _write_json(tmp_path / "structured-manifest.json", manifest)
+
+    ledger = module.load_source_ledger(structured_path, base_dir=review_root)
+
+    assert [entry.source_order for entry in ledger.entries] == orders
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["duplicate", "missing", "out_of_order", "unknown_path", "checksum", "dimension"],
@@ -224,6 +243,9 @@ def test_bundle_reader_allows_known_prepare_metadata(tmp_path, valid_manifest):
     module.write_review_bundle(output, _valid_bundle(ledger), ledger=ledger)
     (output / "source_root.txt").write_text(str(review_root), encoding="utf-8")
     (output / "panel_observations_template.json").write_text("[]", encoding="utf-8")
+    (output / "observations.json").write_text("[]", encoding="utf-8")
+    (output / "chapter-map.json").write_text("{}", encoding="utf-8")
+    (output / "narrative.json").write_text("{}", encoding="utf-8")
 
     loaded = module.read_review_bundle(output, ledger=ledger)
 

@@ -25,7 +25,15 @@ BUNDLE_FILES = (
     "display_cues.json",
     "qc_report.json",
 )
-_PREPARE_METADATA_FILES = frozenset({"source_root.txt", "panel_observations_template.json"})
+_PREPARE_METADATA_FILES = frozenset(
+    {
+        "source_root.txt",
+        "panel_observations_template.json",
+        "observations.json",
+        "chapter-map.json",
+        "narrative.json",
+    }
+)
 
 
 class ManualReviewError(ValueError):
@@ -281,6 +289,18 @@ def load_source_ledger(path: Path, *, base_dir: Path) -> ManualReviewLedger:
     if document.get("asset_count", len(assets)) != len(assets):
         _fail("review.source_coverage_invalid")
     declared_orders = document.get("source_order_coverage")
+    if isinstance(declared_orders, Mapping):
+        expected_orders = declared_orders.get("expected")
+        actual_orders = declared_orders.get("actual")
+        if (
+            declared_orders.get("first") != EXPECTED_SOURCE_ORDERS[0]
+            or declared_orders.get("last") != EXPECTED_SOURCE_ORDERS[-1]
+            or declared_orders.get("complete") is not True
+            or tuple(expected_orders or ()) != EXPECTED_SOURCE_ORDERS
+            or tuple(actual_orders or ()) != EXPECTED_SOURCE_ORDERS
+        ):
+            _fail("review.source_coverage_invalid")
+        declared_orders = expected_orders
     if declared_orders is not None and tuple(declared_orders) != EXPECTED_SOURCE_ORDERS:
         _fail("review.source_coverage_invalid")
     entries = tuple(
