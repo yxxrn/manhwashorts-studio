@@ -127,4 +127,3 @@ def test_ledger_hash_is_deterministic_and_excludes_derived_hash(valid_manifest):
     assert module.canonical_ledger_json(first) == module.canonical_ledger_json(second)
     assert first.ledger_sha256 == second.ledger_sha256
     assert "ledger_sha256" not in module.canonical_ledger_json(first)
-
