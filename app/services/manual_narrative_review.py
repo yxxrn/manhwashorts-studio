@@ -25,6 +25,7 @@ BUNDLE_FILES = (
     "display_cues.json",
     "qc_report.json",
 )
+_PREPARE_METADATA_FILES = frozenset({"source_root.txt", "panel_observations_template.json"})
 
 
 class ManualReviewError(ValueError):
@@ -429,7 +430,7 @@ def read_review_bundle(root: Path, *, ledger: ManualReviewLedger) -> dict[str, o
         names = {path.name for path in root.iterdir() if path.is_file()}
     except OSError:
         _fail("review.bundle_missing")
-    if names != set(BUNDLE_FILES):
+    if not set(BUNDLE_FILES).issubset(names) or names - set(BUNDLE_FILES) - _PREPARE_METADATA_FILES:
         _fail("review.bundle_files_invalid")
     try:
         source_ledger = json.loads((root / "source_ledger.json").read_text(encoding="utf-8"))

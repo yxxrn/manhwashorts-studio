@@ -216,6 +216,20 @@ def test_bundle_round_trip_preserves_spoken_text_and_derived_cues(tmp_path, vali
     ]
 
 
+def test_bundle_reader_allows_known_prepare_metadata(tmp_path, valid_manifest):
+    module = _module()
+    manifest_path, review_root = valid_manifest
+    ledger = module.load_source_ledger(manifest_path, base_dir=review_root)
+    output = tmp_path / "bundle"
+    module.write_review_bundle(output, _valid_bundle(ledger), ledger=ledger)
+    (output / "source_root.txt").write_text(str(review_root), encoding="utf-8")
+    (output / "panel_observations_template.json").write_text("[]", encoding="utf-8")
+
+    loaded = module.read_review_bundle(output, ledger=ledger)
+
+    assert loaded["narration_spoken"] == "Why can't Jin-Woo move?"
+
+
 @pytest.mark.parametrize("filename", ["qc_report.json", "chapter_map.json"])
 def test_bundle_rejects_missing_or_extra_files(tmp_path, valid_manifest, filename):
     module = _module()
