@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -15,6 +16,15 @@ from PIL import Image
 PROVENANCE_KIND = "codex_manual_vision_reference_v1"
 INTERNAL_REVIEW_RIGHTS = "internal review only"
 EXPECTED_SOURCE_ORDERS = tuple(range(24))
+BUNDLE_FILES = (
+    "source_ledger.json",
+    "panel_understanding.json",
+    "chapter_map.json",
+    "narrative_review.json",
+    "narration_spoken.txt",
+    "display_cues.json",
+    "qc_report.json",
+)
 
 
 class ManualReviewError(ValueError):
@@ -257,3 +267,183 @@ def load_source_ledger(path: Path, *, base_dir: Path) -> ManualReviewLedger:
         ledger_sha256="",
     )
     return validate_source_ledger(ledger, base_dir=base_dir)
+
+
+def derive_display_cues(spoken_text: str) -> tuple[dict[str, object], ...]:
+    """Derive one punctuation-free display word from each spoken token."""
+
+    from app.services.timeline import normalize_display_text
+
+    cues: list[dict[str, object]] = []
+    for spoken_token_index, token in enumerate(re.findall(r"\S+", str(spoken_text))):
+        display_text = normalize_display_text(token)
+        if not display_text:
+            continue
+        if " " in display_text or not display_text.isalnum() or display_text != display_text.upper():
+            _fail("review.display_derivation_invalid")
+        cues.append(
+            {
+                "spoken_token_index": spoken_token_index,
+                "display_text": display_text,
+                "timing_status": "not_rendered",
+            }
+        )
+    return tuple(cues)
+
+
+def _validate_bundle_provenance(bundle: Mapping[str, Any], ledger: ManualReviewLedger) -> None:
+    if bundle.get("provenance_kind") != PROVENANCE_KIND:
+        _fail("review.provenance_invalid")
+    if bundle.get("production_evidence") is not False:
+        _fail("review.provenance_invalid")
+    if bundle.get("production_analysis") is not False:
+        _fail("review.provenance_invalid")
+    if bundle.get("publish_allowed") is not False:
+        _fail("review.provenance_invalid")
+    if bundle.get("rights_status") != INTERNAL_REVIEW_RIGHTS:
+        _fail("review.rights_invalid")
+    narrative = _mapping(bundle.get("narrative_review"), "review.narrative_invalid")
+    if narrative.get("provenance_kind") != PROVENANCE_KIND:
+        _fail("review.provenance_invalid")
+    if narrative.get("source_ledger_sha256", ledger.ledger_sha256) != ledger.ledger_sha256:
+        _fail("review.ledger_hash_mismatch")
+
+
+_FORBIDDEN_PAYLOAD_KEYS = frozenset(
+    {
+        "image_path",
+        "audio_path",
+        "video_path",
+        "media_path",
+        "database_path",
+        "db_path",
+        "credential",
+        "api_key",
+        "authorization",
+    }
+)
+
+
+def _reject_media_payload(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if str(key).casefold() in _FORBIDDEN_PAYLOAD_KEYS:
+                _fail("review.media_payload_forbidden")
+            _reject_media_payload(child)
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for child in value:
+            _reject_media_payload(child)
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8", newline="\n")
+        temporary.replace(path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _fail("review.bundle_write_failed")
+
+
+def write_review_bundle(
+    root: Path, bundle: Mapping[str, object], *, ledger: ManualReviewLedger
+) -> Path:
+    """Write the sanitized review files atomically under an ignored local root."""
+
+    _validate_bundle_provenance(bundle, ledger)
+    _reject_media_payload(bundle)
+    spoken_text = bundle.get("narration_spoken")
+    if not isinstance(spoken_text, str) or not spoken_text.strip():
+        _fail("review.narration_invalid")
+    derived_cues = derive_display_cues(spoken_text)
+    supplied_cues = bundle.get("display_cues")
+    if supplied_cues is not None and supplied_cues != list(derived_cues):
+        _fail("review.display_derivation_invalid")
+
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        _fail("review.bundle_write_failed")
+    narrative = dict(_mapping(bundle["narrative_review"], "review.narrative_invalid"))
+    narrative["source_ledger_sha256"] = ledger.ledger_sha256
+    files: dict[str, str] = {
+        "source_ledger.json": canonical_ledger_json(ledger, include_hash=True),
+        "panel_understanding.json": _canonical_json(bundle.get("panel_understanding", [])),
+        "chapter_map.json": _canonical_json(bundle.get("chapter_map", {})),
+        "narrative_review.json": _canonical_json(narrative),
+        "narration_spoken.txt": spoken_text,
+        "display_cues.json": _canonical_json(list(derived_cues)),
+        "qc_report.json": _canonical_json(bundle.get("qc_report", {})),
+    }
+    for filename in BUNDLE_FILES:
+        _write_atomic(root / filename, files[filename])
+    try:
+        result = read_review_bundle(root, ledger=ledger)
+    except ManualReviewError:
+        raise
+    except Exception:
+        _fail("review.bundle_round_trip_invalid")
+    if result["narration_spoken"] != spoken_text:
+        _fail("review.bundle_round_trip_invalid")
+    return root
+
+
+def read_review_bundle(root: Path, *, ledger: ManualReviewLedger) -> dict[str, object]:
+    """Read exactly one sanitized bundle and verify its immutable input hash."""
+
+    try:
+        names = {path.name for path in root.iterdir() if path.is_file()}
+    except OSError:
+        _fail("review.bundle_missing")
+    if names != set(BUNDLE_FILES):
+        _fail("review.bundle_files_invalid")
+    try:
+        source_ledger = json.loads((root / "source_ledger.json").read_text(encoding="utf-8"))
+        panel_understanding = json.loads(
+            (root / "panel_understanding.json").read_text(encoding="utf-8")
+        )
+        chapter_map = json.loads((root / "chapter_map.json").read_text(encoding="utf-8"))
+        narrative_review = json.loads(
+            (root / "narrative_review.json").read_text(encoding="utf-8")
+        )
+        display_cues = json.loads((root / "display_cues.json").read_text(encoding="utf-8"))
+        qc_report = json.loads((root / "qc_report.json").read_text(encoding="utf-8"))
+        narration_spoken = (root / "narration_spoken.txt").read_text(encoding="utf-8")
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _fail("review.bundle_files_invalid")
+    expected_source = json.loads(canonical_ledger_json(ledger, include_hash=True))
+    if source_ledger != expected_source:
+        _fail("review.ledger_hash_mismatch")
+    metadata = {
+        "provenance_kind": narrative_review.get("provenance_kind"),
+        "production_evidence": False,
+        "production_analysis": False,
+        "publish_allowed": False,
+        "rights_status": INTERNAL_REVIEW_RIGHTS,
+        "narrative_review": narrative_review,
+    }
+    _validate_bundle_provenance(metadata, ledger)
+    expected_cues = list(derive_display_cues(narration_spoken))
+    if display_cues != expected_cues:
+        _fail("review.display_derivation_invalid")
+    return {
+        "provenance_kind": PROVENANCE_KIND,
+        "production_evidence": False,
+        "production_analysis": False,
+        "publish_allowed": False,
+        "rights_status": INTERNAL_REVIEW_RIGHTS,
+        "source_ledger": source_ledger,
+        "panel_understanding": panel_understanding,
+        "chapter_map": chapter_map,
+        "narrative_review": narrative_review,
+        "narration_spoken": narration_spoken,
+        "display_cues": display_cues,
+        "qc_report": qc_report,
+    }

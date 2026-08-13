@@ -127,3 +127,114 @@ def test_ledger_hash_is_deterministic_and_excludes_derived_hash(valid_manifest):
     assert module.canonical_ledger_json(first) == module.canonical_ledger_json(second)
     assert first.ledger_sha256 == second.ledger_sha256
     assert "ledger_sha256" not in module.canonical_ledger_json(first)
+
+
+def _valid_bundle(ledger):
+    return {
+        "provenance_kind": "codex_manual_vision_reference_v1",
+        "production_evidence": False,
+        "production_analysis": False,
+        "publish_allowed": False,
+        "rights_status": "internal review only",
+        "panel_understanding": [],
+        "chapter_map": {"beats": [], "causal_chain": [], "coverage": {}},
+        "narrative_review": {
+            "provenance_kind": "codex_manual_vision_reference_v1",
+            "profile_id": "sharp_friend_v1",
+            "passages": [],
+            "ending_kind": "cliffhanger",
+            "approval_state": "PENDING_EDITORIAL_REVIEW",
+        },
+        "narration_spoken": "Why can't Jin-Woo move?",
+        "qc_report": {"blocking_findings": [], "warnings": []},
+    }
+
+
+def test_display_derivation_does_not_mutate_spoken_text():
+    module = _module()
+    spoken = "Why can't Jin-Woo move?"
+    before = spoken[:]
+    cues = module.derive_display_cues(spoken)
+
+    assert [cue["display_text"] for cue in cues] == ["WHY", "CANT", "JINWOO", "MOVE"]
+    assert spoken == before
+    assert all(
+        text.isalnum() and text == text.upper()
+        for text in [cue["display_text"] for cue in cues]
+    )
+
+
+def test_bundle_rejects_production_provenance_and_media_payload(tmp_path, valid_manifest):
+    module = _module()
+    manifest_path, review_root = valid_manifest
+    ledger = module.load_source_ledger(manifest_path, base_dir=review_root)
+    bundle = _valid_bundle(ledger)
+    bundle["provenance_kind"] = "vision_evidence_v2"
+    with pytest.raises(module.ManualReviewError, match="review.provenance_invalid"):
+        module.write_review_bundle(tmp_path / "bundle", bundle, ledger=ledger)
+
+    bundle = _valid_bundle(ledger)
+    bundle["panel_understanding"] = [{"image_path": "panel.png"}]
+    with pytest.raises(module.ManualReviewError, match="review.media_payload_forbidden"):
+        module.write_review_bundle(tmp_path / "media-bundle", bundle, ledger=ledger)
+
+
+def test_bundle_round_trip_preserves_spoken_text_and_derived_cues(tmp_path, valid_manifest):
+    module = _module()
+    manifest_path, review_root = valid_manifest
+    ledger = module.load_source_ledger(manifest_path, base_dir=review_root)
+    bundle = _valid_bundle(ledger)
+    output = tmp_path / "bundle"
+
+    module.write_review_bundle(output, bundle, ledger=ledger)
+    loaded = module.read_review_bundle(output, ledger=ledger)
+
+    assert set(path.name for path in output.iterdir()) == set(module.BUNDLE_FILES)
+    assert loaded["narration_spoken"] == bundle["narration_spoken"]
+    assert loaded["display_cues"] == [
+        {
+            "spoken_token_index": 0,
+            "display_text": "WHY",
+            "timing_status": "not_rendered",
+        },
+        {
+            "spoken_token_index": 1,
+            "display_text": "CANT",
+            "timing_status": "not_rendered",
+        },
+        {
+            "spoken_token_index": 2,
+            "display_text": "JINWOO",
+            "timing_status": "not_rendered",
+        },
+        {
+            "spoken_token_index": 3,
+            "display_text": "MOVE",
+            "timing_status": "not_rendered",
+        },
+    ]
+
+
+@pytest.mark.parametrize("filename", ["qc_report.json", "chapter_map.json"])
+def test_bundle_rejects_missing_or_extra_files(tmp_path, valid_manifest, filename):
+    module = _module()
+    manifest_path, review_root = valid_manifest
+    ledger = module.load_source_ledger(manifest_path, base_dir=review_root)
+    output = tmp_path / "bundle"
+    module.write_review_bundle(output, _valid_bundle(ledger), ledger=ledger)
+    (output / filename).unlink()
+    with pytest.raises(module.ManualReviewError, match="review.bundle_files_invalid"):
+        module.read_review_bundle(output, ledger=ledger)
+
+
+def test_bundle_rejects_display_hash_or_path_drift(tmp_path, valid_manifest):
+    module = _module()
+    manifest_path, review_root = valid_manifest
+    ledger = module.load_source_ledger(manifest_path, base_dir=review_root)
+    output = tmp_path / "bundle"
+    module.write_review_bundle(output, _valid_bundle(ledger), ledger=ledger)
+
+    display_path = output / "display_cues.json"
+    display_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(module.ManualReviewError, match="review.display_derivation_invalid"):
+        module.read_review_bundle(output, ledger=ledger)
