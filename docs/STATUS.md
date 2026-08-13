@@ -1,6 +1,27 @@
 # Current status
 
-Updated: 2026-08-12
+Updated: 2026-08-13
+
+## Current local manual preview checkpoint - 2026-08-13
+
+- Revalidated the corrected preview from local HEAD
+  `53042f466ef576fb755eecb917037979ac2d4ffe` on
+  `feature/codex-manual-preview-v2` using
+  `python scripts/review/render_codex_manual_preview.py` with the committed
+  manifest and edit plan. The deterministic rerender completed with
+  `RENDER_RC=0`.
+- The review artifact is
+  `data/codex-vision-preview-motion-v4/codex-vision-preview-54s-silent.mp4`:
+  54.200000 seconds, 1080x1920, 60/1 FPS, H.264 High, yuv420p, video-only,
+  15,138,101 bytes, SHA-256
+  `68115f8379079144b697201fd56f48fe862739a73e10556eca77fb110e4c2750`.
+  The plan uses source orders 1..23 exactly once in chronology, and the
+  refreshed audit contains 69 start/mid/end frames with no blackdetect
+  findings.
+- This is a local manual-review checkpoint only. It keeps
+  `publish_allowed=false`, `rights_status=internal review only`, and no voice
+  or audio generation. Older VPS/production-pipeline sections below are
+  historical context, not a current production-readiness or publication claim.
 
 ## Codex preview motion variants - 2026-08-12
 

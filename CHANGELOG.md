@@ -2,6 +2,16 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Revalidated the current local 54.2-second manual preview at HEAD
+  `53042f466ef576fb755eecb917037979ac2d4ffe` on
+  `feature/codex-manual-preview-v2`. The deterministic rerender produced the
+  existing v4 artifact with SHA-256
+  `68115f8379079144b697201fd56f48fe862739a73e10556eca77fb110e4c2750`:
+  1080x1920, 60 FPS, H.264 High, yuv420p, video-only, 23 chronological source
+  panels exactly once, 69 audit frames, and no blackdetect findings. This is
+  local review evidence only; older VPS/production text remains historical,
+  and rights/publication stay blocked.
+
 - Added deterministic mixed motion intents to the 60 FPS Codex manual preview:
   `push_in`, directional pans, `hold`, `diagonal`, and `pull_out`. Push/pull
   use centered `scale`+`crop` zoom; pans use a visible 60px displacement. The
