@@ -27,6 +27,7 @@ from app.services import (
     motion_director,
     policy,
     reference_profile,
+    subtitle_karaoke,
     visual_scoring,
 )
 from app.services.timeline import CueSpec, validate_cues
@@ -915,6 +916,32 @@ def check_subtitles(cues: list[CueSpec]) -> list[CheckResult]:
     return results
 
 
+def check_sentence_karaoke(
+    groups: Sequence[object] | None,
+    *,
+    duration: float,
+    contract: Mapping[str, object] | None = None,
+    timing_error: str | None = None,
+) -> list[CheckResult]:
+    """Validate the explicit regular-render sentence karaoke contract."""
+    if timing_error:
+        code = str(timing_error).split(":", 1)[0] or "subtitle.word_timing_invalid"
+        return [_fail(code, CheckSeverity.ERROR, str(timing_error))]
+    if contract and contract.get("contract_version") != subtitle_karaoke.SUBTITLE_CONTRACT_VERSION:
+        return [_fail(
+            "subtitle.contract_invalid",
+            CheckSeverity.ERROR,
+            "Regular render subtitle contract version is unsupported.",
+        )]
+    failures = subtitle_karaoke.validate_sentence_groups(groups or (), duration=duration)
+    if failures:
+        return [
+            _fail(code, CheckSeverity.ERROR, f"Regular sentence karaoke contract failed: {code}.")
+            for code in failures
+        ]
+    return [_pass("subtitle.sentence_karaoke", "Sentence-held word karaoke contract is valid.")]
+
+
 def check_narration_language(script: ScriptVersion | None, language: str) -> list[CheckResult]:
     """Fail mixed English/Indonesian narration at the publication boundary."""
     if script is None:
@@ -1080,6 +1107,9 @@ def run_all(
     cues: list[CueSpec],
     job: RenderJob | None = None,
     duration: float | None = None,
+    caption_groups: Sequence[object] | None = None,
+    subtitle_contract: Mapping[str, object] | None = None,
+    subtitle_timing_error: str | None = None,
 ) -> list[CheckResult]:
     """Full pre-publication sweep, combining policy and technical checks."""
     results: list[CheckResult] = []
@@ -1115,6 +1145,13 @@ def run_all(
     if effective_duration or job:
         if profile is not None:
             results += check_reference_profile(scenes, effective_duration, profile)
+            if caption_groups is not None or subtitle_timing_error is not None:
+                results += check_sentence_karaoke(
+                    caption_groups,
+                    duration=effective_duration,
+                    contract=subtitle_contract,
+                    timing_error=subtitle_timing_error,
+                )
         else:
             results += check_duration(effective_duration, float(project.target_duration))
     if job:

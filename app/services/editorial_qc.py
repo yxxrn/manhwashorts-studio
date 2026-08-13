@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from app.config import settings
-from app.services import motion_director
+from app.services import motion_director, subtitle_karaoke
 
 
 @dataclass
@@ -51,6 +51,14 @@ class EditorialQC:
     full_playback_verified: bool = False
     audio_video_drift: float = 0.0
     black_frame_duration: float = 0.0
+    subtitle_contract_version: str = ""
+    subtitle_font_size_px: int = 0
+    subtitle_max_lines: int = 0
+    subtitle_max_lines_measured: int = 0
+    subtitle_active_word_events: int = 0
+    subtitle_timing_source: str = ""
+    visual_contract_version: str = ""
+    visual_identity_hashes: dict[str, str] = field(default_factory=dict)
     publish_allowed: bool = False
     qc_pass: bool = False
     failures: list[str] = field(default_factory=list)
@@ -431,6 +439,9 @@ def build_report(
     panel_border_masks_by_key: Mapping[tuple[str, str], object] | None = None,
     panel_sizes_by_key: Mapping[tuple[str, str], tuple[int, int]] | None = None,
     telemetry_by_key: Mapping[tuple[str, str], object | None] | None = None,
+    caption_groups: Sequence[object] | None = None,
+    subtitle_contract: Mapping[str, object] | None = None,
+    subtitle_timing_error: str | None = None,
 ) -> EditorialQC:
     average, longest_same, crops, total = _shot_metrics(scenes)
     frozen = _freeze_duration(job_path) if job_path and job_path.is_file() else 0.0
@@ -492,12 +503,36 @@ def build_report(
         voice_profile_count=voice_profile_count,
         ending_has_payoff=any(getattr(s, "section", "") == "twist" for s in scenes),
         ending_has_visual_evidence=bool(scenes and scenes[-1].asset_id),
+        subtitle_contract_version=str((subtitle_contract or {}).get("contract_version", "")),
+        subtitle_font_size_px=int((subtitle_contract or {}).get("font_size_px", 0) or 0),
+        subtitle_max_lines=int((subtitle_contract or {}).get("max_lines", 0) or 0),
+        subtitle_max_lines_measured=max(
+            (len(subtitle_karaoke.sentence_group_lines(getattr(group, "words", ()))) for group in (caption_groups or ())),
+            default=0,
+        ),
+        subtitle_active_word_events=sum(
+            len(getattr(group, "words", ()) or ()) for group in (caption_groups or ())
+        ),
+        subtitle_timing_source=str((subtitle_contract or {}).get("timing_source", "")),
+        visual_contract_version=str(getattr(profile, "framing_contract_version", "")),
+        visual_identity_hashes={
+            str(getattr(scene, "panel_region_id", "")): str(getattr(scene, "evidence_hash", ""))
+            for scene in scenes
+            if getattr(scene, "panel_region_id", "") and getattr(scene, "evidence_hash", "")
+        },
     )
     report.audio_video_drift, report.black_frame_duration = _media_integrity(job_path, duration)
     report.audio_integrated_lufs, report.audio_true_peak_dbfs = _audio_metrics(job_path)
     report.failures.extend(motion_director.audit_camera_sequence(scenes))
     if profile is not None:
         report.failures.extend(_reference_qc_failures(scenes, duration, profile))
+        if caption_groups is not None or subtitle_timing_error is not None:
+            if subtitle_timing_error:
+                report.failures.append(str(subtitle_timing_error).split(":", 1)[0])
+            else:
+                report.failures.extend(
+                    subtitle_karaoke.validate_sentence_groups(caption_groups or (), duration=duration)
+                )
         if panel_evidence_by_key is not None:
             panel_results = check_reference_framing(
                 scenes,

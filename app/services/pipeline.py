@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from PIL import Image, UnidentifiedImageError
@@ -62,6 +63,7 @@ from app.services import (
     reference_visual_review,
     segmentation,
     storage,
+    subtitle_karaoke,
     visual_scoring,
 )
 from app.services import director as director_svc
@@ -2756,8 +2758,29 @@ def run_quality_checks(
     if job and job.duration:
         duration = job.duration
 
+    profile = reference_profile.resolve_reference_profile(project.template)
+    caption_groups: tuple[object, ...] | None = None
+    subtitle_contract: dict[str, object] | None = None
+    subtitle_timing_error: str | None = None
+    if profile is not None:
+        subtitle_contract = subtitle_karaoke.contract_manifest(profile)
+        try:
+            caption_groups = subtitle_karaoke.build_sentence_groups_from_segments(segments)
+        except ValueError as exc:
+            subtitle_timing_error = str(exc)
+
     results = quality_svc.run_all(
-        project, assets, script, segments, scenes, cues, job=job, duration=duration
+        project,
+        assets,
+        script,
+        segments,
+        scenes,
+        cues,
+        job=job,
+        duration=duration,
+        caption_groups=caption_groups,
+        subtitle_contract=subtitle_contract,
+        subtitle_timing_error=subtitle_timing_error,
     )
 
     for old in db.scalars(select(QualityCheck).where(QualityCheck.project_id == project_id)):
@@ -3199,11 +3222,38 @@ def build_render_request(
 
     segments = audio_segments(db, script.id)
     if not segments:
+        if editorial_profile is not None:
+            raise PipelineError(
+                "subtitle.word_timing_missing: regular reference render requires authoritative audio timing"
+            )
         raise PipelineError("no voice-over to render")
+
+    sentence_groups: tuple[object, ...] = ()
+    subtitle_contract: dict[str, object] | None = None
+    subtitle_contract_version = ""
+    subtitle_timing_source = ""
 
     scenes = project_scenes(db, job.project_id)
     if not scenes:
         raise PipelineError("no scenes to render")
+    if editorial_profile is not None:
+        for scene in scenes:
+            if not scene.asset_id:
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: reference scene has no source asset"
+                )
+            asset = db.get(SourceAsset, scene.asset_id)
+            if asset is None or not storage.exists(asset.storage_key):
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: reference scene asset is unavailable"
+                )
+        try:
+            sentence_groups = subtitle_karaoke.build_sentence_groups_from_segments(segments)
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
+        subtitle_contract = subtitle_karaoke.contract_manifest(editorial_profile)
+        subtitle_contract_version = subtitle_karaoke.SUBTITLE_CONTRACT_VERSION
+        subtitle_timing_source = "audio_segment.word_timings"
 
     # Concatenate the narration into one track.
     work = storage.workspace_dir(job.project_id, "audio")
@@ -3399,6 +3449,11 @@ def build_render_request(
         music_path=music_path,
         music_gain_db=-24.0,
         encoder=job.encoder_requested or None,
+        sentence_groups=list(sentence_groups),
+        subtitle_contract_version=subtitle_contract_version,
+        subtitle_timing_source=subtitle_timing_source,
+        subtitle_contract=subtitle_contract,
+        persisted_reference_framing=bool(editorial_profile),
     )
 
 
@@ -3482,8 +3537,54 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
     if test_only and not any(getattr(f, "code", "") == "source.test_only" for f in source_findings):
         source_findings.append(policy_svc.PolicyFinding("source.test_only", policy_svc.CheckSeverity.ERROR, "NOT_FOR_PUBLICATION source is test-only."))
     render_profile = reference_profile.resolve_reference_profile(project.template)
+    qc_scenes = scenes
+    panel_evidence_by_key: dict[tuple[str, str], object] = {}
+    panel_border_masks_by_key: dict[tuple[str, str], object] = {}
+    panel_sizes_by_key: dict[tuple[str, str], tuple[int, int]] = {}
+    telemetry_by_key: dict[tuple[str, str], object] = {}
+    if render_profile is not None:
+        enriched: list[object] = []
+        for persisted_scene, input_scene in zip(scenes, request.scenes, strict=True):
+            values = {
+                key: value
+                for key, value in vars(persisted_scene).items()
+                if not key.startswith("_")
+            }
+            values.update(
+                {
+                    "source_asset_id": input_scene.source_asset_id,
+                    "source_order": input_scene.source_order,
+                    "panel_region_id": input_scene.panel_region_id,
+                    "panel_id": input_scene.panel_id,
+                    "panel_bounds": input_scene.panel_bounds,
+                    "panel_size": input_scene.panel_size,
+                    "visual_evidence": input_scene.visual_evidence,
+                    "border_mask": input_scene.border_mask,
+                    "selected_roi": input_scene.selected_roi,
+                    "roi": input_scene.selected_roi,
+                    "fallback_attempts": input_scene.fallback_attempts,
+                    "framing_telemetry": input_scene.framing_telemetry,
+                    "evidence_hash": input_scene.evidence_hash,
+                    "source_asset_checksum": input_scene.source_asset_checksum,
+                }
+            )
+            enriched.append(SimpleNamespace(**values))
+            key = (str(input_scene.source_asset_id), str(input_scene.panel_region_id))
+            if not key[0] or not key[1]:
+                continue
+            try:
+                evidence = visual_scoring.parse_panel_visual_evidence(input_scene.visual_evidence or {})
+                mask = render_svc._reference_border_mask_from_mapping(input_scene.border_mask)
+            except (render_svc.RenderError, visual_scoring.VisualEvidenceError, TypeError, ValueError):
+                continue
+            panel_evidence_by_key[key] = evidence
+            panel_border_masks_by_key[key] = mask
+            if input_scene.panel_size is not None:
+                panel_sizes_by_key[key] = tuple(input_scene.panel_size)
+            telemetry_by_key[key] = input_scene.framing_telemetry
+        qc_scenes = enriched
     qc = editorial_qc.build_report(
-        scenes=scenes,
+        scenes=qc_scenes,
         cues=cues,
         duration=result.duration,
         job_path=Path(result.output_path),
@@ -3492,6 +3593,13 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
         voice_profile_count=len({segment.voice_profile_hash for segment in audio_segments(db, current_script(db, job.project_id).id) if segment.voice_profile_hash}),
         preview=job.kind == "preview",
         profile=render_profile,
+        caption_groups=request.sentence_groups,
+        subtitle_contract=request.subtitle_contract,
+        subtitle_timing_error=None,
+        panel_evidence_by_key=panel_evidence_by_key if render_profile is not None else None,
+        panel_border_masks_by_key=panel_border_masks_by_key if render_profile is not None else None,
+        panel_sizes_by_key=panel_sizes_by_key if render_profile is not None else None,
+        telemetry_by_key=telemetry_by_key if render_profile is not None else None,
     )
     report_dir = Path(result.output_path).parent
     report_dir.mkdir(parents=True, exist_ok=True)

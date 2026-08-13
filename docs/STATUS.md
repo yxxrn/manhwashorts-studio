@@ -2,6 +2,71 @@
 
 Updated: 2026-08-14
 
+## Regular production render: sentence-chunked karaoke and evidence-gated framing - 2026-08-14
+
+- The regular `app.services.pipeline.build_render_request` /
+  `app.services.render.render_video` path now consumes the shared
+  `sentence_chunked_word_karaoke_v2` contract when an explicit reference
+  profile is selected. It preserves punctuation-bearing spoken text, requires
+  persisted provider word timings, and derives an independent uppercase,
+  punctuation-free display surface. Complete deterministic semantic chunks
+  stay visible while the active word is yellow at `1.08`; inactive words are
+  white; Barber Chop is bold italic at `0.04 * 1920 = 77px`, with a hard two-line
+  maximum and 120px side margins. Missing audio/word timing fails with
+  `subtitle.word_timing_missing`; no provider timing is invented. `profile=None`
+  continues through the legacy ASS path.
+- Regular reference renders now require persisted Task5/Task7 panel lineage,
+  exact panel crop/evidence/mask/ROI/telemetry snapshots, `publish_allowed=false`,
+  and the existing hard balloon/protected-region/framing gates before FFmpeg.
+  Profile/detector or crop/mask mismatches fail closed with stable visual codes;
+  there is no silent legacy fallback. Final profile output normalizes full-range
+  image input to TV-range `yuv420p` before the H.264 High gate. The regular
+  manifest is `regular_render_manifest_v1` and now records subtitle contract
+  metadata plus measured max lines/active-word events, source timing lineage,
+  per-shot evidence/mask hashes, ROI, telemetry, fallback ledger, and rejection
+  fields.
+- The production boundary was verified with a deterministic **synthetic**
+  23-panel typed-evidence fixture through `render_video` (not the review script).
+  Artifact:
+  `data/regular-render-karaoke-production-synthetic-20260814/regular-production-synthetic-50s-silent.mp4`
+  is exactly 50.000000 seconds, 1080x1920, 60fps, H.264 High/yuv420p,
+  video-only, SHA-256
+  `572c7bbd8a38160781419a492b2f2ab5479d52c6a83df5311d14bd871281a2d5`,
+  17,863,299 bytes. `ffprobe.json`, `blackdetect.txt`, the 10-frame contact
+  sheet, 20-frame subtitle-boundary sheet, representative frame audit, regular
+  manifest, and `synthetic_render_summary.json` are in the same ignored
+  directory. Output QC is zero blackdetect intervals, 0 audio streams, 11
+  active-word events, measured maximum 1 line, and `publish_allowed=false`.
+- The real chapter was not relabeled or rendered as production. The current
+  `data/sample.db` has 24 source assets but `story_analyses=0`; the reviewed
+  bundle remains `codex_manual_vision_reference_v1` with
+  `production_evidence=false` and `PENDING_EDITORIAL_REVIEW`. A real order-1
+  regular-path probe stopped before FFmpeg with
+  `visual.balloon_mask_unknown`. The ignored blocker report is
+  `data/regular-render-karaoke-production-synthetic-20260814/real-chapter-readiness.json`;
+  it records the database SHA-256, `PRAGMA integrity_check=ok`, schema counts,
+  and `ready_for_real_chapter_regular_render=false`.
+- TDD evidence for this slice: initial regular boundary RED was collection-clean
+  with `5 collected, 4 failed, 1 passed`; the later output-format RED was one
+  body failure (`yuvj420p` at the final gate), then GREEN after the explicit
+  range/pixel-format filter. Final focused production/reference matrix is
+  `109 passed`; the related reference/framing/subtitle/motion/pipeline matrix
+  is `91 passed, 1 skipped, 14 deselected`. The authoritative LF-preserving
+  disposable full non-slow run collected `867`: `866 passed, 1 existing skip,
+  0 failed`. The primary Windows checkout still reports only the known
+  environment presentation failure in
+  `test_v3_prompt_resource_is_lf_utf8_and_normative` because
+  `core.autocrlf=true` exposes the committed LF prompt as CRLF. `tests/test_pipeline.py`
+  retains its existing vision-only draft-gate failures when explicitly selected;
+  no gate was weakened.
+- Ruff, `compileall -q app`, `git diff --check`, and line-ending/no-churn
+  comparisons are clean. No voice, TTS, music, SFX, provider, DB/schema,
+  subtitle/video publication, UI, rights bypass, or deployment action occurred.
+  Rollback point is `0db8aea`; the implementation branch is
+  `codex/regular-render-karaoke-production`. Main remains unchanged until the
+  real chapter has current persisted typed visual evidence and passes the
+  regular reference QC gate.
+
 ## Two-line semantic karaoke silent preview - 2026-08-14
 
 - Corrected the local Sharp Friend preview from the `76fd6f1` baseline so a

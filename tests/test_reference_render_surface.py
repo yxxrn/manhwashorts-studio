@@ -124,7 +124,11 @@ def test_build_render_request_carries_selected_reference_profile(monkeypatch, tm
         title="Do not overlay this title",
     )
     script = SimpleNamespace(id="script-a")
-    segment = SimpleNamespace(storage_key="clip.wav")
+    segment = SimpleNamespace(
+        storage_key="clip.wav",
+        spoken_text="Review.",
+        word_timings=[{"word": "Review.", "start": 0.0, "end": 40.901}],
+    )
     audio_path = tmp_path / "clip.wav"
     audio_path.write_bytes(b"audio")
     panel_path = tmp_path / "panel.png"

@@ -2,6 +2,19 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Wired the approved sentence-chunked word-karaoke surface into the regular
+  reference render path. Explicit profile renders now require authoritative
+  persisted word timings and exact panel/evidence/mask/ROI telemetry; display
+  text remains independently uppercase and punctuation-free, with a hard
+  two-line/120px-margin contract, 77px Barber Chop styling, yellow active-word
+  `1.08` scale, and stable `yuv420p` final output. Regular manifests record
+  measured subtitle evidence and per-shot visual lineage. A synthetic
+  23-panel regular-path FFmpeg smoke is green at 50.000000s, H.264 High,
+  yuv420p, 60fps, video-only; the real chapter remains blocked by missing
+  production StoryAnalysis/PanelRegion evidence (`visual.panel_lineage_unavailable` /
+  `visual.balloon_mask_unknown`). Voice/TTS/audio/provider/publication remain
+  deferred and publish_allowed stays false.
+
 - Corrected the local silent Sharp Friend preview to
   `sentence_chunked_word_karaoke_v2`. Complete display chunks remain visible
   while word-level timing keeps the active word yellow with the existing

@@ -32,7 +32,13 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from app.config import settings
 from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
-from app.services import encoders, framing_analysis, motion_director, visual_scoring
+from app.services import (
+    encoders,
+    framing_analysis,
+    motion_director,
+    subtitle_karaoke,
+    visual_scoring,
+)
 from app.services.reference_profile import ReferenceProfileConfig, profile_hash
 from app.services.timeline import CueSpec, wrap_caption
 
@@ -167,6 +173,11 @@ class RenderRequest:
     silent_reference_review: bool = False
     output_override: Path | None = None
     sidecar_path: Path | None = None
+    sentence_groups: list[KaraokeSentenceGroup] = field(default_factory=list)
+    subtitle_contract_version: str = ""
+    subtitle_timing_source: str = ""
+    subtitle_contract: Mapping[str, Any] | None = None
+    persisted_reference_framing: bool = False
 
 
 @dataclass
@@ -188,6 +199,7 @@ class RenderResult:
     encoder_reason: str = ""
     scratch_bytes: int = 0
     sidecar_path: Path | None = None
+    manifest_path: Path | None = None
 
 
 def _run(cmd: list[str], timeout: int = 900, step: str = "ffmpeg") -> str:
@@ -304,6 +316,18 @@ def validate_reference_output(info: dict, profile: ReferenceProfileConfig) -> No
             f"reference.output_profile: {codes}",
             code="reference.output_profile",
         )
+
+
+def _reference_final_video_filter(
+    filter_chain: str,
+    profile: ReferenceProfileConfig | None,
+    *,
+    preview: bool,
+) -> str:
+    """Normalize full-range image input to the final reference pixel contract."""
+    if profile is None or preview:
+        return filter_chain
+    return f"{filter_chain},scale=in_range=full:out_range=tv,format={profile.final_pixel_format}"
 
 
 # --- image preparation -----------------------------------------------------
@@ -1250,6 +1274,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return header + "\n".join(lines) + "\n"
 
 
+def _subtitle_manifest_evidence(
+    groups: Sequence[KaraokeSentenceGroup],
+    *,
+    profile: ReferenceProfileConfig | None = None,
+    timing_source: str = "audio_segment.word_timings",
+) -> dict[str, Any]:
+    """Summarize measured subtitle facts for regular-render audit manifests."""
+    return {
+        "max_lines_measured": max(
+            (len(subtitle_karaoke.sentence_group_lines(group.words)) for group in groups),
+            default=0,
+        ),
+        "active_word_events": sum(len(group.words) for group in groups),
+        "display_word_count": sum(len(group.words) for group in groups),
+        "timing_source": timing_source,
+        "spoken_text_immutable": True,
+        "contract_version": subtitle_karaoke.SUBTITLE_CONTRACT_VERSION,
+        "profile_id": getattr(profile, "profile_id", None),
+    }
+
+
 _REFERENCE_TELEMETRY_FIELDS = (
     "contract_version",
     "detector_version",
@@ -1678,6 +1723,41 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         raise RenderError("video dimensions must be even for H.264", code="bad_dimensions")
     if not request.scenes:
         raise RenderError("nothing to render: the timeline has no scenes", code="no_scenes")
+    if request.profile is not None and not request.silent_reference_review and not request.persisted_reference_framing:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: regular reference render requires persisted panel framing",
+            code="visual.panel_lineage_unavailable",
+        )
+    if request.profile is not None and request.persisted_reference_framing and not request.sentence_groups:
+        # Preserve visual-lineage precedence when timing is absent, while still
+        # rejecting the request before any scene encoder work begins.
+        for index, scene in enumerate(request.scenes):
+            if not scene.image_path or not Path(scene.image_path).is_file() or scene.visual_evidence is None:
+                raise RenderError(
+                    f"visual.panel_lineage_unavailable: reference scene {index + 1} is missing panel visual lineage",
+                    code="visual.panel_lineage_unavailable",
+                )
+            try:
+                evidence = (
+                    scene.visual_evidence
+                    if isinstance(scene.visual_evidence, visual_scoring.PanelVisualEvidence)
+                    else visual_scoring.parse_panel_visual_evidence(scene.visual_evidence)
+                )
+                visual_scoring.require_reference_ready_visual_evidence(evidence)
+                _reference_border_mask_from_mapping(scene.border_mask)
+            except RenderError:
+                raise
+            except visual_scoring.VisualEvidenceError as exc:
+                code = (
+                    "visual.balloon_mask_unknown"
+                    if exc.code == "visual.balloon_mask_unknown"
+                    else "visual.panel_lineage_unavailable"
+                )
+                raise RenderError(f"{code}: reference scene visual evidence is unavailable", code=code) from exc
+        raise RenderError(
+            "subtitle.word_timing_missing: regular reference render requires authoritative word timing",
+            code="subtitle.word_timing_missing",
+        )
     if request.silent_reference_review and request.profile is not None:
         validate_silent_reference_cues(request.cues, request.scenes)
 
@@ -1715,7 +1795,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 )
             if not scene.image_path or not Path(scene.image_path).is_file() or scene.visual_evidence is None:
                 raise RenderError(
-                    f"reference scene {i + 1} is missing panel visual lineage",
+                    f"visual.panel_lineage_unavailable: reference scene {i + 1} is missing panel visual lineage",
                     code="visual.panel_lineage_unavailable",
                 )
             try:
@@ -1725,7 +1805,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                     else visual_scoring.parse_panel_visual_evidence(scene.visual_evidence)
                 )
                 scene_evidence = visual_scoring.require_reference_ready_visual_evidence(scene_evidence)
-                if request.silent_reference_review:
+                if request.silent_reference_review or request.persisted_reference_framing:
                     scene_border_mask = _reference_border_mask_from_mapping(scene.border_mask)
                 else:
                     with Image.open(scene.image_path) as panel_image:
@@ -1767,7 +1847,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             shutil.copyfile(cached, prepared)
         elif scene.image_path and Path(scene.image_path).is_file():
             try:
-                if request.silent_reference_review:
+                if request.silent_reference_review or request.persisted_reference_framing:
                     _prepare_exact_reference_frame(
                         scene=scene,
                         dest=prepared,
@@ -1822,18 +1902,43 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
 
     report(65, "burning subtitles")
     video_stage = silent
-    if request.cues:
-        ass_path = work / "captions.ass"
-        ass_path.write_text(
-            build_ass(
-                request.cues,
-                width,
-                height,
-                settings.subtitle_font_name,
-                profile=request.profile,
-            ),
-            encoding="utf-8",
+    if request.sentence_groups:
+        failures = subtitle_karaoke.validate_sentence_groups(
+            request.sentence_groups,
+            duration=sum(scene.duration for scene in request.scenes),
         )
+        if failures:
+            raise RenderError(
+                f"{failures[0]}: sentence karaoke contract is invalid",
+                code=failures[0],
+            )
+        ass_text = build_sentence_karaoke_ass(
+            request.sentence_groups,
+            width,
+            height,
+            font_name=settings.subtitle_font_name or "Barber Chop",
+            max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
+            max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
+            active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
+            font_height_ratio=subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO,
+            safe_margin_px=subtitle_karaoke.CAPTION_SAFE_MARGIN_PX,
+        )
+    elif request.subtitle_contract_version:
+        raise RenderError(
+            "subtitle.word_timing_missing: regular reference render requires sentence groups",
+            code="subtitle.word_timing_missing",
+        )
+    else:
+        ass_text = build_ass(
+            request.cues,
+            width,
+            height,
+            settings.subtitle_font_name,
+            profile=request.profile,
+        )
+    if request.cues or request.sentence_groups:
+        ass_path = work / "captions.ass"
+        ass_path.write_text(ass_text, encoding="utf-8")
         burned = work / "burned.mp4"
         # libass draws on CPU frames, so the hardware upload (if any) has to come
         # after the subtitles filter rather than before it.
@@ -1842,6 +1947,11 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         if font_path.is_file():
             subtitle_filter += f":fontsdir='{_escape_filter_path(font_path.parent)}'"
         burn_vf = encoders.apply_filter_suffix(selection, subtitle_filter)
+        burn_vf = _reference_final_video_filter(
+            burn_vf,
+            request.profile,
+            preview=request.preview,
+        )
         _run(
             [
                 settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
@@ -1913,6 +2023,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
 
     info = probe(output)
     sidecar_path: Path | None = None
+    manifest_path: Path | None = None
     if request.silent_reference_review:
         if request.profile is None:
             raise RenderError(
@@ -1929,6 +2040,65 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         sidecar = _reference_review_sidecar(request, info)
         sidecar_path.write_text(
             json.dumps(sidecar, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+    elif request.profile is not None and request.persisted_reference_framing:
+        manifest_path = request.sidecar_path or output.with_suffix(".render.json")
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "schema_version": "regular_render_manifest_v1",
+            "project_id": request.project_id,
+            "profile_id": request.profile.profile_id,
+            "subtitle_contract": request.subtitle_contract or {},
+            "subtitle_contract_version": request.subtitle_contract_version,
+            "subtitle_timing_source": request.subtitle_timing_source,
+            "subtitle_evidence": _subtitle_manifest_evidence(
+                request.sentence_groups,
+                profile=request.profile,
+                timing_source=request.subtitle_timing_source,
+            ),
+            "publish_allowed": False,
+            "visual_contract_version": request.profile.framing_contract_version,
+            "output": {
+                "duration": info.get("duration"),
+                "width": info.get("width"),
+                "height": info.get("height"),
+                "fps": info.get("fps"),
+                "codec": info.get("codec"),
+                "profile": info.get("profile"),
+                "pix_fmt": info.get("pix_fmt"),
+                "audio_stream_expected": bool(request.audio_path),
+            },
+            "shots": [
+                {
+                    "index": index,
+                    "start_time": scene.start_time,
+                    "end_time": scene.end_time,
+                    "source_asset_id": scene.source_asset_id,
+                    "source_order": scene.source_order,
+                    "panel_region_id": scene.panel_region_id,
+                    "panel_id": scene.panel_id,
+                    "panel_size": scene.panel_size,
+                    "source_asset_checksum": scene.source_asset_checksum,
+                    "evidence_hash": scene.evidence_hash,
+                    "border_mask": _compact_border_mask_identity(scene.border_mask),
+                    "selected_roi": scene.selected_roi,
+                    "framing_telemetry": scene.framing_telemetry,
+                    "fallback_attempts": [
+                        {
+                            key: value
+                            for key, value in attempt.items()
+                            if key != "border_mask"
+                        }
+                        for attempt in scene.fallback_attempts
+                        if isinstance(attempt, Mapping)
+                    ],
+                }
+                for index, scene in enumerate(request.scenes)
+            ],
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
     thumbnail = None
@@ -1977,6 +2147,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         encoder_reason=selection.reason,
         scratch_bytes=scratch_bytes,
         sidecar_path=sidecar_path,
+        manifest_path=manifest_path,
     )
 
 
