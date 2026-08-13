@@ -94,4 +94,3 @@ def test_finalize_rejects_missing_order_and_production_provenance(tmp_path, vali
 
     assert result.returncode != 0
     assert "review.panel_coverage_invalid" in result.stderr
-
