@@ -454,3 +454,83 @@ def test_manual_narrative_allows_evidence_grounded_open_question(valid_manifest)
     )
 
     module.validate_manual_narrative(review, ledger=ledger)
+
+
+def _review_for_qc(module, ledger, passage_count=4):
+    observations = module.validate_panel_observations(ledger, _valid_observations(ledger))
+    return _valid_review_from_typed(module, observations, passage_count=passage_count)
+
+
+def test_qc_separates_blockers_from_warnings(valid_manifest):
+    module = _module()
+    manifest_path, review_root = valid_manifest
+    ledger = module.load_source_ledger(manifest_path, base_dir=review_root)
+    review = _review_for_qc(module, ledger)
+    report = module.build_review_qc(
+        review,
+        ledger=ledger,
+        display_cues=module.derive_display_cues(review.spoken_text),
+    )
+
+    assert report.review_state == "PENDING_EDITORIAL_REVIEW"
+    assert not report.blocking_findings
+    assert report.metrics["passage_count"] == 4
+    assert report.metrics["estimated_duration_s"] > 0
+    assert report.report_sha256 == module.build_review_qc(
+        review,
+        ledger=ledger,
+        display_cues=module.derive_display_cues(review.spoken_text),
+    ).report_sha256
+
+
+def test_approval_requires_human_and_never_creates_production_approval(valid_manifest):
+    module = _module()
+    manifest_path, review_root = valid_manifest
+    ledger = module.load_source_ledger(manifest_path, base_dir=review_root)
+    review = _review_for_qc(module, ledger)
+    report = module.build_review_qc(
+        review,
+        ledger=ledger,
+        display_cues=module.derive_display_cues(review.spoken_text),
+    )
+    bundle = {"qc_report": report.__dict__, "revision_sha256": report.report_sha256}
+
+    with pytest.raises(module.ManualReviewError, match="review.approval_invalid"):
+        module.approve_reference_review(bundle, reviewer="", reviewed_at="2026-08-14T00:00:00Z")
+    approved = module.approve_reference_review(
+        bundle, reviewer="editor-1", reviewed_at="2026-08-14T00:00:00Z"
+    )
+
+    assert approved["approval_state"] == "APPROVED_REFERENCE_ONLY"
+    assert approved["production_evidence"] is False
+    assert approved["publish_allowed"] is False
+    assert "SCRIPT_APPROVED" not in approved.values()
+    assert "approval_state" not in bundle
+
+
+def test_rejection_requires_reason_and_revision_clears_approval(valid_manifest):
+    module = _module()
+    manifest_path, review_root = valid_manifest
+    ledger = module.load_source_ledger(manifest_path, base_dir=review_root)
+    review = _review_for_qc(module, ledger)
+    report = module.build_review_qc(
+        review,
+        ledger=ledger,
+        display_cues=module.derive_display_cues(review.spoken_text),
+    )
+    bundle = module.approve_reference_review(
+        {"qc_report": report.__dict__, "revision_sha256": report.report_sha256},
+        reviewer="editor-1",
+        reviewed_at="2026-08-14T00:00:00Z",
+    )
+    with pytest.raises(module.ManualReviewError, match="review.rejection_invalid"):
+        module.reject_reference_review(bundle, reviewer="editor-1", reason="")
+    rejected = module.reject_reference_review(
+        bundle, reviewer="editor-1", reason="The editor wants a clearer ending."
+    )
+    revised = module.revise_reference_review(rejected, revision_id="revision-2")
+
+    assert rejected["approval_state"] == "REJECTED"
+    assert revised["approval_state"] == "REVISED"
+    assert "reviewer" not in revised
+    assert revised["revision_id"] == "revision-2"

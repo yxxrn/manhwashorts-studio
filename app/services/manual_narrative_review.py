@@ -859,3 +859,187 @@ def validate_manual_narrative(
         if isinstance(exc, ManualReviewError):
             raise
         _fail("narrative.contract_invalid")
+
+
+REVIEW_STATES = frozenset(
+    {
+        "DRAFT",
+        "QC_BLOCKED",
+        "PENDING_EDITORIAL_REVIEW",
+        "APPROVED_REFERENCE_ONLY",
+        "REJECTED",
+        "REVISED",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ReviewQCReport:
+    blocking_findings: tuple[str, ...]
+    warnings: tuple[str, ...]
+    metrics: Mapping[str, float | int]
+    report_sha256: str
+    review_state: str
+
+
+def _qc_hash(
+    blocking_findings: Sequence[str],
+    warnings: Sequence[str],
+    metrics: Mapping[str, float | int],
+    review_state: str,
+) -> str:
+    payload = {
+        "blocking_findings": list(blocking_findings),
+        "warnings": list(warnings),
+        "metrics": dict(metrics),
+        "review_state": review_state,
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def build_review_qc(
+    review: ManualNarrativeReview,
+    *,
+    ledger: ManualReviewLedger,
+    display_cues: Sequence[Mapping[str, object]],
+) -> ReviewQCReport:
+    """Produce deterministic, non-rewriting QC for a manual review revision."""
+
+    blockers: set[str] = set()
+    warnings: set[str] = set()
+    try:
+        validate_manual_narrative(review, ledger=ledger)
+    except ManualReviewError as exc:
+        blockers.add(exc.code)
+    expected_cues = list(derive_display_cues(review.spoken_text))
+    if list(display_cues) != expected_cues:
+        blockers.add("narrative.display_derivation_invalid")
+
+    passages = [
+        {
+            "text": _passage_text(passage),
+            "claim_ids": list(passage.get("claim_ids", [])),
+            "evidence_panel_ids": list(passage.get("evidence_panel_ids", [])),
+        }
+        for passage in review.passages
+    ]
+    claims = {str(claim.get("claim_id")): claim for claim in review.claims}
+    total_words = sum(len(_words(item["text"])) for item in passages)
+    metrics: dict[str, float | int] = {
+        "passage_count": len(review.passages),
+        "total_words": total_words,
+        "estimated_duration_s": round(total_words * 60 / 150, 3),
+        "display_cue_count": len(expected_cues),
+    }
+    if not 90 <= total_words <= 125:
+        warnings.add("narrative.word_count_target_warning")
+    if not blockers:
+        try:
+            from app.services import editorial_qc, narrative_identity
+
+            profile = narrative_identity.get_narrative_identity("sharp_friend_v1")
+            naturalness = editorial_qc.screen_narrative_naturalness(passages, claims, profile)
+            warnings.update(naturalness.warnings)
+            metrics.update(
+                {
+                    "sentence_length_p10": naturalness.sentence_length_p10,
+                    "sentence_length_p50": naturalness.sentence_length_p50,
+                    "sentence_length_p90": naturalness.sentence_length_p90,
+                    "sentence_length_variance": naturalness.sentence_length_variance,
+                    "repeated_sentence_ratio": naturalness.repeated_normalized_sentence_ratio,
+                    "repeated_opening_ratio": naturalness.repeated_opening_ngram_ratio,
+                    "connector_diversity_count": naturalness.connector_diversity_count,
+                    "causal_transition_coverage": naturalness.causal_transition_coverage,
+                    "contraction_count": naturalness.contraction_count,
+                    "claim_evidence_coverage_ratio": naturalness.claim_evidence_coverage_ratio,
+                    "qualified_interpretation_coverage_ratio": naturalness.qualified_interpretation_coverage_ratio,
+                }
+            )
+        except Exception:
+            blockers.add("narrative.qc_invalid")
+    ordered_blockers = tuple(sorted(blockers))
+    ordered_warnings = tuple(sorted(warnings))
+    state = "PENDING_EDITORIAL_REVIEW" if not ordered_blockers else "QC_BLOCKED"
+    report_hash = _qc_hash(ordered_blockers, ordered_warnings, metrics, state)
+    return ReviewQCReport(
+        blocking_findings=ordered_blockers,
+        warnings=ordered_warnings,
+        metrics=metrics,
+        report_sha256=report_hash,
+        review_state=state,
+    )
+
+
+def _require_clear_qc(bundle: Mapping[str, object]) -> str:
+    qc = _mapping(bundle.get("qc_report"), "review.approval_invalid")
+    if qc.get("review_state") != "PENDING_EDITORIAL_REVIEW":
+        _fail("review.approval_invalid")
+    if qc.get("blocking_findings"):
+        _fail("review.approval_invalid")
+    revision_sha = _nonempty(bundle.get("revision_sha256"), "review.approval_invalid")
+    report_sha = _nonempty(qc.get("report_sha256"), "review.approval_invalid")
+    if revision_sha != report_sha:
+        _fail("review.approval_invalid")
+    return revision_sha
+
+
+def approve_reference_review(
+    bundle: Mapping[str, object], *, reviewer: str, reviewed_at: str
+) -> dict[str, object]:
+    """Return an explicit reference-only approval without touching production state."""
+
+    revision_sha = _require_clear_qc(bundle)
+    _nonempty(reviewer, "review.approval_invalid")
+    _nonempty(reviewed_at, "review.approval_invalid")
+    approved = dict(bundle)
+    approved.update(
+        {
+            "approval_state": "APPROVED_REFERENCE_ONLY",
+            "reviewer": reviewer.strip(),
+            "reviewed_at": reviewed_at.strip(),
+            "revision_sha256": revision_sha,
+            "production_evidence": False,
+            "production_analysis": False,
+            "publish_allowed": False,
+            "approval_scope": "reference discussion only; not SCRIPT_APPROVED",
+        }
+    )
+    return approved
+
+
+def reject_reference_review(
+    bundle: Mapping[str, object], *, reviewer: str, reason: str
+) -> dict[str, object]:
+    """Return a rejected revision with an explicit human reason."""
+
+    _nonempty(reviewer, "review.rejection_invalid")
+    _nonempty(reason, "review.rejection_invalid")
+    rejected = dict(bundle)
+    rejected.update(
+        {
+            "approval_state": "REJECTED",
+            "reviewer": reviewer.strip(),
+            "rejection_reason": reason.strip(),
+            "publish_allowed": False,
+        }
+    )
+    return rejected
+
+
+def revise_reference_review(
+    bundle: Mapping[str, object], *, revision_id: str
+) -> dict[str, object]:
+    """Create a new revision marker and clear all prior human approval fields."""
+
+    _nonempty(revision_id, "review.revision_invalid")
+    revised = dict(bundle)
+    for key in ("reviewer", "reviewed_at", "rejection_reason", "approval_scope"):
+        revised.pop(key, None)
+    revised.update(
+        {
+            "approval_state": "REVISED",
+            "revision_id": revision_id.strip(),
+            "publish_allowed": False,
+        }
+    )
+    return revised
