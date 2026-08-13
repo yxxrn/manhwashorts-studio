@@ -930,6 +930,54 @@ def check_narration_language(script: ScriptVersion | None, language: str) -> lis
     )]
 
 
+def check_narrative_naturalness(report: object) -> list[CheckResult]:
+    """Convert safe narrative screening codes to the shared QC result type."""
+
+    warnings = tuple(getattr(report, "warnings", ()) or ())
+    details = {
+        "total_words": int(getattr(report, "total_words", 0)),
+        "sentence_length_variance": float(
+            getattr(report, "sentence_length_variance", 0.0)
+        ),
+        "claim_evidence_coverage_ratio": float(
+            getattr(report, "claim_evidence_coverage_ratio", 0.0)
+        ),
+        "qualified_interpretation_coverage_ratio": float(
+            getattr(report, "qualified_interpretation_coverage_ratio", 0.0)
+        ),
+    }
+    results: list[CheckResult] = []
+    blocking = {
+        "narrative.evidence_missing": "Narrative passages are missing grounded panel evidence.",
+        "narrative.interpretation_unqualified": "Interpretive narrative claims require a qualification.",
+        "narrative.unsupported_claim": "Narrative passages reference an unsupported claim.",
+        "narrative.balloon_dialogue_copied": "Narrative text copies speech-balloon dialogue.",
+        "narrative.cta": "Narrative text contains channel call-to-action language.",
+        "narrative.generic_hype": "Narrative text contains generic hype language.",
+        "narrative.ending_invalid": "Narrative ending does not match its ending kind.",
+        "narrative.display_derivation_invalid": "Narrative display derivation is invalid.",
+    }
+    warning_messages = {
+        "narrative.template_risk": "Narrative structure shows repeated template openings or sentences.",
+        "narrative.rhythm_warning": "Narrative sentence rhythm is unusually uniform.",
+    }
+    for code in warnings:
+        if code in blocking:
+            detail = dict(details)
+            if code == "narrative.generic_hype":
+                detail["markers"] = list(getattr(report, "generic_hype_hits", ()))
+            if code == "narrative.cta":
+                detail["markers"] = list(getattr(report, "cta_hits", ()))
+            results.append(_fail(code, CheckSeverity.ERROR, blocking[code], detail))
+        elif code in warning_messages:
+            results.append(
+                _fail(code, CheckSeverity.WARNING, warning_messages[code], details)
+            )
+    if not results:
+        results.append(_pass("narrative.naturalness_ok", "Narrative screening passed."))
+    return results
+
+
 def check_duration(duration: float, target: float) -> list[CheckResult]:
     """Shorts must stay within the platform ceiling."""
     results: list[CheckResult] = []

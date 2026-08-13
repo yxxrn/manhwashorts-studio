@@ -9,6 +9,12 @@ Notable changes per release. Dates are ISO 8601.
   preserves the default v2 synthesis payload unchanged. No provider call,
   voice, audio, or rendering behavior was added.
 
+- Added non-rewriting Sharp Friend naturalness screening with deterministic
+  sentence-rhythm, repetition, connector, evidence, qualification, CTA, hype,
+  and copied-dialogue signals. Blocking findings use stable narrative codes;
+  template/rhythm findings remain warnings. No prose, audio, or provider
+  behavior is rewritten or generated.
+
 - Revalidated the current local 54.2-second manual preview at HEAD
   `53042f466ef576fb755eecb917037979ac2d4ffe` on
   `feature/codex-manual-preview-v2`. The deterministic rerender produced the

@@ -5,7 +5,7 @@ import json
 import re
 import subprocess
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -57,6 +57,269 @@ class EditorialQC:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class NarrativeNaturalnessReport:
+    total_words: int
+    sentence_length_p10: float
+    sentence_length_p50: float
+    sentence_length_p90: float
+    sentence_length_variance: float
+    repeated_normalized_sentence_ratio: float
+    repeated_opening_ngram_ratio: float
+    connector_diversity_count: int
+    causal_transition_coverage: float
+    contraction_count: int
+    generic_hype_hits: tuple[str, ...]
+    cta_hits: tuple[str, ...]
+    claim_evidence_coverage_ratio: float
+    qualified_interpretation_coverage_ratio: float
+    warnings: tuple[str, ...]
+
+
+_NARRATIVE_CONNECTORS = (
+    "because",
+    "but",
+    "so",
+    "while",
+    "although",
+    "however",
+    "instead",
+    "meanwhile",
+    "yet",
+    "therefore",
+)
+_NARRATIVE_CAUSAL_CONNECTORS = {
+    "because",
+    "so",
+    "while",
+    "although",
+    "however",
+    "instead",
+    "meanwhile",
+    "yet",
+    "therefore",
+}
+_NARRATIVE_HYPE_MARKERS = (
+    "epic battle",
+    "unstoppable attack",
+    "insane power",
+)
+_NARRATIVE_CTA_MARKERS = (
+    "like this video",
+    "subscribe",
+    "follow for more",
+    "watch until the end",
+)
+
+
+def _narrative_words(text: object) -> list[str]:
+    return re.findall(r"[^\W_]+(?:['’][^\W_]+)?", str(text or "").casefold())
+
+
+def _narrative_sentences(text: object) -> list[list[str]]:
+    return [
+        words
+        for part in re.split(r"[.!?]+", str(text or ""))
+        if (words := _narrative_words(part))
+    ]
+
+
+def _narrative_nearest_rank(values: Sequence[int], fraction: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    index = max(0, min(len(ordered) - 1, int(round(fraction * (len(ordered) - 1)))))
+    return float(ordered[index])
+
+
+def _narrative_ratio(numerator: int, denominator: int) -> float:
+    return round(numerator / denominator, 6) if denominator else 0.0
+
+
+def _narrative_dialogue_values(claim: Mapping[str, object]) -> list[str]:
+    values = claim.get("dialogue_or_ocr", claim.get("source_dialogue", []))
+    if isinstance(values, str):
+        return [values]
+    if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+        return [value for value in values if isinstance(value, str)]
+    return []
+
+
+def _narrative_contains_sequence(text: object, source: object) -> bool:
+    passage_words = _narrative_words(text)
+    source_words = _narrative_words(source)
+    if len(source_words) < 4:
+        return False
+    source_ngrams = {
+        tuple(source_words[index : index + 4])
+        for index in range(len(source_words) - 3)
+    }
+    return any(
+        tuple(passage_words[index : index + 4]) in source_ngrams
+        for index in range(len(passage_words) - 3)
+    )
+
+
+def screen_narrative_naturalness(
+    passages: Sequence[Mapping[str, object]],
+    claims: Mapping[str, Mapping[str, object]],
+    profile: object,
+) -> NarrativeNaturalnessReport:
+    """Measure safe prose signals without rewriting provider text."""
+
+    del profile  # The profile selects this screen; metrics remain non-mechanical.
+    passage_texts = [str(item.get("text", "")) for item in passages]
+    sentence_lists = [_narrative_sentences(text) for text in passage_texts]
+    sentence_lengths = [len(sentence) for group in sentence_lists for sentence in group]
+    sentence_hashes = [
+        " ".join(sentence)
+        for group in sentence_lists
+        for sentence in group
+    ]
+    opening_ngrams = [
+        tuple(_narrative_words(text)[:3])
+        for text in passage_texts
+        if len(_narrative_words(text)) >= 3
+    ]
+    repeated_sentences = 0
+    seen_sentences: set[str] = set()
+    for group in sentence_lists:
+        current = {" ".join(sentence) for sentence in group}
+        repeated_sentences += len(current & seen_sentences)
+        seen_sentences.update(current)
+    repeated_openings = len(opening_ngrams) - len(set(opening_ngrams))
+    total_sentences = len(sentence_hashes)
+    sentence_variance = (
+        sum(
+            (value - (sum(sentence_lengths) / len(sentence_lengths))) ** 2
+            for value in sentence_lengths
+        )
+        / len(sentence_lengths)
+        if sentence_lengths
+        else 0.0
+    )
+    lower_text = " ".join(passage_texts).casefold()
+    connector_hits = {
+        connector
+        for connector in _NARRATIVE_CONNECTORS
+        if re.search(rf"\b{re.escape(connector)}\b", lower_text)
+    }
+    causal_passages = sum(
+        any(
+            re.search(rf"\b{re.escape(connector)}\b", text.casefold())
+            for connector in _NARRATIVE_CAUSAL_CONNECTORS
+        )
+        for text in passage_texts
+    )
+    contraction_count = sum(
+        1
+        for text in passage_texts
+        for token in re.findall(r"\b[^\s]+\b", text)
+        if "'" in token or "’" in token
+    )
+    generic_hype_hits = tuple(
+        marker for marker in _NARRATIVE_HYPE_MARKERS if marker in lower_text
+    )
+    cta_hits = tuple(marker for marker in _NARRATIVE_CTA_MARKERS if marker in lower_text)
+
+    complete_passages = 0
+    unsupported_claim = False
+    evidence_missing = False
+    for passage in passages:
+        claim_ids = passage.get("claim_ids", [])
+        evidence_ids = passage.get("evidence_panel_ids", [])
+        if not isinstance(claim_ids, Sequence) or isinstance(claim_ids, (str, bytes)):
+            evidence_missing = True
+            continue
+        if not isinstance(evidence_ids, Sequence) or isinstance(evidence_ids, (str, bytes)):
+            evidence_missing = True
+            continue
+        required: set[str] = set()
+        valid = bool(claim_ids)
+        for claim_id in claim_ids:
+            claim = claims.get(claim_id) if isinstance(claim_id, str) else None
+            if not isinstance(claim, Mapping):
+                unsupported_claim = True
+                valid = False
+                continue
+            claim_evidence = claim.get("evidence_panel_ids")
+            if not isinstance(claim_evidence, Sequence) or isinstance(
+                claim_evidence, (str, bytes)
+            ) or not claim_evidence:
+                evidence_missing = True
+                valid = False
+                continue
+            required.update(str(item) for item in claim_evidence)
+            for dialogue in _narrative_dialogue_values(claim):
+                if _narrative_contains_sequence(passage.get("text", ""), dialogue):
+                    evidence_missing = True
+        if not required <= {str(item) for item in evidence_ids}:
+            evidence_missing = True
+            valid = False
+        if valid:
+            complete_passages += 1
+
+    interpretations = [
+        claim
+        for claim in claims.values()
+        if isinstance(claim, Mapping) and claim.get("claim_type") == "interpretation"
+    ]
+    qualified = sum(
+        bool(str(claim.get("qualification", "")).strip())
+        for claim in interpretations
+    )
+    unqualified = bool(interpretations) and qualified != len(interpretations)
+    warnings: set[str] = set()
+    if generic_hype_hits:
+        warnings.add("narrative.generic_hype")
+    if cta_hits:
+        warnings.add("narrative.cta")
+    if unsupported_claim:
+        warnings.add("narrative.unsupported_claim")
+    if evidence_missing:
+        warnings.add("narrative.evidence_missing")
+    if unqualified:
+        warnings.add("narrative.interpretation_unqualified")
+    if any(
+        _narrative_contains_sequence(passage.get("text", ""), dialogue)
+        for passage in passages
+        for claim in claims.values()
+        if isinstance(claim, Mapping)
+        for dialogue in _narrative_dialogue_values(claim)
+    ):
+        warnings.add("narrative.balloon_dialogue_copied")
+    if repeated_sentences or repeated_openings:
+        warnings.add("narrative.template_risk")
+    if sentence_lengths and sentence_variance == 0.0:
+        warnings.add("narrative.rhythm_warning")
+
+    return NarrativeNaturalnessReport(
+        total_words=sum(len(_narrative_words(text)) for text in passage_texts),
+        sentence_length_p10=_narrative_nearest_rank(sentence_lengths, 0.10),
+        sentence_length_p50=_narrative_nearest_rank(sentence_lengths, 0.50),
+        sentence_length_p90=_narrative_nearest_rank(sentence_lengths, 0.90),
+        sentence_length_variance=round(sentence_variance, 6),
+        repeated_normalized_sentence_ratio=_narrative_ratio(
+            repeated_sentences, total_sentences
+        ),
+        repeated_opening_ngram_ratio=_narrative_ratio(
+            repeated_openings, len(opening_ngrams)
+        ),
+        connector_diversity_count=len(connector_hits),
+        causal_transition_coverage=_narrative_ratio(causal_passages, len(passages)),
+        contraction_count=contraction_count,
+        generic_hype_hits=generic_hype_hits,
+        cta_hits=cta_hits,
+        claim_evidence_coverage_ratio=_narrative_ratio(
+            complete_passages, len(passages)
+        ),
+        qualified_interpretation_coverage_ratio=(
+            round(qualified / len(interpretations), 6) if interpretations else 1.0
+        ),
+        warnings=tuple(sorted(warnings)),
+    )
 
 
 def _shot_metrics(scenes: list[object]) -> tuple[float, float, int, float]:

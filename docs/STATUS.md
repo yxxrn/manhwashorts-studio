@@ -43,6 +43,27 @@ Updated: 2026-08-13
   wiring, and explicit human-review integration; voice generation remains
   deferred.
 
+## Slice E Task 4 - naturalness screening - 2026-08-13
+
+- Added the non-rewriting `NarrativeNaturalnessReport` screen in
+  `app/services/editorial_qc.py` and its shared `CheckResult` conversion in
+  `app/services/quality.py`. It records sentence percentiles/variance,
+  repeated sentence/opening ratios, connector and causal coverage, contractions,
+  evidence/qualification ratios, and safe CTA/hype findings without storing or
+  rewriting passage text.
+- Blocking codes cover missing/unsupported evidence, unqualified interpretation,
+  copied balloon dialogue, CTA, and generic hype. `narrative.template_risk` and
+  `narrative.rhythm_warning` remain visible warnings only; there is no
+  contraction quota, fixed sentence shape, or per-role word budget.
+- TDD evidence: 9 collected/9 passed in `tests/test_narrative_qc.py`; the
+  related naturalness/Sharp Friend/v2/analyzer/vision-evidence matrix is
+  118/118 passed. Ruff, compileall, and diff checks are clean. The synthesis
+  transport checkpoint is `dabbfe7`; this Task 4 checkpoint is not yet a
+  pipeline/API or media change.
+- Next atomic task: Slice E Task 5 pipeline identity persistence, safe status,
+  and explicit approval integration. Voice/TTS/audio/render/provider selection
+  remain deferred; publish rights remain blocked.
+
 ## Current local manual preview checkpoint - 2026-08-13
 
 - Revalidated the corrected preview from local HEAD
