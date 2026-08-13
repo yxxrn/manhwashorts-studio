@@ -5,11 +5,19 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageOps
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from app.services.render import KaraokeSentenceGroup, KaraokeWord
+from app.services.timeline import normalize_display_text, wrap_caption
 
 EXPECTED_SOURCE_ORDERS = tuple(range(1, 24))
 MIN_DURATION_SECONDS = 50.0
@@ -18,6 +26,9 @@ CAPTION_PATTERN = re.compile(r"[A-Z0-9]+(?: [A-Z0-9]+)*\Z")
 PREPARED_SIZE = (1296, 2304)
 OUTPUT_SIZE = (1080, 1920)
 SUPPORTED_FPS = (30, 60)
+CAPTION_MAX_CHARS = 36
+CAPTION_MAX_LINES = 3
+CAPTION_ACTIVE_SCALE = 1.08
 SUPPORTED_MOTIONS = (
     "hold",
     "pan_left",
@@ -45,6 +56,74 @@ class ValidatedCaption:
     text: str
 
 
+def build_sentence_caption_groups(
+    spoken_text: str,
+    timed_cues: Sequence[Mapping[str, object]],
+) -> tuple[KaraokeSentenceGroup, ...]:
+    """Group punctuation-free word cues into sentence-held karaoke blocks."""
+    raw_tokens = re.findall(r"\S+", str(spoken_text))
+    if not raw_tokens or not timed_cues:
+        raise ValueError("subtitle.word_timing_missing: sentence cues are required")
+    sentence_end_indexes = {
+        index
+        for index, token in enumerate(raw_tokens)
+        if re.search(r"[.!?][\"')\]]*$", token)
+    }
+    expected_words = [normalize_display_text(token) for token in raw_tokens]
+    expected_words = [word for word in expected_words if word]
+    words: list[KaraokeWord] = []
+    previous_index = -1
+    for cue in timed_cues:
+        try:
+            spoken_index = int(cue["spoken_token_index"])
+            text = str(cue.get("text", cue.get("display_text", "")))
+            start_time = float(cue["start_s"])
+            end_time = float(cue["end_s"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("subtitle.word_timing_invalid: cue fields are invalid") from None
+        if spoken_index <= previous_index or not 0 <= spoken_index < len(raw_tokens):
+            raise ValueError("subtitle.word_timing_invalid: cue order is invalid")
+        previous_index = spoken_index
+        words.append(KaraokeWord(text, start_time, end_time))
+    if [word.text for word in words] != expected_words:
+        raise ValueError("subtitle.word_timing_missing: cues do not cover display words")
+
+    groups: list[KaraokeSentenceGroup] = []
+    current: list[KaraokeWord] = []
+    current_end_index = -1
+    for cue, word in zip(timed_cues, words, strict=True):
+        current.append(word)
+        current_end_index = int(cue["spoken_token_index"])
+        if current_end_index in sentence_end_indexes:
+            groups.append(
+                KaraokeSentenceGroup(
+                    group_id=f"sentence-{len(groups) + 1}",
+                    words=tuple(current),
+                    start_time=current[0].start_time,
+                    end_time=current[-1].end_time,
+                )
+            )
+            current = []
+    if current:
+        groups.append(
+            KaraokeSentenceGroup(
+                group_id=f"sentence-{len(groups) + 1}",
+                words=tuple(current),
+                start_time=current[0].start_time,
+                end_time=current[-1].end_time,
+            )
+        )
+    if not groups or len(groups) != len(sentence_end_indexes):
+        raise ValueError("subtitle.sentence_boundary_missing: sentence punctuation is not covered")
+    if any(
+        len(wrap_caption(" ".join(word.text for word in group.words), CAPTION_MAX_CHARS))
+        > CAPTION_MAX_LINES
+        for group in groups
+    ):
+        raise ValueError("subtitle overflow: sentence exceeds the configured line budget")
+    return tuple(groups)
+
+
 @dataclass(frozen=True)
 class ValidatedPlan:
     contract_version: str
@@ -57,6 +136,7 @@ class ValidatedPlan:
     random_sampling: bool
     publish_allowed: bool
     rights_status: str
+    caption_groups: tuple[KaraokeSentenceGroup, ...] = ()
 
 
 def _fail(code: str, message: str) -> ValueError:
@@ -153,6 +233,52 @@ def validate_edit_plan(
             raise _fail("preview.caption_contract_invalid", "caption range or text is invalid")
         captions.append(ValidatedCaption(start, end, text))
 
+    raw_groups = plan.get("caption_groups", [])
+    if not isinstance(raw_groups, list):
+        raise _fail("preview.caption_contract_invalid", "caption_groups must be a list")
+    caption_groups: list[KaraokeSentenceGroup] = []
+    previous_end = -1.0
+    for raw in raw_groups:
+        if not isinstance(raw, Mapping):
+            raise _fail("preview.caption_contract_invalid", "caption group must be an object")
+        try:
+            group_id = str(raw["group_id"])
+            start_time = float(raw["start_time"])
+            end_time = float(raw["end_time"])
+            raw_words = raw["words"]
+        except (KeyError, TypeError, ValueError):
+            raise _fail("preview.caption_contract_invalid", "caption group fields are invalid") from None
+        if not isinstance(raw_words, list):
+            raise _fail("preview.caption_contract_invalid", "caption group words must be a list")
+        words: list[KaraokeWord] = []
+        for raw_word in raw_words:
+            if not isinstance(raw_word, Mapping):
+                raise _fail("preview.caption_contract_invalid", "caption word must be an object")
+            try:
+                words.append(
+                    KaraokeWord(
+                        str(raw_word["text"]),
+                        float(raw_word["start_time"]),
+                        float(raw_word["end_time"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise _fail("preview.caption_contract_invalid", str(exc)) from None
+        try:
+            group = KaraokeSentenceGroup(group_id, tuple(words), start_time, end_time)
+        except ValueError as exc:
+            raise _fail("preview.caption_contract_invalid", str(exc)) from None
+        if group.end_time > total_duration + 1e-6:
+            raise _fail("preview.caption_contract_invalid", "caption group exceeds media duration")
+        if group.start_time < previous_end:
+            raise _fail("preview.caption_contract_invalid", "caption groups overlap")
+        if len(wrap_caption(" ".join(word.text for word in group.words), CAPTION_MAX_CHARS)) > CAPTION_MAX_LINES:
+            raise _fail("preview.caption_contract_invalid", "caption group overflows line budget")
+        caption_groups.append(group)
+        previous_end = group.end_time
+    if captions and caption_groups:
+        raise _fail("preview.caption_contract_invalid", "static and sentence captions cannot both be set")
+
     return ValidatedPlan(
         contract_version=str(plan["contract_version"]),
         fps=fps,
@@ -164,6 +290,7 @@ def validate_edit_plan(
         random_sampling=False,
         publish_allowed=False,
         rights_status="internal review only",
+        caption_groups=tuple(caption_groups),
     )
 
 
@@ -246,23 +373,47 @@ def render_preview(
     assembled = output_dir / "assembled-silent.mp4"
     _run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", "-bsf:v", "h264_mp4toannexb", str(assembled)])
     ass = output_dir / "captions.ass"
-    lines = [
-        "[Script Info]\\nScriptType: v4.00+\\nPlayResX: 1080\\nPlayResY: 1920\\n",
-        "[V4+ Styles]\\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\\n",
-        "Style: Main,Barber Chop,82,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,-1,0,0,0,100,100,1,0,1,7,2,2,80,80,260,1\\n",
-        "[Events]\\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\\n",
-    ]
-    for caption in plan.captions:
-        start = sum(shot.duration for shot in plan.shots[:caption.start_shot])
-        end = sum(shot.duration for shot in plan.shots[:caption.end_shot])
-        def stamp(seconds: float) -> str:
-            total = round(seconds * 100)
-            hours, total = divmod(total, 360000)
-            minutes, total = divmod(total, 6000)
-            secs, centis = divmod(total, 100)
-            return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
-        lines.append(f"Dialogue: 0,{stamp(start)},{stamp(end)},Main,,0,0,0,,{caption.text}\\n")
-    ass.write_text("".join(lines).replace("\\n", "\n"), encoding="utf-8")
+    if plan.caption_groups:
+        from app.services.render import build_sentence_karaoke_ass
+
+        ass.write_text(
+            build_sentence_karaoke_ass(
+                plan.caption_groups,
+                plan.width,
+                plan.height,
+                font_name="Barber Chop",
+                max_chars=CAPTION_MAX_CHARS,
+                max_lines=CAPTION_MAX_LINES,
+                active_scale=CAPTION_ACTIVE_SCALE,
+                anchor=(0.50, 0.56),
+                font_height_ratio=0.028,
+                italic=True,
+                outline_pixels=6,
+                shadow_alpha_max=0.35,
+                alignment=5,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        lines = [
+            "[Script Info]\\nScriptType: v4.00+\\nPlayResX: 1080\\nPlayResY: 1920\\n",
+            "[V4+ Styles]\\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\\n",
+            "Style: Main,Barber Chop,82,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,-1,0,0,0,100,100,1,0,1,7,2,2,80,80,260,1\\n",
+            "[Events]\\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\\n",
+        ]
+        for caption in plan.captions:
+            start = sum(shot.duration for shot in plan.shots[:caption.start_shot])
+            end = sum(shot.duration for shot in plan.shots[:caption.end_shot])
+
+            def stamp(seconds: float) -> str:
+                total = round(seconds * 100)
+                hours, total = divmod(total, 360000)
+                minutes, total = divmod(total, 6000)
+                secs, centis = divmod(total, 100)
+                return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
+
+            lines.append(f"Dialogue: 0,{stamp(start)},{stamp(end)},Main,,0,0,0,,{caption.text}\\n")
+        ass.write_text("".join(lines).replace("\\n", "\n"), encoding="utf-8")
     final = output_dir / "codex-vision-preview-54s-silent.mp4"
     ass_filter = str(ass.resolve()).replace("\\", "/").replace(":", "\\:")
     font_dir = (Path(__file__).parents[2] / "assets" / "fonts").resolve()

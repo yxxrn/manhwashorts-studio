@@ -2,6 +2,18 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added `sentence_held_word_karaoke_v1` to the local silent Sharp Friend
+  review preview. Each punctuation-free sentence remains on screen while
+  word-level cues highlight one active word in yellow at 1.08 scale and keep
+  other words white, with centered Barber Chop wrapping capped at three lines.
+  The regenerated ignored artifact is exactly 50.000000 seconds, 1080x1920,
+  60 FPS, H.264 High/yuv420p, video-only, and uses all 23 story panels once.
+  Approval remains pending and publication/voice/audio/provider work remains
+  deferred. Focused and render QC are green; the final disposable LF-normalized
+  Windows suite is 864 collected, 863 passed, one existing skip, and zero
+  failures. The primary checkout's CRLF-only prompt diagnostic is documented
+  in STATUS and required no tracked source normalization.
+
 - Completed the local manual Sharp Friend reference-review boundary for the
   existing 24-entry chapter ledger. Every image was opened in chronological
   order: title/front matter order `0` is explicitly excluded and story orders

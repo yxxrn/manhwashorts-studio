@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -56,6 +57,54 @@ class RenderError(RuntimeError):
         self.code = code
         self.log_tail = log_tail
         self.telemetry = telemetry
+
+
+@dataclass(frozen=True)
+class KaraokeWord:
+    """One punctuation-free display word with authoritative word timing."""
+
+    text: str
+    start_time: float
+    end_time: float
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[A-Z0-9]+", self.text):
+            raise ValueError("subtitle.display_punctuation: display words must be uppercase alphanumeric")
+        if (
+            not math.isfinite(self.start_time)
+            or not math.isfinite(self.end_time)
+            or self.start_time < 0.0
+            or self.end_time <= self.start_time
+        ):
+            raise ValueError("subtitle.word_timing_invalid: word timing must be finite, nonnegative, and ordered")
+
+
+@dataclass(frozen=True)
+class KaraokeSentenceGroup:
+    """A complete display sentence whose active word changes by timing."""
+
+    group_id: str
+    words: tuple[KaraokeWord, ...]
+    start_time: float
+    end_time: float
+
+    def __post_init__(self) -> None:
+        if not self.group_id or not self.words:
+            raise ValueError("subtitle.sentence_group_invalid: group requires an id and words")
+        if (
+            not math.isfinite(self.start_time)
+            or not math.isfinite(self.end_time)
+            or self.start_time < 0.0
+            or self.end_time <= self.start_time
+            or self.start_time > self.words[0].start_time
+            or self.end_time < self.words[-1].end_time
+        ):
+            raise ValueError("subtitle.sentence_timing_invalid: group timing does not contain words")
+        if any(
+            left.end_time > right.start_time
+            for left, right in zip(self.words, self.words[1:], strict=False)
+        ):
+            raise ValueError("subtitle.word_timing_overlap: sentence word timings overlap")
 
 
 @dataclass
@@ -1093,6 +1142,99 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             lines.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},"
                 f"Caption,,0,0,0,,{highlighted}"
+            )
+    return header + "\n".join(lines) + "\n"
+
+
+def build_sentence_karaoke_ass(
+    groups: Sequence[KaraokeSentenceGroup],
+    width: int,
+    height: int,
+    *,
+    font_name: str = "DejaVu Sans",
+    max_chars: int = 36,
+    max_lines: int = 3,
+    active_scale: float = 1.08,
+    anchor: tuple[float, float] = (0.50, 0.56),
+    font_height_ratio: float = 0.028,
+    italic: bool = True,
+    outline_pixels: int = 6,
+    shadow_alpha_max: float = 0.35,
+    alignment: int = 5,
+) -> str:
+    """Build sentence-held ASS karaoke from authoritative word timings.
+
+    Every event contains the complete punctuation-free sentence. Only the word
+    whose interval owns that event is yellow and slightly enlarged; the next
+    sentence replaces the complete block at its own first word boundary.
+    """
+    if width <= 0 or height <= 0 or max_chars <= 0 or max_lines <= 0:
+        raise RenderError("subtitle layout dimensions are invalid", code="reference.subtitle_layout_invalid")
+    if not 1.0 < active_scale <= 1.25 or not math.isfinite(active_scale):
+        raise RenderError("subtitle active scale is invalid", code="reference.subtitle_scale_invalid")
+    if not 0.0 <= anchor[0] <= 1.0 or not 0.0 <= anchor[1] <= 1.0:
+        raise RenderError("subtitle anchor is invalid", code="reference.subtitle_layout_invalid")
+    if not 0.0 < font_height_ratio <= 0.2 or not math.isfinite(font_height_ratio):
+        raise RenderError("subtitle font ratio is invalid", code="reference.subtitle_layout_invalid")
+    if not 0 <= alignment <= 9 or outline_pixels < 0 or not 0.0 <= shadow_alpha_max <= 1.0:
+        raise RenderError("subtitle style is invalid", code="reference.subtitle_layout_invalid")
+
+    font_size = max(1, round(height * font_height_ratio))
+    anchor_x = round(width * anchor[0])
+    anchor_y = round(height * anchor[1])
+    italic_flag = -1 if italic else 0
+    shadow_alpha = round((1.0 - shadow_alpha_max) * 255)
+    active_percent = round(active_scale * 100)
+    header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Caption,{font_name},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H{shadow_alpha:02X}000000,-1,{italic_flag},0,0,100,100,0,0,1,{outline_pixels},2,{alignment},0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    lines: list[str] = []
+    previous_group_end = 0.0
+    for group in groups:
+        if group.start_time < previous_group_end:
+            raise RenderError(
+                "subtitle sentence groups overlap",
+                code="reference.subtitle_timing_invalid",
+            )
+        previous_group_end = group.end_time
+        display_words = [word.text for word in group.words]
+        wrapped = wrap_caption(" ".join(display_words), max_chars)
+        if len(wrapped) > max_lines or any(len(line) > max_chars for line in wrapped):
+            raise RenderError(
+                "subtitle overflow: sentence exceeds the configured line budget",
+                code="reference.subtitle_overflow",
+            )
+        for active_index, word in enumerate(group.words):
+            rendered: list[str] = []
+            word_index = 0
+            for line in wrapped:
+                parts: list[str] = []
+                for display_word in line.split():
+                    if word_index == active_index:
+                        tag = f"\\c&H0000FFFF&\\fscx{active_percent}\\fscy{active_percent}"
+                    else:
+                        tag = "\\c&H00FFFFFF&\\fscx100\\fscy100"
+                    parts.append(
+                        f"{{{tag}}}{_ass_escape(display_word)}"
+                        "{\\c&H00FFFFFF&\\fscx100\\fscy100}"
+                    )
+                    word_index += 1
+                rendered.append(" ".join(parts))
+            display_text = "\\N".join(rendered)
+            lines.append(
+                f"Dialogue: 0,{_ass_time(word.start_time)},{_ass_time(word.end_time)},"
+                f"Caption,,0,0,0,,{{\\pos({anchor_x},{anchor_y})}}{display_text}"
             )
     return header + "\n".join(lines) + "\n"
 

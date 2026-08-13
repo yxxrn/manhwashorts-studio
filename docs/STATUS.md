@@ -2,6 +2,49 @@
 
 Updated: 2026-08-14
 
+## Sentence-held karaoke silent preview - 2026-08-14
+
+- Updated the local manual-review preview surface so a complete
+  punctuation-free sentence remains visible until the next sentence, while
+  the authoritative word-level cue changes only the active word: active text
+  is yellow with a deterministic `1.08` scale bump and all other words remain
+  white. The block uses Barber Chop, bold italic styling, centered anchor
+  `(0.50, 0.56)`, black outline/shadow, and deterministic wrapping capped at
+  36 characters across three lines. Spoken narration remains punctuation-
+  bearing and unchanged; only the independently derived display surface is
+  normalized.
+- The new contract is `sentence_held_word_karaoke_v1`. The ignored plan at
+  `data/real-chapter-narrative-preview-20260814/edit-plan.json` contains 11
+  sentence groups and 122 word intervals. The final ignored review artifact
+  is `data/real-chapter-narrative-preview-20260814/real-chapter-narrative-preview-50s-sentence-karaoke-silent.mp4`:
+  1080x1920, 60 FPS, H.264 High, `yuv420p`, exactly 50.000000 seconds,
+  3000 frames, no audio stream, SHA-256
+  `cf494544e638b4b2809df336bf5d0b7388c475f2ac74d38a15b9f4372a820e58`,
+  16,075,313 bytes. The 69-frame chronology/contact sheet and representative
+  word-transition pixel samples are in the same ignored directory; the
+  machine-readable report is `sentence-karaoke-qc.json` with SHA-256
+  `bc5816fbec454e3c08d03e8e0450df218e145cb390e7338daee5eba2321989b2`.
+- TDD RED was collection-clean: the five new sentence-karaoke tests failed
+  in their bodies because the grouping and ASS builder were absent. GREEN is
+  13/13 for the new/preview focused suite, 47/47 for the broader manual
+  narrative/preview matrix, 10/10 for the subtitle-display compatibility
+  tests, and 3/3 for the reference ASS/profile/motion compatibility checks.
+  Ruff, compileall, `git diff --check`, and the no-churn comparison are clean.
+- The final disposable dependency-complete Windows run used an LF-normalized
+  detached verification worktree plus the external `resource`/SQLite URL
+  compatibility shim and collected 864 non-slow tests: 863 passed, one
+  existing skip, and zero failures. A preliminary run in this primary
+  `core.autocrlf=true` checkout exposed one environment-only failure in
+  `test_v3_prompt_resource_is_lf_utf8_and_normative` because the committed LF
+  prompt blob is presented as CRLF; the normalized verification worktree
+  removes that checkout artifact without changing tracked source. No
+  unrelated source was changed.
+- Provenance remains `codex_manual_vision_reference_v1`, approval remains
+  `PENDING_EDITORIAL_REVIEW`, `publish_allowed=false`, and rights remain
+  internal-review-only. No TTS, voice, music, SFX, provider, DB, UI,
+  publication, or deployment action occurred. The next gate is Sol/user
+  visual and editorial approval; voice generation remains deferred.
+
 ## Real chapter Sharp Friend reference review - software green, editorial review pending - 2026-08-14
 
 - Executed the approved plan
