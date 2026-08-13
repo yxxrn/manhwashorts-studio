@@ -50,7 +50,8 @@ Updated: 2026-08-14
   with `5 collected, 4 failed, 1 passed`; the later output-format RED was one
   body failure (`yuvj420p` at the final gate), then GREEN after the explicit
   range/pixel-format filter. Final focused production/reference matrix is
-  `109 passed`; the related reference/framing/subtitle/motion/pipeline matrix
+  `109 passed` plus the final targeted regular timing-boundary regression;
+  the related reference/framing/subtitle/motion/pipeline matrix
   is `91 passed, 1 skipped, 14 deselected`. The authoritative LF-preserving
   disposable full non-slow run collected `867`: `866 passed, 1 existing skip,
   0 failed`. The primary Windows checkout still reports only the known
