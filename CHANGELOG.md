@@ -2,6 +2,13 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Carried the explicitly selected `sharp_friend_v1` identity through the
+  chapter synthesis request. The adapter now validates the profile version and
+  canonical hash locally, includes only safe identity metadata in the provider
+  payload, validates the returned output through the v3 analyzer contract, and
+  preserves the default v2 synthesis payload unchanged. No provider call,
+  voice, audio, or rendering behavior was added.
+
 - Revalidated the current local 54.2-second manual preview at HEAD
   `53042f466ef576fb755eecb917037979ac2d4ffe` on
   `feature/codex-manual-preview-v2`. The deterministic rerender produced the

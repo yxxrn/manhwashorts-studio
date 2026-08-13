@@ -126,6 +126,9 @@ class VisionChapterSynthesisRequest:
     coverage_manifest: Mapping[str, Any]
     ordered_observations: tuple[Mapping[str, Any], ...]
     chunks: tuple[Mapping[str, Any], ...]
+    narrative_profile_id: str | None = None
+    narrative_profile_version: str | None = None
+    narrative_profile_sha256: str | None = None
 
 
 class VisionObservationProvider(Protocol):
@@ -235,7 +238,7 @@ class OpenAICompatibleVisionProvider:
         self, request: VisionChapterSynthesisRequest
     ) -> Mapping[str, Any]:
         try:
-            expected_panel_ids = _validate_synthesis_request(request)
+            expected_panel_ids, profile = _validate_synthesis_request(request)
         except VisionRequestInvalid:
             raise
         except Exception:
@@ -245,7 +248,9 @@ class OpenAICompatibleVisionProvider:
         if not report.available:
             raise VisionCapabilityError()
 
-        payload = _build_synthesis_payload(request, expected_panel_ids, self._model)
+        payload = _build_synthesis_payload(
+            request, expected_panel_ids, self._model, profile
+        )
         try:
             response = httpx.post(
                 f"{self._base_url.rstrip('/')}/chat/completions",
@@ -273,9 +278,16 @@ class OpenAICompatibleVisionProvider:
             analyzer_contract = importlib.import_module(
                 "app.services.analyzer_contract"
             )
-            analyzer_contract.validate_analyzer_output(
-                result, expected_panel_ids=expected_panel_ids
-            )
+            if profile is None:
+                analyzer_contract.validate_analyzer_output(
+                    result, expected_panel_ids=expected_panel_ids
+                )
+            else:
+                analyzer_contract.validate_analyzer_output(
+                    result,
+                    expected_panel_ids=expected_panel_ids,
+                    narrative_profile_id=profile.profile_id,
+                )
         except Exception:
             raise VisionResponseInvalid() from None
         if not isinstance(result, Mapping):
@@ -845,7 +857,7 @@ def _validate_synthesis_chunks(
 
 def _validate_synthesis_request(
     request: VisionChapterSynthesisRequest,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], Any | None]:
     if not isinstance(request, VisionChapterSynthesisRequest):
         raise VisionRequestInvalid()
     if not _valid_synthesis_text(request.analysis_run_id):
@@ -870,11 +882,15 @@ def _validate_synthesis_request(
     if not isinstance(request.chunks, tuple):
         raise VisionRequestInvalid()
 
+    profile = validate_narrative_identity(request)
+
     try:
         analyzer_contract = importlib.import_module(
             "app.services.analyzer_contract"
         )
-        committed = analyzer_contract.load_analyzer_instruction()
+        committed = analyzer_contract.load_analyzer_instruction(
+            narrative_profile_id=profile.profile_id if profile is not None else None
+        )
     except Exception:
         raise VisionRequestInvalid() from None
     if (
@@ -890,13 +906,53 @@ def _validate_synthesis_request(
     )
     _validate_synthesis_coverage(request.coverage_manifest, expected_panel_ids)
     _validate_synthesis_chunks(request.chunks, expected_panel_ids)
-    return expected_panel_ids
+    return expected_panel_ids, profile
+
+
+def validate_narrative_identity(
+    request: VisionChapterSynthesisRequest,
+) -> Any | None:
+    """Validate the explicit immutable identity carried by a synthesis request."""
+
+    values = (
+        request.narrative_profile_id,
+        request.narrative_profile_version,
+        request.narrative_profile_sha256,
+    )
+    if all(value is None for value in values):
+        return None
+    if (
+        not isinstance(request.narrative_profile_id, str)
+        or not request.narrative_profile_id.strip()
+        or not isinstance(request.narrative_profile_version, str)
+        or not request.narrative_profile_version.strip()
+        or not isinstance(request.narrative_profile_sha256, str)
+        or len(request.narrative_profile_sha256) != 64
+        or any(character not in string.hexdigits for character in request.narrative_profile_sha256)
+    ):
+        raise VisionRequestInvalid()
+    try:
+        narrative_identity = importlib.import_module(
+            "app.services.narrative_identity"
+        )
+        profile = narrative_identity.get_narrative_identity(
+            request.narrative_profile_id
+        )
+    except Exception:
+        raise VisionRequestInvalid() from None
+    if (
+        request.narrative_profile_version != profile.profile_version
+        or request.narrative_profile_sha256 != profile.contract_sha256
+    ):
+        raise VisionRequestInvalid()
+    return profile
 
 
 def _build_synthesis_payload(
     request: VisionChapterSynthesisRequest,
     expected_panel_ids: tuple[str, ...],
     model: str,
+    profile: Any | None = None,
 ) -> dict[str, Any]:
     ledger = {
         "analysis_run_id": request.analysis_run_id,
@@ -918,7 +974,7 @@ def _build_synthesis_payload(
         "contract. Do not invent, repair, or omit evidence.\n"
         f"{ledger_json}"
     )
-    return {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": request.instruction_text},
@@ -927,3 +983,10 @@ def _build_synthesis_payload(
         "response_format": {"type": "json_object"},
         "temperature": 0,
     }
+    if profile is not None:
+        payload["narrative_identity"] = {
+            "profile_id": profile.profile_id,
+            "version": profile.profile_version,
+            "sha256": profile.contract_sha256,
+        }
+    return payload

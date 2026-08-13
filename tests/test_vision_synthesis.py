@@ -45,6 +45,23 @@ def _instruction_contract():
     return version, digest, text
 
 
+def _sharp_identity_contract():
+    contract = importlib.import_module("app.services.analyzer_contract")
+    version, digest, text = contract.load_analyzer_instruction(
+        narrative_profile_id="sharp_friend_v1"
+    )
+    profile_module = importlib.import_module("app.services.narrative_identity")
+    profile = profile_module.get_narrative_identity("sharp_friend_v1")
+    return (
+        version,
+        digest,
+        text,
+        profile.profile_id,
+        profile.profile_version,
+        profile.contract_sha256,
+    )
+
+
 def _request_type(module):
     request_type = getattr(module, "VisionChapterSynthesisRequest", None)
     assert isinstance(
@@ -126,8 +143,31 @@ def _request(
     instruction_version=None,
     instruction_sha256=None,
     instruction_text=None,
+    narrative_profile_id=None,
+    narrative_profile_version=None,
+    narrative_profile_sha256=None,
 ):
-    committed_version, committed_digest, committed_text = _instruction_contract()
+    if narrative_profile_id is None:
+        committed_version, committed_digest, committed_text = _instruction_contract()
+    else:
+        (
+            committed_version,
+            committed_digest,
+            committed_text,
+            _profile_id,
+            profile_version,
+            profile_sha256,
+        ) = _sharp_identity_contract()
+        narrative_profile_version = (
+            profile_version
+            if narrative_profile_version is None
+            else narrative_profile_version
+        )
+        narrative_profile_sha256 = (
+            profile_sha256
+            if narrative_profile_sha256 is None
+            else narrative_profile_sha256
+        )
     if instruction_version is None:
         instruction_version = committed_version
     if instruction_sha256 is None:
@@ -156,7 +196,19 @@ def _request(
             )
         ),
         chunks=tuple(copy.deepcopy(_chunks() if chunks is None else chunks)),
+        narrative_profile_id=narrative_profile_id,
+        narrative_profile_version=narrative_profile_version,
+        narrative_profile_sha256=narrative_profile_sha256,
     )
+
+
+def _sharp_output():
+    output = _valid_output()
+    output["narrative_outline"]["ending_kind"] = "consequence"
+    output["script_passages"][-1]["text"] = (
+        "The next panel will reveal who placed the clue there."
+    )
+    return output
 
 
 def _valid_output():
@@ -318,6 +370,63 @@ def test_synthesis_sends_exact_prompt_complete_ordered_evidence_and_no_images(
     assert "story_spine" not in ledger_json
     assert "payload" not in ledger_json
     assert result == _valid_output()
+
+
+def test_sharp_friend_synthesis_carries_identity_and_validates_v3(
+    mock_provider_url, monkeypatch
+):
+    module = _vision_module()
+    request = _request(module, narrative_profile_id="sharp_friend_v1")
+    provider = _provider(module, mock_provider_url)
+    captured = []
+    output = _sharp_output()
+    _install_response(monkeypatch, module, output, captured)
+
+    result = provider.synthesize(request)
+
+    assert result == output
+    body = captured[0]["kwargs"]["json"]
+    assert body["narrative_identity"] == {
+        "profile_id": "sharp_friend_v1",
+        "version": request.narrative_profile_version,
+        "sha256": request.narrative_profile_sha256,
+    }
+    metadata_json = json.dumps(
+        {key: value for key, value in body.items() if key != "messages"},
+        ensure_ascii=False,
+        sort_keys=True,
+    ).lower()
+    assert "audio" not in metadata_json
+    assert "voice" not in metadata_json
+    assert "api_key" not in metadata_json
+
+
+def test_sharp_friend_synthesis_rejects_profile_hash_mismatch_before_network(
+    mock_provider_url, monkeypatch
+):
+    module = _vision_module()
+    request = _request(
+        module,
+        narrative_profile_id="sharp_friend_v1",
+        narrative_profile_sha256="0" * 64,
+    )
+    provider = _provider(module, mock_provider_url)
+    _assert_preflight_rejected(module, provider, request, monkeypatch)
+
+
+def test_sharp_friend_synthesis_rejects_self_consistent_uncommitted_prompt(
+    mock_provider_url, monkeypatch
+):
+    module = _vision_module()
+    alternate = "uncommitted sharp friend instruction\n"
+    request = _request(
+        module,
+        narrative_profile_id="sharp_friend_v1",
+        instruction_text=alternate,
+        instruction_sha256=hashlib.sha256(alternate.encode("utf-8")).hexdigest(),
+    )
+    provider = _provider(module, mock_provider_url)
+    _assert_preflight_rejected(module, provider, request, monkeypatch)
 
 
 @pytest.mark.parametrize(
