@@ -54,8 +54,10 @@ from app.models import (
 from app.services import analysis as analysis_svc
 from app.services import (
     analyzer_contract,
+    editorial_qc,
     editorial_timing,
     framing_analysis,
+    narrative_identity,
     reference_profile,
     reference_visual_review,
     segmentation,
@@ -908,10 +910,25 @@ def _derive_legacy_fields(row: StoryAnalysis, output: Mapping[str, Any]) -> None
     ]
 
 
-def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnalysis:
+def run_analysis(
+    db: Session,
+    project_id: str,
+    actor_id: str = "",
+    *,
+    narrative_profile_id: str | None = None,
+) -> StoryAnalysis:
     """Run only the complete, fail-closed vision-first analysis flow."""
 
     project = get_project(db, project_id)
+    selected_profile = None
+    if narrative_profile_id is not None:
+        try:
+            selected_profile = narrative_identity.get_narrative_identity(
+                narrative_profile_id
+            )
+            narrative_identity.load_narrative_instruction(narrative_profile_id)
+        except narrative_identity.NarrativeIdentityError:
+            raise PipelineError("narrative_profile_invalid") from None
     assets = image_assets(project_assets(db, project_id))
     run_id = secrets.token_hex(16)
     for old in db.scalars(select(StoryAnalysis).where(StoryAnalysis.project_id == project_id)):
@@ -930,7 +947,9 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
     try:
         try:
             instruction_version, instruction_sha256, instruction_text = (
-                analyzer_contract.load_analyzer_instruction()
+                analyzer_contract.load_analyzer_instruction(
+                    narrative_profile_id=narrative_profile_id
+                )
             )
         except analyzer_contract.AnalyzerContractError:
             raise _AnalysisBlocked("analyzer_contract_invalid", stage="instruction_load") from None
@@ -1044,6 +1063,15 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
             coverage_manifest=manifest,
             ordered_observations=tuple(enriched[panel_id] for panel_id in expected_panel_ids),
             chunks=synthesis_chunks,
+            narrative_profile_id=(
+                selected_profile.profile_id if selected_profile is not None else None
+            ),
+            narrative_profile_version=(
+                selected_profile.profile_version if selected_profile is not None else None
+            ),
+            narrative_profile_sha256=(
+                selected_profile.contract_sha256 if selected_profile is not None else None
+            ),
         )
         try:
             synthesis_output = provider.synthesize(synthesis_request)
@@ -1067,6 +1095,7 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
             analyzer_contract.validate_analyzer_output(
                 synthesis_output,
                 expected_panel_ids=expected_panel_ids,
+                narrative_profile_id=narrative_profile_id,
             )
         except analyzer_contract.AnalyzerContractError:
             raise _AnalysisBlocked("analysis_incomplete", stage="analyzer_validation") from None
@@ -1114,7 +1143,17 @@ def run_analysis(db: Session, project_id: str, actor_id: str = "") -> StoryAnaly
             "duplicate_overlap_observations": duplicate_observations,
             "chain_reconciled": True,
             "chain_errors": list(chain_errors),
+            "narrative_screening_warning_codes": [],
         }
+        if selected_profile is not None:
+            row.reconciliation_json["narrative_identity"] = {
+                "profile_id": selected_profile.profile_id,
+                "version": selected_profile.profile_version,
+                "sha256": selected_profile.contract_sha256,
+            }
+            row.reconciliation_json["narrative_ending_kind"] = synthesis_output[
+                "narrative_outline"
+            ]["ending_kind"]
         row.blocking_reasons_json = None
         _derive_legacy_fields(row, synthesis_output)
         row.state = "RECONCILED"
@@ -1303,8 +1342,11 @@ def _validated_persisted_vision_output(
     ):
         raise PipelineError("analysis has blocking reasons")
 
+    profile = _narrative_identity_from_analysis(row)
     try:
-        version, digest, _ = analyzer_contract.load_analyzer_instruction()
+        version, digest, _ = analyzer_contract.load_analyzer_instruction(
+            narrative_profile_id=profile.profile_id if profile is not None else None
+        )
     except analyzer_contract.AnalyzerContractError:
         raise PipelineError("current analyzer instruction is unavailable") from None
     if row.instruction_version != version or row.instruction_sha256 != digest:
@@ -1424,16 +1466,108 @@ def _validated_persisted_vision_output(
         "narrative_outline": {"story_spine": dict(story_spine)},
         "script_passages": [dict(passage) for passage in passages if isinstance(passage, Mapping)],
     }
+    if profile is not None:
+        ending_kind = reconciliation.get("narrative_ending_kind")
+        if not isinstance(ending_kind, str) or not ending_kind.strip():
+            raise PipelineError("narrative_identity_invalid")
+        output["narrative_outline"]["ending_kind"] = ending_kind
+    validator_output = dict(output)
+    validator_observations: list[dict[str, Any]] = []
+    for observation, panel in zip(output["observations"], panels, strict=True):
+        visual_raw = observation.get("visual_evidence")
+        if visual_raw is not None:
+            try:
+                visual_evidence = visual_scoring.parse_panel_visual_evidence(visual_raw)
+            except Exception:
+                raise PipelineError("persisted visual evidence is invalid") from None
+            if (
+                visual_evidence.panel_id != panel.panel_id
+                or visual_evidence.source_asset_id != panel.source_asset_id
+                or visual_evidence.source_order != panel.source_order
+            ):
+                raise PipelineError("persisted visual evidence lineage is inconsistent")
+        plain_observation = dict(observation)
+        plain_observation.pop("visual_evidence", None)
+        validator_observations.append(plain_observation)
+    validator_output["observations"] = validator_observations
     try:
         analyzer_contract.validate_analyzer_output(
-            output,
+            validator_output,
             expected_panel_ids=expected_panel_ids,
+            narrative_profile_id=profile.profile_id if profile is not None else None,
         )
     except analyzer_contract.AnalyzerContractError:
         raise PipelineError("persisted vision evidence is invalid") from None
     if len(output["script_passages"]) != len(passages):
         raise PipelineError("persisted script passages are malformed")
     return output, panels
+
+
+def _narrative_identity_from_analysis(
+    analysis: StoryAnalysis,
+) -> narrative_identity.NarrativeIdentityProfile | None:
+    """Resolve and locally re-hash the persisted opt-in narrative identity."""
+
+    reconciliation = analysis.reconciliation_json
+    if not isinstance(reconciliation, Mapping) or "narrative_identity" not in reconciliation:
+        return None
+    raw = reconciliation.get("narrative_identity")
+    if not isinstance(raw, Mapping):
+        raise PipelineError("narrative_identity_invalid")
+    profile_id = raw.get("profile_id")
+    version = raw.get("version")
+    stored_hash = raw.get("sha256")
+    if not all(isinstance(value, str) and value.strip() for value in (profile_id, version, stored_hash)):
+        raise PipelineError("narrative_identity_invalid")
+    try:
+        profile = narrative_identity.get_narrative_identity(profile_id)
+        _prompt_version, prompt_sha256, _prompt_text = (
+            narrative_identity.load_narrative_instruction(profile_id)
+        )
+        canonical = narrative_identity.canonical_profile_contract_json(
+            profile, prompt_sha256
+        )
+        computed_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    except narrative_identity.NarrativeIdentityError:
+        raise PipelineError("narrative_identity_invalid") from None
+    if (
+        version != profile.profile_version
+        or stored_hash != computed_hash
+        or computed_hash != profile.contract_sha256
+    ):
+        raise PipelineError("narrative_identity_invalid")
+    return profile
+
+
+def _requested_narrative_profile(
+    analysis: StoryAnalysis,
+    narrative_profile_id: str | None,
+) -> narrative_identity.NarrativeIdentityProfile | None:
+    persisted = _narrative_identity_from_analysis(analysis)
+    if narrative_profile_id is None:
+        return persisted
+    try:
+        requested = narrative_identity.get_narrative_identity(narrative_profile_id)
+        _prompt_version, prompt_sha256, _prompt_text = (
+            narrative_identity.load_narrative_instruction(narrative_profile_id)
+        )
+        computed_hash = hashlib.sha256(
+            narrative_identity.canonical_profile_contract_json(
+                requested, prompt_sha256
+            ).encode("utf-8")
+        ).hexdigest()
+    except narrative_identity.NarrativeIdentityError:
+        raise PipelineError("narrative_profile_invalid") from None
+    if computed_hash != requested.contract_sha256:
+        raise PipelineError("narrative_profile_invalid")
+    if (
+        persisted is None
+        or persisted.profile_id != requested.profile_id
+        or persisted.profile_version != requested.profile_version
+        or persisted.contract_sha256 != requested.contract_sha256
+    ):
+        raise PipelineError("narrative_profile_mismatch")
+    return requested
 
 
 def analysis_status(db: Session, project_id: str) -> dict[str, Any] | None:
@@ -1476,6 +1610,28 @@ def analysis_status(db: Session, project_id: str) -> dict[str, Any] | None:
         "chain_reconciled": reconciliation.get("chain_reconciled", False),
         "claim_count": len(graph.get("claims", [])) if isinstance(graph.get("claims"), list) else 0,
         "passage_count": len(graph.get("script_passages", [])) if isinstance(graph.get("script_passages"), list) else 0,
+        "narrative_profile_id": (
+            reconciliation.get("narrative_identity", {}).get("profile_id")
+            if isinstance(reconciliation.get("narrative_identity"), Mapping)
+            else None
+        ),
+        "narrative_profile_version": (
+            reconciliation.get("narrative_identity", {}).get("version")
+            if isinstance(reconciliation.get("narrative_identity"), Mapping)
+            else None
+        ),
+        "narrative_profile_sha256": (
+            reconciliation.get("narrative_identity", {}).get("sha256")
+            if isinstance(reconciliation.get("narrative_identity"), Mapping)
+            else None
+        ),
+        "narrative_screening_warning_codes": [
+            code
+            for code in reconciliation.get("narrative_screening_warning_codes", [])
+            if isinstance(code, str)
+        ]
+        if isinstance(reconciliation.get("narrative_screening_warning_codes"), list)
+        else [],
         "blocking_codes": [
             code for code in blocking.get("codes", [])
             if isinstance(code, str) and code in _VISION_BLOCKING_CODES
@@ -1495,6 +1651,7 @@ def generate_script(
     hook_count: int = 3,
     seed: int | None = None,
     actor_id: str = "",
+    narrative_profile_id: str | None = None,
 ) -> ScriptVersion:
     """Materialize provider passages from the latest reconciled evidence."""
     project = get_project(db, project_id)
@@ -1503,6 +1660,7 @@ def generate_script(
         raise PipelineError("run vision analysis before generating a script")
     if row.state != "RECONCILED":
         raise PipelineError("script generation requires reconciled vision analysis")
+    profile = _requested_narrative_profile(row, narrative_profile_id)
     output, panels = _validated_persisted_vision_output(db, row)
     previous = latest_script_row(db, project_id)
     _ = (keep_locked, hook_count, seed, actor_id)
@@ -1513,7 +1671,8 @@ def generate_script(
     }
     panel_orders = {panel.panel_id: panel.source_order for panel in panels}
     sections: list[dict[str, Any]] = []
-    for passage in output["script_passages"]:
+    passage_count = len(output["script_passages"])
+    for index, passage in enumerate(output["script_passages"]):
         role = passage["editorial_role"]
         claim_ids = list(passage["claim_ids"])
         evidence_panel_ids = list(passage["evidence_panel_ids"])
@@ -1524,9 +1683,22 @@ def generate_script(
             }
             for claim_id in claim_ids
         ]
+        if profile is None:
+            section_name = _VISION_ROLE_TO_SECTION[role]
+        else:
+            if index == 0:
+                section_name = ScriptSection.HOOK.value
+            elif index == 1:
+                section_name = ScriptSection.SETUP.value
+            elif index == passage_count - 1:
+                section_name = ScriptSection.CTA.value
+            elif index == passage_count - 2 and passage_count >= 5:
+                section_name = ScriptSection.TWIST.value
+            else:
+                section_name = ScriptSection.CONFLICT.value
         sections.append(
             {
-                "section": _VISION_ROLE_TO_SECTION[role],
+                "section": section_name,
                 "text": passage["text"],
                 "locked": False,
                 "editorial_role": role,
@@ -1540,6 +1712,32 @@ def generate_script(
             }
         )
 
+    warnings: list[dict[str, Any]] = []
+    if profile is not None:
+        claims_for_screen = {
+            claim["claim_id"]: claim
+            for claim in output["evidence_graph"]["claims"]
+            if isinstance(claim, Mapping) and isinstance(claim.get("claim_id"), str)
+        }
+        report = editorial_qc.screen_narrative_naturalness(
+            output["script_passages"], claims_for_screen, profile
+        )
+        for check in quality_svc.check_narrative_naturalness(report):
+            if not check.passed:
+                warnings.append(
+                    {
+                        "code": check.code,
+                        "severity": check.severity,
+                        "message": check.message,
+                        "detail": dict(check.detail),
+                    }
+                )
+        reconciliation = dict(row.reconciliation_json or {})
+        reconciliation["narrative_screening_warning_codes"] = [
+            warning["code"] for warning in warnings
+        ]
+        row.reconciliation_json = reconciliation
+
     version = (previous.version + 1) if previous else 1
     script_row = ScriptVersion(
         project_id=project_id,
@@ -1549,8 +1747,8 @@ def generate_script(
         selected_hook=0,
         estimated_duration=round(sum(section["estimated_duration"] for section in sections), 2),
         word_count=script_svc.word_count("\n".join(section["text"] for section in sections)),
-        warnings=[],
-        generator="vision_evidence_v2",
+        warnings=warnings,
+        generator="vision_evidence_v3" if profile is not None else "vision_evidence_v2",
         editorial_metadata={
             "analysis_id": row.id,
             "analysis_run_id": row.analysis_run_id,
@@ -1561,6 +1759,12 @@ def generate_script(
             "editorial_review_actor": "",
         },
     )
+    if profile is not None:
+        script_row.editorial_metadata["narrative_identity"] = {
+            "profile_id": profile.profile_id,
+            "version": profile.profile_version,
+            "sha256": profile.contract_sha256,
+        }
     db.add(script_row)
     row.state = "SCRIPT_DRAFT"
     project.status = ProjectStatus.REVIEW
@@ -1667,31 +1871,94 @@ def approve_script(
         if isinstance(claim, Mapping)
     }
     panel_ids = {panel.panel_id for panel in panels}
-    if len(script.sections or []) != len(_VISION_SCRIPT_ROLES):
-        raise PipelineError("script must contain exactly five evidence-backed sections")
-    for expected_role, section in zip(_VISION_SCRIPT_ROLES, script.sections, strict=True):
+    profile = _narrative_identity_from_analysis(analysis)
+    script_identity = metadata.get("narrative_identity")
+    if profile is not None:
         if (
-            section.get("section") != _VISION_ROLE_TO_SECTION[expected_role]
-            or section.get("editorial_role") != expected_role
-            or not str(section.get("text", "")).strip()
+            script.generator != "vision_evidence_v3"
+            or not isinstance(script_identity, Mapping)
+            or script_identity.get("profile_id") != profile.profile_id
+            or script_identity.get("version") != profile.profile_version
+            or script_identity.get("sha256") != profile.contract_sha256
         ):
-            raise PipelineError("script section roles or text are invalid")
-        claim_ids = section.get("claim_ids")
-        evidence_panel_ids = section.get("evidence_panel_ids")
-        if (
-            not isinstance(claim_ids, list)
-            or not claim_ids
-            or not isinstance(evidence_panel_ids, list)
-            or not evidence_panel_ids
-            or not set(claim_ids) <= set(claim_map)
-            or not set(evidence_panel_ids) <= panel_ids
-        ):
-            raise PipelineError("script section evidence is incomplete")
-        required_evidence = set().union(
-            *(set(claim_map[claim_id]["evidence_panel_ids"]) for claim_id in claim_ids)
+            raise PipelineError("narrative_identity_invalid")
+        if metadata.get("human_review_required") is not True:
+            raise PipelineError("narrative_identity_invalid")
+        if not 4 <= len(script.sections or []) <= 6:
+            raise PipelineError("script must contain four to six evidence-backed sections")
+        for section in script.sections:
+            if (
+                not isinstance(section, Mapping)
+                or not str(section.get("editorial_role", "")).strip()
+                or not str(section.get("text", "")).strip()
+            ):
+                raise PipelineError("script section roles or text are invalid")
+            claim_ids = section.get("claim_ids")
+            evidence_panel_ids = section.get("evidence_panel_ids")
+            if (
+                not isinstance(claim_ids, list)
+                or not claim_ids
+                or not isinstance(evidence_panel_ids, list)
+                or not evidence_panel_ids
+                or not set(claim_ids) <= set(claim_map)
+                or not set(evidence_panel_ids) <= panel_ids
+            ):
+                raise PipelineError("script section evidence is incomplete")
+            required_evidence = set().union(
+                *(set(claim_map[claim_id]["evidence_panel_ids"]) for claim_id in claim_ids)
+            )
+            if not required_evidence <= set(evidence_panel_ids):
+                raise PipelineError("script section evidence does not cover its claims")
+        current_passages = [
+            {
+                "text": section["text"],
+                "claim_ids": list(section["claim_ids"]),
+                "evidence_panel_ids": list(section["evidence_panel_ids"]),
+            }
+            for section in script.sections
+        ]
+        report = editorial_qc.screen_narrative_naturalness(
+            current_passages, claim_map, profile
         )
-        if not required_evidence <= set(evidence_panel_ids):
-            raise PipelineError("script section evidence does not cover its claims")
+        refreshed_warnings = [
+            {
+                "code": check.code,
+                "severity": check.severity,
+                "message": check.message,
+                "detail": dict(check.detail),
+            }
+            for check in quality_svc.check_narrative_naturalness(report)
+            if not check.passed
+        ]
+        if any(item["severity"] == "error" for item in refreshed_warnings):
+            raise PipelineError("narrative editorial screening failed")
+        script.warnings = refreshed_warnings
+    else:
+        if len(script.sections or []) != len(_VISION_SCRIPT_ROLES):
+            raise PipelineError("script must contain exactly five evidence-backed sections")
+        for expected_role, section in zip(_VISION_SCRIPT_ROLES, script.sections, strict=True):
+            if (
+                section.get("section") != _VISION_ROLE_TO_SECTION[expected_role]
+                or section.get("editorial_role") != expected_role
+                or not str(section.get("text", "")).strip()
+            ):
+                raise PipelineError("script section roles or text are invalid")
+            claim_ids = section.get("claim_ids")
+            evidence_panel_ids = section.get("evidence_panel_ids")
+            if (
+                not isinstance(claim_ids, list)
+                or not claim_ids
+                or not isinstance(evidence_panel_ids, list)
+                or not evidence_panel_ids
+                or not set(claim_ids) <= set(claim_map)
+                or not set(evidence_panel_ids) <= panel_ids
+            ):
+                raise PipelineError("script section evidence is incomplete")
+            required_evidence = set().union(
+                *(set(claim_map[claim_id]["evidence_panel_ids"]) for claim_id in claim_ids)
+            )
+            if not required_evidence <= set(evidence_panel_ids):
+                raise PipelineError("script section evidence does not cover its claims")
     blocking = [w for w in (script.warnings or []) if w.get("severity") == "error"]
     if blocking:
         raise PipelineError(

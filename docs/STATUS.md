@@ -2,6 +2,35 @@
 
 Updated: 2026-08-13
 
+## Slice E Task 5 - pipeline identity persistence - 2026-08-13
+
+- Wired the explicit `sharp_friend_v1` identity through `run_analysis`, the
+  persisted reconciliation snapshot, `generate_script`, `approve_script`,
+  the public `/analysis` and `/script` request bodies, and the safe analysis
+  status response. v2 callers still omit the profile and retain the existing
+  five-role `vision_evidence_v2` path; an explicitly unknown profile or a
+  stale persisted identity fails closed.
+- The v3 path preserves the provider's punctuation-bearing passage text
+  byte-for-byte, accepts four-to-six flexible passages, maps only the legacy
+  section slots needed by existing schemas, stores safe identity metadata and
+  review flags, and never calls a legacy/template generator or media stage.
+  Visual evidence sidecars are structurally checked locally while the shared
+  legacy validator continues to receive its unchanged v2 observation shape.
+- TDD evidence: the Task 5 focused file is 14/14 passed. The combined
+  narrative/analyzer/vision/API compatibility matrix is 327/327 passed.
+  The full PATH-correct disposable-environment command
+  `.venv`-equivalent `sharp-friend-v1-verify-venv` ran 825 collected tests:
+  824 passed, 1 existing Task9C1 real-panel skip, and 0 failed. Ruff,
+  compileall, diff checks, and the external Windows compatibility shim audit
+  are clean. Prompt SHA is
+  `b93961d980c0ace1354611b2b78951400945def2ed13f6aa4f43557f5780869b` and
+  Sharp Friend profile SHA is
+  `134b544c9e2f74ca0b8c64ff55a27c831e76f77a08f26fc2a463112cb0678b3e`.
+- This checkpoint starts from rollback parent `d26606d` and is followed by
+  Task 6 review-only approval coverage. No provider call, credential,
+  database/schema/migration, voice/TTS, subtitle, audio, render, or UI
+  behavior was added.
+
 ## Sharp Friend v1 narrative identity - implementation closed - 2026-08-13
 
 - Completed the committed Slice D plan on
@@ -60,9 +89,10 @@ Updated: 2026-08-13
   118/118 passed. Ruff, compileall, and diff checks are clean. The synthesis
   transport checkpoint is `dabbfe7`; this Task 4 checkpoint is not yet a
   pipeline/API or media change.
-- Next atomic task: Slice E Task 5 pipeline identity persistence, safe status,
-  and explicit approval integration. Voice/TTS/audio/render/provider selection
-  remain deferred; publish rights remain blocked.
+- The next task named by this historical checkpoint, Slice E Task 5, is now
+  recorded above as green. Slice E Task 6 review-only approval coverage is the
+  remaining boundary in this local release; voice/TTS/audio/render/provider
+  selection remain deferred and publish rights remain blocked.
 
 ## Current local manual preview checkpoint - 2026-08-13
 

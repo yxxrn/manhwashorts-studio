@@ -188,6 +188,10 @@ class AnalysisOut(BaseModel):
     edited_by_user: bool
     state: str | None = None
     blocking_reasons: dict = Field(default_factory=dict)
+    narrative_profile_id: str | None = None
+    narrative_profile_version: str | None = None
+    narrative_profile_sha256: str | None = None
+    narrative_screening_warning_codes: list[str] = Field(default_factory=list)
 
 
 class AnalysisStatusOut(BaseModel):
@@ -210,6 +214,14 @@ class AnalysisStatusOut(BaseModel):
     passage_count: int = 0
     blocking_codes: list[str] = Field(default_factory=list)
     findings: list[dict] = Field(default_factory=list)
+    narrative_profile_id: str | None = None
+    narrative_profile_version: str | None = None
+    narrative_profile_sha256: str | None = None
+    narrative_screening_warning_codes: list[str] = Field(default_factory=list)
+
+
+class AnalysisRequest(BaseModel):
+    narrative_profile_id: str | None = None
 
 
 class AnalysisUpdate(BaseModel):
@@ -226,6 +238,7 @@ class ScriptGenerateRequest(BaseModel):
     keep_locked: bool = True
     hook_count: int = Field(default=3, ge=1, le=8)
     seed: int | None = None
+    narrative_profile_id: str | None = None
 
 
 class SectionIn(BaseModel):

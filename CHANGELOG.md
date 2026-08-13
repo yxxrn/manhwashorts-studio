@@ -2,6 +2,16 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added Slice E Task 5 pipeline integration for the explicitly selected
+  `sharp_friend_v1` identity. Analysis requests, persisted reconciliation,
+  script materialization, approval, and safe status now carry verified profile
+  identity metadata; v2 defaults remain unchanged. Flexible four-to-six
+  passages preserve punctuation-bearing provider text and are mapped to the
+  existing section schema without legacy/template or media fallback. The
+  14-test Slice E file, 327-test compatibility matrix, and 825-test non-slow
+  suite are green (824 passed, 1 existing real-panel skip). No provider,
+  voice, audio, subtitle, render, UI, DB, or migration behavior was added.
+
 - Carried the explicitly selected `sharp_friend_v1` identity through the
   chapter synthesis request. The adapter now validates the profile version and
   canonical hash locally, includes only safe identity metadata in the provider

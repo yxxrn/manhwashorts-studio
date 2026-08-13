@@ -27,6 +27,7 @@ from app.models import (
 from app.routing import CommitRoute
 from app.schemas import (
     AnalysisOut,
+    AnalysisRequest,
     AnalysisStatusOut,
     AnalysisUpdate,
     AudioSegmentOut,
@@ -71,6 +72,17 @@ def _guard(fn, *args, **kwargs):
 def _analysis_view(row: StoryAnalysis) -> dict:
     payload = AnalysisOut.model_validate(row).model_dump()
     payload["blocking_reasons"] = row.blocking_reasons_json or {}
+    reconciliation = row.reconciliation_json if isinstance(row.reconciliation_json, dict) else {}
+    identity = reconciliation.get("narrative_identity")
+    if isinstance(identity, dict):
+        payload["narrative_profile_id"] = identity.get("profile_id")
+        payload["narrative_profile_version"] = identity.get("version")
+        payload["narrative_profile_sha256"] = identity.get("sha256")
+    payload["narrative_screening_warning_codes"] = [
+        code
+        for code in reconciliation.get("narrative_screening_warning_codes", [])
+        if isinstance(code, str)
+    ] if isinstance(reconciliation.get("narrative_screening_warning_codes"), list) else []
     return payload
 
 
@@ -78,8 +90,23 @@ def _analysis_view(row: StoryAnalysis) -> dict:
 
 
 @router.post("/analysis", response_model=AnalysisOut)
-def run_analysis(project: OwnedProject, db: DbSession, user: CurrentUser) -> dict:
-    return _analysis_view(_guard(pl.run_analysis, db, project.id, user.id))
+def run_analysis(
+    project: OwnedProject,
+    db: DbSession,
+    user: CurrentUser,
+    payload: AnalysisRequest | None = None,
+) -> dict:
+    return _analysis_view(
+        _guard(
+            pl.run_analysis,
+            db,
+            project.id,
+            user.id,
+            narrative_profile_id=(
+                payload.narrative_profile_id if payload is not None else None
+            ),
+        )
+    )
 
 
 @router.get("/analysis", response_model=AnalysisOut)
@@ -135,6 +162,7 @@ def generate_script(
         hook_count=payload.hook_count,
         seed=payload.seed,
         actor_id=user.id,
+        narrative_profile_id=payload.narrative_profile_id,
     )
 
 

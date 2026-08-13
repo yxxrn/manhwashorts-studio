@@ -10,11 +10,10 @@ import pytest
 def _seed_sharp_friend(db):
     """Reuse the complete rights-safe evidence fixture, then opt it into v3."""
 
-    from tests.test_script_evidence_gate import _project, _seed_analysis
-
     from app.models import PanelRegion
     from app.services import analyzer_contract, visual_scoring
     from app.services.narrative_identity import get_narrative_identity
+    from tests.test_script_evidence_gate import _project, _seed_analysis
 
     project = _project(db)
     row = _seed_analysis(db, project)
@@ -113,9 +112,9 @@ def test_sharp_friend_materializes_flexible_script_and_persists_identity(db):
         "profile_id": "sharp_friend_v1",
         "version": "1.0.0",
         "sha256": "134b544c9e2f74ca0b8c64ff55a27c831e76f77a08f26fc2a463112cb0678b3e",
-        "human_review_required": True,
-        "editorial_review_confirmed": False,
     }
+    assert script.editorial_metadata["human_review_required"] is True
+    assert script.editorial_metadata["editorial_review_confirmed"] is False
     assert analysis.reconciliation_json["narrative_identity"]["profile_id"] == (
         "sharp_friend_v1"
     )
@@ -268,10 +267,9 @@ def test_analysis_status_exposes_only_safe_narrative_identity_summary(db):
 
 
 def test_api_accepts_profile_on_script_request_and_returns_safe_metadata(auth_client):
-    from tests.test_vision_status_api import _make_project, _seed_analysis
-
     from app.db import SessionLocal
     from app.services import pipeline as pipeline_service
+    from tests.test_vision_status_api import _make_project, _seed_analysis
 
     project_id = _make_project(auth_client)
     # The API fixture is v2; this request still proves the new optional field is
@@ -288,8 +286,102 @@ def test_api_accepts_profile_on_script_request_and_returns_safe_metadata(auth_cl
         assert pipeline_service.latest_script_row(db, project_id) is None
 
 
+def test_analysis_api_forwards_explicit_narrative_profile_body(
+    auth_client, monkeypatch
+):
+    from app.models import StoryAnalysis
+    from app.routers import pipeline as pipeline_router
+    from tests.test_vision_status_api import _make_project
+
+    project_id = _make_project(auth_client)
+    captured: dict[str, object] = {}
+
+    def fake_run_analysis(
+        db, project_id, actor_id, *, narrative_profile_id=None
+    ):
+        captured.update(
+            project_id=project_id,
+            actor_id=actor_id,
+            narrative_profile_id=narrative_profile_id,
+        )
+        return StoryAnalysis(
+            id="analysis-api-profile",
+            project_id=project_id,
+            characters=[],
+            locations=[],
+            events=[],
+            main_conflict="",
+            twist="",
+            cliffhanger="",
+            pronunciation_candidates=[],
+            low_confidence_notes=[],
+            edited_by_user=False,
+            state="BLOCKED",
+            blocking_reasons_json={"codes": ["vision_capability_missing"]},
+            reconciliation_json={},
+        )
+
+    monkeypatch.setattr(pipeline_router.pl, "run_analysis", fake_run_analysis)
+    response = auth_client.post(
+        f"/api/projects/{project_id}/analysis",
+        json={"narrative_profile_id": "sharp_friend_v1"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "BLOCKED"
+    assert captured["project_id"] == project_id
+    assert captured["narrative_profile_id"] == "sharp_friend_v1"
+
+
 def test_profile_request_schema_is_optional_for_existing_v2_callers():
     from app.schemas import AnalysisRequest, ScriptGenerateRequest
 
     assert AnalysisRequest().narrative_profile_id is None
     assert ScriptGenerateRequest().narrative_profile_id is None
+
+
+def test_run_analysis_explicitly_carries_sharp_friend_identity_to_provider(
+    db, monkeypatch
+):
+    from app.services import pipeline as pipeline_service
+    from tests.test_vision_pipeline import (
+        _install_provider,
+        _ProviderSpy,
+        _seed_vision_project,
+        _valid_synthesis_output,
+    )
+
+    class SharpProvider(_ProviderSpy):
+        def synthesize(self, request):
+            self.synthesis_requests.append(request)
+            output = _valid_synthesis_output(request)
+            output["narrative_outline"]["ending_kind"] = "consequence"
+            output["script_passages"] = output["script_passages"][:4]
+            roles = ("opening_signal", "pressure_turn", "consequence", "sharp_close")
+            for passage, role in zip(output["script_passages"], roles, strict=True):
+                passage["editorial_role"] = role
+            output["script_passages"][-1]["text"] = (
+                "The next panel will show what the witness finds beyond the clue."
+            )
+            return output
+
+    project_id, _assets = _seed_vision_project(db, standalone_count=3)
+    provider = SharpProvider()
+    _install_provider(monkeypatch, provider)
+
+    row = pipeline_service.run_analysis(
+        db,
+        project_id,
+        actor_id="editor-1",
+        narrative_profile_id="sharp_friend_v1",
+    )
+
+    assert row.state == "RECONCILED"
+    assert row.reconciliation_json["narrative_identity"]["profile_id"] == (
+        "sharp_friend_v1"
+    )
+    assert row.reconciliation_json["narrative_ending_kind"] == "consequence"
+    request = provider.synthesis_requests[0]
+    assert request.narrative_profile_id == "sharp_friend_v1"
+    assert request.narrative_profile_version == "1.0.0"
+    assert len(request.narrative_profile_sha256) == 64
