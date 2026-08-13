@@ -392,12 +392,22 @@ def test_quality_run_all_resolves_reference_profile_from_project(monkeypatch):
     assert captured["profile"] is reference_profile.REFERENCE_MATCHED_SHORTS_V1
 
 
-def test_new_project_api_defaults_to_reference_profile_and_41_seconds(auth_client):
+def test_new_project_api_defaults_to_60fps_reference_profile_and_41_seconds(auth_client):
     response = auth_client.post("/api/projects", json={"title": "Reference default"})
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body["template"] == "reference_matched_shorts_v1"
+    assert body["template"] == "reference_matched_shorts_v2"
     assert body["target_duration"] == 41
+
+    legacy_reference = auth_client.post(
+        "/api/projects",
+        json={
+            "title": "Explicit historical reference",
+            "template": "reference_matched_shorts_v1",
+        },
+    )
+    assert legacy_reference.status_code == 201, legacy_reference.text
+    assert legacy_reference.json()["template"] == "reference_matched_shorts_v1"
 
 
 def test_new_project_form_submits_reference_profile_explicitly():

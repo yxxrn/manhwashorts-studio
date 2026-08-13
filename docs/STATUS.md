@@ -2,6 +2,47 @@
 
 Updated: 2026-08-13
 
+## Sharp Friend v1 narrative identity - implementation closed - 2026-08-13
+
+- Completed the committed Slice D plan on
+  `feature/codex-manual-preview-v2`. `sharp_friend_v1` is an explicit opt-in
+  analyzer identity with the v3 prompt resource, frozen profile registry,
+  mechanically verified prompt/profile hashes, flexible four-to-six passage
+  validation, ending-kind rules, shared all-panel evidence gates, CTA/hype/
+  copied-dialogue rejection, and unchanged default v2 behavior.
+- Prompt SHA-256 is
+  `b93961d980c0ace1354611b2b78951400945def2ed13f6aa4f43557f5780869b`;
+  canonical Sharp Friend profile SHA-256 is
+  `134b544c9e2f74ca0b8c64ff55a27c831e76f77a08f26fc2a463112cb0678b3e`.
+- TDD evidence: Task 1 prompt RED was 1 collected/1 intended failure and
+  GREEN was 1 passed; Task 2 profile RED was 6 collected with 5 intended
+  missing-module failures plus the prompt pass and GREEN was 6 passed; Task 3
+  dispatch RED was 2 intended signature failures and GREEN was included in the
+  focused matrix; Task 4/5 RED was collection-clean with 24 collected, 8
+  existing passes, and 16 intended validator failures, followed by 25/25
+  Sharp Friend tests green. The final focused analyzer/v1/v2 matrix is 96/96
+  passed; the related profile/API/preview matrix is 98/98 passed.
+- The release-wide non-slow suite is green: 787 collected, 786 passed, 1
+  existing skip, 0 failed. The local Windows run used a disposable environment
+  installed from the committed `requirements-dev.txt`; the only external
+  compatibility shims normalized Windows SQLite URL separators and supplied
+  the POSIX-only optional RSS `resource` module. Neither shim is in the repo.
+- The prior single release failure was a stale assertion, not a production
+  default defect. Commit `03dc2d7` intentionally made new projects use the
+  60-FPS `reference_matched_shorts_v2`; `app/schemas.py`, `app/models.py`, and
+  the changelog agree, while explicit `reference_matched_shorts_v1` remains
+  supported. The directly affected integration regression now asserts the v2
+  default and preserves explicit-v1 selection.
+- Implementation checkpoints are `111d2a1`, `3655fd8`, `16f4a77`, `b34aa2f`,
+  `00084ab`, and `b2f1fef`; the default-profile gate correction and this status
+  closure are included in the release closure commit. The rollback point for the Sharp Friend
+  implementation is `5eafd18c4e29819a11bdfbbf55834ce7a022ef47`.
+- No provider call, pipeline/vision-adapter wiring, database/schema/migration,
+  API, voice/TTS, subtitle, audio, or render behavior was added. Slice E remains
+  the next approved boundary for advisory naturalness metrics, synthesis/API
+  wiring, and explicit human-review integration; voice generation remains
+  deferred.
+
 ## Current local manual preview checkpoint - 2026-08-13
 
 - Revalidated the corrected preview from local HEAD
