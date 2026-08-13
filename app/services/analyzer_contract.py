@@ -93,8 +93,8 @@ class AnalyzerContractError(ValueError):
         super().__init__(message)
 
 
-def load_analyzer_instruction() -> tuple[str, str, str]:
-    """Load the normative prompt and return its version, digest, and LF text."""
+def _load_v2_instruction() -> tuple[str, str, str]:
+    """Load the default v2 prompt without changing its legacy behavior."""
 
     try:
         text = PROMPT_PATH.read_text(encoding="utf-8")
@@ -103,6 +103,21 @@ def load_analyzer_instruction() -> tuple[str, str, str]:
         return PROMPT_VERSION, digest, normalized
     except (OSError, UnicodeError):
         raise AnalyzerContractError("analyzer instruction cannot be loaded") from None
+
+
+def load_analyzer_instruction(
+    *, narrative_profile_id: str | None = None
+) -> tuple[str, str, str]:
+    """Load v2 by default or an explicitly selected verified identity."""
+
+    if narrative_profile_id is None:
+        return _load_v2_instruction()
+    try:
+        from app.services import narrative_identity
+
+        return narrative_identity.load_narrative_instruction(narrative_profile_id)
+    except narrative_identity.NarrativeIdentityError:
+        raise AnalyzerContractError("unknown narrative profile") from None
 
 
 def _fail(message: str) -> None:
@@ -371,6 +386,28 @@ def _validate_narrative_outline(value: Any) -> None:
         _nonempty_string(spine.get(field), f"story_spine.{field}")
 
 
+_V3_GENERIC_HYPE = (
+    "epic battle",
+    "unstoppable attack",
+    "insane power",
+)
+
+
+def _validate_narrative_outline_v3(value: Any, profile: Any) -> Mapping[str, Any]:
+    outline = _mapping(value, "narrative_outline")
+    if set(outline) != {"story_spine", "ending_kind"}:
+        _fail("v3 narrative_outline keys do not match the contract")
+    spine = _mapping(outline["story_spine"], "story_spine")
+    if set(spine) != set(_STORY_SPINE_FIELDS):
+        _fail("story_spine must contain all six reasoning fields")
+    for field in _STORY_SPINE_FIELDS:
+        _nonempty_string(spine.get(field), f"story_spine.{field}")
+    ending_kind = outline["ending_kind"]
+    if ending_kind not in profile.allowed_ending_kinds:
+        _fail("ending_kind is not supported by the narrative profile")
+    return outline
+
+
 def _normalized_lexical_words(text: str) -> list[str]:
     return re.findall(r"[^\W_]+", text.casefold(), flags=re.UNICODE)
 
@@ -382,6 +419,22 @@ def _normalized_sentences(text: str) -> list[str]:
         if words:
             sentences.append(" ".join(words))
     return sentences
+
+
+def _ngrams(words: list[str], size: int) -> set[tuple[str, ...]]:
+    return {
+        tuple(words[index : index + size])
+        for index in range(max(0, len(words) - size + 1))
+    }
+
+
+def _source_dialogue_ngrams(observations: Any) -> set[tuple[str, ...]]:
+    result: set[tuple[str, ...]] = set()
+    for observation_value in observations:
+        observation = _mapping(observation_value, "observation")
+        for line in _string_list(observation["dialogue_or_ocr"], "dialogue_or_ocr"):
+            result.update(_ngrams(_normalized_lexical_words(line), 4))
+    return result
 
 
 def _contains_channel_cta(text: str) -> bool:
@@ -450,7 +503,85 @@ def _validate_script_passages(
         _fail("payoff_open_loop must end with an evidence-grounded question")
 
 
-def _validate_output(output: Any, expected: tuple[str, ...]) -> None:
+def _validate_v3_ending(
+    outline: Mapping[str, Any],
+    final_text: str,
+    profile: Any,
+) -> None:
+    ending_kind = outline["ending_kind"]
+    unresolved = _nonempty_string(
+        outline["story_spine"]["unresolved_question"],
+        "story_spine.unresolved_question",
+    )
+    if ending_kind == "open_question":
+        if not final_text.endswith("?") or not unresolved:
+            _fail("open_question ending must be evidence-grounded and end with ?")
+    elif ending_kind in {"cliffhanger", "consequence"} and final_text.endswith("?"):
+        _fail("non-question ending kind must not end with ?")
+
+
+def _validate_script_passages_v3(
+    value: Any,
+    expected: tuple[str, ...],
+    claim_evidence: dict[str, set[str]],
+    observations: Any,
+    outline: Mapping[str, Any],
+    profile: Any,
+) -> None:
+    if not isinstance(value, list) or not profile.passage_min <= len(value) <= profile.passage_max:
+        _fail("script_passages must contain four to six passages")
+    passage_ids: set[str] = set()
+    source_dialogue = _source_dialogue_ngrams(observations)
+    for passage_value in value:
+        passage = _mapping(passage_value, "script passage")
+        if set(passage) != _SCRIPT_PASSAGE_KEYS:
+            _fail("script passage keys do not match the v3 contract")
+        passage_id = _nonempty_string(passage["passage_id"], "passage_id")
+        if passage_id in passage_ids:
+            _fail("passage IDs must be unique")
+        passage_ids.add(passage_id)
+        _nonempty_string(passage["editorial_role"], "editorial_role")
+        text = _nonempty_string(passage["text"], "script passage text")
+        if _contains_channel_cta(text):
+            _fail("generic channel CTA language is not allowed")
+        normalized_text = " ".join(_normalized_lexical_words(text))
+        if any(marker in normalized_text for marker in _V3_GENERIC_HYPE):
+            _fail("generic hype language is not allowed")
+        if _ngrams(_normalized_lexical_words(text), 4) & source_dialogue:
+            _fail("script passage copies source dialogue")
+        claim_ids = _string_list(
+            passage["claim_ids"], "passage claim_ids", allow_empty=False
+        )
+        if not set(claim_ids) <= set(claim_evidence):
+            _fail("script passage references an unknown claim")
+        evidence = set(
+            _panel_refs(passage["evidence_panel_ids"], expected, "passage evidence")
+        )
+        required = set().union(
+            *(claim_evidence[claim_id] for claim_id in claim_ids)
+        )
+        if not required <= evidence:
+            _fail("script passage evidence does not cover its claims")
+    final_text = _nonempty_string(value[-1]["text"], "final script passage text").rstrip()
+    _validate_v3_ending(outline, final_text, profile)
+
+
+def _validate_output(
+    output: Any,
+    expected: tuple[str, ...],
+    *,
+    narrative_profile_id: str | None = None,
+) -> None:
+    profile = None
+    if narrative_profile_id is not None:
+        if narrative_profile_id != "sharp_friend_v1":
+            _fail("unknown narrative profile")
+        try:
+            from app.services import narrative_identity
+
+            profile = narrative_identity.get_narrative_identity(narrative_profile_id)
+        except narrative_identity.NarrativeIdentityError:
+            _fail("unknown narrative profile")
     document = _mapping(output, "analyzer output")
     if set(document) != _REQUIRED_OUTPUT_KEYS:
         _fail("analyzer output structures do not match the contract")
@@ -458,18 +589,32 @@ def _validate_output(output: Any, expected: tuple[str, ...]) -> None:
     _validate_coverage_manifest(document["coverage_manifest"], expected)
     _validate_continuity(document["continuity_ledger"], expected)
     claim_evidence = _validate_claims(document["evidence_graph"], expected)
-    _validate_narrative_outline(document["narrative_outline"])
-    _validate_script_passages(document["script_passages"], expected, claim_evidence)
+    if profile is None:
+        _validate_narrative_outline(document["narrative_outline"])
+        _validate_script_passages(document["script_passages"], expected, claim_evidence)
+    else:
+        outline = _validate_narrative_outline_v3(document["narrative_outline"], profile)
+        _validate_script_passages_v3(
+            document["script_passages"],
+            expected,
+            claim_evidence,
+            document["observations"],
+            outline,
+            profile,
+        )
 
 
 def validate_analyzer_output(
-    output: Mapping[str, Any], *, expected_panel_ids: Sequence[str]
+    output: Mapping[str, Any],
+    *,
+    expected_panel_ids: Sequence[str],
+    narrative_profile_id: str | None = None,
 ) -> None:
     """Validate complete analyzer output without mutating or repairing it."""
 
     try:
         expected = _expected_panel_ids(expected_panel_ids)
-        _validate_output(output, expected)
+        _validate_output(output, expected, narrative_profile_id=narrative_profile_id)
     except AnalyzerContractError:
         raise
     except Exception:

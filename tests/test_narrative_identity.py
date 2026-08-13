@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROMPT_PATH = (
     Path(__file__).resolve().parents[1]
     / "app"
@@ -114,10 +113,14 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     module = _identity_module()
     version, digest, text = module.load_narrative_instruction("sharp_friend_v1")
     assert version == "vision-first-story-analyzer-v3"
+    assert digest == "b93961d980c0ace1354611b2b78951400945def2ed13f6aa4f43557f5780869b"
     assert digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert "\r" not in text
     assert "observe every ordered panel" in text.lower()
-    assert module.get_narrative_identity("sharp_friend_v1").contract_sha256
+    assert (
+        module.get_narrative_identity("sharp_friend_v1").contract_sha256
+        == "134b544c9e2f74ca0b8c64ff55a27c831e76f77a08f26fc2a463112cb0678b3e"
+    )
 
 
 def test_profile_loader_rejects_profile_hash_tampering(monkeypatch):
@@ -277,7 +280,11 @@ def _passages(
     total_words: int | None = None,
 ) -> list[dict[str, object]]:
     if total_words is None:
-        budgets = {4: [24, 24, 26, 26], 6: [16, 16, 17, 17, 17, 17]}[count]
+        budgets = {
+            4: [24, 24, 26, 26],
+            5: [18, 20, 22, 20, 20],
+            6: [16, 16, 17, 17, 17, 17],
+        }[count]
     else:
         base, remainder = divmod(total_words, count)
         budgets = [base + (index < remainder) for index in range(count)]
@@ -456,3 +463,42 @@ def test_v3_reuses_shared_observation_coverage_and_continuity_gates():
     chapter["coverage_manifest"]["source_content_coverage_ratio"] = 0.9
     with pytest.raises(module.AnalyzerContractError):
         _validate_v3(chapter)
+
+    chapter = _v3_chapter(
+        chapter_prefix="continuity-gate",
+        passages=_passages("continuity-gate", 4, "consequence"),
+        ending_kind="consequence",
+    )
+    chapter["continuity_ledger"]["chunks"][1]["panel_ids"] = [
+        "continuity-gate-panel-2"
+    ]
+    with pytest.raises(module.AnalyzerContractError):
+        _validate_v3(chapter)
+
+
+def test_v2_default_dispatch_validates_the_legacy_shape_unchanged():
+    module = importlib.import_module("app.services.analyzer_contract")
+    chapter = _v3_chapter(
+        chapter_prefix="v2-compat",
+        passages=_passages("v2-compat", 5, "open_question"),
+        ending_kind="open_question",
+    )
+    chapter["narrative_outline"].pop("ending_kind")
+    roles = (
+        "hook",
+        "setup",
+        "escalation",
+        "editorial_insight",
+        "payoff_open_loop",
+    )
+    for passage, role in zip(chapter["script_passages"], roles, strict=True):
+        passage["editorial_role"] = role
+    version, digest, _ = module.load_analyzer_instruction()
+    assert version == "vision-first-story-analyzer-v2"
+    assert len(digest) == 64
+    module.validate_analyzer_output(
+        chapter,
+        expected_panel_ids=tuple(
+            item["panel_id"] for item in chapter["observations"]
+        ),
+    )
