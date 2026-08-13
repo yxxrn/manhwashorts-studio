@@ -1153,14 +1153,15 @@ def build_sentence_karaoke_ass(
     *,
     font_name: str = "DejaVu Sans",
     max_chars: int = 36,
-    max_lines: int = 3,
+    max_lines: int = 2,
     active_scale: float = 1.08,
     anchor: tuple[float, float] = (0.50, 0.56),
-    font_height_ratio: float = 0.028,
+    font_height_ratio: float = 0.04,
     italic: bool = True,
     outline_pixels: int = 6,
     shadow_alpha_max: float = 0.35,
     alignment: int = 5,
+    safe_margin_px: int = 120,
 ) -> str:
     """Build sentence-held ASS karaoke from authoritative word timings.
 
@@ -1168,7 +1169,7 @@ def build_sentence_karaoke_ass(
     whose interval owns that event is yellow and slightly enlarged; the next
     sentence replaces the complete block at its own first word boundary.
     """
-    if width <= 0 or height <= 0 or max_chars <= 0 or max_lines <= 0:
+    if width <= 0 or height <= 0 or max_chars <= 0 or not 0 < max_lines <= 2:
         raise RenderError("subtitle layout dimensions are invalid", code="reference.subtitle_layout_invalid")
     if not 1.0 < active_scale <= 1.25 or not math.isfinite(active_scale):
         raise RenderError("subtitle active scale is invalid", code="reference.subtitle_scale_invalid")
@@ -1176,7 +1177,13 @@ def build_sentence_karaoke_ass(
         raise RenderError("subtitle anchor is invalid", code="reference.subtitle_layout_invalid")
     if not 0.0 < font_height_ratio <= 0.2 or not math.isfinite(font_height_ratio):
         raise RenderError("subtitle font ratio is invalid", code="reference.subtitle_layout_invalid")
-    if not 0 <= alignment <= 9 or outline_pixels < 0 or not 0.0 <= shadow_alpha_max <= 1.0:
+    if (
+        not 0 <= alignment <= 9
+        or outline_pixels < 0
+        or not 0.0 <= shadow_alpha_max <= 1.0
+        or safe_margin_px < 0
+        or safe_margin_px * 2 >= width
+    ):
         raise RenderError("subtitle style is invalid", code="reference.subtitle_layout_invalid")
 
     font_size = max(1, round(height * font_height_ratio))
@@ -1189,12 +1196,12 @@ def build_sentence_karaoke_ass(
 ScriptType: v4.00+
 PlayResX: {width}
 PlayResY: {height}
-WrapStyle: 0
+WrapStyle: 2
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{font_name},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H{shadow_alpha:02X}000000,-1,{italic_flag},0,0,100,100,0,0,1,{outline_pixels},2,{alignment},0,0,0,1
+Style: Caption,{font_name},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H{shadow_alpha:02X}000000,-1,{italic_flag},0,0,100,100,0,0,1,{outline_pixels},2,{alignment},{safe_margin_px},{safe_margin_px},0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -1210,7 +1217,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         previous_group_end = group.end_time
         display_words = [word.text for word in group.words]
         wrapped = wrap_caption(" ".join(display_words), max_chars)
-        if len(wrapped) > max_lines or any(len(line) > max_chars for line in wrapped):
+        if (
+            len(wrapped) > max_lines
+            or any(len(line) > max_chars for line in wrapped)
+            or (len(wrapped) > 1 and any(len(line.split()) < 2 for line in wrapped))
+        ):
             raise RenderError(
                 "subtitle overflow: sentence exceeds the configured line budget",
                 code="reference.subtitle_overflow",

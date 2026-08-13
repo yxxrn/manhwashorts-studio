@@ -26,9 +26,30 @@ CAPTION_PATTERN = re.compile(r"[A-Z0-9]+(?: [A-Z0-9]+)*\Z")
 PREPARED_SIZE = (1296, 2304)
 OUTPUT_SIZE = (1080, 1920)
 SUPPORTED_FPS = (30, 60)
-CAPTION_MAX_CHARS = 36
-CAPTION_MAX_LINES = 3
+CAPTION_MAX_CHARS = 30
+CAPTION_MAX_LINES = 2
 CAPTION_ACTIVE_SCALE = 1.08
+CAPTION_FONT_HEIGHT_RATIO = 0.04
+CAPTION_SAFE_MARGIN_PX = 120
+CAPTION_MIN_CHUNK_WORDS = 2
+CAPTION_MIN_CHUNK_DURATION_SECONDS = 1.0
+SEMANTIC_BREAK_WORDS = frozenset(
+    {
+        "AND",
+        "ACTION",
+        "AS",
+        "BEFORE",
+        "BUT",
+        "DESTRUCTIVE",
+        "IF",
+        "MEANWHILE",
+        "SO",
+        "THEN",
+        "WHEN",
+        "WHILE",
+        "YET",
+    }
+)
 SUPPORTED_MOTIONS = (
     "hold",
     "pan_left",
@@ -54,6 +75,98 @@ class ValidatedCaption:
     start_shot: int
     end_shot: int
     text: str
+
+
+def _caption_partition_score(
+    chunks: tuple[tuple[KaraokeWord, ...], ...],
+    pause_boundaries: frozenset[int],
+) -> tuple[int, int, float, tuple[int, ...]]:
+    boundaries: list[int] = []
+    position = 0
+    semantic_penalty = 0
+    for index, chunk in enumerate(chunks[:-1]):
+        position += len(chunk)
+        boundaries.append(position)
+        if position not in pause_boundaries and chunks[index + 1][0].text not in SEMANTIC_BREAK_WORDS:
+            semantic_penalty += 1
+    target_size = sum(len(chunk) for chunk in chunks) / len(chunks)
+    balance_penalty = sum(abs(len(chunk) - target_size) for chunk in chunks)
+    return semantic_penalty, len(chunks), balance_penalty, tuple(boundaries)
+
+
+def _caption_lines_fit(words: tuple[KaraokeWord, ...]) -> bool:
+    lines = wrap_caption(" ".join(word.text for word in words), CAPTION_MAX_CHARS)
+    return len(lines) <= CAPTION_MAX_LINES and (
+        len(lines) == 1 or all(len(line.split()) >= 2 for line in lines)
+    )
+
+
+def _split_sentence_words(
+    words: tuple[KaraokeWord, ...],
+    pause_boundaries: frozenset[int] = frozenset(),
+) -> tuple[tuple[KaraokeWord, ...], ...]:
+    """Partition an overflowing sentence at stable semantic/pause boundaries."""
+    if _caption_lines_fit(words):
+        return (words,)
+
+    memo: dict[int, tuple[tuple[KaraokeWord, ...], ...] | None] = {}
+
+    def solve(start: int) -> tuple[tuple[KaraokeWord, ...], ...] | None:
+        if start == len(words):
+            return ()
+        if start in memo:
+            return memo[start]
+        candidates: list[tuple[tuple[KaraokeWord, ...], ...]] = []
+        for end in range(start + CAPTION_MIN_CHUNK_WORDS, len(words) + 1):
+            remainder = len(words) - end
+            if remainder == 1:
+                continue
+            chunk = words[start:end]
+            if not _caption_lines_fit(chunk):
+                continue
+            if chunk[-1].end_time - chunk[0].start_time < CAPTION_MIN_CHUNK_DURATION_SECONDS:
+                continue
+            tail = solve(end)
+            if tail is not None:
+                candidates.append((chunk,) + tail)
+        local_pause_boundaries = frozenset(
+            boundary - start for boundary in pause_boundaries if boundary >= start
+        )
+        result = (
+            min(
+                candidates,
+                key=lambda candidate: _caption_partition_score(
+                    candidate, local_pause_boundaries
+                ),
+            )
+            if candidates
+            else None
+        )
+        memo[start] = result
+        return result
+
+    partition = solve(0)
+    if partition is None:
+        raise ValueError("subtitle overflow: sentence cannot be chunked within the line budget")
+    return partition
+
+
+def _chunk_sentence_group(
+    group: KaraokeSentenceGroup,
+    pause_boundaries: frozenset[int] = frozenset(),
+) -> tuple[KaraokeSentenceGroup, ...]:
+    partitions = _split_sentence_words(group.words, pause_boundaries)
+    if len(partitions) == 1:
+        return (group,)
+    return tuple(
+        KaraokeSentenceGroup(
+            group_id=f"{group.group_id}-chunk-{index}",
+            words=chunk,
+            start_time=chunk[0].start_time,
+            end_time=chunk[-1].end_time,
+        )
+        for index, chunk in enumerate(partitions, start=1)
+    )
 
 
 def build_sentence_caption_groups(
@@ -88,40 +201,48 @@ def build_sentence_caption_groups(
     if [word.text for word in words] != expected_words:
         raise ValueError("subtitle.word_timing_missing: cues do not cover display words")
 
-    groups: list[KaraokeSentenceGroup] = []
+    sentence_groups: list[tuple[KaraokeSentenceGroup, frozenset[int]]] = []
     current: list[KaraokeWord] = []
+    current_pause_boundaries: set[int] = set()
     current_end_index = -1
     for cue, word in zip(timed_cues, words, strict=True):
         current.append(word)
         current_end_index = int(cue["spoken_token_index"])
+        if re.search(r"[,;:]", raw_tokens[current_end_index]):
+            current_pause_boundaries.add(len(current))
         if current_end_index in sentence_end_indexes:
-            groups.append(
-                KaraokeSentenceGroup(
-                    group_id=f"sentence-{len(groups) + 1}",
-                    words=tuple(current),
-                    start_time=current[0].start_time,
-                    end_time=current[-1].end_time,
+            sentence_groups.append(
+                (
+                    KaraokeSentenceGroup(
+                        group_id=f"sentence-{len(sentence_groups) + 1}",
+                        words=tuple(current),
+                        start_time=current[0].start_time,
+                        end_time=current[-1].end_time,
+                    ),
+                    frozenset(current_pause_boundaries),
                 )
             )
             current = []
+            current_pause_boundaries = set()
     if current:
-        groups.append(
-            KaraokeSentenceGroup(
-                group_id=f"sentence-{len(groups) + 1}",
-                words=tuple(current),
-                start_time=current[0].start_time,
-                end_time=current[-1].end_time,
+        sentence_groups.append(
+            (
+                KaraokeSentenceGroup(
+                    group_id=f"sentence-{len(sentence_groups) + 1}",
+                    words=tuple(current),
+                    start_time=current[0].start_time,
+                    end_time=current[-1].end_time,
+                ),
+                frozenset(current_pause_boundaries),
             )
         )
-    if not groups or len(groups) != len(sentence_end_indexes):
+    if not sentence_groups or len(sentence_groups) != len(sentence_end_indexes):
         raise ValueError("subtitle.sentence_boundary_missing: sentence punctuation is not covered")
-    if any(
-        len(wrap_caption(" ".join(word.text for word in group.words), CAPTION_MAX_CHARS))
-        > CAPTION_MAX_LINES
-        for group in groups
-    ):
-        raise ValueError("subtitle overflow: sentence exceeds the configured line budget")
-    return tuple(groups)
+    return tuple(
+        chunk
+        for group in sentence_groups
+        for chunk in _chunk_sentence_group(group[0], group[1])
+    )
 
 
 @dataclass(frozen=True)
@@ -272,7 +393,7 @@ def validate_edit_plan(
             raise _fail("preview.caption_contract_invalid", "caption group exceeds media duration")
         if group.start_time < previous_end:
             raise _fail("preview.caption_contract_invalid", "caption groups overlap")
-        if len(wrap_caption(" ".join(word.text for word in group.words), CAPTION_MAX_CHARS)) > CAPTION_MAX_LINES:
+        if not _caption_lines_fit(group.words):
             raise _fail("preview.caption_contract_invalid", "caption group overflows line budget")
         caption_groups.append(group)
         previous_end = group.end_time
@@ -386,11 +507,12 @@ def render_preview(
                 max_lines=CAPTION_MAX_LINES,
                 active_scale=CAPTION_ACTIVE_SCALE,
                 anchor=(0.50, 0.56),
-                font_height_ratio=0.028,
+                font_height_ratio=CAPTION_FONT_HEIGHT_RATIO,
                 italic=True,
                 outline_pixels=6,
                 shadow_alpha_max=0.35,
                 alignment=5,
+                safe_margin_px=CAPTION_SAFE_MARGIN_PX,
             ),
             encoding="utf-8",
         )

@@ -2,6 +2,52 @@
 
 Updated: 2026-08-14
 
+## Two-line semantic karaoke silent preview - 2026-08-14
+
+- Corrected the local Sharp Friend preview from the `76fd6f1` baseline so a
+  sentence is held as a complete display block until its next deterministic
+  semantic/pause chunk, while the authoritative word cue still highlights
+  only the active word in yellow with the existing `1.08` scale bump. The new
+  contract is `sentence_chunked_word_karaoke_v2`: 19 chunks, 122 word
+  dialogues, punctuation-free uppercase/alphanumeric display text, and no
+  chunk shorter than `1.229508` seconds. Long sentences split only at
+  deterministic punctuation/semantic boundaries; chunks require at least two
+  words and two-line wrapping rejects one-word orphan lines.
+- The ASS surface now has a hard maximum of two lines, `WrapStyle: 2`, Barber
+  Chop bold italic styling, a computed 77px font (`0.04 * 1920`), and 120px
+  left/right safe margins. The final ignored artifact is
+  `data/real-chapter-narrative-preview-20260814-2line/real-chapter-narrative-preview-50s-sentence-karaoke-2line-silent.mp4`:
+  1080x1920, 60 FPS, H.264 High, `yuv420p`, exactly 50.000000 seconds,
+  3000 frames, no audio stream, SHA-256
+  `208c1fa4925546076da70dbb3c4f7f918f11eaaf31dee152500526ce25646432`,
+  16,166,247 bytes. The 69-frame chronology sheet, 36-frame before/after
+  chunk-boundary sheet, longest-caption frame, ffprobe, blackdetect, and
+  `subtitle-2line-qc.json` are in that ignored directory.
+- Final artifact QC measures `max_lines=2`, `122/122` yellow active-word
+  events, no punctuation display, no one-word wrapped lines, 18 audited chunk
+  boundaries, zero blackdetect findings, all story source orders `1..23`
+  exactly once, and `publish_allowed=false`. Visual inspection of the full
+  contact sheet, longest two-line caption, and representative boundary frames
+  found no subtitle overflow, obvious subject obstruction, balloon remnant, or
+  distracting edge blank-space regression.
+- TDD RED was collection-clean after fixture correction: `6 passed, 2 failed`
+  on the new body tests for missing semantic chunking and the old 54px/zero
+  margin style. GREEN is `8/8` for the sentence-karaoke file and `21/21` for
+  the subtitle/manual-preview/Luna compatibility matrix. The broader selected
+  matrix is `73/73` with the disposable dependency-complete environment and
+  external Windows compatibility shim. The exact LF-preserving non-slow run
+  collected `867`: `866 passed`, `1` existing skip, `0 failed`. The primary
+  checkout reports one environment-only v3 prompt CRLF presentation failure
+  under `core.autocrlf=true`; the LF-preserving clone is the authoritative
+  full-suite evidence and does not modify the tracked prompt.
+- Ruff, `compileall -q app`, `git diff --check`, and the semantic/no-churn
+  diff comparison are clean. No voice, TTS, music, SFX, provider, DB, UI,
+  publication, or deployment action occurred. Approval remains
+  `PENDING_EDITORIAL_REVIEW`, provenance remains
+  `codex_manual_vision_reference_v1`, and rights remain internal-review-only.
+  The remaining gate is human visual/editorial approval of this new local
+  artifact; voice generation remains deferred.
+
 ## Sentence-held karaoke silent preview - 2026-08-14
 
 - Updated the local manual-review preview surface so a complete

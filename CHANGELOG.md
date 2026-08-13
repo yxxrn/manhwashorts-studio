@@ -2,6 +2,19 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Corrected the local silent Sharp Friend preview to
+  `sentence_chunked_word_karaoke_v2`. Complete display chunks remain visible
+  while word-level timing keeps the active word yellow with the existing
+  1.08 scale bump; long sentences split deterministically at semantic/pause
+  boundaries. The surface now hard-caps at two lines, uses a 77px Barber Chop
+  font with 120px side margins, rejects one-word wrapped lines, and preserves
+  punctuation-free display text. The new ignored 50.000000-second video is
+  H.264 High/yuv420p, 1080x1920 at 60 FPS, video-only, uses all 23 story
+  panels once, and has no blackdetect findings. Focused `21/21`, selected
+  `73/73`, and LF-preserving full non-slow `866 passed, 1 existing skip`
+  verification are green. Approval remains pending; voice/TTS/audio/provider
+  and publication remain deferred.
+
 - Added `sentence_held_word_karaoke_v1` to the local silent Sharp Friend
   review preview. Each punctuation-free sentence remains on screen while
   word-level cues highlight one active word in yellow at 1.08 scale and keep

@@ -145,3 +145,84 @@ def test_sentence_ass_rejects_three_line_overflow():
 
     with pytest.raises(RenderError, match="subtitle overflow"):
         build_sentence_karaoke_ass([group], 1080, 1920, max_chars=20, max_lines=2)
+
+
+def test_semantic_chunking_is_deterministic_and_avoids_orphans():
+    module = _preview_module()
+    spoken = (
+        "The battlefield breaks while the wounded pair searches for a way out "
+        "and the marked man waits calmly behind them."
+    )
+    raw_words = spoken.split()
+    timed = _timed_words(
+        *(
+            (re.sub(r"[^A-Z0-9]", "", word.upper()), index * 0.4, (index + 1) * 0.4)
+            for index, word in enumerate(raw_words)
+        )
+    )
+
+    first = module.build_sentence_caption_groups(spoken, timed)
+    second = module.build_sentence_caption_groups(spoken, timed)
+
+    assert len(first) >= 2
+    assert [group.group_id for group in first] == [group.group_id for group in second]
+    assert [tuple(word.text for word in group.words) for group in first] == [
+        tuple(word.text for word in group.words) for group in second
+    ]
+    assert any(group.words[0].text in {"WHILE", "AND"} for group in first[1:])
+    assert all(len(group.words) >= 2 for group in first)
+    assert all(group.end_time - group.start_time >= 1.0 for group in first)
+    assert all(
+        len(module.wrap_caption(" ".join(word.text for word in group.words), module.CAPTION_MAX_CHARS))
+        <= module.CAPTION_MAX_LINES
+        for group in first
+    )
+    assert all(
+        len(line.split()) >= 2
+        for group in first
+        for line in module.wrap_caption(
+            " ".join(word.text for word in group.words), module.CAPTION_MAX_CHARS
+        )
+        if len(module.wrap_caption(" ".join(word.text for word in group.words), module.CAPTION_MAX_CHARS)) > 1
+    )
+
+
+def test_sentence_ass_has_hard_two_line_default_and_phone_readable_style():
+    from app.services.render import build_sentence_karaoke_ass
+
+    module = _preview_module()
+    group = module.KaraokeSentenceGroup(
+        "readable",
+        tuple(
+            module.KaraokeWord(text, index * 0.4, (index + 1) * 0.4)
+            for index, text in enumerate(
+                ("THE", "BATTLEFIELD", "BREAKS", "WHILE", "THE", "PAIR", "ESCAPES")
+            )
+        ),
+        0.0,
+        2.9,
+    )
+    ass = build_sentence_karaoke_ass([group], 1080, 1920)
+    style = next(line for line in ass.splitlines() if line.startswith("Style: Caption,"))
+    fields = style.split(",")
+    dialogues = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
+
+    assert int(fields[2]) >= 72
+    assert int(fields[19]) >= 100
+    assert int(fields[20]) >= 100
+    assert all(line.count("\\N") <= 1 for line in dialogues)
+    assert "WrapStyle: 2" in ass
+
+
+def test_sentence_ass_default_rejects_any_three_line_group():
+    from app.services.render import RenderError, build_sentence_karaoke_ass
+
+    module = _preview_module()
+    words = tuple(
+        module.KaraokeWord(f"WORD{index}", index * 0.2, (index + 1) * 0.2)
+        for index in range(20)
+    )
+    group = module.KaraokeSentenceGroup("default-overflow", words, 0.0, 4.0)
+
+    with pytest.raises(RenderError, match="subtitle overflow"):
+        build_sentence_karaoke_ass([group], 1080, 1920, max_chars=20)
