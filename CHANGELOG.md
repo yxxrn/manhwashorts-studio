@@ -2,6 +2,15 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Closed the final real-run operator launcher gate. An existing supported venv
+  with a missing/stale fingerprint is now repaired in place instead of trying
+  to overwrite its active `Scripts\\python.exe`; venv creation remains limited
+  to missing or unsupported interpreters. The actual checked-in
+  `run_operator.cmd` reached all seven menu entries and `Exit / Keluar`, then
+  terminated with exit code `0` without a provider call or API key. Verification:
+  `47` operator/bootstrap/launcher tests and `956` selected non-slow tests
+  (`955` passed, `1` existing skip, `0` failed).
+
 - Hardened the one-click Windows operator launcher after a real user run
   exposed a malformed `py" "<bootstrap-script>` process command. `run_operator.cmd`
   now delegates through `scripts/operator_launcher.ps1`, which keeps the

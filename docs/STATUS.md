@@ -53,6 +53,22 @@ Updated: 2026-08-14
   removed/restored after verification. Ruff, compileall, diff-check, and
   no-churn checks are green. No provider request, API key, voice, audio, or
   publication call was made.
+- Final acceptance initially exposed one additional real-runtime edge: with an
+  existing supported `.venv` whose fingerprint was missing, the bootstrap
+  selected that active interpreter and tried to recreate the same venv. Windows
+  returned `Permission denied`, the top-level launcher exited `1`, and no menu
+  was shown. A collection-clean regression reproduced this as one body failure.
+  `ensure_runtime` now repairs an existing supported venv in place and invokes
+  `python -m venv` only when the interpreter is missing or unsupported.
+- Final acceptance GREEN used the real checked-in `run_operator.cmd` through
+  PowerShell Process redirection, fed the actual menu choice `0` plus the batch
+  pause key, and observed all seven menu entries plus `Exit / Keluar`. It exited
+  `0` with no child left hanging, no `operator.startup_failed`, and no malformed
+  process error. The launcher/bootstrap/operator matrix is now `47 passed`; the
+  final dependency-complete non-slow gate is `956/971 collected`, `15` slow
+  tests deselected, `955 passed`, `1 existing skip`, `0 failed`. The real
+  fingerprint is present in the ignored `.venv`; no provider request or API key
+  was used.
 - A real disposable smoke created a temporary venv, passed the import gate,
   wrote the fingerprint, and launched a quoted fake entrypoint without network
   or provider calls. The current launcher smoke also runs the actual `.cmd`

@@ -150,6 +150,23 @@ def test_stale_fingerprint_repairs_existing_venv(tmp_path):
     assert (venv / bootstrap.FINGERPRINT_FILENAME).read_text(encoding="ascii").strip() != "stale"
 
 
+def test_supported_existing_venv_repairs_in_place_without_reinvoking_venv(tmp_path):
+    bootstrap = _bootstrap_module()
+    _requirements(tmp_path)
+    venv = tmp_path / ".venv"
+    python = venv / "Scripts" / "python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"fake-python")
+    (venv / bootstrap.FINGERPRINT_FILENAME).write_text("stale\n", encoding="ascii")
+    runner = FakeRunner()
+
+    result = bootstrap.ensure_runtime(tmp_path, python_command=("python",), runner=runner)
+
+    assert result == python
+    assert any("-m" in call and "pip" in call for call in runner.calls)
+    assert not any("-m" in call and "venv" in call for call in runner.calls)
+
+
 def test_missing_runtime_import_repairs_even_with_current_fingerprint(tmp_path):
     bootstrap = _bootstrap_module()
     requirements = _requirements(tmp_path)

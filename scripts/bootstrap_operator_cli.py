@@ -254,18 +254,22 @@ def ensure_runtime(
             "Python yang ditemukan bukan versi 3.11+; pilih Python 3.11+ lalu coba lagi.",
         )
     emit("Menyiapkan lingkungan Python lokal...")
-    try:
-        venv_result = runner(
-            (*system_command, "-m", "venv", str(venv)),
-            cwd=root,
-            timeout=300,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise BootstrapError("bootstrap.venv_failed", "venv tidak dapat dibuat atau diperbaiki.") from exc
-    if venv_result.returncode != 0:
-        raise BootstrapError("bootstrap.venv_failed", "venv tidak dapat dibuat atau diperbaiki.")
+    if not _is_supported_version(existing_version):
+        try:
+            venv_result = runner(
+                (*system_command, "-m", "venv", str(venv)),
+                cwd=root,
+                timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise BootstrapError("bootstrap.venv_failed", "venv tidak dapat dibuat atau diperbaiki.") from exc
+        if venv_result.returncode != 0:
+            raise BootstrapError("bootstrap.venv_failed", "venv tidak dapat dibuat atau diperbaiki.")
 
-    python_path = _venv_python(venv)
+        python_path = _venv_python(venv)
+    else:
+        emit("Lingkungan .venv ada; perbaikan dilakukan tanpa menimpa interpreter aktif.")
+
     if not python_path.is_file():
         raise BootstrapError("bootstrap.venv_failed", "interpreter .venv tidak tersedia setelah perbaikan.")
     emit("Memasang dependensi runtime dari requirements.txt; ini hanya perlu saat pertama/stale...")
