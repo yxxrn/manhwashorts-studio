@@ -2,6 +2,18 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Fixed operator provider setup after a real user pasted
+  `http://host:port/v1` into the ambiguous provider-name prompt. Setup now uses
+  explicit Indonesian-friendly profile/endpoint/key prompts, maps
+  `openai`, `openai-compatible`, and `openai_compatible` to the existing
+  canonical `openai` registry key, and keeps unsupported names in the setup
+  loop. URL recovery is local and does not echo endpoint/query data; encrypted
+  BYOK verification remains the only save boundary. RED was `31` collected
+  (`26` passed, `5` intended failures); GREEN is `33/33`, and the combined
+  operator/launcher/bootstrap matrix is `52/52`. The real launcher menu/exit
+  smoke passed with exit `0` and no provider call; live model/capability
+  testing remains an explicit post-publication operator action.
+
 - Closed the final real-run operator launcher gate. An existing supported venv
   with a missing/stale fingerprint is now repaired in place instead of trying
   to overwrite its active `Scripts\\python.exe`; venv creation remains limited

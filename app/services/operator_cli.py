@@ -202,6 +202,30 @@ def safe_error_text(error: BaseException, *, secret: str = "") -> str:
     return text[:300] or "provider request failed"
 
 
+_LLM_PROVIDER_ALIASES = {
+    "openai": "openai",
+    "openai-compatible": "openai",
+    "openai_compatible": "openai",
+}
+
+
+def normalize_llm_provider(value: str | None) -> str:
+    """Map friendly OpenAI-compatible labels to the registry's canonical key."""
+
+    token = str(value or "").strip().casefold()
+    return _LLM_PROVIDER_ALIASES.get(token, token)
+
+
+def _looks_like_http_endpoint(value: str | None) -> bool:
+    """Recognize a pasted endpoint without echoing or trusting its contents."""
+
+    try:
+        parsed = urllib.parse.urlsplit(str(value or "").strip())
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 def _url_parts(raw: str, *, code: str = "operator.endpoint_invalid") -> urllib.parse.SplitResult:
     value = str(raw or "").strip().rstrip("/")
     try:
@@ -236,6 +260,7 @@ def normalize_endpoint(
 ) -> EndpointConfig:
     """Normalize a base or explicit ``/models`` URL using provider defaults."""
 
+    provider = normalize_llm_provider(provider)
     if not str(base_url or "").strip():
         providers = _providers()
         try:
@@ -817,16 +842,37 @@ class OperatorCLI:
     def setup_provider(self) -> None:
         providers = _providers()
         credentials = _credentials()
-        provider = self._ask("Provider [openai]: ", "openai")
-        try:
-            providers.get_spec("llm", provider)
-        except providers.ProviderError as exc:
-            raise OperatorCliError("operator.provider_invalid", "choose a supported LLM provider") from exc
-        base_url = self._ask("Base URL (blank uses provider default): ")
-        models_url = self._ask("Optional explicit models URL (blank derives /models): ")
-        endpoint = normalize_endpoint(base_url, explicit_models_url=models_url or None, provider=provider)
+        provider_input = self._ask("Nama provider/profil [openai]: ", "openai")
+        endpoint_from_profile: str | None = None
+        while True:
+            if _looks_like_http_endpoint(provider_input):
+                endpoint_from_profile = provider_input
+                provider_input = "openai"
+                self._print("Endpoint dikenali dari input pertama; profil openai digunakan.")
+            provider = normalize_llm_provider(provider_input)
+            try:
+                providers.get_spec("llm", provider)
+                break
+            except providers.ProviderError:
+                self._print(
+                    "Provider tidak didukung (unsupported). Pilih openai, "
+                    "openai-compatible, openai_compatible, atau custom_openai."
+                )
+                provider_input = self._ask("Nama provider/profil [openai]: ", "openai")
+
+        base_url = endpoint_from_profile or self._ask(
+            "Endpoint API (contoh http://host:port/v1): "
+        )
+        endpoint = normalize_endpoint(base_url, provider=provider)
         api_key = self.secret_fn("API key (hidden, never echoed): ")
-        label = self._ask("Provider label (optional): ")
+        models_url = self._ask("Optional explicit models URL (blank derives /models): ")
+        if models_url:
+            endpoint = normalize_endpoint(
+                base_url,
+                explicit_models_url=models_url,
+                provider=provider,
+            )
+        label = self._ask("Nama tampilan provider (optional): ")
         models = fetch_models(endpoint, api_key)
         try:
             with self._db() as db:
@@ -1017,6 +1063,7 @@ __all__ = [
     "list_job_states",
     "main",
     "normalize_endpoint",
+    "normalize_llm_provider",
     "parse_models_payload",
     "parse_run_options",
     "resolve_operator_context",

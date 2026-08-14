@@ -50,13 +50,24 @@ The console provides:
 7. View status/review blockers
 0. Exit
 
-Provider setup accepts an OpenAI-compatible base URL, an optional explicit
-`/models` URL, a provider label, and a hidden API-key prompt. A blank base URL
-uses the selected provider's configured default. The URL must be plain
-`http(s)` without credentials, query strings, or fragments. The model list is
-validated as a structured `{"data": [{"id": "..."}]}` response, sorted
-deterministically, and selected by number, filter, or an explicitly listed
-`manual:<model-id>` value.
+Provider setup first shows the unambiguous prompts `Nama provider/profil
+[openai]:`, `Endpoint API (contoh http://host:port/v1):`, and a hidden
+`API key` prompt. The registry's canonical LLM key is `openai`; the friendly
+aliases `openai-compatible` and `openai_compatible` normalize to that same
+OpenAI-compatible adapter, while the optional display label remains separate
+from the stored provider kind. If an operator pastes an `http://` or `https://`
+URL into the first profile prompt, the CLI recognizes it as the endpoint,
+keeps profile `openai`, and continues to the hidden key prompt without
+echoing the URL. Unsupported provider names stay inside setup with the
+supported examples shown instead of returning to the menu without guidance.
+
+The endpoint is validated locally before the key is requested and must be a
+plain `http(s)` URL without credentials, query strings, or fragments; custom
+HTTP endpoints such as `http://43.156.164.238:20128/v1` are allowed. An
+optional explicit `/models` URL is checked against the same endpoint. The
+model list is validated as a structured `{"data": [{"id": "..."}]}` response,
+sorted deterministically, and selected by number, filter, or an explicitly
+listed `manual:<model-id>` value.
 
 Credentials are saved only through the existing encrypted BYOK service. The
 key is held in memory for the bounded model request and BYOK verification, then

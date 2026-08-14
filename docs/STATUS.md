@@ -2,6 +2,39 @@
 
 Updated: 2026-08-14
 
+## Operator provider setup UX correction - 2026-08-14
+
+- Fixed the real-run setup failure where pasting an endpoint at the old
+  ambiguous `Provider [openai]:` prompt was treated as an unsupported provider.
+  The prompts now distinguish profile, endpoint, hidden key, optional models
+  URL, and display label. Canonical registry key `openai` is retained, with
+  `openai-compatible` and `openai_compatible` accepted as aliases; display
+  labels never replace the internal credential provider kind.
+- A URL pasted into the profile prompt is recognized locally as the endpoint,
+  profile `openai` is selected, and no endpoint/query value is echoed. Unsupported
+  names remain in the setup loop with safe examples. Existing encrypted BYOK
+  save/verification is unchanged, and cancellation before verification cannot
+  overwrite an existing credential.
+- TDD evidence: collection-clean RED was `31` cases with `26` passed and `5`
+  intended body failures for URL recovery, aliases, and retry. GREEN is `33/33`
+  in `tests/test_operator_cli.py`; the combined operator/launcher/bootstrap
+  matrix is `52/52`. Exact endpoint normalization and cancellation preservation
+  are covered. Ruff and compileall are clean. The real checked-in
+  `run_operator.cmd` reached the actual seven-entry menu and `Exit / Keluar`
+  with exit code `0`, no startup/malformed-process error, and no provider call;
+  a redirected setup smoke was intentionally stopped because Windows getpass
+  requires a real console. No live credential was persisted or printed.
+- The dependency-complete full gate is `978` collected, `15` slow tests
+  deselected, `963` executed (`962` passed, `1` existing skip, `0` failed).
+  Rollback is `95b69425c930beea11eb854ea700ee2dbbc7695e`; the implementation
+  branch is `codex/operator-setup-provider-ux` and no runtime artifact is in
+  the tracked diff.
+- The temporary endpoint's live model/capability check remains an operator
+  action after publication: type the key directly into the hidden prompt,
+  select menu `2` to test connection, then menu `3` to fetch/select a model and
+  explicitly consent to the minimal capability probe. Voice/TTS/audio,
+  publication, and rights gates remain deferred.
+
 ## Interactive local operator console - 2026-08-14
 
 - Added the Windows-first `run_operator.cmd` launcher and the thin

@@ -45,6 +45,15 @@ def test_endpoint_normalization_derives_models_url_without_query_or_credentials(
     assert "@" not in endpoint.models_url
 
 
+def test_exact_user_http_endpoint_is_normalized_without_network_access():
+    cli = _cli_module()
+
+    endpoint = cli.normalize_endpoint("http://43.156.164.238:20128/v1", provider="openai")
+
+    assert endpoint.base_url == "http://43.156.164.238:20128/v1"
+    assert endpoint.models_url == "http://43.156.164.238:20128/v1/models"
+
+
 def test_explicit_models_url_is_normalized_and_base_is_derived():
     cli = _cli_module()
 
@@ -352,6 +361,188 @@ def test_setup_provider_uses_hidden_key_and_existing_byok_boundary(monkeypatch):
     assert captured["api_key"] == secret
     assert secret not in "\n".join(output)
     assert secret not in str(captured.get("models", ""))
+
+
+def test_setup_provider_recovers_endpoint_pasted_at_provider_prompt(monkeypatch):
+    cli = _cli_module()
+    from types import SimpleNamespace
+
+    endpoint = "http://43.156.164.238:20128/v1"
+    sentinel = "operator-sentinel-key"
+    captured = {}
+    output = []
+    prompts = []
+
+    class Providers:
+        class ProviderError(Exception):
+            pass
+
+        @staticmethod
+        def get_spec(_kind, provider):
+            if provider != "openai":
+                raise Providers.ProviderError("unsupported provider")
+            return SimpleNamespace(default_base_url="https://api.openai.com/v1")
+
+    class Credentials:
+        @staticmethod
+        def save_credential(db, **kwargs):
+            captured.update(kwargs)
+            assert db == "db"
+            return SimpleNamespace(key_hint="operator-...1234"), SimpleNamespace()
+
+    class Context:
+        def __enter__(self):
+            return "db"
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(cli, "_providers", lambda: Providers())
+    monkeypatch.setattr(cli, "_credentials", lambda: Credentials())
+    monkeypatch.setattr(
+        cli,
+        "fetch_models",
+        lambda received_endpoint, api_key: (
+            captured.update(fetched_endpoint=received_endpoint, fetched_key=api_key),
+            (cli.ModelChoice("vision-model"),),
+        )[1],
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_operator_context",
+        lambda _db: (SimpleNamespace(id="user-1"), SimpleNamespace(id="workspace-1")),
+    )
+
+    def input_fn(prompt):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return endpoint
+        if "model" in prompt.casefold():
+            return ""
+        if "label" in prompt.casefold() or "tampilan" in prompt.casefold():
+            return ""
+        raise AssertionError(f"unexpected visible prompt after URL recovery: {prompt}")
+
+    secret_prompts = []
+    app = cli.OperatorCLI(
+        input_fn=input_fn,
+        output_fn=output.append,
+        secret_fn=lambda prompt: (secret_prompts.append(prompt), sentinel)[1],
+        db_factory=lambda: Context(),
+    )
+
+    app.setup_provider()
+
+    assert captured["provider"] == "openai"
+    assert captured["base_url"] == endpoint
+    assert captured["fetched_endpoint"].base_url == endpoint
+    assert prompts[0] == "Nama provider/profil [openai]: "
+    assert secret_prompts and "hidden" in secret_prompts[0].casefold()
+    assert endpoint not in "\n".join(output)
+    assert sentinel not in "\n".join(output)
+    assert all("provider_invalid" not in line for line in output)
+
+
+@pytest.mark.parametrize("alias", ["openai", "openai-compatible", "openai_compatible"])
+def test_openai_provider_aliases_normalize_to_existing_registry_key(alias):
+    cli = _cli_module()
+
+    assert cli.normalize_llm_provider(alias) == "openai"
+
+
+def test_unsupported_provider_retries_inside_setup_without_touching_credentials(monkeypatch):
+    cli = _cli_module()
+    from types import SimpleNamespace
+
+    endpoint = "http://127.0.0.1:20128/v1"
+    calls = []
+
+    class Providers:
+        class ProviderError(Exception):
+            pass
+
+        @staticmethod
+        def get_spec(_kind, provider):
+            if provider != "openai":
+                raise Providers.ProviderError("unsupported provider")
+            return SimpleNamespace(default_base_url="https://api.openai.com/v1")
+
+    class Credentials:
+        @staticmethod
+        def save_credential(_db, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(key_hint="operator-...1234"), SimpleNamespace()
+
+    class Context:
+        def __enter__(self):
+            return "db"
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(cli, "_providers", lambda: Providers())
+    monkeypatch.setattr(cli, "_credentials", lambda: Credentials())
+    monkeypatch.setattr(cli, "fetch_models", lambda _endpoint, _api_key: (cli.ModelChoice("vision-model"),))
+    monkeypatch.setattr(
+        cli,
+        "resolve_operator_context",
+        lambda _db: (SimpleNamespace(id="user-1"), SimpleNamespace(id="workspace-1")),
+    )
+    answers = iter(["unsupported", "openai", endpoint, "", ""])
+    output = []
+    app = cli.OperatorCLI(
+        input_fn=lambda _prompt: next(answers),
+        output_fn=output.append,
+        secret_fn=lambda _prompt: "operator-sentinel-key",
+        db_factory=lambda: Context(),
+    )
+
+    app.setup_provider()
+
+    assert calls and calls[0]["provider"] == "openai"
+    assert any("openai" in line and "unsupported" in line.casefold() for line in output)
+
+
+def test_setup_cancellation_before_verification_preserves_existing_credential(monkeypatch):
+    cli = _cli_module()
+    from types import SimpleNamespace
+
+    saved = []
+
+    class Providers:
+        class ProviderError(Exception):
+            pass
+
+        @staticmethod
+        def get_spec(_kind, _provider):
+            return SimpleNamespace(default_base_url="https://api.openai.com/v1")
+
+    class Credentials:
+        @staticmethod
+        def save_credential(_db, **kwargs):
+            saved.append(kwargs)
+            raise AssertionError("cancellation must happen before BYOK save")
+
+    class Context:
+        def __enter__(self):
+            return "db"
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(cli, "_providers", lambda: Providers())
+    monkeypatch.setattr(cli, "_credentials", lambda: Credentials())
+    answers = iter(["openai", "http://127.0.0.1:20128/v1"])
+    app = cli.OperatorCLI(
+        input_fn=lambda _prompt: next(answers),
+        secret_fn=lambda _prompt: (_ for _ in ()).throw(KeyboardInterrupt()),
+        db_factory=lambda: Context(),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        app.setup_provider()
+
+    assert saved == []
 
 
 def test_operator_run_projects_isolates_failures_and_preserves_safe_states():
