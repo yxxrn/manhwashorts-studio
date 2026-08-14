@@ -2,6 +2,17 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Fixed the one-click Windows operator startup path. `run_operator.cmd` now
+  validates `.venv`/Python 3.11+ candidates and invokes a stdlib-only bootstrap
+  that creates or repairs `.venv`, installs only `requirements.txt`, verifies
+  SQLAlchemy/Pillow/FastAPI/Pydantic/cryptography plus the BYOK/operator
+  imports, and records a requirements-plus-Python fingerprint only after a
+  healthy install. Offline, proxy, SSL, and package errors remain retryable
+  without printing raw output or secrets. Verification: `13` bootstrap-focused
+  passes, `26` operator-focused passes, `98` related passes, and `948`
+  non-slow selections (`944` passed, `1` existing skip). No provider, voice,
+  audio, or publication call was made.
+
 - Added the Windows-first interactive operator console on
   `codex/interactive-production-cli`. `run_operator.cmd` discovers the local
   virtual environment and opens a persistent terminal menu for encrypted BYOK

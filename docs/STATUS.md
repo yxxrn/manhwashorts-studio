@@ -28,19 +28,30 @@ Updated: 2026-08-14
 - A small compatibility guard in `app.services.pipeline` allows the existing
   RSS telemetry call to run on native Windows where POSIX `resource` is absent;
   it reports zero RSS rather than changing pipeline behavior on POSIX.
-- TDD evidence: operator RED was `20 failed, 0 collection errors` before the
-  new module/launcher existed. Operator focused GREEN is `26 passed`; directly
-  related BYOK/cloud/strip/segmentation/vision tests are `98 passed`. The
-  dependency-complete Windows non-slow gate is `935 selected, 934 passed, 1
+- The startup bug was reproduced with the supported system Python: importing
+  SQLAlchemy failed and the old entrypoint stopped before the menu. The new
+  stdlib-only `scripts/bootstrap_operator_cli.py` creates/repairs `.venv` from
+  `requirements.txt`, verifies the runtime import set, writes a fingerprint
+  only after health passes, and launches the existing entrypoint with a fixed
+  argument list. Offline/proxy/SSL/package/venv errors are stable and retryable;
+  no raw pip output or secret is printed.
+- TDD evidence: bootstrap RED was `10 failed, 0 collection errors` with the
+  missing module; bootstrap focused GREEN is `13 passed`, operator focused is
+  `26 passed`, and the combined focused matrix is `39 passed`. Directly related
+  BYOK/cloud/strip/segmentation/vision tests are `98 passed`. The
+  dependency-complete Windows non-slow gate is `945 selected, 944 passed, 1
   existing skip, 0 failed` (the first checkout run exposed only the existing
   CRLF-vs-LF prompt snapshot environment issue; the final run used a disposable
   external LF normalization shim and restored the tracked bytes). Ruff,
   compileall, diff-check, and no-churn checks are required at release and no
   real provider request or key was used here.
-- Disposable verification material is outside the repository and is not part
-  of the release. Next operator action: double-click the launcher, enter the
-  user's endpoint and hidden key, select a verified model, and confirm a
-  capability probe only if billing is acceptable. Voice/TTS/audio, media,
+- A real disposable smoke created a temporary venv, passed the import gate,
+  wrote the fingerprint, and launched a quoted fake entrypoint without network
+  or provider calls. Disposable verification material is outside the repository
+  and is not part of the release. Next operator action: double-click the
+  launcher; first run may install runtime packages, later starts are fast. Then
+  enter the user's endpoint and hidden key, select a verified model, and confirm
+  a capability probe only if billing is acceptable. Voice/TTS/audio, media,
   publication, and rights work remain deferred.
 
 ## Production long-strip segmentation - 2026-08-14

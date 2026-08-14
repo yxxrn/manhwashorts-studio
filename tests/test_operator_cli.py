@@ -409,7 +409,7 @@ def test_launcher_exists_and_selects_project_venv_without_shell_arguments():
     assert launcher.is_file()
     text = launcher.read_text(encoding="utf-8")
     assert ".venv\\Scripts\\python.exe" in text
-    assert "scripts\\run_operator_cli.py" in text
+    assert "scripts\\bootstrap_operator_cli.py" in text
     assert "%*" not in text
 
 

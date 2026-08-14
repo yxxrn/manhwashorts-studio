@@ -7,18 +7,31 @@ review-only cloud multimodal pipeline without using a web UI.
 
 Double-click `run_operator.cmd` at the repository root. The window stays open
 on setup or runtime failure and prints a short next step. The launcher prefers
-`.venv\Scripts\python.exe`, then `venv\Scripts\python.exe`, then a standard
-Python 3.11 installation, and finally `python` on `PATH`.
+`.venv\Scripts\python.exe`; otherwise it validates `py -3.11`, `py -3`, then
+`python` in that order. No user-specific Python path, global pip, or PATH
+mutation is used.
 
 The equivalent terminal command is:
 
 ```text
-python scripts/run_operator_cli.py
+python scripts/bootstrap_operator_cli.py
 ```
 
-If no interpreter is found, create `.venv` and install `requirements-dev.txt`
-before starting the console again. The launcher passes no user arguments to
-the script, so paths and credentials are entered interactively.
+After the environment is ready, the cross-platform direct entrypoint remains
+`python scripts/run_operator_cli.py`. On first run, the bootstrap creates or
+repairs the repository `.venv` in place and installs only the authoritative
+runtime `requirements.txt` (never `requirements-dev.txt`). It verifies
+SQLAlchemy, Pillow, FastAPI/Pydantic, cryptography/BYOK, and the operator
+module before launching the menu. A deterministic fingerprint of the exact
+requirements bytes and Python version is stored inside `.venv`; a healthy
+matching environment skips pip. Stale fingerprints or failed imports trigger
+an in-place repair without deleting the venv.
+
+If no Python 3.11+ interpreter is found, install Python 3.11+ and retry. Offline,
+proxy, SSL, venv, and package failures have separate sanitized recovery codes;
+the venv is preserved and the success marker is not written after a failed
+install. The launcher passes no user arguments to the script, so paths and
+credentials are entered interactively.
 
 ## Menu
 
