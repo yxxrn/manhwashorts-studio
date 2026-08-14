@@ -2,6 +2,38 @@
 
 Updated: 2026-08-14
 
+## Final production silent acceptance - real-input lineage checkpoint - 2026-08-14
+
+- The first real `final_test` preflight exposed two deterministic ingestion
+  defects before any provider request: bare numeric suffix parsing collapsed
+  distinct double-underscore source pages into one family, and the local
+  operator serialized `(x1, y1)` endpoint coordinates into JSON fields named
+  `width`/`height`. The fixes are limited to
+  `app/services/ingest.py` and `app/services/operator_cli.py`; the stored
+  contract now keeps `001__001`, `001__002`, and `001__003` distinct and writes
+  true `xywh` dimensions for source bounds.
+- TDD evidence is collection-clean RED for both defects (one focused failure
+  each), followed by GREEN for the source-family regression, the sliced-family
+  compatibility regression, and the operator `xywh` persistence regression.
+  The focused commands are
+  `.venv\\Scripts\\python.exe -m pytest tests/test_strips.py -k
+  'double_underscore_input_pages or sliced_panels_keep_one_persisted_source_family' -q`
+  (`2 passed`) and
+  `.venv\\Scripts\\python.exe -m pytest tests/test_operator_cli.py -k
+  'operator_import_stores_source_bounds_as_xywh' -q` (`1 passed`).
+- A clean isolated real-input retry ingested all `40` files into `106`
+  deterministic assets, then stopped safely at
+  `segmentation.ambiguous_boundary` (`reviewable=true`) with no provider
+  boundary assessment. No source image, provider payload, credential, or
+  media was committed. The ignored diagnostic root is
+  `data/_final_acceptance_preflight/` and is disposable.
+- The real model/capability call and silent MP4 remain unverified. The next
+  executable step is to enter the authorized credential through the real
+  hidden-key operator prompt, fetch/select `ag/gemini-3.6-flash-high`, run the
+  explicit vision probe, and resume this exact project through the existing
+  cloud boundary assessor. Voice/TTS/audio and publication remain deferred;
+  `publish_allowed=false` remains unchanged.
+
 ## Final silent production acceptance - context bootstrap checkpoint - 2026-08-14
 
 - The acceptance design/plan is committed at `9653929` on

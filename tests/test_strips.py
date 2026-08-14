@@ -257,6 +257,17 @@ def test_sliced_panels_keep_one_persisted_source_family():
     assert {asset.source_family for asset in assets} == {"chapter/page01"}
 
 
+def test_double_underscore_input_pages_do_not_share_a_slice_family():
+    from app.services import ingest
+
+    families = {
+        ingest.derive_source_family(name)
+        for name in ("001__001.jpg", "001__002.jpg", "001__003.jpg")
+    }
+
+    assert families == {"001__001", "001__002", "001__003"}
+
+
 def test_source_family_override_is_exposed_by_asset_route(client, declared_rights):
     assert client.post(
         "/api/auth/register",

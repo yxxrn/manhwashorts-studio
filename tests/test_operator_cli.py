@@ -741,3 +741,32 @@ def test_import_chapter_uses_ingest_and_is_idempotent(db, tmp_path):
     assert first.created is True
     assert second.created is False
     assert first.project_id == second.project_id
+
+
+def test_operator_import_stores_source_bounds_as_xywh():
+    cli = _cli_module()
+    from app.services.ingest import IngestedAsset
+
+    result = IngestedAsset(
+        type="image",
+        original_filename="source-strip_p01.png",
+        mime_type="image/png",
+        storage_key="tests/source-strip_p01.png",
+        size_bytes=31,
+        checksum="derived-checksum",
+        width=886,
+        height=996,
+        original_checksum="original-checksum",
+        original_width=1000,
+        original_height=2000,
+        source_bounds=(17, 211, 903, 1207),
+    )
+
+    asset = cli._asset_from_ingested("project-id", result, 0)
+
+    assert asset.source_bounds_json == {
+        "x": 17,
+        "y": 211,
+        "width": 886,
+        "height": 996,
+    }

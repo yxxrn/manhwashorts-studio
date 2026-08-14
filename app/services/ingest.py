@@ -79,6 +79,7 @@ class IngestedAsset:
 
 
 _SLICE_SUFFIX = re.compile(r"(?:[_-]p?\d+)$", re.IGNORECASE)
+_EXPLICIT_SLICE_SUFFIX = re.compile(r"(?:[_-]p\d+)$", re.IGNORECASE)
 
 
 def derive_source_family(filename: str) -> str:
@@ -87,7 +88,11 @@ def derive_source_family(filename: str) -> str:
     if not value:
         return "unknown"
     path = Path(value)
-    stem = (_SLICE_SUFFIX.sub("", path.stem).rstrip("_-") or path.stem or "unknown")
+    # Double-underscore names are source-page identifiers (for example,
+    # ``001__002.jpg``), not the legacy numeric slice suffix.  Only remove
+    # the explicit ``_pNN`` suffix that ingestion adds to such a source.
+    suffix_pattern = _EXPLICIT_SLICE_SUFFIX if "__" in path.stem else _SLICE_SUFFIX
+    stem = (suffix_pattern.sub("", path.stem).rstrip("_-") or path.stem or "unknown")
     parent = "/".join(part for part in path.parts[:-1] if part not in {"", "."})
     return f"{parent}/{stem}" if parent else stem
 

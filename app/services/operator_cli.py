@@ -463,6 +463,7 @@ def _existing_project_for_manifest(db: Any, workspace_id: str, manifest: Chapter
 
 def _asset_from_ingested(project_id: str, result: Any, order_index: int) -> SourceAsset:
     _Project, SourceAsset, _User, _Workspace = _models()
+    x0, y0, x1, y1 = result.source_bounds
     return SourceAsset(
         project_id=project_id,
         type=result.type,
@@ -484,10 +485,10 @@ def _asset_from_ingested(project_id: str, result: Any, order_index: int) -> Sour
         original_width=result.original_width,
         original_height=result.original_height,
         source_bounds_json={
-            "x": result.source_bounds[0],
-            "y": result.source_bounds[1],
-            "width": result.source_bounds[2],
-            "height": result.source_bounds[3],
+            "x": x0,
+            "y": y0,
+            "width": x1 - x0,
+            "height": y1 - y0,
         },
         strip_order=result.strip_order,
         region_order=result.region_order,

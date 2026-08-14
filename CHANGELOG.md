@@ -2,6 +2,15 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Hardened the real-input acceptance path for long chapter folders. Distinct
+  double-underscore source pages now retain distinct source-family lineage,
+  and operator-imported source bounds are serialized as true `xywh` dimensions
+  instead of endpoint coordinates. The two focused RED regressions are now
+  green. A real `final_test` retry ingested `40` files into `106` assets but
+  correctly stopped at reviewable `segmentation.ambiguous_boundary` before any
+  provider request; the silent MP4 acceptance remains pending secure provider
+  capability verification.
+
 - Added the local operator context bootstrap required for one-click offline
   startup: an empty local DB now receives one deterministic audited operator and
   workspace without a web-login prerequisite, while existing users remain
