@@ -179,6 +179,18 @@ class OpenAICompatibleVisionProvider:
             "api_key='[redacted]')"
         )
 
+    @property
+    def model_id(self) -> str:
+        """The configured model identity, safe to expose in stage metadata."""
+
+        return self._model
+
+    @property
+    def endpoint(self) -> str:
+        """Configured endpoint without credentials, for pinned stage identity."""
+
+        return self._base_url
+
     def capability(self) -> VisionCapabilityReport:
         available = self._configured()
         return VisionCapabilityReport(
@@ -293,6 +305,64 @@ class OpenAICompatibleVisionProvider:
         if not isinstance(result, Mapping):
             raise VisionResponseInvalid()
         return result
+
+    def complete_json(
+        self,
+        *,
+        stage: str,
+        prompt_version: str,
+        prompt_sha256: str,
+        prompt_text: str = "",
+        payload: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Run a strict JSON text stage through the same configured model.
+
+        The cloud orchestration layer supplies stage prompts and performs all
+        semantic reconciliation.  This adapter only speaks the existing
+        OpenAI-compatible wire format and never returns provider error text.
+        """
+
+        if not isinstance(stage, str) or not stage.strip() or not isinstance(prompt_version, str) or not prompt_version.strip() or not isinstance(prompt_sha256, str) or len(prompt_sha256) != 64 or not isinstance(prompt_text, str):
+            raise VisionRequestInvalid()
+        if not isinstance(payload, Mapping):
+            raise VisionRequestInvalid()
+        report = self.capability()
+        if not report.available:
+            raise VisionCapabilityError()
+        body = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        f"{prompt_text.rstrip()}\n\n"
+                        f"Stage: {stage}. Prompt version: {prompt_version}. "
+                        f"Prompt SHA-256: {prompt_sha256}. Return only valid JSON."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(payload, sort_keys=True, separators=(",", ":"))},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0,
+        }
+        try:
+            response = httpx.post(
+                f"{self._base_url.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=VISION_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            value = json.loads(content)
+        except Exception:
+            raise VisionProviderRequestFailed() from None
+        if not isinstance(value, Mapping):
+            raise VisionResponseInvalid()
+        return value
 
     def _configured(self) -> bool:
         parsed = urlparse(self._base_url)

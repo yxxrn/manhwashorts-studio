@@ -2,6 +2,60 @@
 
 Updated: 2026-08-14
 
+## Cloud multimodal mass-production MVP - 2026-08-14
+
+- Implemented on branch `codex/cloud-multimodal-mass-production` from clean
+  main `93fd8c99700125a5af20322718d5e1593bd4271a`. The new generic
+  `app.services.cloud_multimodal` boundary uses the existing verified BYOK
+  OpenAI-compatible vision adapter for three separate, pinned stages:
+  `balloon-free-visual-evidence-v1` (`7abd1a456903fa5b46dc047b9d24cee02578fa7da027ebc14cde18a264bd2534`),
+  `cloud-causal-map-v1` (`c0494942be104bacd664feb696b64e1909fea3ccae4e2a25e8bbfcefd6aa7db2`),
+  and `vision-first-story-analyzer-v3`
+  (`b93961d980c0ace1354611b2b78951400945def2ed13f6aa4f43557f5780869b`).
+  Sharp Friend v1 remains locally verified at profile hash
+  `134b544c9e2f74ca0b8c64ff55a27c831e76f77a08f26fc2a463112cb0678b3e`.
+- Stage A consumes every ordered panel and reconciles provider geometry into
+  local canonical evidence hashes; provider-supplied hashes are rejected.
+  Unknown balloon geometry, OCR-only known geometry, foreign/duplicate panels,
+  invalid boxes/confidence, incomplete source coverage, causal-map gaps,
+  unmapped narrative claims, copied dialogue/CTA/hype, and duration/QC failures
+  fail closed. Stage B consumes the complete ordered visual result with
+  `random_sampling=false`; Stage C validates the existing Sharp Friend v1
+  analyzer contract and derives uppercase punctuation-free display words
+  independently from punctuation-bearing spoken text.
+- `prepare_project_panels` reuses current segmentation, source bytes, integer
+  panel bounds, source checksums, and coverage hashes. `persist_cloud_chapter`
+  writes a reconciled `StoryAnalysis` and `ScriptVersion` only after all three
+  stages pass, through the existing v3 validation/persistence path. It never
+  relabels legacy evidence and leaves `editorial_review_confirmed=false`.
+- `CloudBatchService` and `scripts/run_cloud_multimodal_batch.py` support
+  repeated project jobs, isolated `FAILED`/`NEEDS_REVIEW` records, atomic JSON
+  resume state, stale source/model/prompt cache rejection, bounded retries,
+  configurable request budgets/rate spacing/estimated cost, and a deterministic
+  concurrency cap. Example after configuring an existing verified BYOK LLM
+  credential (no secret is passed on the command line):
+  `python scripts/run_cloud_multimodal_batch.py --project-id PROJECT_ID
+  --state-dir data/cloud-multimodal-jobs --model MODEL_ID`.
+  The command stops at `READY_TO_RENDER`/review-only because authoritative voice
+  word timings are absent; `regular_render_allowed` remains false and
+  `cloud.voice_timing_required` blocks final audio/video rendering. No local
+  fallback, provider call, TTS, audio, or media was run in this checkpoint.
+- A frozen `VoiceProfile` contract now records provider/model/version,
+  voice/reference identity, locale, speed/style/stability, approval state, and
+  a local profile hash. Changing an approved identity raises
+  `voice_profile_reapproval_required`; no voice provider was selected or called.
+- TDD evidence: collection-clean initial RED was `8 collected, 8 body
+  failures` for the absent cloud/voice boundaries. Focused final GREEN is
+  `13 passed`. The related non-slow vision/analyzer/QC/pipeline/render/voice
+  matrix is `142 passed, 13 deselected`. The full authoritative disposable
+  non-slow suite is `888 passed, 1 existing skip, 15 deselected, 0 failed`.
+  The 15 deselected tests are the existing slow-marked pipeline/render tests;
+  the Windows dependency-complete run used an external path-normalization and
+  LF snapshot shim only, never committed. Ruff, compileall, and diff checks
+  are green. The next gate is real BYOK configuration plus a real chapter
+  run; source rights, explicit editorial approval, voice/TTS/audio, final
+  render, and publication remain blocked/deferred.
+
 ## Regular production render: sentence-chunked karaoke and evidence-gated framing - 2026-08-14
 
 - The regular `app.services.pipeline.build_render_request` /

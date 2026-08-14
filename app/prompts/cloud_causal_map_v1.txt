@@ -1,0 +1,10 @@
+Contract ID: cloud_multimodal_causal_map
+Version: cloud-causal-map-v1
+
+Consume the complete ordered panel observation ledger and its typed visual
+evidence. Do not sample, skip, reorder, or infer a panel from filenames.
+Return only JSON with panel_ids, random_sampling=false, ordered beats, a
+causal_chain, and evidence-grounded claims. Every beat and claim must cite
+one or more supplied panel IDs. Use qualified language when the panels do not
+prove intent, identity, or causality. Never copy dialogue or add a call to
+action. The local application computes all canonical hashes after validation.

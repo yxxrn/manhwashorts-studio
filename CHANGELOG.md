@@ -2,6 +2,19 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added the cloud multimodal mass-production MVP boundary on
+  `codex/cloud-multimodal-mass-production`. One verified BYOK
+  OpenAI-compatible model identity is pinned across separate visual-evidence,
+  complete causal-map, and Sharp Friend narration stages. Local validation owns
+  canonical hashes and fail-closed lineage/coverage/QC; provider hashes,
+  unknown balloon geometry, unsupported claims, and invalid duration do not
+  pass. Batch JSON state supports isolated failures/resume, while the existing
+  regular renderer remains blocked until authoritative voice word timings and
+  approval exist. The frozen future `VoiceProfile` identity contract is
+  included, but no TTS/provider/audio call was made. Verification is
+  `13` focused passes, `142` related non-slow passes, and `888` full non-slow
+  passes with one existing skip; `publish_allowed` remains false.
+
 - Wired the approved sentence-chunked word-karaoke surface into the regular
   reference render path. Explicit profile renders now require authoritative
   persisted word timings and exact panel/evidence/mask/ROI telemetry; display
