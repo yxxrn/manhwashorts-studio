@@ -34,6 +34,7 @@ class SourceAssetInput:
     payload: bytes
     decoded_width: int | None = None
     decoded_height: int | None = None
+    source_family: str = ""
 
 
 @dataclass(frozen=True)
@@ -323,33 +324,39 @@ def _invalid_candidate(
 
 
 def _row_classification(image: Image.Image) -> list[tuple[RegionClass, float, str]]:
-    width, height = image.size
-    pixels = image.load()
-    rows: list[tuple[RegionClass, float, str]] = []
-    for y in range(height):
-        brightness: list[float] = []
-        for x in range(width):
-            red, green, blue = pixels[x, y]
-            brightness.append((red + green + blue) / 3.0)
-        mean = sum(brightness) / width
-        variance = sum((value - mean) ** 2 for value in brightness) / width
-        is_extreme = (mean >= 236.0 or mean <= 22.0) and variance <= 25.0
-        if is_extreme:
-            kind = "near_white" if mean >= 236.0 else "near_black"
-            distance = (mean - 236.0) if mean >= 236.0 else (22.0 - mean)
-            confidence = min(1.0, 0.7 + max(distance, 0.0) / 255.0)
-            evidence = (
-                f"coverage.gutter.extreme_flat:{kind};"
-                f"mean={mean:.3f};variance={variance:.3f}"
-            )
-            rows.append(("verified_gutter", confidence, evidence))
-        else:
-            evidence = (
-                "coverage.content.full_width_decoded;"
-                f"mean={mean:.3f};variance={variance:.3f}"
-            )
-            rows.append(("canonical_panel", 0.9, evidence))
-    return rows
+    # Keep the byte/coverage contract for the tiny legacy fixtures and normal
+    # portrait panels. Long source strips use the color-agnostic detector below.
+    if image.size[1] < 512:
+        width, height = image.size
+        pixels = image.load()
+        rows: list[tuple[RegionClass, float, str]] = []
+        for y in range(height):
+            brightness = [sum(pixels[x, y]) / 3.0 for x in range(width)]
+            mean = sum(brightness) / width
+            variance = sum((value - mean) ** 2 for value in brightness) / width
+            is_extreme = (mean >= 236.0 or mean <= 22.0) and variance <= 25.0
+            if is_extreme:
+                kind = "near_white" if mean >= 236.0 else "near_black"
+                distance = (mean - 236.0) if mean >= 236.0 else (22.0 - mean)
+                rows.append(
+                    (
+                        "verified_gutter",
+                        min(1.0, 0.7 + max(distance, 0.0) / 255.0),
+                        f"coverage.gutter.extreme_flat:{kind};mean={mean:.3f};variance={variance:.3f}",
+                    )
+                )
+            else:
+                rows.append(
+                    (
+                        "canonical_panel",
+                        0.9,
+                        f"coverage.content.full_width_decoded;mean={mean:.3f};variance={variance:.3f}",
+                    )
+                )
+        return rows
+    from app.services import strips
+
+    return strips.color_agnostic_row_classifications(image)
 
 
 def _decode_candidates(

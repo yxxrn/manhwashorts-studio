@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
@@ -25,12 +25,15 @@ from app.services import (
     narrative_identity,
     quality,
     script,
+    strip_segmentation,
     visual_scoring,
 )
 from app.services.vision_adapter import VisionObservationRequest
 
 CAUSAL_MAP_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "cloud_causal_map_v1.txt"
 CAUSAL_MAP_PROMPT_VERSION = "cloud-causal-map-v1"
+STRIP_BOUNDARY_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "strip_boundary_assessment_v1.txt"
+STRIP_BOUNDARY_PROMPT_VERSION = "strip-boundary-assessment-v1"
 
 
 class CloudStageError(RuntimeError):
@@ -103,6 +106,7 @@ class CloudPanelInput:
     strip_region_id: str = ""
     coverage_map_version: str = ""
     coverage_map_hash: str = ""
+    segmentation_version: str = ""
 
     def __post_init__(self) -> None:
         if not self.panel_id.strip() or not self.source_asset_id.strip():
@@ -160,6 +164,8 @@ class CloudPanelInput:
             descriptor["coverage_map_version"] = self.coverage_map_version
         if self.coverage_map_hash:
             descriptor["coverage_map_hash"] = self.coverage_map_hash
+        if self.segmentation_version:
+            descriptor["segmentation_version"] = self.segmentation_version
         return descriptor
 
 
@@ -369,11 +375,23 @@ def _load_causal_prompt() -> tuple[str, str, str]:
     return CAUSAL_MAP_PROMPT_VERSION, hashlib.sha256(normalized.encode("utf-8")).hexdigest(), normalized
 
 
+def _load_strip_boundary_prompt() -> tuple[str, str, str]:
+    try:
+        text = STRIP_BOUNDARY_PROMPT_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        raise CloudStageError("cloud.prompt_missing") from None
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if f"Version: {STRIP_BOUNDARY_PROMPT_VERSION}" not in normalized:
+        raise CloudStageError("cloud.prompt_invalid")
+    return STRIP_BOUNDARY_PROMPT_VERSION, hashlib.sha256(normalized.encode("utf-8")).hexdigest(), normalized
+
+
 def _prompt_specs() -> dict[str, tuple[str, str, str]]:
     return {
         "visual": visual_scoring.load_visual_evidence_instruction(),
         "story_map": _load_causal_prompt(),
         "narration": narrative_identity.load_narrative_instruction("sharp_friend_v1"),
+        "segmentation": _load_strip_boundary_prompt(),
     }
 
 
@@ -419,7 +437,7 @@ class CloudStageRunner:
         self._last_request_at = 0.0
         self.prompts = _prompt_specs()
         expected = dict(model_identity.prompt_versions)
-        if any(expected.get(stage) != prompt[0] for stage, prompt in self.prompts.items()):
+        if any(stage in expected and expected[stage] != prompt[0] for stage, prompt in self.prompts.items()):
             raise CloudStageError("cloud.prompt_identity_mismatch")
 
     def _call(self, operation) -> Any:
@@ -442,6 +460,19 @@ class CloudStageRunner:
                 last_error = exc
         del last_error
         raise CloudStageError("cloud.provider_request_failed") from None
+
+    def assess_strip_boundaries(self, request: strip_segmentation.BoundaryRequest) -> Mapping[str, Any]:
+        """Ask the pinned model to validate candidates and protected regions."""
+        prompt = self.prompts["segmentation"]
+        return self._call(
+            lambda: self.provider.complete_json(
+                stage="strip_segmentation",
+                prompt_version=prompt[0],
+                prompt_sha256=prompt[1],
+                prompt_text=prompt[2],
+                payload=request.as_payload(),
+            )
+        )
 
     @staticmethod
     def _ordered_panels(panels: Sequence[CloudPanelInput]) -> tuple[CloudPanelInput, ...]:
@@ -708,7 +739,14 @@ class CloudStageRunner:
         return result
 
 
-def prepare_project_panels(db: Any, project_id: str) -> tuple[CloudPanelInput, ...]:
+def prepare_project_panels(
+    db: Any,
+    project_id: str,
+    *,
+    boundary_assessor: Callable[[strip_segmentation.BoundaryRequest], Mapping[str, Any]] | None = None,
+    review_root: Path | None = None,
+    return_segmentation: bool = False,
+) -> tuple[CloudPanelInput, ...] | tuple[tuple[CloudPanelInput, ...], dict[str, Any]]:
     """Build immutable cloud inputs from the current project panel lineage.
 
     Segmentation and source decoding are reused from the regular pipeline.  No
@@ -722,6 +760,22 @@ def prepare_project_panels(db: Any, project_id: str) -> tuple[CloudPanelInput, .
     try:
         assets = pipeline.image_assets(pipeline.project_assets(db, project_id))
         inputs, asset_by_id = pipeline._build_source_inputs(assets)
+        reconciliation = strip_segmentation.reconcile_sources(
+            inputs,
+            boundary_assessor=boundary_assessor,
+            review_root=review_root,
+        )
+    except strip_segmentation.StripSegmentationError as exc:
+        raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
+    except Exception:
+        raise CloudStageError("cloud.panel_coverage_incomplete") from None
+    if reconciliation.status != "RECONCILED":
+        review_codes = [report.review_code for report in reconciliation.reports if report.review_code]
+        raise CloudStageError(
+            review_codes[0] if review_codes else "segmentation.coverage_incomplete",
+            reviewable=True,
+        )
+    try:
         coverage = segmentation.build_complete_coverage_map(
             inputs,
             segmentation_version=segmentation.SEGMENTATION_VERSION,
@@ -785,9 +839,13 @@ def prepare_project_panels(db: Any, project_id: str) -> tuple[CloudPanelInput, .
                 strip_region_id=region.region_id,
                 coverage_map_version=coverage.version,
                 coverage_map_hash=coverage.map_sha256,
+                segmentation_version=strip_segmentation.SEGMENTATION_VERSION,
             )
         )
-    return tuple(panels)
+    result = tuple(panels)
+    if return_segmentation:
+        return result, reconciliation.as_dict()
+    return result
 
 
 def persist_cloud_chapter(
@@ -1071,10 +1129,12 @@ class CloudBatchService:
         runner: CloudStageRunner,
         store: JsonJobStore,
         max_concurrent: int = 1,
+        review_root: Path | None = Path("data/segmentation-review"),
     ) -> None:
         self.runner = runner
         self.store = store
         self.max_concurrent = max(1, int(max_concurrent))
+        self.review_root = Path(review_root) if review_root is not None else None
 
     def run_job(self, job_id: str, panels: Sequence[CloudPanelInput]) -> ChapterJobRecord:
         _validate_job_id(job_id)
@@ -1167,8 +1227,17 @@ class CloudBatchService:
         """Run one DB-backed project and persist only after stage reconciliation."""
 
         try:
-            panels = prepare_project_panels(db, project_id)
+            prepared = prepare_project_panels(
+                db,
+                project_id,
+                boundary_assessor=self.runner.assess_strip_boundaries,
+                review_root=self.review_root,
+                return_segmentation=True,
+            )
+            panels, segmentation_state = prepared
             record = self.run_job(project_id, panels)
+            record.stage_results["segmentation"] = segmentation_state
+            self.store.save(record)
             if record.state != ChapterState.READY_TO_RENDER:
                 return record
             result = ChapterResult(

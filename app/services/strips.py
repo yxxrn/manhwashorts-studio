@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import io
 from dataclasses import dataclass
+from math import sqrt
 
 from PIL import Image
 
@@ -45,6 +46,22 @@ _SEARCH_FRACTION = 0.18
 
 #: A cut is never placed closer than this fraction of a segment to its neighbour.
 _MIN_SEGMENT_FRACTION = 0.55
+
+# This detector is intentionally based on structure rather than brightness.
+# The version participates in downstream cache/review identities.
+COLOR_AGNOSTIC_DETECTOR_VERSION = "color-agnostic-gutter-v2"
+
+
+@dataclass(frozen=True)
+class SeparatorCandidate:
+    """A deterministic, source-row separator candidate."""
+
+    position: int
+    confidence: float
+    score: float
+    run_top: int
+    run_bottom: int
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -69,6 +86,152 @@ class StripSlice:
     @property
     def height(self) -> int:
         return self.bottom - self.top
+
+
+def _colour_distance(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
+    return sqrt(sum((a - b) ** 2 for a, b in zip(left, right, strict=True)))
+
+
+def _row_structure_features(
+    img: Image.Image,
+    *,
+    max_sample_width: int = 64,
+) -> tuple[list[tuple[float, float, float]], list[float], list[float]]:
+    """Return mean colour, within-row variance, and texture for every source row.
+
+    The horizontal sample is bounded while the vertical axis is preserved, so
+    every candidate remains in the original source coordinate space. No
+    brightness or colour-class threshold is used here.
+    """
+    source = img.convert("RGB")
+    width, height = source.size
+    sample_width = max(1, min(width, max_sample_width))
+    sampled = source.resize((sample_width, height), Image.Resampling.BOX)
+    pixels = sampled.load()
+    means: list[tuple[float, float, float]] = []
+    variances: list[float] = []
+    textures: list[float] = []
+    for y in range(height):
+        row = [pixels[x, y] for x in range(sample_width)]
+        mean = tuple(sum(pixel[channel] for pixel in row) / sample_width for channel in range(3))
+        variance = sum(
+            (pixel[channel] - mean[channel]) ** 2
+            for pixel in row
+            for channel in range(3)
+        ) / (sample_width * 3)
+        texture = (
+            sum(
+                abs(row[index][channel] - row[index - 1][channel])
+                for index in range(1, sample_width)
+                for channel in range(3)
+            )
+            / max(1, (sample_width - 1) * 3)
+        )
+        means.append(mean)
+        variances.append(variance)
+        textures.append(texture)
+    return means, variances, textures
+
+
+def color_agnostic_separator_candidates(
+    img: Image.Image,
+    *,
+    max_pixels: int = 8_000_000,
+) -> tuple[SeparatorCandidate, ...]:
+    """Find sustained structural gutters without assuming white or black.
+
+    A candidate needs low local variance/texture, continuity through the band,
+    and textured/contrasting context on both sides. This rejects a broad flat
+    sky or wall when it has no separator context. Results are sorted by stable
+    confidence then source position.
+    """
+    width, height = img.size
+    if width <= 0 or height <= 0:
+        return ()
+    if width * height > max_pixels:
+        raise ValueError("segmentation.pixel_budget_exceeded")
+    means, variances, textures = _row_structure_features(img)
+    low_information = [variance <= 90.0 and texture <= 10.0 for variance, texture in zip(variances, textures, strict=True)]
+    min_run = max(24, min(96, int(height * 0.006)))
+    candidates: list[SeparatorCandidate] = []
+    index = 0
+    while index < height:
+        if not low_information[index]:
+            index += 1
+            continue
+        start = index
+        while index < height and low_information[index]:
+            if index > start and _colour_distance(means[index], means[index - 1]) > 8.0:
+                break
+            index += 1
+        end = index
+        run_length = end - start
+        if run_length < min_run or start == 0 or end == height:
+            continue
+        left_delta = _colour_distance(means[start], means[start - 1])
+        right_delta = _colour_distance(means[end - 1], means[end])
+        edge_score = min(1.0, (left_delta + right_delta) / 180.0)
+        neighbour_texture = max(
+            max(textures[max(0, start - 4):start], default=0.0),
+            max(textures[end:min(height, end + 4)], default=0.0),
+        )
+        context_score = min(1.0, edge_score * 0.55 + neighbour_texture / 35.0)
+        flatness = min(
+            1.0,
+            max(0.0, 1.0 - (sum(variances[start:end]) / run_length) / 90.0),
+        )
+        band_score = min(1.0, run_length / max(1.0, min_run * 2.0))
+        confidence = round(
+            0.45 * flatness + 0.25 * edge_score + 0.20 * context_score + 0.10 * band_score,
+            6,
+        )
+        if confidence < 0.7 or edge_score < 0.22 or context_score < 0.2:
+            continue
+        candidates.append(
+            SeparatorCandidate(
+                position=(start + end) // 2,
+                confidence=confidence,
+                score=confidence,
+                run_top=start,
+                run_bottom=end,
+                reason=(
+                    f"{COLOR_AGNOSTIC_DETECTOR_VERSION};low_variance_texture;"
+                    f"edge_context={edge_score:.3f};continuity={context_score:.3f}"
+                ),
+            )
+        )
+    return tuple(sorted(candidates, key=lambda item: (-item.confidence, item.position)))
+
+
+def color_agnostic_row_classifications(
+    img: Image.Image,
+) -> list[tuple[str, float, str]]:
+    """Classify rows for source-space coverage reconciliation."""
+    _, height = img.size
+    classifications = [
+        (
+            "canonical_panel",
+            0.9,
+            f"coverage.content.{COLOR_AGNOSTIC_DETECTOR_VERSION}",
+        )
+        for _ in range(height)
+    ]
+    for candidate in color_agnostic_separator_candidates(img):
+        for row in range(candidate.run_top, candidate.run_bottom):
+            classifications[row] = (
+                "verified_gutter",
+                candidate.confidence,
+                f"coverage.gutter.{candidate.reason}",
+            )
+    return classifications
+
+
+def color_agnostic_row_scores(img: Image.Image) -> list[float]:
+    scores = [0.0] * img.size[1]
+    for candidate in color_agnostic_separator_candidates(img):
+        for row in range(candidate.run_top, candidate.run_bottom):
+            scores[row] = max(scores[row], candidate.confidence)
+    return scores
 
 
 def _row_stats(img: Image.Image) -> tuple[list[float], list[float]]:
@@ -223,9 +386,10 @@ def plan_cuts(img: Image.Image) -> tuple[list[tuple[int, int]], list[bool]]:
     if ratio < settings.strip_slice_min_ratio:
         return [(0, height)], [False]
 
-    means, variances = _row_stats(img)
-    top, bottom = _trim_uniform_edges(means, variances, height)
-    usable = bottom - top
+    # Keep the complete source extent. Older versions trimmed extreme end
+    # bands, which could silently drop source pixels from a persisted family.
+    top, bottom = 0, height
+    usable = height
 
     # Target height for one 9:16 frame at this width.
     frame_height = width / TARGET_RATIO
@@ -234,7 +398,7 @@ def plan_cuts(img: Image.Image) -> tuple[list[tuple[int, int]], list[bool]]:
     if parts <= 1:
         return [(top, bottom)], [False]
 
-    scores = [_gutter_score(means[i], variances[i]) for i in range(height)]
+    scores = color_agnostic_row_scores(img)
     segment = usable / parts
     radius = int(segment * _SEARCH_FRACTION)
     min_gap = int(segment * _MIN_SEGMENT_FRACTION)

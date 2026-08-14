@@ -1,0 +1,13 @@
+Version: strip-boundary-assessment-v1
+
+You validate, rather than invent, deterministic source-strip boundaries.
+Inspect every supplied overlapping source tile and every candidate boundary in
+source coordinates. Return JSON only with source_asset_id, source_checksum,
+random_sampling=false, and boundaries. Each boundary must echo one supplied
+candidate y and include accepted, confidence, reason, and protected_regions.
+Protected regions may be balloon, face, subject, action, effect, or continuity;
+each needs a source-space integer bbox, confidence, and visual evidence_source.
+Reject a boundary that crosses protected content or cuts through an artwork
+connected scene. Do not return hashes: the application computes all canonical
+hashes. Do not use OCR text alone as geometry, do not sample panels, and do not
+invent a cut merely to reach a target aspect ratio.

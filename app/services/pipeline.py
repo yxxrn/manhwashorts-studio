@@ -431,6 +431,7 @@ def _build_source_inputs(
                 payload=payload,
                 decoded_width=decoded_width,
                 decoded_height=decoded_height,
+                source_family=str(asset.source_family or ""),
             )
         )
         asset_by_id[asset.id] = asset

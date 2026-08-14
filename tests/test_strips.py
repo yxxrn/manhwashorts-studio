@@ -124,6 +124,66 @@ def test_cuts_prefer_a_gutter():
             assert min(abs(piece.top - g) for g in gutters) <= 40
 
 
+def test_color_agnostic_detector_finds_a_mid_colour_separator():
+    """A separator must not depend on white/black brightness extremes."""
+    from app.services import strips
+
+    image = Image.new("RGB", (400, 2200), (72, 91, 113))
+    draw = ImageDraw.Draw(image)
+    for y in range(0, 2200, 36):
+        draw.rectangle((0, y, 399, y + 15), fill=(118, 64, 96))
+    for top in (710, 1450):
+        draw.rectangle((0, top, 399, top + 42), fill=(132, 78, 171))
+
+    candidates = strips.color_agnostic_separator_candidates(image)
+
+    assert candidates
+    assert any(abs(candidate.position - top - 21) <= 35 for top in (710, 1450) for candidate in candidates)
+    assert all(candidate.confidence >= 0.7 for candidate in candidates)
+
+
+def test_color_agnostic_detector_does_not_call_a_flat_sky_gutter():
+    from app.services import strips
+
+    image = Image.new("RGB", (400, 2200), (132, 178, 219))
+
+    candidates = strips.color_agnostic_separator_candidates(image)
+
+    assert candidates == ()
+
+
+@pytest.mark.parametrize("band_colour", [(0, 0, 0), (255, 255, 255)])
+def test_color_agnostic_detector_keeps_black_and_white_support(band_colour):
+    from app.services import strips
+
+    image = Image.new("RGB", (400, 1200), (82, 95, 116))
+    draw = ImageDraw.Draw(image)
+    for y in range(0, 1200, 36):
+        draw.rectangle((0, y, 399, y + 15), fill=(132, 64, 94))
+    draw.rectangle((0, 560, 399, 600), fill=band_colour)
+
+    candidates = strips.color_agnostic_separator_candidates(image)
+
+    assert any(abs(candidate.position - 580) <= 25 for candidate in candidates)
+
+
+def test_color_agnostic_detector_accepts_a_mildly_textured_mid_colour_gutter():
+    from app.services import strips
+
+    image = Image.new("RGB", (400, 1200), (82, 95, 116))
+    draw = ImageDraw.Draw(image)
+    for y in range(0, 1200, 36):
+        draw.rectangle((0, y, 399, y + 15), fill=(132, 64, 94))
+    for y in range(560, 601):
+        for x in range(400):
+            delta = (x + y) % 3 - 1
+            image.putpixel((x, y), (120 + delta, 136 + delta, 150 + delta))
+
+    candidates = strips.color_agnostic_separator_candidates(image)
+
+    assert any(abs(candidate.position - 580) <= 25 for candidate in candidates)
+
+
 def test_slicing_keeps_far_more_of_the_page_than_one_crop():
     """The whole point: retention should improve substantially."""
     from app.services import strips

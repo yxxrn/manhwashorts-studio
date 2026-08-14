@@ -28,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="data/cloud-multimodal-jobs",
         help="Ignored JSON resume state directory.",
     )
+    parser.add_argument(
+        "--segmentation-review-dir",
+        default="data/segmentation-review",
+        help="Ignored JSON/thumbnail directory for ambiguous strip boundaries.",
+    )
     parser.add_argument("--model", default=None, help="Require the configured model ID.")
     parser.add_argument("--actor-id", default="", help="Optional non-secret audit actor ID.")
     parser.add_argument("--max-attempts", type=int, default=2)
@@ -58,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
                     runner=runner,
                     store=cloud_multimodal.JsonJobStore(state_dir),
                     max_concurrent=options.max_concurrent,
+                    review_root=Path(options.segmentation_review_dir),
                 )
                 record = service.run_project(db, project_id, actor_id=options.actor_id)
                 jobs[project_id] = record.as_dict()

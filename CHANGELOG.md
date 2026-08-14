@@ -2,6 +2,17 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added production-grade color-agnostic long-strip reconciliation on
+  `codex/color-agnostic-strip-segmentation`. Deterministic structure/context
+  gutters preserve full source coverage, bounded pixel analysis, and exact
+  source-family lineage; ambiguous artwork becomes an auditable
+  `NEEDS_REVIEW` blocker. Cloud boundary validation now receives overlapping
+  tiles and candidate cuts through `strip-boundary-assessment-v1`, while local
+  code owns hashes, protected-region checks, review artifacts, and batch resume
+  state. No provider call, media, voice/TTS/audio, or publication was run.
+  Verification: `13` cloud-focused passes, `52` strip/segmentation passes, and
+  `909` selected non-slow tests (`908` passed, `1` existing skip).
+
 - Added the cloud multimodal mass-production MVP boundary on
   `codex/cloud-multimodal-mass-production`. One verified BYOK
   OpenAI-compatible model identity is pinned across separate visual-evidence,

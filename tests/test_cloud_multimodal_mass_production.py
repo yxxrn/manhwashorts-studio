@@ -117,6 +117,7 @@ class _FakeProvider:
 
     def __post_init__(self):
         self.calls: list[tuple[str, str, str]] = []
+        self.boundary_payloads: list[dict] = []
 
     def observe(self, request):
         self.calls.append(("visual", request.visual_instruction_version, request.visual_instruction_sha256))
@@ -132,6 +133,23 @@ class _FakeProvider:
 
     def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
         self.calls.append((stage, prompt_version, prompt_sha256))
+        if stage == "strip_segmentation":
+            self.boundary_payloads.append(dict(payload))
+            return {
+                "source_asset_id": payload["source_asset_id"],
+                "source_checksum": payload["source_checksum"],
+                "random_sampling": False,
+                "boundaries": [
+                    {
+                        "y": candidate["position"],
+                        "accepted": True,
+                        "confidence": 0.96,
+                        "reason": "the overlapping tiles support this boundary",
+                        "protected_regions": [],
+                    }
+                    for candidate in payload["candidate_boundaries"]
+                ],
+            }
         panel_ids = list(payload["panel_ids"])
         if stage == "story_map":
             return {
@@ -167,6 +185,70 @@ class _FakeProvider:
                 ],
             }
         return _narrative_output("cloud", panel_ids)
+
+
+def test_stage_runner_sends_strip_boundary_tiles_through_pinned_prompt():
+    module = _module()
+    segmentation = importlib.import_module("app.services.strip_segmentation")
+    provider = _FakeProvider()
+    runner = module.CloudStageRunner(provider=provider, model_identity=_identity(module))
+    request = segmentation.BoundaryRequest(
+        source_asset_id="strip-a",
+        source_checksum="a" * 64,
+        width=400,
+        height=2200,
+        candidates=(
+            segmentation.BoundaryCandidate(
+                position=1100,
+                confidence=0.8,
+                score=0.8,
+                run_top=1080,
+                run_bottom=1120,
+                reason="structural separator",
+            ),
+        ),
+        tiles=(
+            {"tile_index": 0, "y0": 0, "y1": 1200, "payload_b64": "cG5n"},
+            {"tile_index": 1, "y0": 1000, "y1": 2200, "payload_b64": "cG5n"},
+        ),
+    )
+
+    result = runner.assess_strip_boundaries(request)
+
+    assert result["random_sampling"] is False
+    assert provider.calls[-1][0] == "strip_segmentation"
+    assert provider.calls[-1][1] == "strip-boundary-assessment-v1"
+    assert provider.calls[-1][2] == "b01302bc92536a9ded8581687b094ef88e5688fb184fd750b2496a10ef93d073"
+    assert provider.boundary_payloads[-1]["overlapping_source_tiles"]
+    assert provider.boundary_payloads[-1]["candidate_boundaries"]
+
+
+def test_prepare_project_panels_preserves_segmentation_review_code(monkeypatch):
+    module = _module()
+    segmentation = importlib.import_module("app.services.segmentation")
+    pipeline = importlib.import_module("app.services.pipeline")
+    payload = b"not decoded because lineage is rejected first"
+    input_row = segmentation.SourceAssetInput(
+        source_asset_id="partial-source",
+        original_checksum="f" * 64,
+        original_width=100,
+        original_height=100,
+        source_bounds=(0, 0, 100, 80),
+        strip_order=0,
+        region_order=0,
+        payload=payload,
+        decoded_width=100,
+        decoded_height=80,
+    )
+    monkeypatch.setattr(pipeline, "project_assets", lambda _db, _project_id: ())
+    monkeypatch.setattr(pipeline, "image_assets", lambda assets: list(assets))
+    monkeypatch.setattr(pipeline, "_build_source_inputs", lambda _assets: ((input_row,), {}))
+
+    with pytest.raises(module.CloudStageError) as caught:
+        module.prepare_project_panels(object(), "project-a")
+
+    assert caught.value.code == "segmentation.coverage_incomplete"
+    assert caught.value.reviewable is True
 
 
 def test_stage_runner_reconciles_all_panels_with_local_hashes_and_pinned_identity():

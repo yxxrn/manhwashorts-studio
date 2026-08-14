@@ -2,6 +2,61 @@
 
 Updated: 2026-08-14
 
+## Production long-strip segmentation - 2026-08-14
+
+- Implemented the color-agnostic source-strip reconciliation boundary on
+  `codex/color-agnostic-strip-segmentation` from rollback parent
+  `c5a170a551f0ff22cecc23653563bb3c649dcfcd`. The new
+  `app.services.strip_segmentation` contract preserves ordered source
+  lineage, integer bounds, original checksums, complete top-to-bottom coverage,
+  deterministic candidate ranking, bounded pixel analysis, and local canonical
+  analysis hashes. `strips.slice_strip` keeps the complete source extent and
+  now uses `color-agnostic-gutter-v2` structure/context candidates; the legacy
+  ingest API and normal portrait behavior remain compatible.
+- Detector candidates use within-row structure/texture, row-to-row colour
+  continuity, sustained bands, and edge/context contrast rather than a
+  white/black brightness assumption. Flat sky/wall-like artwork without strong
+  separator context is not accepted as a gutter. High-confidence deterministic
+  gutters may reconcile without a provider; artwork-connected or otherwise
+  ambiguous strips remain one auditable span with
+  `segmentation.ambiguous_boundary` and `NEEDS_REVIEW`. A provider-protected
+  boundary is rejected as `segmentation.protected_boundary`; malformed source,
+  checksum, overlap, gap, coordinate, hash, OCR-only geometry, and pixel-budget
+  inputs fail closed without dropping or duplicating pixels.
+- `CloudStageRunner.assess_strip_boundaries` uses the pinned
+  `strip-boundary-assessment-v1` prompt (canonical LF SHA-256
+  `b01302bc92536a9ded8581687b094ef88e5688fb184fd750b2496a10ef93d073`) and
+  sends every candidate plus overlapping source tiles. Provider responses are
+  untrusted: they cannot supply hashes, must echo source lineage, use supplied
+  coordinates, set `random_sampling=false`, and provide validated protected
+  regions. Local code owns all hashes and rejection decisions. A missing BYOK
+  model still permits only the local high-confidence path; the cloud batch CLI
+  itself stops at `cloud.credential_missing` rather than falling back.
+- `prepare_project_panels` reconciles source families before constructing
+  visual inputs. When ingestion already produced multiple pieces, the pieces
+  are rebuilt transiently from their exact bounds for one boundary assessment;
+  the reconstructed bytes are never persisted or substituted for source
+  assets. Ambiguous reports write sanitized JSON plus a thumbnail under the
+  ignored `data/segmentation-review/` directory. `CloudBatchService` records
+  segmentation state before visual/story/narration stages and preserves
+  isolated `NEEDS_REVIEW`/`FAILED` resume behavior. The operator command is:
+  `python scripts/run_cloud_multimodal_batch.py --project-id PROJECT_ID
+  --segmentation-review-dir data/segmentation-review --state-dir
+  data/cloud-multimodal-jobs --model MODEL_ID`.
+- TDD evidence: collection-clean initial boundary RED was `9 failed, 0
+  collection errors` for the absent detector/reconciliation boundary. Final
+  focused cloud integration is `13 passed`; strip/segmentation/coverage
+  regressions are `52 passed`; the full dependency-complete non-slow gate is
+  `909 selected, 908 passed, 1 existing skip, 0 failed` (15 slow tests
+  deselected). Ruff, compileall, diff-check, and no-churn comparisons are
+  green. The run used only an external disposable dependency environment and
+  Windows compatibility shim; neither is part of the repository.
+- No real cloud request, source-media render, voice/TTS/audio, UI, database
+  migration, rights bypass, or publication occurred. Review artifacts remain
+  ignored; `publish_allowed` and the existing approval/voice gates are
+  unchanged. Next gate: configure a verified BYOK model for a real chapter;
+  unresolved segmentation must remain `NEEDS_REVIEW` before visual evidence.
+
 ## Cloud multimodal mass-production MVP - 2026-08-14
 
 - Implemented on branch `codex/cloud-multimodal-mass-production` from clean
