@@ -804,12 +804,16 @@ class OperatorCLI:
     ) -> None:
         import getpass
 
+        from app.services import operator_ui
+
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.secret_fn = secret_fn or getpass.getpass
         self.db_factory = db_factory or _session_scope()
         self.state_dir = Path(state_dir)
         self.review_dir = Path(review_dir)
+        self._operator_ui = operator_ui
+        self._color = operator_ui.color_enabled()
 
     def _print(self, message: str = "") -> None:
         self.output_fn(str(message))
@@ -848,7 +852,21 @@ class OperatorCLI:
     def run(self) -> int:
         self._print(f"ManhwaShorts operator console ({CLI_VERSION})")
         while True:
-            self._print("\n1) Setup/change cloud provider\n2) Test connection\n3) Fetch/select model\n4) Import/run one chapter folder\n5) Run batch parent folder\n6) Resume failed/pending jobs\n7) View status/review blockers\n0) Exit / Keluar")
+            jobs = list_job_states(self.state_dir)
+            job_summary = "none" if not jobs else ", ".join(
+                f"{row['job_id']}={row['state']}" for row in jobs[:2]
+            )
+            if len(jobs) > 2:
+                job_summary += f" (+{len(jobs) - 2})"
+            self._print(
+                self._operator_ui.render_menu(
+                    provider="use menu 1 to configure",
+                    model="use menu 3 to select",
+                    project="use menu 4/5 to import",
+                    job=job_summary,
+                    color=self._color,
+                )
+            )
             choice = self._ask("Choose: ", "0")
             if choice == "0":
                 self._print("Exit / Keluar")

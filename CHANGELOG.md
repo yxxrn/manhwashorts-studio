@@ -8,6 +8,11 @@ Notable changes per release. Dates are ISO 8601.
   unchanged. Context TDD is green (`2/2`); live provider and silent-preview
   acceptance remain pending secure interactive credential entry.
 
+- Added a readable operator terminal header/status summary with ANSI badges for
+  real TTYs, plain-text/`NO_COLOR` fallback, narrow-width truncation, and
+  display redaction. UI TDD is `3/3`; provider and silent-preview acceptance
+  remain pending.
+
 - Fixed operator provider setup after a real user pasted
   `http://host:port/v1` into the ambiguous provider-name prompt. Setup now uses
   explicit Indonesian-friendly profile/endpoint/key prompts, maps

@@ -25,6 +25,16 @@ Updated: 2026-08-14
   entry plus the real provider call, after which the isolated silent render
   must pass before any main merge.
 
+## Final silent acceptance - operator presentation checkpoint - 2026-08-14
+
+- Added a deterministic terminal presentation helper with semantic status
+  badges, aligned summary fields, narrow-terminal truncation, ANSI opt-in only
+  for TTYs, and automatic `NO_COLOR` fallback. Key-shaped values and URL query
+  values are redacted before display.
+- UI TDD RED was `3` collection-clean intended failures for the absent module;
+  GREEN is `3/3`. The combined operator/launcher/UI matrix is green. This is a
+  usability checkpoint only; it does not claim provider or preview acceptance.
+
 ## Operator provider setup UX correction - 2026-08-14
 
 - Fixed the real-run setup failure where pasting an endpoint at the old

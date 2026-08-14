@@ -39,6 +39,11 @@ credentials are entered interactively.
 
 ## Menu
 
+The console provides a compact status header and aligned menu. ANSI badges are
+used only on an interactive TTY; redirected output and terminals with
+`NO_COLOR` receive the same readable plain-text layout. Status is never
+conveyed by color alone.
+
 The console provides:
 
 1. Setup/change cloud provider
