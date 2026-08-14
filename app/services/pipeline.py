@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import resource
 import secrets
 import time
 from collections.abc import Mapping, Sequence
@@ -25,6 +24,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+try:  # resource is POSIX-only; Windows still runs the pipeline without RSS data.
+    import resource
+except ImportError:  # pragma: no cover - exercised by native Windows
+    class _ResourceCompat:
+        RUSAGE_SELF = 0
+
+        @staticmethod
+        def getrusage(_kind: int) -> SimpleNamespace:
+            return SimpleNamespace(ru_maxrss=0)
+
+    resource = _ResourceCompat()
 
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select

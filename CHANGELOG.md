@@ -2,6 +2,17 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added the Windows-first interactive operator console on
+  `codex/interactive-production-cli`. `run_operator.cmd` discovers the local
+  virtual environment and opens a persistent terminal menu for encrypted BYOK
+  setup, bounded model discovery, explicit capability consent, deterministic
+  chapter/batch import, cloud job resume, and safe review status. It reuses the
+  existing ingest, segmentation, cloud batch, and job-state services; keys,
+  provider payloads, source images, media, and runtime DB data are not logged or
+  committed. Verification: `26` operator-focused passes, `98` related passes,
+  and `935` non-slow selections (`934` passed, `1` existing skip). No provider,
+  voice/TTS/audio, publication, or final render call was made.
+
 - Added production-grade color-agnostic long-strip reconciliation on
   `codex/color-agnostic-strip-segmentation`. Deterministic structure/context
   gutters preserve full source coverage, bounded pixel analysis, and exact

@@ -2,6 +2,47 @@
 
 Updated: 2026-08-14
 
+## Interactive local operator console - 2026-08-14
+
+- Added the Windows-first `run_operator.cmd` launcher and the thin
+  `scripts/run_operator_cli.py` entry point on
+  `codex/interactive-production-cli`, from rollback parent
+  `e15708525daa37aaa1f66e3072a4c11c1668144f`. The menu covers encrypted BYOK
+  setup/change, connection testing, deterministic model discovery/selection,
+  one-chapter import/run, deterministic batch import/run, resume, safe status,
+  and exit. See `docs/operator-cli.md` for the exact double-click and terminal
+  commands.
+- `app.services.operator_cli` reuses the existing credential, ingest,
+  segmentation, `CloudBatchService`, and `JsonJobStore` boundaries. It accepts
+  only validated plain HTTP(S) endpoints, uses hidden `getpass` input, bounds
+  model retries/timeouts, sorts and validates model IDs, redacts keys/provider
+  bodies from operator errors, and persists no plaintext credential. A model is
+  considered vision-capable only after the operator explicitly consents to a
+  small structured capability request through the existing cloud adapter.
+- Chapter folders are validated as supported images in deterministic filename
+  order, imported through existing ingest/storage contracts with manifest-based
+  idempotency, and run as isolated resumable jobs. No source image is printed;
+  only safe filenames, job IDs, states, review counts, and stable blockers are
+  shown. `READY_TO_RENDER` remains review-only: authoritative voice timing,
+  approval, rights, and publication gates still block final voiced output.
+- A small compatibility guard in `app.services.pipeline` allows the existing
+  RSS telemetry call to run on native Windows where POSIX `resource` is absent;
+  it reports zero RSS rather than changing pipeline behavior on POSIX.
+- TDD evidence: operator RED was `20 failed, 0 collection errors` before the
+  new module/launcher existed. Operator focused GREEN is `26 passed`; directly
+  related BYOK/cloud/strip/segmentation/vision tests are `98 passed`. The
+  dependency-complete Windows non-slow gate is `935 selected, 934 passed, 1
+  existing skip, 0 failed` (the first checkout run exposed only the existing
+  CRLF-vs-LF prompt snapshot environment issue; the final run used a disposable
+  external LF normalization shim and restored the tracked bytes). Ruff,
+  compileall, diff-check, and no-churn checks are required at release and no
+  real provider request or key was used here.
+- Disposable verification material is outside the repository and is not part
+  of the release. Next operator action: double-click the launcher, enter the
+  user's endpoint and hidden key, select a verified model, and confirm a
+  capability probe only if billing is acceptable. Voice/TTS/audio, media,
+  publication, and rights work remain deferred.
+
 ## Production long-strip segmentation - 2026-08-14
 
 - Implemented the color-agnostic source-strip reconciliation boundary on
