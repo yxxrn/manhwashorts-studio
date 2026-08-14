@@ -594,6 +594,67 @@ def test_operator_run_projects_propagates_ctrl_c_without_converting_it_to_a_fake
         )
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("sqlalchemy") is None,
+    reason="requires the repository dependency-complete test environment",
+)
+def test_local_operator_context_bootstraps_once_and_records_safe_origin(db):
+    cli = _cli_module()
+    from sqlalchemy import select
+
+    from app.models import AuditLog, User, Workspace
+
+    user, workspace = cli.ensure_local_operator_context(db)
+    assert user.email == "local-operator@local.invalid"
+    assert user.name == "Local Operator"
+    assert workspace.name == "My Workspace"
+    assert workspace.owner_id == user.id
+
+    again_user, again_workspace = cli.ensure_local_operator_context(db)
+    assert again_user.id == user.id
+    assert again_workspace.id == workspace.id
+    assert len(db.scalars(select(User)).all()) == 1
+    assert len(db.scalars(select(Workspace)).all()) == 1
+    audits = db.scalars(select(AuditLog)).all()
+    assert len(audits) == 1
+    assert audits[0].action == "operator.local_context_bootstrap"
+    assert audits[0].detail["origin"] == "local_operator_cli"
+    assert "password" not in str(audits[0].detail).casefold()
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("sqlalchemy") is None,
+    reason="requires the repository dependency-complete test environment",
+)
+def test_local_operator_context_preserves_existing_user_and_only_adds_workspace(db):
+    cli = _cli_module()
+    from sqlalchemy import select
+
+    from app.models import AuditLog, User, Workspace
+
+    existing = User(
+        email="existing-owner@example.test",
+        name="Existing Owner",
+        password_hash="existing-hash",
+        is_active=True,
+    )
+    db.add(existing)
+    db.flush()
+
+    user, workspace = cli.ensure_local_operator_context(db)
+
+    assert user.id == existing.id
+    assert user.email == "existing-owner@example.test"
+    assert user.name == "Existing Owner"
+    assert workspace.owner_id == existing.id
+    assert len(db.scalars(select(User)).all()) == 1
+    audits = db.scalars(select(AuditLog)).all()
+    assert len(audits) == 1
+    assert audits[0].detail["user_created"] is False
+    assert audits[0].detail["workspace_created"] is True
+    assert db.scalars(select(Workspace).where(Workspace.owner_id == existing.id)).one().id == workspace.id
+
+
 def test_launcher_exists_and_selects_project_venv_without_shell_arguments():
     root = Path(__file__).parents[1]
     launcher = root / "run_operator.cmd"

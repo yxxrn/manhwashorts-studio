@@ -2,6 +2,12 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added the local operator context bootstrap required for one-click offline
+  startup: an empty local DB now receives one deterministic audited operator and
+  workspace without a web-login prerequisite, while existing users remain
+  unchanged. Context TDD is green (`2/2`); live provider and silent-preview
+  acceptance remain pending secure interactive credential entry.
+
 - Fixed operator provider setup after a real user pasted
   `http://host:port/v1` into the ambiguous provider-name prompt. Setup now uses
   explicit Indonesian-friendly profile/endpoint/key prompts, maps

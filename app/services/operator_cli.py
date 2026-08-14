@@ -739,16 +739,52 @@ def run_projects(
 
 
 def resolve_operator_context(db: Any) -> tuple[User, Workspace]:
+    return ensure_local_operator_context(db)
+
+
+_LOCAL_OPERATOR_EMAIL = "local-operator@local.invalid"
+_LOCAL_OPERATOR_NAME = "Local Operator"
+
+
+def ensure_local_operator_context(db: Any) -> tuple[User, Workspace]:
+    """Return an idempotent local operator/workspace without a web-login gate."""
+
     from sqlalchemy import select
 
     _Project, _SourceAsset, User, Workspace = _models()
+    user_created = False
     user = db.scalars(select(User).where(User.is_active.is_(True)).order_by(User.created_at)).first()
     if user is None:
-        raise OperatorCliError("operator.context_missing", "create or log into a local user through the app first")
+        user = db.scalars(select(User).where(User.email == _LOCAL_OPERATOR_EMAIL)).first()
+        user_created = user is None
+        if user is None:
+            user = User(
+                email=_LOCAL_OPERATOR_EMAIL,
+                name=_LOCAL_OPERATOR_NAME,
+                password_hash="",
+                is_active=True,
+            )
+            db.add(user)
+            db.flush()
+        elif not user.is_active:
+            user.is_active = True
     workspace = db.scalars(select(Workspace).where(Workspace.owner_id == user.id).order_by(Workspace.created_at)).first()
+    workspace_created = workspace is None
     if workspace is None:
         workspace = Workspace(owner_id=user.id, name="My Workspace")
         db.add(workspace)
+        db.flush()
+    if user_created or workspace_created:
+        _pipeline().audit(
+            db,
+            "operator.local_context_bootstrap",
+            "workspace",
+            workspace.id,
+            user.id,
+            origin="local_operator_cli",
+            user_created=user_created,
+            workspace_created=workspace_created,
+        )
         db.flush()
     return user, workspace
 

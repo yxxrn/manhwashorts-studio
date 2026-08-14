@@ -2,6 +2,29 @@
 
 Updated: 2026-08-14
 
+## Final silent production acceptance - context bootstrap checkpoint - 2026-08-14
+
+- The acceptance design/plan is committed at `9653929` on
+  `codex/final-production-silent-acceptance`. The working tree also preserves
+  the user-provided, untracked `final_test/` folder.
+- `ensure_local_operator_context(db)` now creates one deterministic local
+  operator (`local-operator@local.invalid`) and `My Workspace` when an empty
+  local DB has no active user, records the non-secret audit origin
+  `local_operator_cli`, and is idempotent. Existing active users are preserved;
+  provider setup can continue without a web-login prerequisite.
+- TDD RED was collection-clean: two intended failures because the helper was
+  absent. GREEN is `2/2` for fresh context, rerun idempotency, existing-user
+  preservation, workspace creation, and safe audit details. The broader
+  operator matrix is currently environment-blocked by the repository's known
+  Windows SQLite slash guard when the compatibility shim is not loaded; the
+  context-focused command is green.
+- The real provider/model/capability run and `final_test` silent MP4 have not
+  started. The local runtime DB has zero provider credentials. A sanitized
+  unauthenticated model-endpoint check returned HTTP 401; no response body or
+  credential was used. The remaining gate is secure interactive credential
+  entry plus the real provider call, after which the isolated silent render
+  must pass before any main merge.
+
 ## Operator provider setup UX correction - 2026-08-14
 
 - Fixed the real-run setup failure where pasting an endpoint at the old
