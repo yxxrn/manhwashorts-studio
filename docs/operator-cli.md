@@ -7,8 +7,12 @@ review-only cloud multimodal pipeline without using a web UI.
 
 Double-click `run_operator.cmd` at the repository root. The window stays open
 on setup or runtime failure and prints a short next step. The launcher prefers
-`.venv\Scripts\python.exe`; otherwise it validates `py -3.11`, `py -3`, then
-`python` in that order. No user-specific Python path, global pip, or PATH
+`.venv\Scripts\python.exe`; otherwise the PowerShell boundary in
+`scripts/operator_launcher.ps1` validates `py -3.11`, `py -3`, then `python`
+in that order. The executable and selector arguments are kept as separate
+PowerShell arrays and invoked with `&`, so a broken `py.exe`, `py.ini`, Store
+stub, or path containing spaces falls through safely instead of being joined
+into a malformed command. No user-specific Python path, global pip, or PATH
 mutation is used.
 
 The equivalent terminal command is:

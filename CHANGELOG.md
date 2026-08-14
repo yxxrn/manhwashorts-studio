@@ -2,6 +2,18 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Hardened the one-click Windows operator launcher after a real user run
+  exposed a malformed `py" "<bootstrap-script>` process command. `run_operator.cmd`
+  now delegates through `scripts/operator_launcher.ps1`, which keeps the
+  executable and optional `-3.11`/`-3` selector separate, validates each Python
+  candidate, rejects broken Store/`py.ini` launchers, and invokes the bootstrap
+  with PowerShell's structured call operator. The regression suite exercises
+  the actual `.cmd` from the repository and a path containing spaces. RED was
+  `4` body failures; GREEN was `7` launcher tests and `46` operator/bootstrap
+  tests; the final non-slow gate was `955` selected (`954` passed, `1` existing
+  skip, `0` failed). No provider, key, voice, audio, or publication call was
+  made.
+
 - Fixed the one-click Windows operator startup path. `run_operator.cmd` now
   validates `.venv`/Python 3.11+ candidates and invokes a stdlib-only bootstrap
   that creates or repairs `.venv`, installs only `requirements.txt`, verifies

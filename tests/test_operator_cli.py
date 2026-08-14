@@ -404,13 +404,17 @@ def test_operator_run_projects_propagates_ctrl_c_without_converting_it_to_a_fake
 
 
 def test_launcher_exists_and_selects_project_venv_without_shell_arguments():
-    launcher = Path(__file__).parents[1] / "run_operator.cmd"
+    root = Path(__file__).parents[1]
+    launcher = root / "run_operator.cmd"
+    powershell_launcher = root / "scripts" / "operator_launcher.ps1"
 
     assert launcher.is_file()
-    text = launcher.read_text(encoding="utf-8")
-    assert ".venv\\Scripts\\python.exe" in text
-    assert "scripts\\bootstrap_operator_cli.py" in text
-    assert "%*" not in text
+    launcher_text = launcher.read_text(encoding="utf-8")
+    powershell_text = powershell_launcher.read_text(encoding="utf-8")
+    assert '"%~dp0scripts\\operator_launcher.ps1"' in launcher_text
+    assert ".venv\\Scripts\\python.exe" in powershell_text
+    assert "scripts\\bootstrap_operator_cli.py" in powershell_text
+    assert "%*" not in launcher_text
 
 
 @pytest.mark.skipif(

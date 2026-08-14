@@ -53,16 +53,20 @@ def test_bootstrap_module_and_launcher_contract_are_present():
     assert callable(bootstrap.ensure_runtime)
     assert callable(bootstrap.find_supported_python)
     assert callable(bootstrap.dependency_fingerprint)
-    launcher = Path(__file__).parents[1] / "run_operator.cmd"
-    text = launcher.read_text(encoding="utf-8").lower()
-    assert "scripts\\bootstrap_operator_cli.py" in text
-    assert ".venv\\scripts\\python.exe" in text
-    assert "py -3.11" in text
-    assert "py -3" in text
-    assert "python" in text
-    assert "requirements-dev.txt" not in text
-    assert "invoke-expression" not in text
-    assert "%*" not in text
+    root = Path(__file__).parents[1]
+    launcher = root / "run_operator.cmd"
+    powershell_launcher = root / "scripts" / "operator_launcher.ps1"
+    launcher_text = launcher.read_text(encoding="utf-8").lower()
+    powershell_text = powershell_launcher.read_text(encoding="utf-8").lower()
+    assert '"%~dp0scripts\\operator_launcher.ps1"' in launcher_text
+    assert "scripts\\bootstrap_operator_cli.py" in powershell_text
+    assert ".venv\\scripts\\python.exe" in powershell_text
+    assert "-3.11" in powershell_text
+    assert "-3" in powershell_text
+    assert "python" in powershell_text
+    assert "requirements-dev.txt" not in launcher_text + powershell_text
+    assert "invoke-expression" not in launcher_text + powershell_text
+    assert "%*" not in launcher_text
 
 
 def test_interpreter_candidates_are_ordered_and_reject_unsupported_python():

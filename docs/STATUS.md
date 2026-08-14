@@ -35,21 +35,32 @@ Updated: 2026-08-14
   only after health passes, and launches the existing entrypoint with a fixed
   argument list. Offline/proxy/SSL/package/venv errors are stable and retryable;
   no raw pip output or secret is printed.
-- TDD evidence: bootstrap RED was `10 failed, 0 collection errors` with the
-  missing module; bootstrap focused GREEN is `13 passed`, operator focused is
-  `26 passed`, and the combined focused matrix is `39 passed`. Directly related
-  BYOK/cloud/strip/segmentation/vision tests are `98 passed`. The
-  dependency-complete Windows non-slow gate is `945 selected, 944 passed, 1
-  existing skip, 0 failed` (the first checkout run exposed only the existing
-  CRLF-vs-LF prompt snapshot environment issue; the final run used a disposable
-  external LF normalization shim and restored the tracked bytes). Ruff,
-  compileall, diff-check, and no-churn checks are required at release and no
-  real provider request or key was used here.
+- The second real-run failure was a Windows command-construction defect: the
+  old batch variables could produce a Python-installation path concatenated
+  with `py" "<bootstrap-script>`. `run_operator.cmd` is now a thin,
+  fixed-argument PowerShell delegate. `scripts/operator_launcher.ps1` keeps
+  each executable and optional selector as separate values, validates every
+  candidate with a tiny version command, rejects Store/App Execution Alias
+  stubs, and falls through from broken `py -3.11`/`py -3` to `python` without
+  invoking a command string. This correction starts from clean rollback point
+  `b150982bedc75b9b99b527060d4da524dec4e9bd`.
+- TDD evidence for the correction: collection-clean RED was `4 failed, 0
+  collection errors`; launcher GREEN is `7 passed`, and the dependency-complete
+  operator/bootstrap/CLI matrix is `46 passed`. The final Windows non-slow gate
+  is `955/970 collected`, `15` slow tests deselected, `954 passed`, `1 existing
+  skip`, `0 failed`. The run used a disposable external SQLite path shim and
+  temporary LF normalization for the existing prompt snapshot; both were
+  removed/restored after verification. Ruff, compileall, diff-check, and
+  no-churn checks are green. No provider request, API key, voice, audio, or
+  publication call was made.
 - A real disposable smoke created a temporary venv, passed the import gate,
   wrote the fingerprint, and launched a quoted fake entrypoint without network
-  or provider calls. Disposable verification material is outside the repository
-  and is not part of the release. Next operator action: double-click the
-  launcher; first run may install runtime packages, later starts are fast. Then
+  or provider calls. The current launcher smoke also runs the actual `.cmd`
+  from the repository and from a disposable path containing spaces, reaching a
+  mocked bootstrap without network. Disposable verification material is
+  outside the repository and is not part of the release. Next operator action:
+  double-click the launcher; first run may install runtime packages, later
+  starts are fast. Then
   enter the user's endpoint and hidden key, select a verified model, and confirm
   a capability probe only if billing is acceptable. Voice/TTS/audio, media,
   publication, and rights work remain deferred.
