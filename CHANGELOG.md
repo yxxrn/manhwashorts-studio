@@ -2,6 +2,20 @@
 
 Notable changes per release. Dates are ISO 8601.
 
+- Added the versioned review-only source policy
+  `review_silent_source_upscale_v1` with a configurable/default `1.50x`
+  Lanczos cap, deterministic source/panel checksum manifests, native-first
+  candidate ordering, and explicit `LOW_SOURCE_RESOLUTION` disclosure above
+  the cap. The policy is restricted to silent review and never relaxes
+  balloon/protected/lineage gates. Focused verification is `14 passed`.
+  The related matrix is `93 collected, 92 passed, 1 existing fixture skip`,
+  and the full non-slow gate is `1005 collected, 1004 passed, 1 existing
+  fixture skip` using only the disposable Windows SQLite test shim.
+  The real `final_test` acceptance remains correctly blocked before rendering:
+  a fresh 30-panel opening re-observation still yielded no feasible hook ROI
+  (`0/40`) and one setup ROI (`1/38`), so no MP4 or false readiness claim was
+  produced.
+
 - Hardened the real-input acceptance path for long chapter folders. Distinct
   double-underscore source pages now retain distinct source-family lineage,
   and operator-imported source bounds are serialized as true `xywh` dimensions

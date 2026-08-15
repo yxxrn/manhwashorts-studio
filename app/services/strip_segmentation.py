@@ -27,6 +27,11 @@ from app.services import strips
 SEGMENTATION_VERSION = "color-agnostic-strip-reconciliation-v1"
 BOUNDARY_PROMPT_VERSION = "strip-boundary-assessment-v1"
 MAX_ANALYSIS_PIXELS = 8_000_000
+BOUNDARY_REQUEST_MAX_BYTES = 2_000_000
+BOUNDARY_TILE_MAX_COUNT = 12
+BOUNDARY_TILE_MAX_WIDTH = 512
+BOUNDARY_TILE_MAX_HEIGHT = 768
+BOUNDARY_TILE_JPEG_QUALITY = 68
 _PROTECTED_KINDS = {"balloon", "face", "subject", "action", "effect", "continuity"}
 _HASH_FIELDS = {"analysis_hash", "boundary_hash", "evidence_hash", "mask_sha256"}
 Bounds = tuple[int, int, int, int]
@@ -209,35 +214,68 @@ def _candidate_pool(
         reason=candidate.reason,
     ) for candidate in local}
     ideals = tuple(round(height * index / parts) for index in range(1, parts))
+    radius = max(min_segment_px, int(frame_height * 0.2))
+    offsets = (-radius, -(radius // 2), 0, radius // 2, radius)
     for ideal in ideals:
         nearby = [candidate for candidate in local if abs(candidate.position - ideal) <= radius]
         if nearby:
-            continue
-        values.setdefault(
-            ideal,
-            BoundaryCandidate(
+            values.setdefault(ideal, BoundaryCandidate(
                 position=ideal,
                 confidence=0.0,
                 score=0.0,
                 run_top=ideal,
                 run_bottom=ideal,
                 reason="target_geometry_candidate_without_local_separator",
-            ),
-        )
+            ))
+        for offset in offsets:
+            position = max(min_segment_px, min(height - min_segment_px, ideal + offset))
+            if position <= 0 or position >= height:
+                continue
+            values.setdefault(
+                position,
+                BoundaryCandidate(
+                    position=position,
+                    confidence=0.0,
+                    score=0.0,
+                    run_top=position,
+                    run_bottom=position,
+                    reason="target_geometry_candidate_near_ideal",
+                ),
+            )
     ordered = tuple(sorted(values.values(), key=lambda candidate: (-candidate.confidence, candidate.position)))
     return ordered, ideals
 
 
-def _tiles(image: Image.Image, *, tile_height: int = 1024, overlap: int = 64) -> tuple[dict[str, Any], ...]:
+def _tiles(image: Image.Image, *, tile_height: int = 2048, overlap: int = 128) -> tuple[dict[str, Any], ...]:
     width, height = image.size
+    if width <= 0 or height <= 0:
+        raise StripSegmentationError("segmentation.source_dimensions_invalid", reviewable=False)
+    tile_height = max(1, int(tile_height))
+    overlap = max(0, int(overlap))
+    if (height + tile_height - 1) // tile_height > BOUNDARY_TILE_MAX_COUNT:
+        tile_height = (height + BOUNDARY_TILE_MAX_COUNT - 1) // BOUNDARY_TILE_MAX_COUNT
+    overlap = min(overlap, max(0, tile_height - 1))
     result: list[dict[str, Any]] = []
     start = 0
     index = 0
     while start < height:
         end = min(height, start + tile_height)
         crop = image.crop((0, start, width, end))
+        preview = crop.convert("RGB")
+        preview.thumbnail(
+            (BOUNDARY_TILE_MAX_WIDTH, BOUNDARY_TILE_MAX_HEIGHT),
+            Image.Resampling.LANCZOS,
+        )
         output = io.BytesIO()
-        crop.save(output, format="PNG", optimize=False)
+        preview.save(
+            output,
+            format="JPEG",
+            quality=BOUNDARY_TILE_JPEG_QUALITY,
+            optimize=True,
+            progressive=False,
+            subsampling=2,
+        )
+        encoded = base64.b64encode(output.getvalue()).decode("ascii")
         result.append(
             {
                 "tile_index": index,
@@ -245,13 +283,19 @@ def _tiles(image: Image.Image, *, tile_height: int = 1024, overlap: int = 64) ->
                 "y1": end,
                 "overlap_above": 0 if start == 0 else overlap,
                 "overlap_below": 0 if end == height else overlap,
-                "payload_b64": base64.b64encode(output.getvalue()).decode("ascii"),
+                "mime_type": "image/jpeg",
+                "encoded_width": preview.width,
+                "encoded_height": preview.height,
+                "payload_b64": encoded,
             }
         )
         if end == height:
             break
         start = end - overlap
         index += 1
+    payload_bytes = sum(len(tile["payload_b64"]) for tile in result)
+    if payload_bytes > BOUNDARY_REQUEST_MAX_BYTES:
+        raise StripSegmentationError("segmentation.tile_payload_budget_exceeded")
     return tuple(result)
 
 
@@ -307,6 +351,10 @@ def _validate_provider_assessment(
     for raw_boundary in raw_boundaries:
         if not isinstance(raw_boundary, Mapping):
             raise StripSegmentationError("segmentation.provider_response_invalid")
+        if "y" in raw_boundary and "position" in raw_boundary and raw_boundary["y"] != raw_boundary["position"]:
+            raise StripSegmentationError("segmentation.provider_coordinate_invalid")
+        if "y" not in raw_boundary and "position" in raw_boundary:
+            raw_boundary = {**raw_boundary, "y": raw_boundary["position"]}
         y = raw_boundary.get("y")
         if isinstance(y, bool) or not isinstance(y, int) or y <= 0 or y >= request.height:
             raise StripSegmentationError("segmentation.provider_coordinate_invalid")
@@ -721,6 +769,222 @@ def reconcile_sources(
     )
 
 
+def restore_cached_reconciliation(
+    inputs: Sequence[Any],
+    cached: Mapping[str, Any],
+) -> SourceSegmentationResult:
+    """Restore a verified local segmentation checkpoint without provider calls."""
+
+    def invalid() -> StripSegmentationError:
+        return StripSegmentationError("segmentation.cache_invalid", reviewable=True)
+
+    if not isinstance(cached, Mapping):
+        raise invalid()
+    ordered = tuple(
+        sorted(
+            inputs,
+            key=lambda item: (
+                item.strip_order,
+                item.region_order,
+                item.source_bounds[1],
+                item.source_asset_id,
+            ),
+        )
+    )
+    ordered_ids = cached.get("ordered_source_asset_ids")
+    if ordered_ids != [item.source_asset_id for item in ordered]:
+        raise invalid()
+    if cached.get("status") != "RECONCILED" or cached.get("coverage_ratio") != 1.0:
+        raise invalid()
+    reports_raw = cached.get("reports")
+    if not isinstance(reports_raw, list):
+        raise invalid()
+
+    groups: dict[tuple[str, int, int], list[Any]] = {}
+    for item in ordered:
+        groups.setdefault(_source_group_key(item), []).append(item)
+    if len(reports_raw) != len(groups):
+        raise invalid()
+
+    reports: list[StripSegmentationResult] = []
+    for group, raw in zip(groups.values(), reports_raw, strict=True):
+        if not isinstance(raw, Mapping):
+            raise invalid()
+        reconstructed = _reconstruct_source_group(group)
+        if reconstructed is None:
+            payload = group[0].payload
+            expected_asset_id = group[0].source_asset_id
+            expected_checksum = group[0].original_checksum
+        else:
+            payload, expected_asset_id, expected_checksum = reconstructed
+        try:
+            with Image.open(io.BytesIO(payload)) as image:
+                image.load()
+                width, height = image.size
+        except (OSError, UnidentifiedImageError, ValueError):
+            raise invalid() from None
+        if (
+            raw.get("source_asset_id") != expected_asset_id
+            or raw.get("source_checksum") != expected_checksum
+            or raw.get("width") != width
+            or raw.get("height") != height
+            or raw.get("status") != "RECONCILED"
+            or raw.get("review_code") != ""
+            or raw.get("detector_version") != SEGMENTATION_VERSION
+            or raw.get("payload_sha256") != hashlib.sha256(payload).hexdigest()
+        ):
+            raise invalid()
+        spans_raw = raw.get("spans")
+        candidates_raw = raw.get("candidates")
+        selected_raw = raw.get("selected_cuts")
+        rejected_raw = raw.get("rejected_cuts")
+        if not isinstance(spans_raw, list) or not isinstance(candidates_raw, list):
+            raise invalid()
+        if not isinstance(selected_raw, list) or not isinstance(rejected_raw, (list, tuple)):
+            raise invalid()
+        try:
+            spans = tuple(
+                (span[0], span[1])
+                for span in spans_raw
+                if isinstance(span, (list, tuple))
+                and len(span) == 2
+                and all(isinstance(value, int) and not isinstance(value, bool) for value in span)
+                and span[1] > span[0]
+            )
+            if len(spans) != len(spans_raw):
+                raise ValueError
+            selected_cuts = tuple(
+                value
+                for value in selected_raw
+                if isinstance(value, int) and not isinstance(value, bool)
+            )
+            if len(selected_cuts) != len(selected_raw):
+                raise ValueError
+            candidates = tuple(
+                BoundaryCandidate(
+                    position=item["position"],
+                    confidence=item["confidence"],
+                    score=item["score"],
+                    run_top=item["run_top"],
+                    run_bottom=item["run_bottom"],
+                    reason=item["reason"],
+                )
+                for item in candidates_raw
+                if isinstance(item, Mapping)
+            )
+            if len(candidates) != len(candidates_raw):
+                raise ValueError
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                for candidate in candidates
+                for value in (
+                    candidate.position,
+                    candidate.run_top,
+                    candidate.run_bottom,
+                )
+            ):
+                raise ValueError
+            if any(not isinstance(item, Mapping) for item in rejected_raw):
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            raise invalid() from None
+        if (
+            not spans
+            or spans[0][0] != 0
+            or spans[-1][1] != height
+            or any(left[1] != right[0] for left, right in zip(spans, spans[1:], strict=False))
+            or selected_cuts != tuple(span[1] for span in spans[:-1])
+        ):
+            raise invalid()
+        provider_assessment = raw.get("provider_assessment")
+        if provider_assessment is not None and not isinstance(provider_assessment, Mapping):
+            raise invalid()
+        override = raw.get("override")
+        if override is not None and not isinstance(override, Mapping):
+            raise invalid()
+        restored = _make_result(
+            source_asset_id=expected_asset_id,
+            source_checksum=expected_checksum,
+            width=width,
+            height=height,
+            spans=spans,
+            candidates=candidates,
+            selected_cuts=selected_cuts,
+            rejected_cuts=tuple(dict(item) for item in rejected_raw),
+            status="RECONCILED",
+            review_code="",
+            detector_version=SEGMENTATION_VERSION,
+            payload_sha256=hashlib.sha256(payload).hexdigest(),
+            provider_assessment=dict(provider_assessment) if provider_assessment is not None else None,
+            override=dict(override) if override is not None else None,
+        )
+        if (
+            raw.get("analysis_hash") != restored.analysis_hash
+            or json.loads(_canonical(raw)) != json.loads(_canonical(restored.as_dict()))
+        ):
+            raise invalid()
+        reports.append(restored)
+
+    expected_hash = _hash(
+        {
+            "version": SEGMENTATION_VERSION,
+            "coverage_ratio": 1.0,
+            "reports": [report.analysis_hash for report in reports],
+            "source_asset_ids": [item.source_asset_id for item in ordered],
+        }
+    )
+    restored_analysis_hash = expected_hash
+    if cached.get("analysis_hash") != expected_hash:
+        prior_report_hashes: list[str] = []
+        has_review_override = False
+        for raw, report in zip(reports_raw, reports, strict=True):
+            override = raw.get("override")
+            if override is None:
+                prior_report_hashes.append(report.analysis_hash)
+                continue
+            if (
+                not isinstance(override, Mapping)
+                or override.get("provenance") != "review_only_auto_override"
+                or not isinstance(override.get("prior_analysis_hash"), str)
+                or len(override["prior_analysis_hash"]) != 64
+                or any(character not in "0123456789abcdef" for character in override["prior_analysis_hash"].lower())
+            ):
+                raise invalid()
+            prior_report_hashes.append(override["prior_analysis_hash"])
+            has_review_override = True
+        if not has_review_override:
+            raise invalid()
+        prior_hash = _hash(
+            {
+                "version": SEGMENTATION_VERSION,
+                "coverage_ratio": 1.0,
+                "reports": prior_report_hashes,
+                "source_asset_ids": [item.source_asset_id for item in ordered],
+            }
+        )
+        restored_analysis_hash = _hash(
+            {
+                "version": SEGMENTATION_VERSION,
+                "prior_analysis_hash": prior_hash,
+                "reports": [report.analysis_hash for report in reports],
+                "provenance": "review_only_auto_override",
+            }
+        )
+        if cached.get("analysis_hash") != restored_analysis_hash:
+            raise invalid()
+    restored = SourceSegmentationResult(
+        ordered_inputs=ordered,
+        reports=tuple(reports),
+        status="RECONCILED",
+        coverage_ratio=1.0,
+        analysis_hash=restored_analysis_hash,
+    )
+    if json.loads(_canonical(restored.as_dict())) != json.loads(_canonical(cached)):
+        raise invalid()
+    return restored
+
+
 def apply_manual_override(
     result: StripSegmentationResult,
     *,
@@ -764,6 +1028,178 @@ def apply_manual_override(
     )
 
 
+def apply_review_only_auto_override(
+    result: StripSegmentationResult,
+    *,
+    actor_id: str,
+    reason: str,
+    confidence_floor: float = 0.80,
+    min_segment_px: int = 200,
+    max_parts: int = 12,
+) -> StripSegmentationResult:
+    """Keep only provider-confirmed cuts for an explicit silent review run.
+
+    This is intentionally narrower than :func:`apply_manual_override`: it is
+    available only to the review-preview workflow, never to normal/final
+    rendering. Ambiguous artwork remains contiguous when no provider-approved
+    cut is safe. A protected boundary, malformed assessment, or lineage
+    mismatch stays fail-closed instead of being relabeled as reconciled.
+    """
+
+    if not actor_id.strip() or not reason.strip():
+        raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=False)
+    if result.status != "NEEDS_REVIEW" or result.review_code not in {
+        "segmentation.ambiguous_boundary",
+        "segmentation.protected_boundary",
+    }:
+        raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True)
+    if (
+        isinstance(confidence_floor, bool)
+        or not isinstance(confidence_floor, (int, float))
+        or not isfinite(float(confidence_floor))
+        or not 0.0 <= float(confidence_floor) <= 1.0
+        or isinstance(min_segment_px, bool)
+        or not isinstance(min_segment_px, int)
+        or min_segment_px <= 0
+        or isinstance(max_parts, bool)
+        or not isinstance(max_parts, int)
+        or max_parts < 1
+    ):
+        raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=False)
+
+    assessment = result.provider_assessment
+    if not isinstance(assessment, Mapping) or assessment.get("source_asset_id") != result.source_asset_id:
+        raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True)
+    raw_boundaries = assessment.get("boundaries")
+    if not isinstance(raw_boundaries, list):
+        raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True)
+
+    candidate_positions = {candidate.position for candidate in result.candidates}
+    confirmed: list[tuple[int, float]] = []
+    protected_positions: list[int] = []
+    for raw in raw_boundaries:
+        if not isinstance(raw, Mapping):
+            raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True)
+        y = raw.get("y")
+        confidence = raw.get("confidence")
+        boundary_reason = str(raw.get("reason", "")).strip()
+        protected_regions = raw.get("protected_regions", [])
+        if (
+            isinstance(y, bool)
+            or not isinstance(y, int)
+            or y <= 0
+            or y >= result.height
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not isfinite(float(confidence))
+            or not boundary_reason
+            or not isinstance(protected_regions, list)
+        ):
+            raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True)
+        if y not in candidate_positions:
+            raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True)
+        protected_boundary = boundary_reason == "segmentation.protected_boundary"
+        for protected in protected_regions:
+            if not isinstance(protected, Mapping):
+                raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True)
+            bounds = protected.get("bounds")
+            if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+                raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True)
+            try:
+                top, bottom = int(bounds[1]), int(bounds[3])
+            except (TypeError, ValueError):
+                raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True) from None
+            if top < y < bottom:
+                protected_boundary = True
+        if protected_boundary:
+            protected_positions.append(y)
+        elif raw.get("accepted") is True and float(confidence) >= float(confidence_floor):
+            confirmed.append((y, float(confidence)))
+
+    selected: list[int] = []
+    for y, _confidence in sorted(confirmed, key=lambda item: (-item[1], item[0])):
+        if len(selected) >= max_parts - 1:
+            break
+        if any(abs(y - existing) < min_segment_px for existing in selected):
+            continue
+        if y < min_segment_px or result.height - y < min_segment_px:
+            continue
+        selected.append(y)
+    selected.sort()
+    boundaries = (0, *selected, result.height)
+    spans = tuple((left, right) for left, right in zip(boundaries, boundaries[1:], strict=False))
+    if any(right - left < min_segment_px for left, right in spans):
+        raise StripSegmentationError("segmentation.review_auto_override_unsafe", reviewable=True)
+    override = {
+        "actor_id": actor_id,
+        "reason": reason,
+        "provenance": "review_only_auto_override",
+        "prior_analysis_hash": result.analysis_hash,
+        "provider_confirmed_cuts": list(selected),
+        "protected_boundaries_retained_contiguous": sorted(set(protected_positions)),
+        "confidence_floor": float(confidence_floor),
+        "ambiguous_boundaries_remain_contiguous": True,
+    }
+    return _make_result(
+        source_asset_id=result.source_asset_id,
+        source_checksum=result.source_checksum,
+        width=result.width,
+        height=result.height,
+        spans=spans,
+        candidates=result.candidates,
+        selected_cuts=tuple(selected),
+        rejected_cuts=result.rejected_cuts,
+        status="RECONCILED",
+        review_code="",
+        detector_version=result.detector_version,
+        payload_sha256=result.payload_sha256,
+        provider_assessment=dict(assessment),
+        override=override,
+    )
+
+
+def apply_review_only_overrides(
+    result: SourceSegmentationResult,
+    *,
+    actor_id: str,
+    reason: str,
+    confidence_floor: float = 0.80,
+) -> SourceSegmentationResult:
+    """Reconcile only ambiguous reports for the opt-in silent review path."""
+
+    reports = tuple(
+        apply_review_only_auto_override(
+            report,
+            actor_id=actor_id,
+            reason=reason,
+            confidence_floor=confidence_floor,
+        )
+        if report.status == "NEEDS_REVIEW"
+        and report.review_code in {"segmentation.ambiguous_boundary", "segmentation.protected_boundary"}
+        else report
+        for report in result.reports
+    )
+    status = (
+        "RECONCILED"
+        if result.coverage_ratio == 1.0 and all(report.status == "RECONCILED" for report in reports)
+        else "NEEDS_REVIEW"
+    )
+    return SourceSegmentationResult(
+        ordered_inputs=result.ordered_inputs,
+        reports=reports,
+        status=status,
+        coverage_ratio=result.coverage_ratio,
+        analysis_hash=_hash(
+            {
+                "version": SEGMENTATION_VERSION,
+                "prior_analysis_hash": result.analysis_hash,
+                "reports": [report.analysis_hash for report in reports],
+                "provenance": "review_only_auto_override",
+            }
+        ),
+    )
+
+
 def write_review_artifact(result: StripSegmentationResult, data: bytes, root: Path) -> tuple[Path, Path]:
     """Write a small JSON report and thumbnail outside tracked source paths."""
     safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", result.source_asset_id).strip("._") or "source"
@@ -801,7 +1237,10 @@ __all__ = [
     "StripSegmentationError",
     "StripSegmentationResult",
     "apply_manual_override",
+    "apply_review_only_auto_override",
+    "apply_review_only_overrides",
     "reconcile_sources",
     "reconcile_strip",
+    "restore_cached_reconciliation",
     "write_review_artifact",
 ]

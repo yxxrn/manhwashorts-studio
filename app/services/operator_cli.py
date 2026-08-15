@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import urllib.parse
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -93,6 +94,26 @@ def _settings():
     from app.config import settings
 
     return settings
+
+
+def read_operator_secret(
+    prompt: str,
+    *,
+    output_fn: Callable[[str], None] | None = None,
+) -> str:
+    """Read a hidden key, consuming an optional one-shot process-memory value."""
+
+    # ``output_fn`` is an injection seam for launcher tests and future
+    # operator-facing guidance.  Never echo the secret or the prompt through
+    # it; getpass remains the only interactive fallback.
+    del output_fn
+
+    one_shot = os.environ.pop("MS_OPERATOR_API_KEY", "")
+    if one_shot:
+        return one_shot.strip()
+    import getpass
+
+    return getpass.getpass(prompt)
 
 
 @dataclass(frozen=True)
@@ -679,6 +700,11 @@ def run_projects(
     estimated_cost_per_request: float = 0.0,
     max_concurrent: int = 1,
     run_options: RunOptions | None = None,
+    review_only_preview: bool = False,
+    review_source_upscale_policy: str | None = None,
+    review_source_root: str | Path | None = None,
+    review_source_roots: Mapping[str, str | Path] | None = None,
+    review_output_dir: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     """Run sorted isolated jobs through the existing CloudBatchService."""
 
@@ -730,7 +756,21 @@ def run_projects(
         rows: list[dict[str, Any]] = []
         for project_id in ordered_ids:
             try:
-                rows.append(_job_summary(service.run_project(run_db, project_id, actor_id=actor_id)))
+                run_kwargs: dict[str, Any] = {"actor_id": actor_id}
+                if review_only_preview:
+                    run_kwargs.update(
+                        {
+                            "review_only_preview": True,
+                            "review_source_upscale_policy": review_source_upscale_policy,
+                            "review_source_root": (
+                                review_source_roots.get(project_id, review_source_root)
+                                if review_source_roots is not None
+                                else review_source_root
+                            ),
+                            "review_output_dir": review_output_dir,
+                        }
+                    )
+                rows.append(_job_summary(service.run_project(run_db, project_id, **run_kwargs)))
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
@@ -803,13 +843,11 @@ class OperatorCLI:
         state_dir: str | Path = "data/cloud-multimodal-jobs",
         review_dir: str | Path = "data/segmentation-review",
     ) -> None:
-        import getpass
-
         from app.services import operator_ui
 
         self.input_fn = input_fn
         self.output_fn = output_fn
-        self.secret_fn = secret_fn or getpass.getpass
+        self.secret_fn = secret_fn or read_operator_secret
         self.db_factory = db_factory or _session_scope()
         self.state_dir = Path(state_dir)
         self.review_dir = Path(review_dir)
@@ -1021,10 +1059,14 @@ class OperatorCLI:
             review_dir=self.review_dir,
             runner_factory=cloud_multimodal.resolve_cloud_runner,
             run_options=self._run_options(),
+            review_only_preview=True,
+            review_source_upscale_policy="review_silent_source_upscale_v1",
+            review_source_root=chapter.folder,
+            review_output_dir=_settings().output_dir,
         )
         for row in rows:
             self._print(f"{row['job_id']}: {row['state']} {row['error_code']}")
-        self._print("READY_TO_RENDER means AI/narrative stages are ready; final voiced render remains blocked until authoritative voice timing and approval gates pass.")
+            self._print("REVIEW_PREVIEW_READY means the silent review is ready; voice timing, editorial approval, rights, and publication remain blocked.")
 
     def import_and_run_batch(self) -> None:
         cloud_multimodal = _cloud()
@@ -1034,6 +1076,10 @@ class OperatorCLI:
         if not self._confirm("Import and run this batch with the configured request budget?"):
             raise OperatorCliError("operator.cancelled", "operator cancelled before provider calls")
         imported = [self._import_one(chapter) for chapter in chapters]
+        source_roots = {
+            item.project_id: chapter.folder
+            for chapter, item in zip(chapters, imported, strict=True)
+        }
         rows = run_projects(
             None,
             [item.project_id for item in imported],
@@ -1041,6 +1087,10 @@ class OperatorCLI:
             review_dir=self.review_dir,
             runner_factory=cloud_multimodal.resolve_cloud_runner,
             run_options=options,
+            review_only_preview=True,
+            review_source_upscale_policy="review_silent_source_upscale_v1",
+            review_source_roots=source_roots,
+            review_output_dir=_settings().output_dir,
         )
         for row in rows:
             self._print(f"{row['job_id']}: {row['state']} {row['error_code']}")
@@ -1087,7 +1137,9 @@ def main() -> int:
         from app.db import init_db
 
         init_db()
-        return OperatorCLI().run()
+        state_dir = os.environ.get("MS_STATE_DIR", "data/cloud-multimodal-jobs")
+        review_dir = os.environ.get("MS_REVIEW_DIR", "data/segmentation-review")
+        return OperatorCLI(state_dir=state_dir, review_dir=review_dir).run()
     except KeyboardInterrupt:
         print("Interrupted safely; durable job checkpoints were not deleted.")
         return 130
@@ -1124,6 +1176,7 @@ __all__ = [
     "resolve_operator_context",
     "run_capability_probe",
     "run_projects",
+    "read_operator_secret",
     "safe_error_text",
     "select_model",
 ]

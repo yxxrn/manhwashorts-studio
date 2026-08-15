@@ -11,7 +11,13 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass, replace
 
-from app.services import director, framing_analysis, motion_director, visual_scoring
+from app.services import (
+    director,
+    framing_analysis,
+    motion_director,
+    review_source_upscale,
+    visual_scoring,
+)
 
 _MAX_EDITORIAL_SHOT_SECONDS = 2.8
 _REFERENCE_SHOT_INTERVAL_SECONDS = 1.28
@@ -46,7 +52,9 @@ class ReferencePlanningError(RuntimeError):
 
 
 def _reference_group_counts(
-    beats: list[director.StoryBeat], target_shots: int
+    beats: list[director.StoryBeat],
+    target_shots: int,
+    max_counts_by_section: Mapping[str, int] | None = None,
 ) -> list[int]:
     groups: list[list[director.StoryBeat]] = []
     cursor = 0
@@ -64,27 +72,63 @@ def _reference_group_counts(
     ]
     total = sum(durations)
     counts = [1] * len(groups)
+    caps = [
+        max(
+            1,
+            int((max_counts_by_section or {}).get(str(group[0].section), target_shots)),
+        )
+        for group in groups
+    ]
+    if sum(caps) < target_shots:
+        raise ReferencePlanningError(
+            "review cadence capacity is below the requested section coverage"
+        )
     remaining = max(0, target_shots - len(groups))
     exact = [remaining * duration / total for duration in durations]
-    counts = [count + math.floor(value) for count, value in zip(counts, exact, strict=True)]
+    counts = [
+        min(cap, count + math.floor(value))
+        for count, value, cap in zip(counts, exact, caps, strict=True)
+    ]
     left = target_shots - sum(counts)
     order = sorted(
         range(len(groups)),
         key=lambda index: (-(exact[index] - math.floor(exact[index])), index),
     )
-    for index in order[:left]:
-        counts[index] += 1
+    while left:
+        progressed = False
+        for index in order:
+            if left <= 0:
+                break
+            if counts[index] >= caps[index]:
+                continue
+            counts[index] += 1
+            left -= 1
+            progressed = True
+        if not progressed:
+            raise ReferencePlanningError(
+                "review cadence allocation exceeded section capacity"
+            )
     return counts
 
 
 def _coalesce_beats(
-    beats: list[director.StoryBeat], target_shots: int | None = None
+    beats: list[director.StoryBeat],
+    target_shots: int | None = None,
+    max_counts_by_section: Mapping[str, int] | None = None,
 ) -> list[director.StoryBeat]:
     """Compress event fragments to the fixed 18-24 shot editorial budget."""
     if not beats:
         return []
     result: list[director.StoryBeat] = []
-    target_counts = _reference_group_counts(beats, target_shots) if target_shots else []
+    target_counts = (
+        _reference_group_counts(
+            beats,
+            target_shots,
+            max_counts_by_section=max_counts_by_section,
+        )
+        if target_shots
+        else []
+    )
     cursor = 0
     section_index = 0
     while cursor < len(beats):
@@ -236,8 +280,12 @@ def _reference_section_shot_durations(
     emphasis_count: int,
     profile: object,
     emphasis_positions: set[int] | None = None,
+    *,
+    allow_review_cadence_adaptation: bool = False,
 ) -> list[float]:
-    if emphasis_count <= 0:
+    if allow_review_cadence_adaptation:
+        values = [section_duration / shot_count] * shot_count
+    elif emphasis_count <= 0:
         values = [section_duration / shot_count] * shot_count
     else:
         emphasis_duration = min(
@@ -257,7 +305,7 @@ def _reference_section_shot_durations(
             emphasis_duration if index in positions else normal_duration
             for index in range(shot_count)
         ]
-    if any(
+    if not allow_review_cadence_adaptation and any(
         not (
             profile.hold_min_s <= value <= profile.hold_max_s
             or profile.emphasis_min_s <= value <= profile.emphasis_max_s
@@ -468,6 +516,7 @@ class ReferencePanelFallbackCandidate:
     eligible_beats: tuple[str, ...]
     roi_alternatives: tuple[ReferenceROIAlternative, ...]
     panel_candidate: visual_scoring.PanelCandidate
+    source_upscale_manifest: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -515,13 +564,42 @@ class ReferencePanelFallbackCandidate:
                 "panel size is invalid", "visual.panel_lineage_unavailable"
             )
         x0, y0, x1, y1 = self.panel_bounds
-        if (
-            x0 < 0
-            or y0 < 0
-            or (x1 - x0, y1 - y0) != self.panel_size
-        ):
+        if x0 < 0 or y0 < 0:
             raise ReferencePlanningError(
-                "panel bounds must be nonnegative and match panel_size",
+                "panel bounds must be nonnegative",
+                "visual.panel_lineage_unavailable",
+            )
+        if self.source_upscale_manifest is None:
+            bounds_match_panel = (x1 - x0, y1 - y0) == self.panel_size
+        else:
+            try:
+                review_source_upscale.validate_review_manifest_dimensions(
+                    self.source_upscale_manifest, self.panel_size
+                )
+                prepared_bounds = tuple(
+                    int(value)
+                    for value in self.source_upscale_manifest["prepared_panel_bounds"]
+                )
+                source_bounds = tuple(
+                    int(value)
+                    for value in self.source_upscale_manifest["source_panel_bounds"]
+                )
+                bounds_match_panel = (
+                    prepared_bounds == self.panel_bounds
+                    and len(source_bounds) == 4
+                    and source_bounds[2] > source_bounds[0]
+                    and source_bounds[3] > source_bounds[1]
+                )
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                review_source_upscale.ReviewSourceUpscaleError,
+            ):
+                bounds_match_panel = False
+        if not bounds_match_panel:
+            raise ReferencePlanningError(
+                "panel bounds must match the prepared panel geometry",
                 "visual.panel_lineage_unavailable",
             )
         try:
@@ -661,6 +739,7 @@ def _reference_panel_attempt(
     phase_kind: str,
     previously_used: bool,
     used_rois: set[tuple[object, ...]],
+    allow_source_resolution_warning: bool = False,
 ) -> tuple[bool, object, dict]:
     evidence = candidate.visual_evidence
     entry_kind = phase_kind
@@ -697,6 +776,17 @@ def _reference_panel_attempt(
             "code": "visual.reuse_roi_duplicate",
             "reason": "a repeated panel requires a distinct ROI",
         }
+    source_manifest = candidate.source_upscale_manifest
+    allow_low_resolution = bool(
+        allow_source_resolution_warning
+        and isinstance(source_manifest, Mapping)
+        and source_manifest.get("policy_id") == "review_silent_source_upscale_v1"
+        and source_manifest.get("resolution_state") == "LOW_SOURCE_RESOLUTION"
+        and source_manifest.get("non_native_warning") == "review.low_source_resolution"
+    )
+    feasibility_kwargs: dict[str, object] = {}
+    if allow_low_resolution:
+        feasibility_kwargs["allow_source_resolution_warning"] = True
     try:
         feasible, telemetry = framing_analysis.candidate_is_feasible(
             roi.crop_box,
@@ -704,6 +794,7 @@ def _reference_panel_attempt(
             candidate.border_mask,
             candidate.panel_size,
             (profile.final_width, profile.final_height),
+            **feasibility_kwargs,
         )
     except framing_analysis.VisualEvidenceError as exc:
         if exc.code == "visual.balloon_mask_unknown":
@@ -748,10 +839,77 @@ def _reference_panel_attempt(
     return accepted, telemetry, entry
 
 
+def _prioritize_resolution_candidates(
+    candidates: Sequence[ReferencePanelFallbackCandidate],
+) -> tuple[ReferencePanelFallbackCandidate, ...]:
+    """Try automatic/native-resolution candidates before review warnings."""
+
+    def is_low_resolution(candidate: ReferencePanelFallbackCandidate) -> bool:
+        manifest = candidate.source_upscale_manifest
+        return bool(
+            isinstance(manifest, Mapping)
+            and manifest.get("policy_id") == "review_silent_source_upscale_v1"
+            and manifest.get("resolution_state") == "LOW_SOURCE_RESOLUTION"
+            and manifest.get("non_native_warning") == "review.low_source_resolution"
+        )
+
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                is_low_resolution(candidate),
+                candidate.source_order,
+                candidate.panel_id,
+                candidate.panel_region_id,
+            ),
+        )
+    )
+
+
+def _feasible_roi_capacity(
+    candidate: ReferencePanelFallbackCandidate,
+    profile: object,
+    *,
+    allow_source_resolution_warning: bool,
+) -> int:
+    """Count exact feasible ROI alternatives for review cadence allocation."""
+    source_manifest = candidate.source_upscale_manifest
+    allow_low_resolution = bool(
+        allow_source_resolution_warning
+        and isinstance(source_manifest, Mapping)
+        and source_manifest.get("policy_id") == "review_silent_source_upscale_v1"
+        and source_manifest.get("resolution_state") == "LOW_SOURCE_RESOLUTION"
+        and source_manifest.get("non_native_warning") == "review.low_source_resolution"
+    )
+    feasibility_kwargs: dict[str, object] = {}
+    if allow_low_resolution:
+        feasibility_kwargs["allow_source_resolution_warning"] = True
+    ready = visual_scoring.require_reference_ready_visual_evidence(
+        candidate.visual_evidence
+    )
+    feasible = 0
+    for roi in _ordered_roi_alternatives(candidate):
+        accepted, _telemetry = framing_analysis.candidate_is_feasible(
+            roi.crop_box,
+            ready,
+            candidate.border_mask,
+            candidate.panel_size,
+            (profile.final_width, profile.final_height),
+            **feasibility_kwargs,
+        )
+        if accepted:
+            feasible += 1
+    return min(feasible, profile.max_canonical_panel_uses)
+
+
 def _plan_reference_panel_candidates(
     spans: list[object],
     profile: object,
     panel_candidates: Sequence[ReferencePanelFallbackCandidate],
+    *,
+    allow_source_resolution_warning: bool = False,
+    allow_review_cadence_adaptation: bool = False,
+    allow_review_duration: bool = False,
 ) -> list[dict]:
     if not panel_candidates:
         raise ReferencePlanningError(
@@ -806,12 +964,47 @@ def _plan_reference_panel_candidates(
         )
         for candidate in ordered
     ]
+    section_names = tuple(
+        dict.fromkeys(str(span.section) for span in spans if str(span.section))
+    )
+    section_capacity: dict[str, int] = {}
+    for section in section_names:
+        eligible_for_section = [
+            candidate
+            for candidate in ordered
+            if not candidate.eligible_sections or section in candidate.eligible_sections
+        ]
+        capacities = [
+            _feasible_roi_capacity(
+                candidate,
+                profile,
+                allow_source_resolution_warning=allow_source_resolution_warning,
+            )
+            for candidate in eligible_for_section
+        ]
+        # A single eligible panel cannot be selected twice in succession. Its
+        # feasible ROI count is still useful for multi-panel reuse, but must
+        # not inflate this section's cadence capacity beyond one shot.
+        if len({candidate.panel_id for candidate in eligible_for_section}) == 1:
+            section_capacity[section] = 1 if any(capacity > 0 for capacity in capacities) else 0
+        else:
+            section_capacity[section] = sum(capacities)
+    if allow_review_cadence_adaptation and any(
+        capacity < 1 for capacity in section_capacity.values()
+    ):
+        raise ReferencePlanningError(
+            "no feasible exact panel candidate covers every story section",
+            "visual.visual_unavailable",
+        )
     base_shots = _plan_reference(
         spans,
         timing_candidates,
         profile,
         None,
         None,
+        max_shots_by_section=(section_capacity if allow_review_cadence_adaptation else None),
+        allow_review_cadence_adaptation=allow_review_cadence_adaptation,
+        allow_review_duration=allow_review_duration,
     )
     uses: dict[str, int] = {}
     used_rois: dict[str, set[tuple[object, ...]]] = {}
@@ -828,6 +1021,33 @@ def _plan_reference_panel_candidates(
             and uses.get(candidate.panel_id, 0) < profile.max_canonical_panel_uses
             and candidate.panel_id != last_panel_id
         ]
+        eligible = list(_prioritize_resolution_candidates(eligible))
+        if allow_review_cadence_adaptation:
+            eligible = [
+                candidate
+                for candidate in eligible
+                if _feasible_roi_capacity(
+                    candidate,
+                    profile,
+                    allow_source_resolution_warning=allow_source_resolution_warning,
+                )
+                > len(used_rois.get(candidate.panel_id, set()))
+            ]
+            eligible.sort(
+                key=lambda candidate: (
+                    -(
+                        _feasible_roi_capacity(
+                            candidate,
+                            profile,
+                            allow_source_resolution_warning=allow_source_resolution_warning,
+                        )
+                        - len(used_rois.get(candidate.panel_id, set()))
+                    ),
+                    candidate.source_order,
+                    candidate.panel_id,
+                    candidate.panel_region_id,
+                )
+            )
         if not eligible:
             raise ReferencePlanningError(
                 f"no exact panel candidate is eligible for section {section}",
@@ -860,6 +1080,7 @@ def _plan_reference_panel_candidates(
                     phase_kind=phase_kind,
                     previously_used=previous_uses > 0,
                     used_rois=used_rois.get(candidate.panel_id, set()),
+                    allow_source_resolution_warning=allow_source_resolution_warning,
                 )
                 attempts.append(entry)
                 if accepted:
@@ -924,6 +1145,16 @@ def _plan_reference_panel_candidates(
                 },
             }
         )
+        if shot.get("visual_review_warnings"):
+            telemetry_record["visual_review_warnings"] = list(
+                shot["visual_review_warnings"]
+            )
+            telemetry_record["nominal_target_shots"] = shot.get(
+                "nominal_target_shots"
+            )
+            telemetry_record["planned_target_shots"] = shot.get(
+                "planned_target_shots"
+            )
         telemetry_record = _canonical_json_mapping(telemetry_record)
         accepted_attempt_order = len(attempts) - 1
         attempts[accepted_attempt_order]["telemetry"] = telemetry_record
@@ -968,6 +1199,10 @@ def _plan_reference(
     profile: object,
     cited_asset_ids_by_section: Mapping[str, Iterable[str]] | None,
     citation_alignment_reasons_by_section: Mapping[str, Iterable[str]] | None,
+    *,
+    allow_review_cadence_adaptation: bool = False,
+    max_shots_by_section: Mapping[str, int] | None = None,
+    allow_review_duration: bool = False,
 ) -> list[dict]:
     if not spans or not candidates:
         raise ReferencePlanningError(
@@ -976,22 +1211,48 @@ def _plan_reference(
     origin = min(float(span.start_time) for span in spans)
     end = max(float(span.end_time) for span in spans)
     total_duration = end - origin
-    if not profile.duration_min_s <= total_duration <= profile.duration_max_s:
+    duration_min_s = 50.0 if allow_review_duration else profile.duration_min_s
+    duration_max_s = 60.0 if allow_review_duration else profile.duration_max_s
+    if not duration_min_s <= total_duration <= duration_max_s:
         raise ReferencePlanningError(
             f"{profile.profile_id} requires duration between "
-            f"{profile.duration_min_s:.1f} and {profile.duration_max_s:.1f} seconds"
+            f"{duration_min_s:.1f} and {duration_max_s:.1f} seconds"
         )
-    target = max(
+    nominal_target = max(
         profile.shot_min,
         min(profile.shot_max, round(total_duration / _REFERENCE_SHOT_INTERVAL_SECONDS)),
     )
-    if len(candidates) * profile.max_canonical_panel_uses < target:
+    target = nominal_target
+    capacity = len(candidates) * profile.max_canonical_panel_uses
+    if max_shots_by_section is not None:
+        capacity = min(capacity, sum(max_shots_by_section.values()))
+    cadence_adapted = False
+    if capacity < target:
+        if not allow_review_cadence_adaptation:
+            raise ReferencePlanningError(
+                f"{profile.profile_id} cannot satisfy the panel reuse cap for "
+                f"{target} shots"
+            )
+        section_count = len({str(span.section) for span in spans if str(span.section)})
+        if capacity < max(1, section_count):
+            raise ReferencePlanningError(
+                f"{profile.profile_id} has insufficient feasible panel capacity for "
+                f"{section_count} story sections"
+            )
+        target = capacity
+
+    if capacity < target:
         raise ReferencePlanningError(
             f"{profile.profile_id} cannot satisfy the panel reuse cap for "
             f"{target} shots"
         )
+    cadence_adapted = target != nominal_target
 
-    beats = _coalesce_beats(director.analyze_story(spans), target_shots=target)
+    beats = _coalesce_beats(
+        director.analyze_story(spans),
+        target_shots=target,
+        max_counts_by_section=max_shots_by_section,
+    )
     shots = visual_scoring.plan_content_aware_scenes(
         beats,
         candidates,
@@ -1000,10 +1261,46 @@ def _plan_reference(
         preferred_asset_ids_by_section=cited_asset_ids_by_section,
         max_asset_uses=profile.max_canonical_panel_uses,
     )
+    if cadence_adapted and len(shots) != target:
+        section_order = list(dict.fromkeys(str(beat.section) for beat in beats))
+        target_counts = _reference_group_counts(
+            beats,
+            target,
+            max_counts_by_section=max_shots_by_section,
+        )
+        collapsed: list[dict] = []
+        for section, section_target in zip(section_order, target_counts, strict=True):
+            section_shots = [
+                shot for shot in shots if str(shot.get("section", "")) == section
+            ]
+            if len(section_shots) < section_target:
+                raise ReferencePlanningError(
+                    f"{profile.profile_id} could not preserve review cadence for section {section}"
+                )
+            positions = (
+                [0]
+                if section_target == 1
+                else [
+                    round(index * (len(section_shots) - 1) / (section_target - 1))
+                    for index in range(section_target)
+                ]
+            )
+            collapsed.extend(dict(section_shots[position]) for position in positions)
+        shots = collapsed
     if len(shots) != target:
         raise ReferencePlanningError(
             f"{profile.profile_id} planned {len(shots)} shots; expected {target}"
         )
+
+    if cadence_adapted:
+        warning = "visual.cadence_adapted_to_feasible_capacity"
+        for shot in shots:
+            reasons = list(shot.get("alignment_reasons", ()))
+            reasons.append(warning)
+            shot["alignment_reasons"] = sorted(set(reasons))
+            shot["visual_review_warnings"] = [warning]
+            shot["nominal_target_shots"] = nominal_target
+            shot["planned_target_shots"] = target
 
     # With exactly the minimum viable panel pool, deterministic chronological
     # rotation is the only safe way to use every panel twice without exceeding
@@ -1042,6 +1339,7 @@ def _plan_reference(
             len(section_emphasis),
             profile,
             {index - shot_cursor for index in section_emphasis},
+            allow_review_cadence_adaptation=cadence_adapted,
         )
         for shot_index, shot in enumerate(section_shots):
             start = round(timeline_cursor, 3)
@@ -1102,16 +1400,20 @@ def _plan_reference(
         if not asset_id:
             raise ReferencePlanningError(f"{profile.profile_id} produced a shot without a panel")
         positions.setdefault(str(asset_id), []).append(index)
-        if index and asset_id == shots[index - 1].get("asset_id"):
+        if (
+            not cadence_adapted
+            and index
+            and asset_id == shots[index - 1].get("asset_id")
+        ):
             raise ReferencePlanningError(
                 f"{profile.profile_id} produced consecutive panel reuse"
             )
     for _asset_id, indexes in positions.items():
-        if len(indexes) > profile.max_canonical_panel_uses:
+        if not cadence_adapted and len(indexes) > profile.max_canonical_panel_uses:
             raise ReferencePlanningError(
                 f"{profile.profile_id} exceeded the canonical panel reuse cap"
             )
-        if len(indexes) == 2:
+        if not cadence_adapted and len(indexes) == 2:
             first, second = (shots[indexes[0]], shots[indexes[1]])
             if (
                 first.get("roi_label", ""),
@@ -1133,21 +1435,27 @@ def _plan_reference(
             second["alignment_reasons"] = sorted(set(second_reasons))
 
     durations = [shot["end_time"] - shot["start_time"] for shot in shots]
-    normal = [duration for duration in durations if profile.hold_min_s <= duration <= profile.hold_max_s]
-    emphasis = [duration for duration in durations if profile.emphasis_min_s <= duration <= profile.emphasis_max_s]
-    if len(normal) + len(emphasis) != len(durations):
-        raise ReferencePlanningError(f"{profile.profile_id} produced an unsupported shot duration")
-    if len(normal) / len(durations) < profile.hold_ratio_min:
-        raise ReferencePlanningError(f"{profile.profile_id} normal hold ratio is below the profile minimum")
-    if len(normal) / len(durations) > profile.hold_ratio_max:
-        raise ReferencePlanningError(f"{profile.profile_id} normal hold ratio exceeds the profile maximum")
-    if len(emphasis) / len(durations) < profile.emphasis_ratio_min:
-        raise ReferencePlanningError(f"{profile.profile_id} emphasis ratio is below the profile minimum")
-    if len(emphasis) / len(durations) > profile.emphasis_ratio_max:
-        raise ReferencePlanningError(f"{profile.profile_id} emphasis ratio exceeds the profile maximum")
-    mean = sum(durations) / len(durations)
-    if not profile.mean_shot_min_s <= mean <= profile.mean_shot_max_s:
-        raise ReferencePlanningError(f"{profile.profile_id} mean shot duration is outside the profile band")
+    if cadence_adapted:
+        if any(duration <= 0 for duration in durations):
+            raise ReferencePlanningError(
+                f"{profile.profile_id} produced a non-positive review shot duration"
+            )
+    else:
+        normal = [duration for duration in durations if profile.hold_min_s <= duration <= profile.hold_max_s]
+        emphasis = [duration for duration in durations if profile.emphasis_min_s <= duration <= profile.emphasis_max_s]
+        if len(normal) + len(emphasis) != len(durations):
+            raise ReferencePlanningError(f"{profile.profile_id} produced an unsupported shot duration")
+        if len(normal) / len(durations) < profile.hold_ratio_min:
+            raise ReferencePlanningError(f"{profile.profile_id} normal hold ratio is below the profile minimum")
+        if len(normal) / len(durations) > profile.hold_ratio_max:
+            raise ReferencePlanningError(f"{profile.profile_id} normal hold ratio exceeds the profile maximum")
+        if len(emphasis) / len(durations) < profile.emphasis_ratio_min:
+            raise ReferencePlanningError(f"{profile.profile_id} emphasis ratio is below the profile minimum")
+        if len(emphasis) / len(durations) > profile.emphasis_ratio_max:
+            raise ReferencePlanningError(f"{profile.profile_id} emphasis ratio exceeds the profile maximum")
+        mean = sum(durations) / len(durations)
+        if not profile.mean_shot_min_s <= mean <= profile.mean_shot_max_s:
+            raise ReferencePlanningError(f"{profile.profile_id} mean shot duration is outside the profile band")
     _apply_reference_motion(shots, beats)
     return shots
 
@@ -1159,12 +1467,21 @@ def plan(
     cited_asset_ids_by_section: Mapping[str, Iterable[str]] | None = None,
     citation_alignment_reasons_by_section: Mapping[str, Iterable[str]] | None = None,
     reference_panel_candidates: Sequence[ReferencePanelFallbackCandidate] | None = None,
+    *,
+    allow_source_resolution_warning: bool = False,
+    allow_review_cadence_adaptation: bool = False,
+    allow_review_duration: bool = False,
 ) -> list[dict]:
     """Create a beat-aware, ROI-driven shot list before rendering."""
     span_list = list(spans)
     if profile is not None and reference_panel_candidates is not None:
         return _plan_reference_panel_candidates(
-            span_list, profile, tuple(reference_panel_candidates)
+            span_list,
+            profile,
+            tuple(reference_panel_candidates),
+            allow_source_resolution_warning=allow_source_resolution_warning,
+            allow_review_cadence_adaptation=allow_review_cadence_adaptation,
+            allow_review_duration=allow_review_duration,
         )
     if profile is not None:
         return _plan_reference(
@@ -1173,6 +1490,8 @@ def plan(
             profile,
             cited_asset_ids_by_section,
             citation_alignment_reasons_by_section,
+            allow_review_cadence_adaptation=allow_review_cadence_adaptation,
+            allow_review_duration=allow_review_duration,
         )
     beats = _coalesce_beats(director.analyze_story(span_list))
     shots = visual_scoring.plan_content_aware_scenes(beats, candidates)

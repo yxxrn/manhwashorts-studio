@@ -532,6 +532,9 @@ def _validate_script_passages_v3(
         _fail("script_passages must contain four to six passages")
     passage_ids: set[str] = set()
     source_dialogue = _source_dialogue_ngrams(observations)
+    covered_claim_evidence: dict[str, set[str]] = {
+        claim_id: set() for claim_id in claim_evidence
+    }
     for passage_value in value:
         passage = _mapping(passage_value, "script passage")
         if set(passage) != _SCRIPT_PASSAGE_KEYS:
@@ -560,8 +563,13 @@ def _validate_script_passages_v3(
         required = set().union(
             *(claim_evidence[claim_id] for claim_id in claim_ids)
         )
-        if not required <= evidence:
-            _fail("script passage evidence does not cover its claims")
+        for claim_id in claim_ids:
+            covered_claim_evidence[claim_id].update(evidence & claim_evidence[claim_id])
+    if any(
+        covered_claim_evidence[claim_id] != required
+        for claim_id, required in claim_evidence.items()
+    ):
+        _fail("script passage evidence does not cover its claims")
     final_text = _nonempty_string(value[-1]["text"], "final script passage text").rstrip()
     _validate_v3_ending(outline, final_text, profile)
 

@@ -99,6 +99,21 @@ def test_contractions_and_human_rhythm_are_allowed_without_a_quota():
     assert all(result.passed for result in results)
 
 
+def test_claim_evidence_may_be_distributed_across_passages():
+    passages = _passages()
+    passages[0]["evidence_panel_ids"] = ["panel-a"]
+    passages[1]["evidence_panel_ids"] = ["panel-b"]
+    passages[2]["evidence_panel_ids"] = ["panel-a"]
+    passages[3]["evidence_panel_ids"] = ["panel-b"]
+
+    report = editorial_qc.screen_narrative_naturalness(
+        passages, _claims(), _profile()
+    )
+
+    assert report.claim_evidence_coverage_ratio == 1.0
+    assert "narrative.evidence_missing" not in report.warnings
+
+
 def test_screening_marks_repeated_openings_as_warning_and_does_not_rewrite():
     passages = _passages()
     passages[1]["text"] = passages[0]["text"]

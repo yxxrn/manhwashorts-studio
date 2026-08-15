@@ -8,4 +8,12 @@ Classify balloon geometry as known_nonempty only when normalized bounding boxes 
 
 Protected regions may include subject, face, action, effect, background, and continuity_context. Use normalized coordinates in the unit frame, valid region identifiers, confidence, provenance, and required/minimum-coverage fields. Do not claim geometry from text-only OCR; OCR geometry may be optional supporting evidence.
 
+Geometry must be tight and visibly grounded: bound only the actual visible balloon, subject, face, action, effect, or continuity-critical art. Do not expand a region to the whole panel, a full-height strip, a blank gutter, or an unrelated background merely to express uncertainty. If a tight region cannot be located reliably, return unknown or omit that optional protected kind with an explicit uncertainty rather than claiming broad geometry.
+
+If only text OCR supports a possible balloon, set balloon_mask_status to unknown, return no balloon_regions, use evidence_source visual_geometry_unavailable, and explain the limitation in mask_reason. Never label OCR-only geometry as known_nonempty or known_empty, and never use ocr_text_only as geometry provenance.
+
+When balloon_mask_status is known_nonempty, every balloon region MUST use kind speech_balloon and mask_status known_nonempty. Protected-region kind MUST be exactly one of background, subject, face, action, effect, or continuity_context.
+
+Do not use unknown merely because wording is uncertain or a balloon is small: unknown is only for unavailable or insufficient visual geometry. If inspection establishes that no speech region is present, use known_empty with positive confidence and nonempty visual provenance.
+
 Keep panel_id, source_asset_id, and source_order tied to the supplied panel. Do not invent lineage or facts. Return structured JSON only and preserve uncertainty instead of guessing.

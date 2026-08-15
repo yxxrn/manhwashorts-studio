@@ -371,6 +371,28 @@ def test_v3_accepts_cliffhanger_and_natural_contractions():
     _validate_v3(chapter)
 
 
+def test_v3_allows_claim_evidence_to_be_distributed_across_passages():
+    chapter = _v3_chapter(
+        chapter_prefix="distributed",
+        passages=_passages("distributed", 4, "consequence"),
+        ending_kind="consequence",
+    )
+    passages = chapter["script_passages"]
+    panel_ids = [f"distributed-panel-{index}" for index in range(3)]
+    fact_claim = "distributed-claim-fact"
+    interpretation_claim = "distributed-claim-interpretation"
+    passages[0]["claim_ids"] = [fact_claim]
+    passages[0]["evidence_panel_ids"] = [panel_ids[0]]
+    passages[1]["claim_ids"] = [interpretation_claim]
+    passages[1]["evidence_panel_ids"] = [panel_ids[1]]
+    passages[2]["claim_ids"] = [interpretation_claim]
+    passages[2]["evidence_panel_ids"] = [panel_ids[2]]
+    passages[3]["claim_ids"] = [fact_claim]
+    passages[3]["evidence_panel_ids"] = [panel_ids[0]]
+
+    _validate_v3(chapter)
+
+
 def test_v3_target_word_range_is_advisory_not_a_hard_failure():
     chapter = _v3_chapter(
         chapter_prefix="short-grounded",

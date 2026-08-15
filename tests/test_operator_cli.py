@@ -288,6 +288,32 @@ def test_operator_menu_can_exit_without_provider_or_database(monkeypatch):
     assert any("Exit" in line or "Keluar" in line for line in output)
 
 
+def test_main_uses_isolated_state_and_review_dirs_from_environment(monkeypatch, tmp_path):
+    cli = _cli_module()
+    import app.db as db_module
+
+    captured = {}
+
+    class FakeCLI:
+        def __init__(self, *, state_dir, review_dir):
+            captured["state_dir"] = state_dir
+            captured["review_dir"] = review_dir
+
+        def run(self):
+            return 0
+
+    state_dir = tmp_path / "state"
+    review_dir = tmp_path / "review"
+    monkeypatch.setenv("MS_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MS_REVIEW_DIR", str(review_dir))
+    monkeypatch.setattr(db_module, "init_db", lambda: None)
+    monkeypatch.setattr(cli, "OperatorCLI", FakeCLI)
+
+    assert cli.main() == 0
+    assert Path(captured["state_dir"]) == state_dir
+    assert Path(captured["review_dir"]) == review_dir
+
+
 def test_safe_error_text_never_contains_secret_or_raw_provider_body():
     cli = _cli_module()
     secret = "sk-test-secret-123456"
@@ -300,6 +326,19 @@ def test_safe_error_text_never_contains_secret_or_raw_provider_body():
     assert secret not in message
     assert "Bearer" not in message
     assert "body" not in message
+
+
+def test_one_shot_operator_secret_env_is_consumed_without_printing(monkeypatch):
+    cli = _cli_module()
+    secret = "operator-process-memory-secret"
+    monkeypatch.setenv("MS_OPERATOR_API_KEY", secret)
+    output = []
+
+    value = cli.read_operator_secret("API key (hidden): ", output_fn=output.append)
+
+    assert value == secret
+    assert "MS_OPERATOR_API_KEY" not in __import__("os").environ
+    assert secret not in "\n".join(output)
 
 
 def test_setup_provider_uses_hidden_key_and_existing_byok_boundary(monkeypatch):
@@ -577,6 +616,48 @@ def test_operator_run_projects_isolates_failures_and_preserves_safe_states():
     assert results[0]["state"] == "NEEDS_REVIEW"
     assert results[1]["state"] == "READY_TO_RENDER"
     assert calls == [("bad", "operator-1"), ("good", "operator-1")]
+
+
+def test_operator_review_run_passes_source_and_output_boundaries_to_service(tmp_path):
+    cli = _cli_module()
+    captured = []
+
+    class Record:
+        def as_dict(self):
+            return {"job_id": "chapter-1", "state": "REVIEW_PREVIEW_READY", "error_code": ""}
+
+    class Service:
+        def run_project(self, _db, project_id, actor_id="", **kwargs):
+            captured.append((project_id, actor_id, kwargs))
+            return Record()
+
+    source_root = tmp_path / "chapter"
+    output_root = tmp_path / "output"
+    results = cli.run_projects(
+        object(),
+        ["chapter-1"],
+        service_factory=lambda **_kwargs: Service(),
+        db_factory=lambda: object(),
+        actor_id="operator-1",
+        review_only_preview=True,
+        review_source_root=source_root,
+        review_output_dir=output_root,
+        review_source_upscale_policy="review_silent_source_upscale_v1",
+    )
+
+    assert results[0]["state"] == "REVIEW_PREVIEW_READY"
+    assert captured == [
+        (
+            "chapter-1",
+            "operator-1",
+            {
+                "review_only_preview": True,
+                "review_source_upscale_policy": "review_silent_source_upscale_v1",
+                "review_source_root": source_root,
+                "review_output_dir": output_root,
+            },
+        )
+    ]
 
 
 def test_operator_run_projects_propagates_ctrl_c_without_converting_it_to_a_fake_failure():

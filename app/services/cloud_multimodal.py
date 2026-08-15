@@ -9,12 +9,13 @@ Provider output is untrusted JSON.  Canonical hashes are always computed here.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
@@ -27,6 +28,7 @@ from app.services import (
     script,
     strip_segmentation,
     visual_scoring,
+    visual_narrative_repair,
 )
 from app.services.vision_adapter import VisionObservationRequest
 
@@ -34,6 +36,22 @@ CAUSAL_MAP_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "clou
 CAUSAL_MAP_PROMPT_VERSION = "cloud-causal-map-v1"
 STRIP_BOUNDARY_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "strip_boundary_assessment_v1.txt"
 STRIP_BOUNDARY_PROMPT_VERSION = "strip-boundary-assessment-v1"
+# Keep provider response envelopes to one image: this configured endpoint has
+# returned incomplete structured JSON for multi-image requests.  Every ordered
+# panel is still processed; local reconciliation owns complete coverage.
+VISUAL_REQUEST_MAX_PANELS = 1
+VISUAL_REQUEST_MAX_ESTIMATED_BYTES = 1_500_000
+VISUAL_REQUEST_OVERLAP = 0
+_REVIEW_ERROR_CODE_PATTERN = re.compile(
+    r"\b(?:cloud|visual|reference|review)\.[a-z0-9_.-]+\b"
+)
+
+
+def _review_failure_code(message: str) -> str:
+    """Extract only a known stable code from a local review-stage error."""
+
+    match = _REVIEW_ERROR_CODE_PATTERN.search(str(message))
+    return match.group(0) if match else "review.preview_failed"
 
 
 class CloudStageError(RuntimeError):
@@ -51,6 +69,7 @@ class ChapterState(StrEnum):
     STORY_MAPPED = "STORY_MAPPED"
     SCRIPTED = "SCRIPTED"
     READY_TO_RENDER = "READY_TO_RENDER"
+    REVIEW_PREVIEW_READY = "REVIEW_PREVIEW_READY"
     RENDERED = "RENDERED"
     NEEDS_REVIEW = "NEEDS_REVIEW"
     FAILED = "FAILED"
@@ -392,6 +411,7 @@ def _prompt_specs() -> dict[str, tuple[str, str, str]]:
         "story_map": _load_causal_prompt(),
         "narration": narrative_identity.load_narrative_instruction("sharp_friend_v1"),
         "segmentation": _load_strip_boundary_prompt(),
+        "visual_narrative_repair": visual_narrative_repair.load_repair_prompt(),
     }
 
 
@@ -464,14 +484,26 @@ class CloudStageRunner:
     def assess_strip_boundaries(self, request: strip_segmentation.BoundaryRequest) -> Mapping[str, Any]:
         """Ask the pinned model to validate candidates and protected regions."""
         prompt = self.prompts["segmentation"]
-        return self._call(
-            lambda: self.provider.complete_json(
-                stage="strip_segmentation",
-                prompt_version=prompt[0],
-                prompt_sha256=prompt[1],
-                prompt_text=prompt[2],
-                payload=request.as_payload(),
+        payload = request.as_payload()
+        for attempt in range(self.max_attempts):
+            raw = self._call(
+                lambda attempt=attempt: self.provider.complete_json(
+                    stage="strip_segmentation",
+                    prompt_version=prompt[0],
+                    prompt_sha256=prompt[1],
+                    prompt_text=prompt[2],
+                    payload={**payload, "lineage_retry_attempt": attempt},
+                )
             )
+            if not isinstance(raw, Mapping):
+                return raw
+            if (
+                raw.get("source_asset_id") == request.source_asset_id
+                and raw.get("source_checksum") == request.source_checksum
+            ):
+                return raw
+        raise strip_segmentation.StripSegmentationError(
+            "segmentation.provider_lineage_invalid"
         )
 
     @staticmethod
@@ -491,63 +523,111 @@ class CloudStageRunner:
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
             return VisualStageResult.from_dict(cached)
         instruction_version, instruction_sha256, _ = analyzer_contract.load_analyzer_instruction()
-        request = VisionObservationRequest(
-            analysis_run_id=f"cloud-{_hash(source)[:24]}",
-            instruction_version=instruction_version,
-            instruction_sha256=instruction_sha256,
-            chunk_index=0,
-            panels=tuple(
-                {
-                    **item.descriptor(),
-                    "payload": item.payload,
-                }
-                for item in ordered
-            ),
-            visual_instruction_version=prompt[0],
-            visual_instruction_sha256=prompt[1],
-        )
-        raw_rows = self._call(lambda: self.provider.observe(request))
-        if not isinstance(raw_rows, list) or len(raw_rows) != len(ordered):
-            raise CloudStageError("cloud.provider_response_invalid")
-        reconciled: list[dict[str, Any]] = []
-        for item, raw in zip(ordered, raw_rows, strict=True):
-            if not isinstance(raw, Mapping) or raw.get("panel_id") != item.panel_id:
-                raise CloudStageError("cloud.panel_lineage_invalid")
-            raw_visual = raw.get("visual_evidence")
-            if not isinstance(raw_visual, Mapping):
-                raise CloudStageError("visual.balloon_mask_unknown", reviewable=True)
-            if raw_visual.get("evidence_hash"):
-                raise CloudStageError("cloud.provider_hash_forbidden")
-            visual = dict(raw_visual)
-            visual.setdefault("contract_version", visual_scoring.VISUAL_EVIDENCE_CONTRACT_VERSION)
-            visual.pop("evidence_hash", None)
-            try:
-                merged, evidence = visual_scoring.ensure_panel_visual_evidence(
-                    {**dict(raw), "visual_evidence": visual},
-                    panel_id=item.panel_id,
-                    source_asset_id=item.source_asset_id,
-                    source_order=item.source_order,
+        reconciled_by_id: dict[str, dict[str, Any]] = {}
+        for chunk_index, chunk in enumerate(_visual_panel_chunks(ordered)):
+            request_panels = []
+            for item in chunk:
+                provider_payload, provider_mime = _visual_provider_payload(item)
+                request_panels.append(
+                    {
+                        **item.descriptor(),
+                        "mime_type": provider_mime,
+                        "payload": provider_payload,
+                    }
                 )
-            except visual_scoring.VisualEvidenceError as exc:
-                raise CloudStageError(getattr(exc, "code", "cloud.visual_evidence_invalid")) from None
-            if evidence.balloon_mask_status == "unknown":
-                raise CloudStageError("visual.balloon_mask_unknown", reviewable=True)
-            source_values = {evidence.evidence_source, *(region.evidence_source for region in evidence.balloon_regions)}
-            if any("ocr" in value.lower() for value in source_values):
-                raise CloudStageError("visual.balloon_geometry_invalid", reviewable=True)
-            evidence_json = visual_scoring.panel_visual_evidence_json(evidence)
-            merged["visual_evidence"] = evidence_json
-            reconciled.append(
-                {
-                    "panel_id": item.panel_id,
-                    "source_asset_id": item.source_asset_id,
-                    "source_order": item.source_order,
-                    "source_checksum": item.source_checksum,
-                    "observation": merged,
-                    "visual_evidence": evidence_json,
-                    "evidence_hash": evidence_json["evidence_hash"],
-                }
+            request = VisionObservationRequest(
+                analysis_run_id=f"cloud-{_hash(source)[:24]}",
+                instruction_version=instruction_version,
+                instruction_sha256=instruction_sha256,
+                chunk_index=chunk_index,
+                panels=tuple(request_panels),
+                visual_instruction_version=prompt[0],
+                visual_instruction_sha256=prompt[1],
             )
+            retryable_visual_codes = {
+                "cloud.provider_response_invalid",
+                "cloud.panel_lineage_invalid",
+                "cloud.provider_hash_forbidden",
+                "cloud.visual_evidence_invalid",
+                "visual.balloon_mask_unknown",
+                "visual.balloon_geometry_invalid",
+            }
+            for attempt in range(self.max_attempts):
+                try:
+                    attempt_request = replace(
+                        request,
+                        analysis_run_id=f"{request.analysis_run_id}-attempt-{attempt}",
+                    )
+                    raw_rows = self._call(
+                        lambda request=attempt_request: self.provider.observe(request)
+                    )
+                    if not isinstance(raw_rows, list) or len(raw_rows) != len(chunk):
+                        raise CloudStageError("cloud.provider_response_invalid")
+                    chunk_reconciled: dict[str, dict[str, Any]] = {}
+                    for item, raw in zip(chunk, raw_rows, strict=True):
+                        if not isinstance(raw, Mapping) or raw.get("panel_id") != item.panel_id:
+                            raise CloudStageError("cloud.panel_lineage_invalid")
+                        if item.panel_id in reconciled_by_id:
+                            continue
+                        if item.panel_id in chunk_reconciled:
+                            raise CloudStageError("cloud.panel_lineage_invalid")
+                        raw_visual = raw.get("visual_evidence")
+                        if not isinstance(raw_visual, Mapping):
+                            raise CloudStageError("visual.balloon_mask_unknown", reviewable=True)
+                        if raw_visual.get("evidence_hash"):
+                            raise CloudStageError("cloud.provider_hash_forbidden")
+                        visual = dict(raw_visual)
+                        visual.setdefault(
+                            "contract_version",
+                            visual_scoring.VISUAL_EVIDENCE_CONTRACT_VERSION,
+                        )
+                        visual.pop("evidence_hash", None)
+                        try:
+                            merged, evidence = visual_scoring.ensure_panel_visual_evidence(
+                                {**dict(raw), "visual_evidence": visual},
+                                panel_id=item.panel_id,
+                                source_asset_id=item.source_asset_id,
+                                source_order=item.source_order,
+                            )
+                        except visual_scoring.VisualEvidenceError as exc:
+                            raise CloudStageError(
+                                getattr(exc, "code", "cloud.visual_evidence_invalid")
+                            ) from None
+                        if evidence.balloon_mask_status == "unknown":
+                            raise CloudStageError(
+                                "visual.balloon_mask_unknown", reviewable=True
+                            )
+                        source_values = {
+                            evidence.evidence_source,
+                            *(region.evidence_source for region in evidence.balloon_regions),
+                        }
+                        if any("ocr" in value.lower() for value in source_values):
+                            raise CloudStageError(
+                                "visual.balloon_geometry_invalid", reviewable=True
+                            )
+                        evidence_json = visual_scoring.panel_visual_evidence_json(evidence)
+                        merged["visual_evidence"] = evidence_json
+                        chunk_reconciled[item.panel_id] = {
+                            "panel_id": item.panel_id,
+                            "source_asset_id": item.source_asset_id,
+                            "source_order": item.source_order,
+                            "source_checksum": item.source_checksum,
+                            "observation": merged,
+                            "visual_evidence": evidence_json,
+                            "evidence_hash": evidence_json["evidence_hash"],
+                        }
+                    reconciled_by_id.update(chunk_reconciled)
+                    break
+                except CloudStageError as exc:
+                    if (
+                        exc.code in retryable_visual_codes
+                        and attempt + 1 < self.max_attempts
+                    ):
+                        continue
+                    raise
+        if tuple(reconciled_by_id) != tuple(item.panel_id for item in ordered):
+            raise CloudStageError("cloud.panel_coverage_incomplete")
+        reconciled = [reconciled_by_id[item.panel_id] for item in ordered]
         result = VisualStageResult(
             panels=tuple(reconciled),
             source_hash=_hash(source),
@@ -569,19 +649,38 @@ class CloudStageRunner:
         key = _cache_key("story_map", source, self.model_identity, prompt)
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
             return StoryMapResult.from_dict(cached)
-        raw = self._call(
-            lambda: self.provider.complete_json(
-                stage="story_map",
-                prompt_version=prompt[0],
-                prompt_sha256=prompt[1],
-                prompt_text=prompt[2],
-                payload=source,
-            )
-        )
-        result = self._reconcile_story_map(raw, visual.panel_ids, prompt)
-        if self.cache is not None:
-            self.cache.put(key, result.as_dict())
-        return result
+        retryable_story_codes = {
+            "cloud.provider_request_failed",
+            "cloud.provider_response_invalid",
+            "cloud.provider_hash_forbidden",
+            "cloud.panel_coverage_incomplete",
+            "cloud.story_map_invalid",
+            "cloud.story_claim_invalid",
+        }
+        for attempt in range(self.max_attempts):
+            attempt_source = {**source, "retry_attempt": attempt}
+            try:
+                raw = self._call(
+                    lambda attempt_source=attempt_source: self.provider.complete_json(
+                        stage="story_map",
+                        prompt_version=prompt[0],
+                        prompt_sha256=prompt[1],
+                        prompt_text=prompt[2],
+                        payload=attempt_source,
+                    )
+                )
+                result = self._reconcile_story_map(raw, visual.panel_ids, prompt)
+            except CloudStageError as exc:
+                if (
+                    exc.code in retryable_story_codes
+                    and attempt + 1 < self.max_attempts
+                ):
+                    continue
+                raise
+            if self.cache is not None:
+                self.cache.put(key, result.as_dict())
+            return result
+        raise CloudStageError("cloud.story_map_invalid")
 
     def _reconcile_story_map(
         self,
@@ -636,93 +735,578 @@ class CloudStageRunner:
             prompt_sha256=prompt[1],
         )
 
-    def run_narration(self, visual: VisualStageResult, story_map: StoryMapResult) -> NarrationResult:
+    @staticmethod
+    def _narration_observations(
+        visual: VisualStageResult,
+        panels: Sequence[CloudPanelInput] | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Reconcile the persisted visual ledger into the analyzer envelope.
+
+        The cloud narration response is intentionally limited to prose and its
+        claim graph.  Panel observations, bounds, checksums, and coverage are
+        already locally reconciled by the visual stage and must not be
+        regenerated or trusted from a second provider response.
+        """
+
+        visual_by_id = {str(item.get("panel_id")): item for item in visual.panels}
+        if panels is None:
+            ordered_panels: tuple[CloudPanelInput, ...] = ()
+            for item in visual.panels:
+                bounds = item.get("panel_bounds")
+                dimensions = item.get("source_dimensions")
+                if not isinstance(bounds, (list, tuple)) or not isinstance(dimensions, (list, tuple)):
+                    raise CloudStageError("cloud.panel_lineage_invalid")
+                try:
+                    ordered_panels += (
+                        CloudPanelInput(
+                            panel_id=str(item["panel_id"]),
+                            source_asset_id=str(item["source_asset_id"]),
+                            source_order=int(item["source_order"]),
+                            mime_type="image/png",
+                            payload=b"visual-ledger-payload",
+                            source_checksum=str(item.get("source_checksum", "")),
+                            panel_bounds=tuple(int(value) for value in bounds),
+                            source_dimensions=tuple(int(value) for value in dimensions),
+                            strip_region_id=str(item.get("strip_region_id", item["panel_id"])),
+                            coverage_map_version=str(item.get("coverage_map_version", "")),
+                            coverage_map_hash=str(item.get("coverage_map_hash", "")),
+                        ),
+                    )
+                except (CloudStageError, KeyError, TypeError, ValueError):
+                    raise CloudStageError("cloud.panel_lineage_invalid") from None
+        else:
+            ordered_panels = tuple(panels)
+
+        if tuple(panel.panel_id for panel in ordered_panels) != visual.panel_ids:
+            raise CloudStageError("cloud.panel_lineage_invalid")
+        observations: list[dict[str, Any]] = []
+        for source_index, panel in enumerate(ordered_panels):
+            visual_item = visual_by_id.get(panel.panel_id)
+            if visual_item is None or not isinstance(visual_item.get("observation"), Mapping):
+                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            source = visual_item["observation"]
+            required_lists = (
+                "visible_facts",
+                "dialogue_or_ocr",
+                "inferences",
+                "uncertainties",
+                "evidence_refs",
+            )
+            if any(not isinstance(source.get(key), list) for key in required_lists):
+                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            clean_lists: dict[str, list[str]] = {}
+            for key in required_lists:
+                values = source[key]
+                normalized_values: list[str] = []
+                structured_text_keys = {
+                    "dialogue_or_ocr": ("text", "ocr_text"),
+                    "visible_facts": ("fact",),
+                    "inferences": ("inference",),
+                    "uncertainties": ("uncertainty",),
+                }.get(key)
+                for value in values:
+                    if isinstance(value, str):
+                        normalized_values.append(value)
+                    elif structured_text_keys is not None and isinstance(value, Mapping):
+                        for structured_text_key in structured_text_keys:
+                            structured_text = value.get(structured_text_key)
+                            if isinstance(structured_text, str):
+                                normalized_values.append(structured_text)
+                                break
+                        else:
+                            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+                    else:
+                        raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+                values = normalized_values
+                if key in {"dialogue_or_ocr", "inferences", "uncertainties"}:
+                    values = [value for value in values if value.strip()]
+                clean_lists[key] = list(values)
+            evidence_refs = clean_lists["evidence_refs"]
+            if panel.panel_id not in evidence_refs:
+                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            if panel.panel_bounds is None or panel.source_dimensions is None:
+                raise CloudStageError("cloud.panel_lineage_invalid")
+            x0, y0, x1, y1 = panel.panel_bounds
+            observation = {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "strip_region_id": panel.strip_region_id or panel.panel_id,
+                "source_index": source_index,
+                "region_bounds": {
+                    "x": x0,
+                    "y": y0,
+                    "width": x1 - x0,
+                    "height": y1 - y0,
+                },
+                "coverage_map_version": panel.coverage_map_version,
+                "coverage_map_hash": panel.coverage_map_hash,
+                **clean_lists,
+            }
+            observations.append(observation)
+
+        panel_ids = list(visual.panel_ids)
+        entity_panels: dict[str, list[str]] = {}
+        entity_names: dict[str, str] = {}
+        for panel_id in panel_ids:
+            source = visual_by_id[panel_id]["observation"]
+            for entity in source.get("entities", []):
+                if not isinstance(entity, str) or not entity.strip():
+                    continue
+                canonical = entity.strip()
+                entity_key = canonical.casefold()
+                entity_names.setdefault(entity_key, canonical)
+                entity_panels.setdefault(entity_key, []).append(panel_id)
+        if not entity_names:
+            # A structural continuity bucket is not a semantic identity or
+            # narrative claim; it preserves the validator's nonempty ledger
+            # invariant when visual evidence contains no named entity.
+            entity_names["observed_context"] = "observed context"
+            entity_panels["observed_context"] = list(panel_ids)
+        entities = [
+            {
+                "entity_id": f"visual-entity-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}",
+                "canonical_name": entity_names[key],
+                "aliases": [],
+                "panel_ids": list(dict.fromkeys(entity_panels[key])),
+            }
+            for key in sorted(entity_names)
+        ]
+        continuity = {
+            "chunks": [{"chunk_id": "visual-reconciled-chunk", "panel_ids": panel_ids}],
+            "entities": entities,
+            "motives": [],
+            "state_changes": [],
+            "causal_links": [],
+            "reconciled_after_final_chunk": True,
+        }
+        coverage = {
+            "total_panels": len(panel_ids),
+            "processed_panels": len(panel_ids),
+            "total_canonical_panels": len(panel_ids),
+            "persisted_canonical_panels": len(panel_ids),
+            "processed_canonical_panel_count": len(panel_ids),
+            "panel_ids": panel_ids,
+            "source_content_coverage_ratio": 1.0,
+            "unresolved_material_area": 0,
+            "material_unresolved_regions": [],
+            "reconciliation_complete": True,
+        }
+        return observations, {"continuity_ledger": continuity, "coverage_manifest": coverage}
+
+    @staticmethod
+    def _normalize_narration_claims(value: Any) -> list[dict[str, Any]]:
+        if isinstance(value, Mapping):
+            raw_claims = value.get("claims")
+            if raw_claims is None:
+                raw_claims = list(value.values())
+        elif isinstance(value, list):
+            raw_claims = value
+        else:
+            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+        if not isinstance(raw_claims, list) or not raw_claims:
+            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+        claims: list[dict[str, Any]] = []
+        for raw_claim in raw_claims:
+            if not isinstance(raw_claim, Mapping):
+                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            claim = dict(raw_claim)
+            if "evidence_panel_ids" not in claim and "panel_ids" in claim:
+                claim["evidence_panel_ids"] = claim.pop("panel_ids")
+            # The provider's compact envelope omits this classifier.  Treating
+            # an unclassified narrative claim as an interpretation is the
+            # conservative local metadata choice; qualification remains
+            # mandatory and the shared validator still owns all claim gates.
+            claim.setdefault("claim_type", "interpretation")
+            claims.append(claim)
+        return claims
+
+    @staticmethod
+    def _claims_from_causal_map(
+        script_passages: Any,
+        story_map: StoryMapResult,
+    ) -> list[dict[str, Any]]:
+        """Reuse only locally validated causal claims when the graph is omitted.
+
+        Some compatible models return passage prose and claim IDs while
+        omitting the duplicate evidence-graph envelope.  Reusing the exact
+        causal-map records is safe because that graph was already reconciled
+        against every ordered panel; no claim text or evidence is invented.
+        """
+
+        if not isinstance(script_passages, list) or not script_passages:
+            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+        claims_by_id = {
+            str(claim.get("claim_id")): dict(claim)
+            for claim in story_map.claims
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        referenced_ids: list[str] = []
+        for passage in script_passages:
+            if not isinstance(passage, Mapping):
+                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            claim_ids = passage.get("claim_ids")
+            if not isinstance(claim_ids, list) or not claim_ids:
+                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            for claim_id in claim_ids:
+                if not isinstance(claim_id, str) or claim_id not in claims_by_id:
+                    raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+                referenced_ids.append(claim_id)
+        return [claims_by_id[claim_id] for claim_id in dict.fromkeys(referenced_ids)]
+
+    def run_narration(
+        self,
+        visual: VisualStageResult,
+        story_map: StoryMapResult,
+        *,
+        panels: Sequence[CloudPanelInput] | None = None,
+    ) -> NarrationResult:
         prompt = self.prompts["narration"]
+        observations, structural = self._narration_observations(visual, panels)
         source = {
             "panel_ids": list(visual.panel_ids),
             "visual_source_hash": visual.source_hash,
+            "visual_observations": observations,
             "story_map": story_map.as_dict(),
+            "duration_contract": {
+                "minimum_s": 50.0,
+                "maximum_s": 60.0,
+                "target_word_min": 115,
+                "target_word_max": 125,
+            },
         }
         key = _cache_key("narration", source, self.model_identity, prompt)
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
             return NarrationResult.from_dict(cached)
-        raw = self._call(
-            lambda: self.provider.complete_json(
-                stage="narration",
-                prompt_version=prompt[0],
-                prompt_sha256=prompt[1],
-                prompt_text=prompt[2],
-                payload=source,
-            )
+        retryable_codes = {
+            "cloud.provider_request_failed",
+            "cloud.provider_response_invalid",
+            "cloud.narrative_not_grounded",
+            "cloud.narrative_claim_unmapped",
+            "cloud.narrative_qc_blocked",
+            "cloud.narrative_duration_out_of_range",
+        }
+        for attempt in range(self.max_attempts):
+            error: CloudStageError | None = None
+            try:
+                raw = self._call(
+                    lambda attempt=attempt: self.provider.complete_json(
+                        stage="narration",
+                        prompt_version=prompt[0],
+                        prompt_sha256=prompt[1],
+                        prompt_text=prompt[2],
+                        payload={**source, "retry_attempt": attempt},
+                    )
+                )
+                if not isinstance(raw, Mapping):
+                    raise CloudStageError("cloud.provider_response_invalid")
+                provider_output = raw.get("analyzer_output", raw)
+                if not isinstance(provider_output, Mapping):
+                    raise CloudStageError("cloud.provider_response_invalid")
+                raw_claims = provider_output.get("evidence_graph")
+                if raw_claims is None:
+                    raw_claims = self._claims_from_causal_map(
+                        provider_output.get("script_passages"),
+                        story_map,
+                    )
+                claims_list = self._normalize_narration_claims(raw_claims)
+                output = {
+                    "observations": observations,
+                    "continuity_ledger": structural["continuity_ledger"],
+                    "coverage_manifest": structural["coverage_manifest"],
+                    "evidence_graph": {"claims": claims_list},
+                    "narrative_outline": provider_output.get("narrative_outline"),
+                    "script_passages": provider_output.get("script_passages"),
+                }
+                analyzer_contract.validate_analyzer_output(
+                    output,
+                    expected_panel_ids=visual.panel_ids,
+                    narrative_profile_id="sharp_friend_v1",
+                )
+                claims = {claim["claim_id"]: claim for claim in claims_list}
+                passages = tuple(dict(item) for item in output["script_passages"])
+                report = editorial_qc.screen_narrative_naturalness(
+                    passages,
+                    claims,
+                    narrative_identity.SHARP_FRIEND_V1,
+                )
+                checks = quality.check_narrative_naturalness(report)
+                if any(not check.passed and check.severity == "error" for check in checks):
+                    raise CloudStageError("cloud.narrative_qc_blocked", reviewable=True)
+                spoken_text = "\n\n".join(str(item["text"]).strip() for item in passages)
+                display_words = tuple(re.findall(r"[A-Z0-9]+", spoken_text.upper()))
+                if not display_words or any(not word.isalnum() for word in display_words):
+                    raise CloudStageError("cloud.display_derivation_invalid")
+                duration = script.estimate_duration(spoken_text, "dramatic")
+                if not 50.0 <= duration <= 60.0:
+                    raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
+                qc_report = {
+                    "profile_id": "sharp_friend_v1",
+                    "profile_sha256": narrative_identity.SHARP_FRIEND_V1.contract_sha256,
+                    "total_words": report.total_words,
+                    "estimated_duration_s": duration,
+                    "ending_kind": output["narrative_outline"]["ending_kind"],
+                    "display_word_count": len(display_words),
+                    "timing_source": "voice_required",
+                    "warnings": list(report.warnings),
+                    "signals": asdict(report),
+                }
+                result = NarrationResult(
+                    spoken_text=spoken_text,
+                    display_words=display_words,
+                    passages=passages,
+                    ending_kind=str(output["narrative_outline"]["ending_kind"]),
+                    word_count=report.total_words,
+                    estimated_duration_s=duration,
+                    qc_report=qc_report,
+                    model_identity_hash=self.model_identity.identity_hash,
+                    prompt_version=prompt[0],
+                    prompt_sha256=prompt[1],
+                    observations=tuple(observations),
+                    continuity_ledger=dict(output["continuity_ledger"]),
+                    evidence_graph=dict(output["evidence_graph"]),
+                    story_spine=dict(output["narrative_outline"]["story_spine"]),
+                )
+                if self.cache is not None:
+                    self.cache.put(key, result.as_dict())
+                return result
+            except analyzer_contract.AnalyzerContractError:
+                error = CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            except CloudStageError as caught:
+                error = caught
+            if error is None:
+                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            if error.code not in retryable_codes or attempt + 1 >= self.max_attempts:
+                raise error
+        raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+
+    def run_visual_narrative_repair(
+        self,
+        visual: VisualStageResult,
+        story_map: StoryMapResult,
+        narration: NarrationResult | None,
+        ledger: visual_narrative_repair.FeasibleVisualLedger,
+        section_to_beats: Mapping[str, Sequence[str]],
+        *,
+        panels: Sequence[CloudPanelInput] | None = None,
+    ) -> NarrationResult:
+        """Repair only missing visual sections using the same pinned model."""
+
+        prompt = self.prompts["visual_narrative_repair"]
+        observations, structural = self._narration_observations(visual, panels)
+        feasible_ids = set(ledger.feasible_panel_ids)
+        feasible_observations = [
+            dict(item)
+            for item in visual.panels
+            if str(item.get("panel_id", "")) in feasible_ids
+        ]
+        repair_narration = (
+            narration.as_dict()
+            if narration is not None
+            else {
+                "spoken_text": "",
+                "passages": [],
+                "ending_kind": "",
+                "initial_failure_code": "cloud.narrative_not_grounded",
+            }
         )
-        if not isinstance(raw, Mapping):
-            raise CloudStageError("cloud.provider_response_invalid")
-        output = raw.get("analyzer_output", raw)
-        if not isinstance(output, Mapping):
-            raise CloudStageError("cloud.provider_response_invalid")
-        try:
-            analyzer_contract.validate_analyzer_output(
-                output,
-                expected_panel_ids=visual.panel_ids,
-                narrative_profile_id="sharp_friend_v1",
-            )
-        except analyzer_contract.AnalyzerContractError:
-            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True) from None
-        claims = {
-            claim["claim_id"]: claim
-            for claim in output["evidence_graph"]["claims"]
-            if isinstance(claim, Mapping) and isinstance(claim.get("claim_id"), str)
+        payload = visual_narrative_repair.build_repair_payload(
+            narration=repair_narration,
+            story_map=story_map.as_dict(),
+            ledger=ledger,
+            section_to_beats=section_to_beats,
+            feasible_observations=feasible_observations,
+        )
+        source = {
+            "visual_source_hash": visual.source_hash,
+            "story_map_hash": story_map.story_map_hash,
+            "narration_hash": _hash(repair_narration),
+            "missing_sections": payload["missing_sections"],
+            "ledger_hash": ledger.ledger_hash,
+            "section_to_beats": payload["section_to_beats"],
         }
-        story_claim_ids = {claim["claim_id"] for claim in story_map.claims}
-        narrative_claim_ids = {
-            claim["claim_id"]
-            for claim in output["evidence_graph"].get("claims", [])
-            if isinstance(claim, Mapping) and isinstance(claim.get("claim_id"), str)
-        }
-        if not narrative_claim_ids <= story_claim_ids:
-            raise CloudStageError("cloud.narrative_claim_unmapped", reviewable=True)
-        passages = tuple(dict(item) for item in output["script_passages"])
-        report = editorial_qc.screen_narrative_naturalness(passages, claims, narrative_identity.SHARP_FRIEND_V1)
-        checks = quality.check_narrative_naturalness(report)
-        if any(not check.passed and check.severity == "error" for check in checks):
-            raise CloudStageError("cloud.narrative_qc_blocked", reviewable=True)
-        spoken_text = "\n\n".join(str(item["text"]).strip() for item in passages)
-        display_words = tuple(re.findall(r"[A-Z0-9]+", spoken_text.upper()))
-        if not display_words or any(not word.isalnum() for word in display_words):
-            raise CloudStageError("cloud.display_derivation_invalid")
-        duration = script.estimate_duration(spoken_text, "dramatic")
-        if not 50.0 <= duration <= 60.0:
-            raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
-        qc_report = {
-            "profile_id": "sharp_friend_v1",
-            "profile_sha256": narrative_identity.SHARP_FRIEND_V1.contract_sha256,
-            "total_words": report.total_words,
-            "estimated_duration_s": duration,
-            "ending_kind": output["narrative_outline"]["ending_kind"],
-            "display_word_count": len(display_words),
-            "timing_source": "voice_required",
-            "warnings": list(report.warnings),
-            "signals": asdict(report),
-        }
-        result = NarrationResult(
-            spoken_text=spoken_text,
-            display_words=display_words,
-            passages=passages,
-            ending_kind=str(output["narrative_outline"]["ending_kind"]),
-            word_count=report.total_words,
-            estimated_duration_s=duration,
-            qc_report=qc_report,
+        key = visual_narrative_repair.repair_cache_key(
+            ledger=ledger,
             model_identity_hash=self.model_identity.identity_hash,
-            prompt_version=prompt[0],
             prompt_sha256=prompt[1],
-            observations=tuple(dict(item) for item in output["observations"]),
-            continuity_ledger=dict(output["continuity_ledger"]),
-            evidence_graph=dict(output["evidence_graph"]),
-            story_spine=dict(output["narrative_outline"]["story_spine"]),
+            narration_hash=str(source["narration_hash"]),
         )
-        if self.cache is not None:
-            self.cache.put(key, result.as_dict())
-        return result
+        allowed_claim_ids = {
+            str(claim.get("claim_id"))
+            for claim in story_map.claims
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+
+        def reconcile_repaired_references(
+            raw_claims: object,
+            raw_passages: object,
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], tuple[dict[str, Any], ...]]:
+            claims = self._normalize_narration_claims(raw_claims)
+            if not isinstance(raw_passages, list):
+                raise visual_narrative_repair.VisualNarrativeRepairError(
+                    "repair passages are malformed",
+                    "visual.narrative_repair_ungrounded",
+                )
+            repaired_payload, remaps = visual_narrative_repair.remap_same_beat_panel_citations(
+                {"claims": claims, "passages": raw_passages},
+                ledger=ledger,
+                section_to_beats=section_to_beats,
+            )
+            claims = self._normalize_narration_claims(repaired_payload["claims"])
+            passages = [dict(item) for item in repaired_payload["passages"]]
+            visual_narrative_repair.validate_repaired_panel_references(
+                {"claims": claims, "passages": passages},
+                ledger=ledger,
+                allowed_claim_ids=allowed_claim_ids,
+            )
+            return claims, passages, remaps
+
+        if self.cache is not None and (cached := self.cache.get(key)) is not None:
+            cached_result = NarrationResult.from_dict(cached)
+            claims, passages, remaps = reconcile_repaired_references(
+                cached_result.evidence_graph.get("claims"),
+                list(cached_result.passages),
+            )
+            visual_narrative_repair.validate_repaired_section_visual_coverage(
+                passages,
+                ledger=ledger,
+                section_to_beats=section_to_beats,
+                missing_sections=visual_narrative_repair.missing_visual_sections(
+                    ledger, section_to_beats
+                ),
+            )
+            if not remaps:
+                return cached_result
+            evidence_graph = dict(cached_result.evidence_graph)
+            evidence_graph["claims"] = claims
+            qc_report = dict(cached_result.qc_report)
+            qc_report["visual_section_remap_v1"] = list(remaps)
+            return replace(
+                cached_result,
+                passages=tuple(passages),
+                evidence_graph=evidence_graph,
+                qc_report=qc_report,
+            )
+
+        retryable_codes = {
+            "cloud.provider_request_failed",
+            "cloud.provider_response_invalid",
+            "cloud.narrative_not_grounded",
+            "cloud.narrative_duration_out_of_range",
+            "cloud.narrative_qc_blocked",
+            "visual.narrative_repair_ungrounded",
+        }
+        for attempt in range(visual_narrative_repair.MAX_REPAIR_ATTEMPTS):
+            try:
+                raw = self._call(
+                    lambda attempt=attempt: self.provider.complete_json(
+                        stage="visual_narrative_repair",
+                        prompt_version=prompt[0],
+                        prompt_sha256=prompt[1],
+                        prompt_text=prompt[2],
+                        payload={
+                            **payload,
+                            "repair_attempt": attempt + 1,
+                            "request_identity": source,
+                        },
+                    )
+                )
+                if not isinstance(raw, Mapping):
+                    raise CloudStageError("cloud.provider_response_invalid")
+                provider_output = raw.get("analyzer_output", raw)
+                if not isinstance(provider_output, Mapping):
+                    raise CloudStageError("cloud.provider_response_invalid")
+                raw_claims = provider_output.get("claims")
+                if raw_claims is None:
+                    raw_claims = provider_output.get("evidence_graph")
+                claims = self._normalize_narration_claims(raw_claims)
+                passages = provider_output.get("passages")
+                if passages is None:
+                    passages = provider_output.get("script_passages")
+                outline = provider_output.get("narrative_outline")
+                if not isinstance(passages, list) or not isinstance(outline, Mapping):
+                    raise CloudStageError("cloud.provider_response_invalid")
+                claims, passages, remaps = reconcile_repaired_references(
+                    claims,
+                    passages,
+                )
+                visual_narrative_repair.validate_repaired_section_visual_coverage(
+                    passages,
+                    ledger=ledger,
+                    section_to_beats=section_to_beats,
+                    missing_sections=visual_narrative_repair.missing_visual_sections(
+                        ledger, section_to_beats
+                    ),
+                )
+                output = {
+                    "observations": observations,
+                    "continuity_ledger": structural["continuity_ledger"],
+                    "coverage_manifest": structural["coverage_manifest"],
+                    "evidence_graph": {"claims": claims},
+                    "narrative_outline": dict(outline),
+                    "script_passages": [dict(item) for item in passages],
+                }
+                analyzer_contract.validate_analyzer_output(
+                    output,
+                    expected_panel_ids=visual.panel_ids,
+                    narrative_profile_id="sharp_friend_v1",
+                )
+                claims_by_id = {str(claim["claim_id"]): claim for claim in claims}
+                passage_rows = tuple(dict(item) for item in passages)
+                report = editorial_qc.screen_narrative_naturalness(
+                    passage_rows,
+                    claims_by_id,
+                    narrative_identity.SHARP_FRIEND_V1,
+                )
+                checks = quality.check_narrative_naturalness(report)
+                if any(not check.passed and check.severity == "error" for check in checks):
+                    raise CloudStageError("cloud.narrative_qc_blocked", reviewable=True)
+                spoken_text = "\n\n".join(str(item["text"]).strip() for item in passage_rows)
+                display_words = derive_display_words(spoken_text)
+                duration = script.estimate_duration(spoken_text, "dramatic")
+                if not 50.0 <= duration <= 60.0 or not 115 <= report.total_words <= 125:
+                    raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
+                result = NarrationResult(
+                    spoken_text=spoken_text,
+                    display_words=display_words,
+                    passages=passage_rows,
+                    ending_kind=str(output["narrative_outline"]["ending_kind"]),
+                    word_count=report.total_words,
+                    estimated_duration_s=duration,
+                    qc_report={
+                        "profile_id": "sharp_friend_v1",
+                        "profile_sha256": narrative_identity.SHARP_FRIEND_V1.contract_sha256,
+                        "total_words": report.total_words,
+                        "estimated_duration_s": duration,
+                        "ending_kind": output["narrative_outline"]["ending_kind"],
+                        "display_word_count": len(display_words),
+                        "timing_source": "voice_required",
+                        "warnings": list(report.warnings),
+                        "signals": asdict(report),
+                        "repair_contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
+                        "visual_section_remap_v1": list(remaps),
+                        "feasible_ledger_hash": ledger.ledger_hash,
+                        "repaired_sections": list(visual_narrative_repair.missing_visual_sections(ledger, section_to_beats)),
+                    },
+                    model_identity_hash=self.model_identity.identity_hash,
+                    prompt_version=prompt[0],
+                    prompt_sha256=prompt[1],
+                    observations=tuple(observations),
+                    continuity_ledger=dict(output["continuity_ledger"]),
+                    evidence_graph=dict(output["evidence_graph"]),
+                    story_spine=dict(output["narrative_outline"]["story_spine"]),
+                )
+                if self.cache is not None:
+                    self.cache.put(key, result.as_dict())
+                return result
+            except analyzer_contract.AnalyzerContractError:
+                error = CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            except visual_narrative_repair.VisualNarrativeRepairError as exc:
+                error = CloudStageError(exc.code, reviewable=exc.reviewable)
+            except CloudStageError as exc:
+                error = exc
+            if error.code not in retryable_codes or attempt + 1 >= visual_narrative_repair.MAX_REPAIR_ATTEMPTS:
+                raise error
+        raise CloudStageError("visual.narrative_repair_bounded", reviewable=True)
 
     def run_chapter(self, panels: Sequence[CloudPanelInput]) -> ChapterResult:
         ordered = self._ordered_panels(panels)
@@ -732,7 +1316,7 @@ class CloudStageRunner:
             return ChapterResult.from_dict(cached)
         visual = self.run_visual_evidence(ordered)
         story_map = self.run_story_map(visual)
-        narration = self.run_narration(visual, story_map)
+        narration = self.run_narration(visual, story_map, panels=ordered)
         result = ChapterResult(ChapterState.READY_TO_RENDER, visual, story_map, narration)
         if self.cache is not None:
             self.cache.put(key, result.as_dict())
@@ -746,6 +1330,8 @@ def prepare_project_panels(
     boundary_assessor: Callable[[strip_segmentation.BoundaryRequest], Mapping[str, Any]] | None = None,
     review_root: Path | None = None,
     return_segmentation: bool = False,
+    review_only_auto_override: bool = False,
+    cached_segmentation: Mapping[str, Any] | None = None,
 ) -> tuple[CloudPanelInput, ...] | tuple[tuple[CloudPanelInput, ...], dict[str, Any]]:
     """Build immutable cloud inputs from the current project panel lineage.
 
@@ -760,15 +1346,39 @@ def prepare_project_panels(
     try:
         assets = pipeline.image_assets(pipeline.project_assets(db, project_id))
         inputs, asset_by_id = pipeline._build_source_inputs(assets)
-        reconciliation = strip_segmentation.reconcile_sources(
-            inputs,
-            boundary_assessor=boundary_assessor,
-            review_root=review_root,
-        )
+        if cached_segmentation is not None:
+            try:
+                reconciliation = strip_segmentation.restore_cached_reconciliation(
+                    inputs,
+                    cached_segmentation,
+                )
+            except strip_segmentation.StripSegmentationError as exc:
+                if exc.code != "segmentation.cache_invalid":
+                    raise
+                reconciliation = strip_segmentation.reconcile_sources(
+                    inputs,
+                    boundary_assessor=boundary_assessor,
+                    review_root=review_root,
+                )
+        else:
+            reconciliation = strip_segmentation.reconcile_sources(
+                inputs,
+                boundary_assessor=boundary_assessor,
+                review_root=review_root,
+            )
     except strip_segmentation.StripSegmentationError as exc:
         raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
     except Exception:
         raise CloudStageError("cloud.panel_coverage_incomplete") from None
+    if reconciliation.status != "RECONCILED" and review_only_auto_override:
+        try:
+            reconciliation = strip_segmentation.apply_review_only_overrides(
+                reconciliation,
+                actor_id="review-preview-auto",
+                reason="review-only preview retained provider-confirmed separators and kept ambiguous artwork contiguous",
+            )
+        except strip_segmentation.StripSegmentationError as exc:
+            raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
     if reconciliation.status != "RECONCILED":
         review_codes = [report.review_code for report in reconciliation.reports if report.review_code]
         raise CloudStageError(
@@ -796,11 +1406,11 @@ def prepare_project_panels(
             key=lambda region: (region.source_order, region.region_id),
         )
     )
-    if not regions or [region.source_order for region in regions] != list(range(len(regions))):
+    if not regions:
         raise CloudStageError("cloud.panel_coverage_incomplete")
 
     panels: list[CloudPanelInput] = []
-    for region in regions:
+    for panel_order, region in enumerate(regions):
         source_input = input_by_asset.get(region.source_asset_id)
         asset = asset_by_id.get(region.source_asset_id)
         if source_input is None or asset is None:
@@ -814,7 +1424,7 @@ def prepare_project_panels(
             original_height=source_input.original_height,
             strip_region_id=region.region_id,
             panel_id=region.region_id,
-            source_order=region.source_order,
+            source_order=panel_order,
             bounds_json={
                 "x": region.bounds[0],
                 "y": region.bounds[1],
@@ -830,7 +1440,7 @@ def prepare_project_panels(
             CloudPanelInput(
                 panel_id=region.region_id,
                 source_asset_id=asset.id,
-                source_order=region.source_order,
+                source_order=panel_order,
                 mime_type="image/png",
                 payload=payload,
                 source_checksum=source_input.original_checksum,
@@ -846,6 +1456,65 @@ def prepare_project_panels(
     if return_segmentation:
         return result, reconciliation.as_dict()
     return result
+
+
+def _visual_panel_chunks(
+    panels: Sequence[CloudPanelInput],
+    *,
+    max_panels: int = VISUAL_REQUEST_MAX_PANELS,
+    max_estimated_bytes: int = VISUAL_REQUEST_MAX_ESTIMATED_BYTES,
+    overlap: int = VISUAL_REQUEST_OVERLAP,
+) -> tuple[tuple[CloudPanelInput, ...], ...]:
+    """Partition ordered panels into bounded, deterministic visual requests."""
+
+    if max_panels <= 0 or max_estimated_bytes <= 0 or overlap < 0 or overlap >= max_panels:
+        raise ValueError("invalid visual request chunk limits")
+    ordered = tuple(panels)
+    chunks: list[tuple[CloudPanelInput, ...]] = []
+    start = 0
+    while start < len(ordered):
+        current: list[CloudPanelInput] = []
+        estimated = 0
+        index = start
+        while index < len(ordered) and len(current) < max_panels:
+            panel = ordered[index]
+            provider_payload, _ = _visual_provider_payload(panel)
+            panel_estimate = (len(provider_payload) * 4 + 2) // 3 + 768
+            if current and estimated + panel_estimate > max_estimated_bytes:
+                break
+            current.append(panel)
+            estimated += panel_estimate
+            index += 1
+        if not current:
+            current.append(ordered[start])
+            index = start + 1
+        chunks.append(tuple(current))
+        if index >= len(ordered):
+            break
+        start = max(index - overlap, start + 1)
+    return tuple(chunks)
+
+
+def _visual_provider_payload(panel: CloudPanelInput) -> tuple[bytes, str]:
+    """Bound provider image size while leaving persisted panel bytes untouched."""
+
+    if len(panel.payload) <= 180_000:
+        return panel.payload, panel.mime_type
+    try:
+        import io
+
+        from PIL import Image, UnidentifiedImageError
+
+        with Image.open(io.BytesIO(panel.payload)) as source:
+            source.load()
+            image = source.convert("RGB")
+        image.thumbnail((512, 768), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=68, optimize=True, progressive=False, subsampling=2)
+        encoded = output.getvalue()
+    except (OSError, ValueError, UnidentifiedImageError):
+        return panel.payload, panel.mime_type
+    return (encoded, "image/jpeg") if len(encoded) < len(panel.payload) else (panel.payload, panel.mime_type)
 
 
 def persist_cloud_chapter(
@@ -1122,6 +1791,157 @@ def _validate_job_id(job_id: str) -> None:
         raise CloudStageError("cloud.job_id_invalid")
 
 
+def _build_ephemeral_review_candidates(
+    panels: Sequence[CloudPanelInput],
+    visual: VisualStageResult,
+    story_map: StoryMapResult,
+    *,
+    profile: object,
+    review_source_upscale_policy: object,
+) -> tuple[tuple[object, ...], dict[str, tuple[str, ...]]]:
+    """Build the review ledger before narration is durable.
+
+    Review-only repair may be needed when the first narration response is not
+    grounded.  At that point visual/story stages are durable in the job store,
+    but ``PanelRegion``/``ScriptVersion`` rows do not exist yet.  This helper
+    uses the exact panel payloads and reconciled visual sidecars already held
+    by the job, then hands them to the same panel-keyed candidate builder used
+    after persistence.  It never invents evidence or promotes this transient
+    registry to production state.
+    """
+
+    from types import SimpleNamespace
+
+    from PIL import Image, UnidentifiedImageError
+
+    from app.services import reference_visual_review, review_source_upscale, visual_scoring
+
+    visual_by_id = {
+        str(row.get("panel_id")): row
+        for row in visual.panels
+        if isinstance(row, Mapping) and str(row.get("panel_id", "")).strip()
+    }
+    ordered_panels = tuple(
+        sorted(
+            (panel for panel in panels if int(panel.source_order) > 0),
+            key=lambda panel: (int(panel.source_order), str(panel.panel_id)),
+        )
+    )
+    if not ordered_panels or any(panel.panel_id not in visual_by_id for panel in ordered_panels):
+        raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
+
+    beat_by_id = {
+        str(beat.get("beat_id")): beat
+        for beat in story_map.beats
+        if isinstance(beat, Mapping) and str(beat.get("beat_id", "")).strip()
+    }
+    section_names = ("hook", "setup", "conflict", "twist", "cta")
+    section_to_beats = visual_narrative_repair.default_section_to_beats(
+        section_names,
+        story_map.beats,
+    )
+    valid_panel_ids = {panel.panel_id for panel in ordered_panels}
+    section_evidence: dict[str, tuple[str, ...]] = {}
+    for section, beat_ids in section_to_beats.items():
+        panel_ids: list[str] = []
+        for beat_id in beat_ids:
+            beat = beat_by_id.get(str(beat_id))
+            if beat is None:
+                continue
+            for panel_id in beat.get("panel_ids", ()):
+                if str(panel_id) in valid_panel_ids and str(panel_id) not in panel_ids:
+                    panel_ids.append(str(panel_id))
+        if not panel_ids:
+            raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
+        section_evidence[section] = tuple(panel_ids)
+
+    panel_regions: list[object] = []
+    panel_candidates: dict[str, object] = {}
+    panel_crops: dict[str, Image.Image] = {}
+    upscale_manifests: dict[str, Mapping[str, Any]] = {}
+    for panel in ordered_panels:
+        raw_visual = visual_by_id.get(panel.panel_id)
+        raw_evidence = raw_visual.get("visual_evidence") if raw_visual else None
+        if not isinstance(raw_evidence, Mapping):
+            raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
+        try:
+            with Image.open(io.BytesIO(panel.payload)) as source:
+                source.load()
+                crop = source.convert("RGB")
+        except (OSError, UnidentifiedImageError, ValueError):
+            raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True) from None
+
+        if review_source_upscale_policy is not None:
+            bounds = panel.panel_bounds or (0, 0, crop.width, crop.height)
+            dimensions = panel.source_dimensions or crop.size
+            try:
+                prepared, manifest = review_source_upscale.prepare_review_panel(
+                    crop,
+                    policy=review_source_upscale_policy,
+                    source_asset_id=panel.source_asset_id,
+                    panel_region_id=panel.panel_id,
+                    source_asset_checksum=panel.source_checksum,
+                    source_panel_bounds=tuple(int(value) for value in bounds),
+                    source_dimensions=tuple(int(value) for value in dimensions),
+                )
+            except review_source_upscale.ReviewSourceUpscaleError as exc:
+                raise CloudStageError(exc.code, reviewable=True) from None
+            crop.close()
+            crop = prepared
+            upscale_manifests[panel.panel_id] = manifest
+            prepared_bounds = review_source_upscale.transform_panel_bounds(
+                tuple(int(value) for value in bounds), manifest
+            )
+        else:
+            prepared_bounds = tuple(
+                int(value)
+                for value in (panel.panel_bounds or (0, 0, crop.width, crop.height))
+            )
+
+        region = SimpleNamespace(
+            id=panel.panel_id,
+            source_asset_id=panel.source_asset_id,
+            source_asset_checksum=panel.source_checksum,
+            original_width=int(panel.source_dimensions[0]) if panel.source_dimensions else int(crop.width),
+            original_height=int(panel.source_dimensions[1]) if panel.source_dimensions else int(crop.height),
+            strip_region_id=panel.strip_region_id or panel.panel_id,
+            panel_id=panel.panel_id,
+            source_order=int(panel.source_order),
+            bounds_json={
+                "x": prepared_bounds[0],
+                "y": prepared_bounds[1],
+                "width": prepared_bounds[2] - prepared_bounds[0],
+                "height": prepared_bounds[3] - prepared_bounds[1],
+            },
+            observation_json={"visual_evidence": dict(raw_evidence)},
+        )
+        encoded = io.BytesIO()
+        crop.save(encoded, format="PNG")
+        panel_regions.append(region)
+        panel_crops[panel.panel_id] = crop
+        panel_candidates[panel.panel_id] = visual_scoring.analyze_panel(
+            encoded.getvalue(),
+            asset_id=panel.source_asset_id,
+            order_index=int(panel.source_order),
+            source_family="",
+        )
+
+    try:
+        candidates = reference_visual_review.build_reference_panel_fallback_candidates(
+            panel_regions=panel_regions,
+            panel_candidates_by_region_id=panel_candidates,
+            panel_crops_by_region_id=panel_crops,
+            section_evidence_panel_ids=section_evidence,
+            section_citations={section: () for section in section_to_beats},
+            beats_by_section=section_to_beats,
+            profile=profile,
+            source_upscale_manifests_by_region_id=upscale_manifests,
+        )
+    except reference_visual_review.ReferenceReviewError as exc:
+        raise CloudStageError(exc.code, reviewable=True) from None
+    return tuple(candidates), section_to_beats
+
+
 class CloudBatchService:
     def __init__(
         self,
@@ -1189,7 +2009,7 @@ class CloudBatchService:
                 raise KeyError("stale_narration_cache")
         except (KeyError, TypeError, ValueError):
             try:
-                narration = self.runner.run_narration(visual, story_map)
+                narration = self.runner.run_narration(visual, story_map, panels=panels)
             except CloudStageError as exc:
                 return self._record_failure(record, exc)
         try:
@@ -1215,6 +2035,160 @@ class CloudBatchService:
         self.store.save(record)
         return record
 
+    def _repair_review_narrative(
+        self,
+        db: Any,
+        project_id: str,
+        script_row: Any | None,
+        panels: Sequence[CloudPanelInput],
+        result: ChapterResult | None,
+        *,
+        visual: VisualStageResult | None = None,
+        story_map: StoryMapResult | None = None,
+        review_source_upscale_policy: Any,
+        review_source_root: Path,
+    ) -> tuple[ChapterResult, visual_narrative_repair.FeasibleVisualLedger, tuple[str, ...]]:
+        """Build the local feasible ledger and repair only missing sections."""
+
+        from app.models import Project
+        from app.services import pipeline, reference_profile, review_source_upscale
+
+        project = db.get(Project, project_id)
+        if project is None:
+            raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
+        profile = reference_profile.resolve_reference_profile(project.template)
+        if profile is None:
+            raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
+        try:
+            if isinstance(review_source_upscale_policy, review_source_upscale.ReviewSourceUpscalePolicy):
+                policy = review_source_upscale_policy
+            else:
+                policy = review_source_upscale.validate_review_upscale_request(
+                    review_source_upscale_policy,
+                    silent_reference_review=True,
+                    publish_allowed=False,
+                )
+        except review_source_upscale.ReviewSourceUpscaleError as exc:
+            raise CloudStageError(exc.code, reviewable=True) from None
+        if policy is None:
+            raise CloudStageError("review.upscale_policy_required", reviewable=True)
+
+        current_visual = result.visual if result is not None else visual
+        current_story_map = result.story_map if result is not None else story_map
+        current_narration = result.narration if result is not None else None
+        if current_visual is None or current_story_map is None:
+            raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
+
+        images = pipeline.image_assets(pipeline.project_assets(db, project_id))
+        if script_row is None:
+            candidates, section_to_beats = _build_ephemeral_review_candidates(
+                panels,
+                current_visual,
+                current_story_map,
+                profile=profile,
+                review_source_upscale_policy=policy,
+            )
+        else:
+            section_names = tuple(
+                str(section.get("section", ""))
+                for section in (getattr(script_row, "sections", ()) or ())
+                if isinstance(section, Mapping) and str(section.get("section", "")).strip()
+            )
+            section_to_beats = visual_narrative_repair.default_section_to_beats(
+                section_names,
+                current_story_map.beats,
+            )
+            analysis = pipeline.latest_analysis(db, project_id)
+            eligible_panel_ids = {
+                str(region.panel_id)
+                for region in (getattr(analysis, "panel_regions", ()) or ())
+                if int(region.source_order) > 0
+            }
+            beat_panel_ids = {
+                str(beat["beat_id"]): tuple(
+                    str(panel_id)
+                    for panel_id in beat["panel_ids"]
+                    if str(panel_id) in eligible_panel_ids
+                )
+                for beat in current_story_map.beats
+            }
+            candidates = pipeline._load_reference_panel_fallback_candidates(
+                db,
+                project_id,
+                script_row,
+                images,
+                profile,
+                review_source_upscale_policy=policy,
+                section_evidence_panel_ids=beat_panel_ids,
+                section_citations={beat_id: () for beat_id in beat_panel_ids},
+                beats_by_section={beat_id: (beat_id,) for beat_id in beat_panel_ids},
+                review_source_root=review_source_root,
+            )
+        ledger = visual_narrative_repair.build_feasible_visual_ledger(
+            candidates,
+            profile=profile,
+            model_identity_hash=self.runner.model_identity.identity_hash,
+            allow_source_resolution_warning=bool(policy.allow_low_source_resolution_warning),
+        )
+        missing = visual_narrative_repair.missing_visual_sections(ledger, section_to_beats)
+        if not missing and current_narration is not None:
+            return result, ledger, missing
+        if not ledger.entries:
+            raise CloudStageError("visual.visual_unavailable", reviewable=True)
+        repaired = self.runner.run_visual_narrative_repair(
+            current_visual,
+            current_story_map,
+            current_narration,
+            ledger,
+            section_to_beats,
+            panels=panels,
+        )
+        coalesced_passages, coalesce_provenance = (
+            visual_narrative_repair.coalesce_adjacent_duplicate_panel_passages(
+                repaired.passages
+            )
+        )
+        if coalesce_provenance:
+            qc_report = dict(repaired.qc_report)
+            qc_report["visual_sequence_coalesce_v1"] = list(coalesce_provenance)
+            repaired = replace(
+                repaired,
+                passages=tuple(coalesced_passages),
+                spoken_text="\n\n".join(
+                    str(passage.get("text", "")).strip()
+                    for passage in coalesced_passages
+                ),
+                qc_report=qc_report,
+            )
+            claims = repaired.evidence_graph.get("claims", [])
+            visual_narrative_repair.validate_repaired_panel_references(
+                {
+                    "claims": claims,
+                    "passages": [dict(item) for item in repaired.passages],
+                },
+                ledger=ledger,
+                allowed_claim_ids={
+                    str(claim.get("claim_id", ""))
+                    for claim in claims
+                    if isinstance(claim, Mapping)
+                },
+            )
+        try:
+            visual_narrative_repair.validate_repaired_section_visual_coverage(
+                repaired.passages,
+                ledger=ledger,
+                section_to_beats=section_to_beats,
+                missing_sections=missing,
+            )
+        except visual_narrative_repair.VisualNarrativeRepairError as exc:
+            raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
+        if current_narration is not None and repaired == current_narration:
+            raise CloudStageError(
+                "visual.narrative_repair_ungrounded",
+                reviewable=True,
+            )
+        return ChapterResult(ChapterState.READY_TO_RENDER, current_visual, current_story_map, repaired), ledger, missing
+
     def run_batch(self, jobs: Mapping[str, Sequence[CloudPanelInput]]) -> dict[str, ChapterJobRecord]:
         ordered_ids = sorted(jobs)
         if self.max_concurrent == 1 or len(ordered_ids) < 2:
@@ -1223,29 +2197,85 @@ class CloudBatchService:
             records = executor.map(lambda job_id: self.run_job(job_id, jobs[job_id]), ordered_ids)
             return dict(zip(ordered_ids, records, strict=True))
 
-    def run_project(self, db: Any, project_id: str, *, actor_id: str = "") -> ChapterJobRecord:
+    def run_project(
+        self,
+        db: Any,
+        project_id: str,
+        *,
+        actor_id: str = "",
+        review_only_preview: bool = False,
+        review_source_upscale_policy: str | None = None,
+        review_source_root: Path | None = None,
+        review_output_dir: Path | None = None,
+    ) -> ChapterJobRecord:
         """Run one DB-backed project and persist only after stage reconciliation."""
 
         try:
+            record = self.store.load(project_id) or ChapterJobRecord(project_id)
+            cached_segmentation = record.stage_results.get("segmentation")
             prepared = prepare_project_panels(
                 db,
                 project_id,
                 boundary_assessor=self.runner.assess_strip_boundaries,
                 review_root=self.review_root,
                 return_segmentation=True,
+                review_only_auto_override=review_only_preview,
+                cached_segmentation=(
+                    cached_segmentation
+                    if isinstance(cached_segmentation, Mapping)
+                    else None
+                ),
             )
             panels, segmentation_state = prepared
+            record.stage_results["segmentation"] = segmentation_state
+            self.store.save(record)
             record = self.run_job(project_id, panels)
             record.stage_results["segmentation"] = segmentation_state
             self.store.save(record)
+            repaired_result: ChapterResult | None = None
+            repair_ledger: visual_narrative_repair.FeasibleVisualLedger | None = None
+            repair_missing_sections: tuple[str, ...] = ()
             if record.state != ChapterState.READY_TO_RENDER:
-                return record
-            result = ChapterResult(
-                state=ChapterState.READY_TO_RENDER,
-                visual=VisualStageResult.from_dict(record.stage_results["visual"]),
-                story_map=StoryMapResult.from_dict(record.stage_results["story_map"]),
-                narration=NarrationResult.from_dict(record.stage_results["narration"]),
-            )
+                can_repair_initial_narration = (
+                    review_only_preview
+                    and record.error_code == "cloud.narrative_not_grounded"
+                    and isinstance(record.stage_results.get("visual"), Mapping)
+                    and isinstance(record.stage_results.get("story_map"), Mapping)
+                )
+                if not can_repair_initial_narration:
+                    return record
+                try:
+                    repaired_result, repair_ledger, repair_missing_sections = (
+                        self._repair_review_narrative(
+                            db,
+                            project_id,
+                            None,
+                            panels,
+                            None,
+                            visual=VisualStageResult.from_dict(record.stage_results["visual"]),
+                            story_map=StoryMapResult.from_dict(record.stage_results["story_map"]),
+                            review_source_upscale_policy=review_source_upscale_policy,
+                            review_source_root=Path(
+                                review_source_root or self.review_root or Path("final_test")
+                            ),
+                        )
+                    )
+                except CloudStageError as exc:
+                    return self._record_failure(record, exc)
+                record.stage_results["narration"] = repaired_result.narration.as_dict()
+                record.state = ChapterState.READY_TO_RENDER
+                record.error_code = ""
+                record.error_message = ""
+                self.store.save(record)
+            if repaired_result is None:
+                result = ChapterResult(
+                    state=ChapterState.READY_TO_RENDER,
+                    visual=VisualStageResult.from_dict(record.stage_results["visual"]),
+                    story_map=StoryMapResult.from_dict(record.stage_results["story_map"]),
+                    narration=NarrationResult.from_dict(record.stage_results["narration"]),
+                )
+            else:
+                result = repaired_result
             analysis, script_row = persist_cloud_chapter(
                 db,
                 project_id,
@@ -1254,6 +2284,11 @@ class CloudBatchService:
                 model_identity=self.runner.model_identity,
                 actor_id=actor_id,
             )
+            # Make reconciled analysis/script durable before the optional
+            # review render. A later render failure must not roll back the
+            # expensive cloud stages or prevent a safe resume.
+            if hasattr(db, "commit"):
+                db.commit()
             record.stage_results["persistence"] = {
                 "analysis_id": analysis.id,
                 "script_id": script_row.id,
@@ -1261,6 +2296,109 @@ class CloudBatchService:
                 "approval_required": True,
                 "voice_timing_required": True,
             }
+            if review_only_preview:
+                from app.services import review_source_upscale
+
+                try:
+                    policy_id = review_source_upscale_policy or review_source_upscale.REVIEW_SOURCE_UPSCALE_POLICY_ID
+                    if repaired_result is None:
+                        repaired_result, repair_ledger, repair_missing_sections = self._repair_review_narrative(
+                            db,
+                            project_id,
+                            script_row,
+                            panels,
+                            result,
+                            review_source_upscale_policy=policy_id,
+                            review_source_root=Path(review_source_root or self.review_root or Path("final_test")),
+                        )
+                    ledger = repair_ledger
+                    missing_sections = repair_missing_sections
+                    if ledger is None:
+                        raise CloudStageError("visual.narrative_repair_stale_ledger", reviewable=True)
+                    record.stage_results["feasible_visual_ledger"] = ledger.as_dict()
+                    record.stage_results["visual_repair"] = {
+                        "contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
+                        "missing_sections": list(missing_sections),
+                        "attempted": bool(missing_sections),
+                        "model_identity_hash": self.runner.model_identity.identity_hash,
+                        "prompt_version": self.runner.prompts["visual_narrative_repair"][0],
+                        "prompt_sha256": self.runner.prompts["visual_narrative_repair"][1],
+                        "publish_allowed": False,
+                    }
+                    if repaired_result.narration != result.narration:
+                        analysis, script_row = persist_cloud_chapter(
+                            db,
+                            project_id,
+                            panels,
+                            repaired_result,
+                            model_identity=self.runner.model_identity,
+                            actor_id=actor_id,
+                        )
+                        record.stage_results["narration"] = repaired_result.narration.as_dict()
+                        record.stage_results["persistence"] = {
+                            "analysis_id": analysis.id,
+                            "script_id": script_row.id,
+                            "script_version": script_row.version,
+                            "approval_required": True,
+                            "voice_timing_required": True,
+                            "visual_repair": True,
+                        }
+                except CloudStageError as exc:
+                    return self._record_failure(record, exc)
+                try:
+                    from app.services import pipeline
+
+                    section_panel_ids = {
+                        str(section.get("section", "")): tuple(
+                            str(panel_id)
+                            for panel_id in section.get("evidence_panel_ids", ())
+                            if str(panel_id).strip()
+                        )
+                        for section in script_row.sections
+                        if isinstance(section, Mapping) and str(section.get("section", "")).strip()
+                    }
+                    section_citations = {
+                        str(section.get("section", "")): tuple(
+                            int(value)
+                            for value in section.get("citations", ())
+                            if isinstance(value, int)
+                        )
+                        for section in script_row.sections
+                        if isinstance(section, Mapping) and str(section.get("section", "")).strip()
+                    }
+                    pipeline.build_timeline(
+                        db,
+                        project_id,
+                        actor_id=actor_id,
+                        silent_reference_review=True,
+                        review_source_upscale_policy=policy_id,
+                        provisional_duration_s=float(script_row.estimated_duration),
+                        reference_section_panel_ids=section_panel_ids,
+                        reference_section_citations=section_citations,
+                        reference_beats_by_section={},
+                        review_source_root=Path(review_source_root or self.review_root or Path("final_test")),
+                    )
+                    _render_job, artifacts = pipeline.render_silent_review_preview(
+                        db,
+                        project_id,
+                        actor_id=actor_id,
+                        review_source_upscale_policy=policy_id,
+                        review_source_root=Path(review_source_root or self.review_root or Path("final_test")),
+                        output_dir=review_output_dir,
+                    )
+                except Exception as exc:  # noqa: BLE001 - convert to a durable review state
+                    code = _review_failure_code(
+                        str(getattr(exc, "code", "") or exc)
+                    )
+                    raise CloudStageError(code, "review preview was not produced", reviewable=True) from None
+                record.stage_results["review_preview"] = artifacts.as_dict()
+                record.stage_results["voice_state"] = "VISUAL_ONLY_WAITING_FOR_VOICE"
+                record.stage_results["publish_allowed"] = False
+                record.state = ChapterState.REVIEW_PREVIEW_READY
+            else:
+                record.state = ChapterState.READY_TO_RENDER
+            record.error_code = ""
+            record.error_message = ""
             self.store.save(record)
             return record
         except CloudStageError as exc:

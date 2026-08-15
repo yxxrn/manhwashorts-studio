@@ -9,7 +9,10 @@ from collections.abc import Mapping, Sequence
 from app.services.timeline import normalize_display_text, wrap_caption
 
 SUBTITLE_CONTRACT_VERSION = "sentence_chunked_word_karaoke_v2"
-CAPTION_MAX_CHARS = 30
+# Barber Chop at the fixed 77px phone-readable size needs a narrower logical
+# line budget than a character-only 30-column estimate.  The production ASS
+# builder also checks rendered font width before encoding.
+CAPTION_MAX_CHARS = 22
 CAPTION_MAX_LINES = 2
 CAPTION_ACTIVE_SCALE = 1.08
 CAPTION_FONT_HEIGHT_RATIO = 0.04
@@ -71,9 +74,11 @@ def caption_lines_fit(words: Sequence[object]) -> bool:
 def sentence_group_lines(
     words: Sequence[object],
     *,
-    max_chars: int = CAPTION_MAX_CHARS,
+    max_chars: int | None = None,
 ) -> list[str]:
     """Return deterministic display lines without changing spoken text."""
+    if max_chars is None:
+        max_chars = CAPTION_MAX_CHARS
     return wrap_caption(
         " ".join(str(getattr(word, "text", "")) for word in words),
         max_chars,

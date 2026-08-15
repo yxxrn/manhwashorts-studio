@@ -531,8 +531,15 @@ def candidate_is_feasible(
     border_mask: BorderMaskResult,
     source_size: tuple[int, int],
     target_size: tuple[int, int],
+    *,
+    allow_source_resolution_warning: bool = False,
 ) -> tuple[bool, FramingTelemetry]:
-    """Evaluate one static crop against the hard reference framing contract."""
+    """Evaluate one static crop against the hard reference framing contract.
+
+    The optional resolution warning is reserved for the explicit silent
+    review upscale policy. It never relaxes lineage, balloon, protected
+    region, or blank-space constraints.
+    """
     parsed = _reference_evidence(evidence)
     source_width, source_height = source_size
     target_width, target_height = target_size
@@ -591,8 +598,15 @@ def candidate_is_feasible(
     )
     if balloon_ratio > 0.0:
         return False, replace(telemetry, rejection_code="visual.balloon_mask_overlap")
-    if base_zoom > source_cap + 1e-9 or crop_width < target_width / 1.15 or crop_height < target_height / 1.15:
+    source_resolution_insufficient = (
+        base_zoom > source_cap + 1e-9
+        or crop_width < target_width / 1.15
+        or crop_height < target_height / 1.15
+    )
+    if source_resolution_insufficient and not allow_source_resolution_warning:
         return False, replace(telemetry, rejection_code="visual.source_resolution_insufficient")
+    if source_resolution_insufficient:
+        telemetry = replace(telemetry, fallback_reason="review.low_source_resolution")
     for kind, minimum in (
         ("subject", 0.98),
         ("face", 0.98),
@@ -602,7 +616,17 @@ def candidate_is_feasible(
     ):
         if coverage[kind] < minimum:
             return False, replace(telemetry, rejection_code=f"visual.protected_{kind}_coverage")
-    if base_zoom > protected_cap + 1e-9:
+    required_protected_regions = any(
+        max(
+            float(getattr(region, "minimum_coverage", 0.0)),
+            _REQUIRED_PROTECTED_COVERAGE.get(getattr(region, "kind", ""), 0.0),
+        )
+        > 0.0
+        for region in parsed.protected_regions
+    )
+    if base_zoom > protected_cap + 1e-9 and (
+        not allow_source_resolution_warning or required_protected_regions
+    ):
         return False, replace(telemetry, rejection_code="visual.protected_zoom_insufficient")
     return True, telemetry
 

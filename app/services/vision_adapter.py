@@ -85,6 +85,21 @@ _PROTECTED_REGION_KEYS = frozenset(
 _OCR_ONLY_EVIDENCE_SOURCES = frozenset(
     {"ocr_text_only", "text_only_ocr", "ocr_only"}
 )
+_BALLOON_KIND_ALIASES = frozenset(
+    {
+        "caption",
+        "shout",
+        "speech",
+        "speech_edge",
+        "speech_tail",
+        "shout_balloon",
+        "tail",
+        "thought",
+        "thought_edge",
+        "thought_balloon",
+    }
+)
+_BALLOON_MASK_STATUS_ALIASES = frozenset({"covered", "mask_required"})
 
 
 def _is_ocr_only_evidence_source(value: Any) -> bool:
@@ -92,6 +107,63 @@ def _is_ocr_only_evidence_source(value: Any) -> bool:
         return False
     normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
     return normalized in _OCR_ONLY_EVIDENCE_SOURCES
+
+
+def _normalize_provider_visual_evidence(observation: Any) -> Any:
+    """Normalize one conservative provider alias before local validation.
+
+    Some OpenAI-compatible multimodal endpoints describe balloon regions with
+    semantic labels (for example ``speech_edge``) and a covered mask as
+    ``covered`` or ``mask_required``.  These are conservatively mapped to a
+    local speech-balloon/non-empty geometry.  All other values remain
+    untrusted and fail in the validator.
+    """
+
+    if not isinstance(observation, Mapping):
+        return observation
+    visual = observation.get("visual_evidence")
+    if not isinstance(visual, Mapping):
+        return observation
+    regions = visual.get("balloon_regions")
+    if not isinstance(regions, list):
+        return observation
+    normalized_regions: list[Any] = []
+    changed = False
+    for region in regions:
+        if not isinstance(region, Mapping):
+            normalized_regions.append(region)
+            continue
+        kind = region.get("kind")
+        mask_status = region.get("mask_status")
+        normalized_kind = (
+            "speech_balloon"
+            if isinstance(kind, str)
+            and kind.strip().lower().replace("-", "_").replace(" ", "_")
+            in _BALLOON_KIND_ALIASES
+            else kind
+        )
+        normalized_mask_status = (
+            "known_nonempty"
+            if isinstance(mask_status, str)
+            and mask_status.strip().lower().replace("-", "_").replace(" ", "_")
+            in _BALLOON_MASK_STATUS_ALIASES
+            else mask_status
+        )
+        if normalized_kind != kind or normalized_mask_status != mask_status:
+            item = dict(region)
+            item["kind"] = normalized_kind
+            item["mask_status"] = normalized_mask_status
+            normalized_regions.append(item)
+            changed = True
+        else:
+            normalized_regions.append(region)
+    if not changed:
+        return observation
+    normalized_visual = dict(visual)
+    normalized_visual["balloon_regions"] = normalized_regions
+    normalized_observation = dict(observation)
+    normalized_observation["visual_evidence"] = normalized_visual
+    return normalized_observation
 
 
 @dataclass(frozen=True)
@@ -164,6 +236,73 @@ class VisionProviderRequestFailed(VisionCapabilityError):
     code = "vision_provider_request_failed"
 
 
+def _chat_completion_content(response: httpx.Response) -> str:
+    """Extract assistant text from JSON or OpenAI-style SSE responses."""
+
+    headers = getattr(response, "headers", {})
+    content_type = str(headers.get("content-type", "")).lower()
+    if "text/event-stream" not in content_type:
+        payload = response.json()
+        return payload["choices"][0]["message"]["content"]
+
+    fragments: list[str] = []
+    for raw_line in response.text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            event = json.loads(data)
+        except (TypeError, ValueError):
+            raise VisionResponseInvalid() from None
+        if not isinstance(event, Mapping):
+            continue
+        choices = event.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        choice = choices[0]
+        if not isinstance(choice, Mapping):
+            continue
+        delta = choice.get("delta")
+        message = choice.get("message")
+        value = (
+            delta.get("content")
+            if isinstance(delta, Mapping)
+            else message.get("content")
+            if isinstance(message, Mapping)
+            else choice.get("text")
+        )
+        if isinstance(value, str):
+            fragments.append(value)
+        elif isinstance(value, list):
+            fragments.extend(
+                str(part["text"])
+                for part in value
+                if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+            )
+    if not fragments:
+        raise VisionResponseInvalid()
+    return "".join(fragments)
+
+
+def _decode_json_content(content: str) -> Any:
+    """Decode strict JSON, accepting only a whole-response JSON code fence."""
+
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if (
+            len(lines) < 3
+            or lines[-1].strip() != "```"
+            or lines[0].strip().lower() not in {"```", "```json"}
+        ):
+            raise ValueError("invalid JSON code fence")
+        text = "\n".join(lines[1:-1]).strip()
+    return json.loads(text)
+
+
 class OpenAICompatibleVisionProvider:
     """Minimal OpenAI-compatible multimodal adapter with fail-closed parsing."""
 
@@ -229,17 +368,21 @@ class OpenAICompatibleVisionProvider:
             raise VisionProviderRequestFailed() from None
 
         try:
-            provider_payload = response.json()
-            content = provider_payload["choices"][0]["message"]["content"]
+            content = _chat_completion_content(response)
         except Exception:
             raise VisionResponseInvalid() from None
         if not isinstance(content, str):
             raise VisionResponseInvalid()
 
         try:
-            observations = json.loads(content)
+            observations = _decode_json_content(content)
         except (TypeError, ValueError):
             raise VisionResponseInvalid() from None
+        if request.visual_instruction_version is not None:
+            observations = [
+                _normalize_provider_visual_evidence(item)
+                for item in observations
+            ] if isinstance(observations, list) else observations
         return _validate_observations(
             observations,
             panels,
@@ -356,8 +499,8 @@ class OpenAICompatibleVisionProvider:
                 timeout=VISION_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            value = json.loads(content)
+            content = _chat_completion_content(response)
+            value = _decode_json_content(content)
         except Exception:
             raise VisionProviderRequestFailed() from None
         if not isinstance(value, Mapping):
@@ -494,10 +637,22 @@ def _build_payload(
         metadata["visual_instruction_sha256"] = request.visual_instruction_sha256
     if request.visual_instruction_version is not None:
         _, _, visual_prompt = visual_scoring.load_visual_evidence_instruction()
+        legacy_fields = ", ".join(sorted(_REQUIRED_OBSERVATION_KEYS))
         instruction = (
             f"{visual_prompt.rstrip()}\n\n"
-            "Return the existing analyzer observation fields plus exactly one "
-            "visual_evidence object per panel. Request metadata: "
+            "Return a JSON array containing the exact legacy observation fields "
+            f"{legacy_fields} plus exactly one visual_evidence object per panel. "
+            "Every legacy field is mandatory; return no markdown fences or commentary. "
+            "Visual sidecar keys exactly: balloon_mask_status, balloon_regions, "
+            "protected_regions, mask_confidence, evidence_source, mask_reason, "
+            "panel_id, source_asset_id, source_order. "
+            "Balloon region keys exactly: region_id, kind, normalized_bbox, "
+            "normalized_polygon, confidence, evidence_source, mask_status. "
+            "Protected region keys exactly: region_id, kind, normalized_bbox, "
+            "normalized_polygon, confidence, evidence_source, required, "
+            "minimum_coverage. Local reconciliation owns the evidence hash. "
+            "evidence_refs must include the panel_id and be non-empty. "
+            "Request metadata: "
             f"{json.dumps(metadata, sort_keys=True, separators=(',', ':'))}"
         )
     else:
@@ -595,11 +750,11 @@ def validate_visual_evidence_observation(
                 or bbox[3] <= bbox[1]
             ):
                 raise VisionResponseInvalid()
-            if not isinstance(polygon, list):
+            if polygon is not None and not isinstance(polygon, list):
                 raise VisionResponseInvalid()
             if polygon and len(polygon) < 3:
                 raise VisionResponseInvalid()
-            for point in polygon:
+            for point in polygon or []:
                 if (
                     not isinstance(point, list)
                     or len(point) != 2

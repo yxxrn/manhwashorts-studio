@@ -177,6 +177,7 @@ def build_reference_panel_fallback_candidates(
     section_citations: Mapping[str, Sequence[int]],
     beats_by_section: Mapping[str, Sequence[str]],
     profile: object,
+    source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[editorial_visual_planner.ReferencePanelFallbackCandidate, ...]:
     """Build exact panel candidates without database or asset-level fallback."""
     ordered_regions = tuple(
@@ -256,6 +257,10 @@ def build_reference_panel_fallback_candidates(
                         expected_size, candidate, profile
                     ),
                     panel_candidate=candidate,
+                    source_upscale_manifest=(
+                        dict((source_upscale_manifests_by_region_id or {}).get(region_id, {}))
+                        or None
+                    ),
                 )
             )
         return tuple(built)
@@ -423,8 +428,13 @@ def attach_accepted_mask_snapshot(
             copied["mask_sha256"] = candidate.border_mask.mask_sha256
             copied["mask_source_width"] = candidate.border_mask.source_width
             copied["mask_source_height"] = candidate.border_mask.source_height
+            if candidate.source_upscale_manifest is not None:
+                copied["source_upscale_manifest"] = dict(
+                    candidate.source_upscale_manifest
+                )
         else:
             copied.pop("border_mask", None)
+            copied.pop("source_upscale_manifest", None)
         result.append(copied)
     return result
 

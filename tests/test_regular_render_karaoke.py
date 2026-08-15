@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageFont
 
 
 def _timings(*words: tuple[str, float, float]) -> list[dict[str, object]]:
@@ -40,7 +40,7 @@ def test_shared_production_chunker_is_deterministic_and_keeps_spoken_text_immuta
 
     assert spoken == "First turn, then the wounded pair escapes."
     assert first == second
-    assert [word.text for word in first[0].words] == [
+    assert [word.text for group in first for word in group.words] == [
         "FIRST",
         "TURN",
         "THEN",
@@ -234,6 +234,82 @@ def test_regular_ass_holds_complete_chunk_with_two_lines_and_active_word_style()
         for token in re.sub(r"\{[^}]*\}", " ", payload).replace("\\N", " ").split()
     ]
     assert all(re.fullmatch(r"[A-Z0-9]+", word) for word in display_words)
+
+
+def test_regular_ass_keeps_long_sentence_chunks_inside_font_safe_width():
+    from app.config import settings
+    from app.services import render, subtitle_karaoke
+
+    spoken = (
+        "A radiant purple aura ignites the torrential battlefield, signaling an "
+        "overwhelming surge of dark energy right at the start of this intense confrontation."
+    )
+    words = spoken.split()
+    groups = subtitle_karaoke.build_sentence_caption_groups(
+        spoken,
+        [
+            {"word": word, "start": index * 0.4, "end": (index + 1) * 0.4}
+            for index, word in enumerate(words)
+        ],
+    )
+
+    ass = render.build_sentence_karaoke_ass(
+        groups,
+        1080,
+        1920,
+        font_name="BarberChop",
+        max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
+        max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
+        active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
+        font_height_ratio=subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO,
+        safe_margin_px=subtitle_karaoke.CAPTION_SAFE_MARGIN_PX,
+    )
+    font = ImageFont.truetype(str(settings.subtitle_font), 77)
+    safe_width = 1080 - (2 * subtitle_karaoke.CAPTION_SAFE_MARGIN_PX) - 12
+    for event in (line for line in ass.splitlines() if line.startswith("Dialogue:")):
+        payload = event.rsplit(",,", 1)[1].replace("\\N", "|")
+        display_lines = re.sub(r"\{[^}]*\}", "", payload).split("|")
+        assert len(display_lines) <= subtitle_karaoke.CAPTION_MAX_LINES
+        assert all(font.getlength(line) <= safe_width for line in display_lines)
+
+
+def test_regular_ass_splits_character_fit_chunk_when_font_pixels_require_it():
+    from app.services import render
+
+    groups = (
+        render.KaraokeSentenceGroup(
+            group_id="pixel-overflow",
+            words=tuple(
+                render.KaraokeWord(
+                    word,
+                    round(index * 0.4, 3),
+                    round((index + 1) * 0.4, 3),
+                )
+                for index, word in enumerate(("WW", "WW", "WW", "WWWWWWWW", "WW", "WWWWW"))
+            ),
+            start_time=0.0,
+            end_time=2.4,
+        ),
+    )
+
+    ass = render.build_sentence_karaoke_ass(
+        groups,
+        1080,
+        1920,
+        font_name="BarberChop",
+        max_chars=22,
+        max_lines=2,
+        active_scale=1.08,
+        font_height_ratio=0.04,
+        safe_margin_px=120,
+    )
+
+    assert ass.count("Dialogue:") == sum(len(group.words) for group in groups)
+    assert "\\N" not in ass or all(
+        line.count("\\N") <= 1
+        for line in ass.splitlines()
+        if line.startswith("Dialogue:")
+    )
 
 
 def test_profile_active_regular_render_rejects_missing_persisted_visual_lineage_before_ffmpeg(tmp_path: Path):

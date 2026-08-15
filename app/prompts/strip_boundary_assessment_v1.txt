@@ -5,8 +5,13 @@ Inspect every supplied overlapping source tile and every candidate boundary in
 source coordinates. Return JSON only with source_asset_id, source_checksum,
 random_sampling=false, and boundaries. Each boundary must echo one supplied
 candidate y and include accepted, confidence, reason, and protected_regions.
+Boundary objects use keys exactly: y, accepted, confidence, reason,
+protected_regions. Never rename y to position or cut.
 Protected regions may be balloon, face, subject, action, effect, or continuity;
 each needs a source-space integer bbox, confidence, and visual evidence_source.
+Protected_regions objects use keys: region_id, kind, bounds, confidence,
+evidence_source. Bounds are exactly [x0, y0, x1, y1] integer coordinates in
+the full source image; do not use bbox or category aliases.
 Reject a boundary that crosses protected content or cuts through an artwork
 connected scene. Do not return hashes: the application computes all canonical
 hashes. Do not use OCR text alone as geometry, do not sample panels, and do not

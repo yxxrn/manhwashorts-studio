@@ -8,3 +8,8 @@ causal_chain, and evidence-grounded claims. Every beat and claim must cite
 one or more supplied panel IDs. Use qualified language when the panels do not
 prove intent, identity, or causality. Never copy dialogue or add a call to
 action. The local application computes all canonical hashes after validation.
+
+Use exactly these object fields: each beat has beat_id, panel_ids, summary;
+each causal_chain item has from_beat, to_beat, reason; each claim has claim_id,
+text, panel_ids, qualification. Keep every listed field nonempty where it is
+textual, and return panel_ids in the supplied order.

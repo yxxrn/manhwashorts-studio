@@ -118,6 +118,45 @@ def test_panel_candidate_builder_fans_out_integer_citation_by_source_order():
     assert all("hook" in candidate.eligible_sections for candidate in result)
 
 
+def test_reference_loader_excludes_order_zero_front_matter_before_candidate_build(monkeypatch):
+    import io
+
+    image_bytes = io.BytesIO()
+    _crop((40, 60, 100), True).save(image_bytes, format="PNG")
+    asset = SimpleNamespace(
+        id="asset-a",
+        storage_key="asset-a.png",
+        checksum="asset-checksum",
+        original_checksum="asset-checksum",
+        source_family="family-a",
+    )
+    regions = [
+        _region("title", "region-title", "asset-a", 0, (0, 0, 100, 200), "asset-checksum"),
+        _region("panel-a", "region-a", "asset-a", 1, (0, 0, 100, 200), "asset-checksum"),
+    ]
+    captured: list[str] = []
+
+    def builder(**kwargs):
+        captured.extend(str(region.id) for region in kwargs["panel_regions"])
+        return ()
+
+    monkeypatch.setattr(pipeline, "latest_analysis", lambda *_args: SimpleNamespace(id="analysis"))
+    monkeypatch.setattr(pipeline.storage, "read_bytes", lambda _key: image_bytes.getvalue())
+    monkeypatch.setattr(pipeline, "_build_reference_panel_fallback_candidates", builder)
+    db = SimpleNamespace(scalars=lambda _statement: regions)
+    script = SimpleNamespace(sections=[{"section": "hook", "evidence_panel_ids": ["panel-a"]}])
+
+    pipeline._load_reference_panel_fallback_candidates(
+        db,
+        "project",
+        script,
+        [asset],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+
+    assert captured == ["region-a"]
+
+
 @pytest.mark.parametrize("panel_ids", (("missing-panel",), ("panel-a", "foreign-panel")))
 def test_panel_candidate_builder_rejects_missing_or_foreign_explicit_ids(panel_ids):
     builder = pipeline._build_reference_panel_fallback_candidates
@@ -686,6 +725,7 @@ def test_reference_ledger_rejects_tampered_mask_and_nonfinite_telemetry():
 
 def test_reference_planner_tries_all_roi_phases_on_alternate_panel(monkeypatch):
     from dataclasses import replace
+    from types import SimpleNamespace
 
     from app.services import editorial_visual_planner, framing_analysis
 
@@ -745,7 +785,7 @@ def test_reference_planner_tries_all_roi_phases_on_alternate_panel(monkeypatch):
         ],
     )
     result = editorial_visual_planner._plan_reference_panel_candidates(
-        [object()],
+        [SimpleNamespace(section="hook", start_time=0.0, end_time=40.901)],
         reference_profile.REFERENCE_MATCHED_SHORTS_V1,
         candidate_tuple,
     )
@@ -753,6 +793,76 @@ def test_reference_planner_tries_all_roi_phases_on_alternate_panel(monkeypatch):
     assert result[0]["panel_id"] == "panel-b"
     assert accepted["kind"] == "alternate_panel"
     assert accepted["roi_kind"] == "alternate_roi"
+
+
+def test_reference_planner_caps_single_panel_section_before_consecutive_reuse(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services import editorial_visual_planner
+
+    regions, crops, candidates = _builder_inputs()
+    candidate_tuple = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions[:1],
+        panel_candidates_by_region_id={"region-a": candidates["region-a"]},
+        panel_crops_by_region_id={"region-a": crops["region-a"]},
+        section_evidence_panel_ids={"setup": ("panel-a",)},
+        section_citations={},
+        beats_by_section={"setup": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    captured = {}
+
+    monkeypatch.setattr(editorial_visual_planner, "_feasible_roi_capacity", lambda *_args, **_kwargs: 2)
+
+    def fake_reference(*_args, **kwargs):
+        captured["capacity"] = kwargs["max_shots_by_section"]["setup"]
+        return [
+            {
+                "order_index": index,
+                "section": "setup",
+                "start_time": float(index * 25),
+                "end_time": float((index + 1) * 25),
+                "camera_intent": "neutral",
+                "effect": "static",
+                "asset_id": "unused",
+                "focus_x": 0.5,
+                "focus_y": 0.5,
+                "focus_end_x": 0.5,
+                "focus_end_y": 0.5,
+            }
+            for index in range(kwargs["max_shots_by_section"]["setup"])
+        ]
+
+    monkeypatch.setattr(editorial_visual_planner, "_plan_reference", fake_reference)
+
+    def fake_attempt(candidate, roi, **kwargs):
+        entry = {
+            "accepted": True,
+            "panel_region_id": candidate.panel_region_id,
+            "panel_id": candidate.panel_id,
+            "source_asset_id": candidate.source_asset_id,
+            "source_order": candidate.source_order,
+            "source_asset_checksum": candidate.source_asset_checksum,
+            "panel_size": list(candidate.panel_size),
+            "evidence_hash": candidate.evidence_hash,
+            "roi_label": roi.roi_label,
+            "crop_box": list(roi.crop_box),
+            "roi_kind": roi.kind,
+            "telemetry": {},
+        }
+        return True, {"rejection_code": None}, entry
+
+    monkeypatch.setattr(editorial_visual_planner, "_reference_panel_attempt", fake_attempt)
+    result = editorial_visual_planner._plan_reference_panel_candidates(
+        [SimpleNamespace(section="setup", start_time=0.0, end_time=50.0)],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        candidate_tuple,
+        allow_review_cadence_adaptation=True,
+        allow_review_duration=True,
+    )
+
+    assert captured["capacity"] == 1
+    assert len(result) == 1
 
 
 def test_silent_render_video_uses_persisted_roi_without_reselection(monkeypatch, tmp_path):
@@ -809,6 +919,43 @@ def test_silent_render_video_uses_persisted_roi_without_reselection(monkeypatch,
     result = render.render_video(request)
     assert exact_calls == [(0, 0, 50, 200)]
     assert result.sidecar_path is not None
+
+
+def test_silent_reference_duration_uses_review_window_without_relaxing_voice_profile():
+    from app.services import pipeline
+
+    profile = reference_profile.REFERENCE_MATCHED_SHORTS_V2
+
+    assert pipeline._reference_duration_bounds(profile, silent_reference_review=True) == (50.0, 60.0)
+    assert pipeline._reference_duration_bounds(profile, silent_reference_review=False) == (
+        profile.duration_min_s,
+        profile.duration_max_s,
+    )
+
+
+def test_silent_reference_planner_receives_explicit_review_duration_flag(monkeypatch):
+    from app.services import editorial_visual_planner
+
+    captured = {}
+
+    def fake_panel_plan(*_args, **kwargs):
+        captured["allow_review_duration"] = kwargs["allow_review_duration"]
+        return []
+
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_plan_reference_panel_candidates",
+        fake_panel_plan,
+    )
+    editorial_visual_planner.plan(
+        [],
+        [],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V2,
+        reference_panel_candidates=(),
+        allow_review_duration=True,
+    )
+
+    assert captured["allow_review_duration"] is True
 
 
 

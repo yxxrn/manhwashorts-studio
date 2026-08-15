@@ -2,6 +2,39 @@
 
 Updated: 2026-08-14
 
+## Final-test review-only source resolution policy checkpoint - 2026-08-14
+
+- The explicit `review_silent_source_upscale_v1` policy now defaults to a
+  configurable `1.50x` automatic cap (`ReviewSourceUpscalePolicy.max_scale`),
+  version `1.1.0`, deterministic Lanczos resampling, and a 1080x1920 review
+  target. Scaling from 1.00x through 1.50x is disclosed as `UPSCALED`; a
+  larger required scale is disclosed as `LOW_SOURCE_RESOLUTION` with
+  `review.low_source_resolution` and remains review-only with
+  `publish_allowed=false`. Final/voiced/publish paths reject this policy.
+- Candidate planning tries evidence-eligible native/automatic-resolution
+  panels before low-resolution warning candidates. The warning path never
+  bypasses balloon overlap, protected-region retention, lineage, blank-space,
+  chronology, or detector/profile gates. Focused policy verification is
+  `14 passed`, including the hard balloon/protected rejection and native-first
+  ordering regressions. The related framing/profile/motion/subtitle matrix is
+  `93 collected, 92 passed, 1 existing fixture skip`; the full non-slow suite
+  is `1005 collected, 1004 passed, 1 existing fixture skip` under the
+  disposable Windows SQLite URL-separator shim (not part of the repository).
+- The isolated real `final_test` job has `40` source files, `106` persisted
+  assets, and `118` current panel regions. The authorized model capability
+  probe succeeded earlier. A bounded fresh visual re-observation of the two
+  blocked opening beats completed with `30` panel rows and `31` sanitized
+  requests; local feasibility remained `hook: 0/40` and `setup: 1/38`.
+  An exhaustive deterministic ROI audit also found no feasible crop in the
+  opening panels. The remaining blocker is therefore genuine provider
+  balloon/protected geometry, not source resolution.
+- The regular silent timeline remains fail-closed with no rendered MP4 and no
+  timeline rows created. Do not relax hard visual gates, move later-beat
+  evidence into the opening, or invent a mask. The next executable action is
+  a truthful visual-evidence correction/review for the opening beat (or an
+  alternate evidence-covered source); voice/TTS/audio and publication remain
+  deferred.
+
 ## Final production silent acceptance - real-input lineage checkpoint - 2026-08-14
 
 - The first real `final_test` preflight exposed two deterministic ingestion

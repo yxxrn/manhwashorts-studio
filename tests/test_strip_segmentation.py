@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import io
+import json
 from dataclasses import replace
 
 import pytest
@@ -76,6 +77,52 @@ def test_high_confidence_mid_colour_strip_is_reconciled_without_provider():
     assert len(result.analysis_hash) == 64
 
 
+def test_reconciled_segmentation_checkpoint_restores_without_provider_call():
+    module = _module()
+    source = _input(module, "checkpoint-source", _strip_bytes())
+    original = module.reconcile_sources((source,))
+
+    restored = module.restore_cached_reconciliation((source,), original.as_dict())
+
+    assert restored.as_dict() == original.as_dict()
+    assert restored.status == "RECONCILED"
+
+
+def test_review_only_override_checkpoint_restores_with_audited_hash():
+    module = _module()
+    source = _input(module, "review-checkpoint-source", _strip_bytes(gutters=False))
+
+    def assessor(request):
+        return {
+            "source_asset_id": request.source_asset_id,
+            "source_checksum": request.source_checksum,
+            "random_sampling": False,
+            "boundaries": [],
+        }
+
+    initial = module.reconcile_sources((source,), boundary_assessor=assessor)
+    assert initial.status == "NEEDS_REVIEW"
+    overridden = module.apply_review_only_overrides(
+        initial,
+        actor_id="review-test",
+        reason="test-only audited review checkpoint",
+    )
+    restored = module.restore_cached_reconciliation((source,), overridden.as_dict())
+
+    assert restored.as_dict() == overridden.as_dict()
+    assert restored.status == "RECONCILED"
+
+
+def test_tampered_segmentation_checkpoint_fails_closed_before_resume():
+    module = _module()
+    source = _input(module, "checkpoint-source", _strip_bytes())
+    cached = module.reconcile_sources((source,)).as_dict()
+    cached["reports"][0]["source_checksum"] = "f" * 64
+
+    with pytest.raises(module.StripSegmentationError, match="segmentation.cache_invalid"):
+        module.restore_cached_reconciliation((source,), cached)
+
+
 def test_artwork_connected_strip_without_separator_becomes_needs_review():
     module = _module()
 
@@ -108,6 +155,61 @@ def test_provider_boundary_outside_source_is_rejected_before_selection():
             source_asset_id="provider-invalid",
             original_checksum="c" * 64,
             boundary_assessor=assessor,
+        )
+
+
+def test_provider_position_alias_is_normalized_only_for_exact_candidates():
+    module = _module()
+
+    def assessor(request):
+        return {
+            "source_asset_id": request.source_asset_id,
+            "source_checksum": request.source_checksum,
+            "random_sampling": False,
+            "boundaries": [
+                {
+                    "position": candidate.position,
+                    "accepted": True,
+                    "confidence": 0.99,
+                    "reason": "provider boundary",
+                    "protected_regions": [],
+                }
+                for candidate in request.candidates
+            ],
+        }
+
+    result = module.reconcile_strip(
+        _strip_bytes(),
+        source_asset_id="position-alias",
+        original_checksum="p" * 64,
+        boundary_assessor=assessor,
+    )
+
+    assert result.status == "RECONCILED"
+    assert result.selected_cuts
+
+    def foreign_position(request):
+        return {
+            "source_asset_id": request.source_asset_id,
+            "source_checksum": request.source_checksum,
+            "random_sampling": False,
+            "boundaries": [
+                {
+                    "position": request.height - 1,
+                    "accepted": True,
+                    "confidence": 0.99,
+                    "reason": "foreign coordinate",
+                    "protected_regions": [],
+                }
+            ],
+        }
+
+    with pytest.raises(module.StripSegmentationError, match="segmentation.provider_coordinate_invalid"):
+        module.reconcile_strip(
+            _strip_bytes(),
+            source_asset_id="position-foreign",
+            original_checksum="q" * 64,
+            boundary_assessor=foreign_position,
         )
 
 
@@ -250,6 +352,59 @@ def test_provider_request_contains_overlapping_tiles_and_candidate_boundaries():
     assert all(tile["payload_b64"] for tile in request.tiles)
 
 
+def test_provider_can_choose_a_nearby_safe_cut_when_ideal_is_rejected():
+    module = _module()
+
+    def assessor(request):
+        frame_height = request.width / module.strips.TARGET_RATIO
+        part_count = max(1, min(12, round(request.height / frame_height)))
+        ideals = tuple(round(request.height * index / part_count) for index in range(1, part_count))
+        return {
+            "source_asset_id": request.source_asset_id,
+            "source_checksum": request.source_checksum,
+            "random_sampling": False,
+            "boundaries": [
+                {
+                    "y": candidate.position,
+                    "accepted": all(abs(candidate.position - ideal) >= 100 for ideal in ideals),
+                    "confidence": 0.98 if all(abs(candidate.position - ideal) >= 100 for ideal in ideals) else 0.0,
+                    "reason": "nearby safe cut" if all(abs(candidate.position - ideal) >= 100 for ideal in ideals) else "ideal crosses protected content",
+                    "protected_regions": [],
+                }
+                for candidate in request.candidates
+            ],
+        }
+
+    result = module.reconcile_strip(
+        _strip_bytes(gutters=False),
+        source_asset_id="nearby-safe-cut",
+        original_checksum="5" * 64,
+        boundary_assessor=assessor,
+    )
+
+    assert result.status == "RECONCILED"
+    assert result.selected_cuts
+    assert all(cut not in {733, 1467} for cut in result.selected_cuts)
+
+
+def test_provider_tiles_have_bounded_encoded_size_and_explicit_format():
+    module = _module()
+    image = Image.effect_noise((900, 5334), 100).convert("RGB")
+
+    tiles = module._tiles(image)
+    encoded = json.dumps(
+        {"overlapping_source_tiles": list(tiles)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert len(encoded) <= 2_000_000
+    assert len(tiles) <= 12
+    assert all(tile["mime_type"] == "image/jpeg" for tile in tiles)
+    assert all(tile["encoded_width"] <= 512 for tile in tiles)
+    assert all(tile["encoded_height"] <= 768 for tile in tiles)
+
+
 def test_reconciliation_is_deterministic_for_multiple_source_files():
     module = _module()
     first = _input(module, "file-a", _strip_bytes(width=180, height=400), order=0)
@@ -389,3 +544,130 @@ def test_pixel_budget_fails_closed_before_long_strip_analysis():
             source_asset_id="too-large",
             original_checksum="f" * 64,
         )
+
+
+def test_review_only_auto_override_keeps_only_provider_safe_cuts_and_audits_provenance():
+    module = _module()
+    result = module.StripSegmentationResult(
+        source_asset_id="long-strip",
+        source_checksum="a" * 64,
+        width=900,
+        height=5_334,
+        spans=((0, 5_334),),
+        candidates=(
+            module.BoundaryCandidate(
+                position=1_715,
+                confidence=0.91,
+                score=0.91,
+                run_top=1_600,
+                run_bottom=1_830,
+                reason="provider-confirmed structural separator",
+            ),
+            module.BoundaryCandidate(
+                position=3_556,
+                confidence=0.48,
+                score=0.48,
+                run_top=3_500,
+                run_bottom=3_600,
+                reason="ambiguous artwork-connected boundary",
+            ),
+        ),
+        selected_cuts=(),
+        rejected_cuts=({"ideal": 3_556, "reason": "segmentation.ambiguous_boundary"},),
+        status="NEEDS_REVIEW",
+        review_code="segmentation.ambiguous_boundary",
+        report={},
+        detector_version=module.SEGMENTATION_VERSION,
+        analysis_hash="b" * 64,
+        provider_assessment={
+            "source_asset_id": "long-strip",
+            "boundaries": [
+                {
+                    "y": 1_715,
+                    "accepted": True,
+                    "confidence": 0.91,
+                    "reason": "provider-confirmed structural separator",
+                    "protected_regions": [],
+                },
+                {
+                    "y": 3_556,
+                    "accepted": False,
+                    "confidence": 0.48,
+                    "reason": "ambiguous artwork-connected boundary",
+                    "protected_regions": [],
+                },
+            ],
+        },
+    )
+
+    overridden = module.apply_review_only_auto_override(
+        result,
+        actor_id="review-preview-auto",
+        reason="retain only provider-confirmed separators; keep ambiguous artwork contiguous",
+    )
+
+    assert overridden.status == "RECONCILED"
+    assert overridden.selected_cuts == (1_715,)
+    assert overridden.spans == ((0, 1_715), (1_715, 5_334))
+    assert overridden.override["provenance"] == "review_only_auto_override"
+    assert overridden.override["prior_analysis_hash"] == "b" * 64
+    assert overridden.override["provider_confirmed_cuts"] == [1_715]
+
+
+def test_review_only_auto_override_retains_protected_boundary_contiguously():
+    module = _module()
+    result = module.StripSegmentationResult(
+        source_asset_id="protected-strip",
+        source_checksum="c" * 64,
+        width=900,
+        height=3_000,
+        spans=((0, 3_000),),
+        candidates=(
+            module.BoundaryCandidate(
+                position=1_500,
+                confidence=0.99,
+                score=0.99,
+                run_top=1_450,
+                run_bottom=1_550,
+                reason="protected content crosses boundary",
+            ),
+        ),
+        selected_cuts=(),
+        rejected_cuts=({"ideal": 1_500, "reason": "segmentation.protected_boundary"},),
+        status="NEEDS_REVIEW",
+        review_code="segmentation.protected_boundary",
+        report={},
+        detector_version=module.SEGMENTATION_VERSION,
+        analysis_hash="d" * 64,
+        provider_assessment={
+            "source_asset_id": "protected-strip",
+            "boundaries": [
+                {
+                    "y": 1_500,
+                    "accepted": False,
+                    "confidence": 0.99,
+                    "reason": "segmentation.protected_boundary",
+                    "protected_regions": [
+                        {
+                            "region_id": "face-1",
+                            "kind": "face",
+                            "bounds": [100, 1_400, 800, 1_600],
+                            "confidence": 0.99,
+                            "evidence_source": "vision_geometry_v1",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    overridden = module.apply_review_only_auto_override(
+        result,
+        actor_id="review-preview-auto",
+        reason="must not cross protected content",
+    )
+
+    assert overridden.status == "RECONCILED"
+    assert overridden.selected_cuts == ()
+    assert overridden.spans == ((0, 3_000),)
+    assert overridden.override["protected_boundaries_retained_contiguous"] == [1_500]

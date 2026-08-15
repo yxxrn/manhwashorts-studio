@@ -140,6 +140,9 @@ def test_ordered_multimodal_request_contains_each_panel_and_image_once(
     assert "vision-first-story-analyzer-v1" in text
     assert "a" * 64 in text
     assert "4" in text
+    assert "structured JSON list" in text
+    for key in REQUIRED_OBSERVATION_KEYS:
+        assert key in text
 
     panel_positions = [text.index(panel["panel_id"]) for panel in panels]
     assert panel_positions == sorted(panel_positions)
@@ -189,6 +192,147 @@ def test_complete_mock_observations_have_all_required_keys(mock_provider_url):
     assert len(observations) == 3
     for observation in observations:
         assert set(observation) >= REQUIRED_OBSERVATION_KEYS
+
+
+def test_sse_chat_completion_is_assembled_for_observations(monkeypatch):
+    module = _vision_module()
+    import httpx
+    import mock_provider
+
+    content = json.dumps(mock_provider.default_vision_response())
+    midpoint = len(content) // 2
+    sse = "\n".join(
+        (
+            "data: "
+            + json.dumps({"choices": [{"delta": {"content": content[:midpoint]}}]}),
+            "data: "
+            + json.dumps({"choices": [{"delta": {"content": content[midpoint:]}}]}),
+            "data: [DONE]",
+            "",
+        )
+    )
+    response = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        text=sse,
+        request=httpx.Request("POST", "http://provider.test/v1/chat/completions"),
+    )
+    monkeypatch.setattr(module.httpx, "post", lambda *args, **kwargs: response)
+
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url="http://provider.test/v1",
+        model="mock-large",
+        api_key="test-key",
+    )
+
+    observations = provider.observe(_request(module))
+
+    assert [item["panel_id"] for item in observations] == [
+        panel["panel_id"] for panel in _panels()
+    ]
+
+
+def test_observation_accepts_a_whole_json_code_fence(monkeypatch):
+    module = _vision_module()
+    import httpx
+    import mock_provider
+
+    content = "```json\n" + json.dumps(mock_provider.default_vision_response()) + "\n```"
+    response = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        json={"choices": [{"message": {"content": content}}]},
+        request=httpx.Request("POST", "http://provider.test/v1/chat/completions"),
+    )
+    monkeypatch.setattr(module.httpx, "post", lambda *args, **kwargs: response)
+
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url="http://provider.test/v1",
+        model="mock-large",
+        api_key="test-key",
+    )
+
+    observations = provider.observe(_request(module))
+
+    assert [item["panel_id"] for item in observations] == [
+        panel["panel_id"] for panel in _panels()
+    ]
+
+
+def test_sse_chat_completion_is_assembled_for_json_stage(monkeypatch):
+    module = _vision_module()
+    import httpx
+
+    content = json.dumps({"stage": "ok"})
+    sse = "\n".join(
+        (
+            "data: "
+            + json.dumps({"choices": [{"delta": {"content": content}}]}),
+            "data: [DONE]",
+            "",
+        )
+    )
+    response = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        text=sse,
+        request=httpx.Request("POST", "http://provider.test/v1/chat/completions"),
+    )
+    monkeypatch.setattr(module.httpx, "post", lambda *args, **kwargs: response)
+
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url="http://provider.test/v1",
+        model="mock-large",
+        api_key="test-key",
+    )
+
+    result = provider.complete_json(
+        stage="test",
+        prompt_version="prompt-v1",
+        prompt_sha256="a" * 64,
+        payload={"panel_ids": ["panel-a"]},
+    )
+
+    assert result == {"stage": "ok"}
+
+
+def test_complete_json_accepts_a_whole_json_code_fence(monkeypatch):
+    module = _vision_module()
+    import httpx
+
+    content = "```json\n" + json.dumps({"stage": "ok"}) + "\n```"
+    sse = "\n".join(
+        (
+            "data: "
+            + json.dumps(
+                {"choices": [{"delta": {"content": content}}]}
+            ),
+            "data: [DONE]",
+            "",
+        )
+    )
+    response = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        text=sse,
+        request=httpx.Request("POST", "http://provider.test/v1/chat/completions"),
+    )
+    monkeypatch.setattr(module.httpx, "post", lambda *args, **kwargs: response)
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url="http://provider.test/v1",
+        model="mock-large",
+        api_key="test-key",
+    )
+
+    result = provider.complete_json(
+        stage="story_map",
+        prompt_version="story-map-v1",
+        prompt_sha256="b" * 64,
+        prompt_text="Return JSON.",
+        payload={"panel_ids": ["panel-a"]},
+    )
+
+    assert result == {"stage": "ok"}
 
 
 def _assert_invalid_response(module, mock_provider_url, content):
@@ -346,6 +490,18 @@ def test_visual_request_uses_committed_prompt_and_ordered_provider_sidecars(
     assert version in text
     assert digest in text
     assert prompt.strip() in text
+    assert "Return a JSON array" in text
+    for key in REQUIRED_OBSERVATION_KEYS:
+        assert key in text
+    for key in (
+        "normalized_bbox",
+        "normalized_polygon",
+        "region_id",
+        "mask_status",
+        "minimum_coverage",
+    ):
+        assert key in text
+    assert "evidence_refs must include the panel_id" in text
     assert "evidence_hash" not in json.dumps(body)
     for panel, row in zip(_panels(), observations, strict=True):
         assert set(row) == REQUIRED_OBSERVATION_KEYS | {"visual_evidence"}
@@ -367,6 +523,96 @@ def test_visual_request_uses_committed_prompt_and_ordered_provider_sidecars(
         assert "evidence_hash" not in sidecar
 
 
+def test_visual_sidecar_accepts_optional_null_polygon_for_bbox_regions(
+    mock_provider_url,
+):
+    module = _vision_module()
+    import mock_provider
+
+    request, _, _, _ = _visual_request(module)
+    response = copy.deepcopy(mock_provider.default_visual_vision_response())
+    for row in response:
+        for region in row["visual_evidence"]["protected_regions"]:
+            region["normalized_polygon"] = None
+    mock_provider.reset_vision_state()
+    mock_provider.set_vision_response_content(json.dumps(response))
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url=mock_provider_url,
+        model="mock-large",
+        api_key=mock_provider.GOOD_KEY,
+    )
+
+    observations = provider.observe(request)
+
+    assert len(observations) == len(_panels())
+
+
+def test_visual_sidecar_normalizes_provider_mask_required_alias(
+    mock_provider_url,
+):
+    module = _vision_module()
+    import mock_provider
+
+    request, _, _, _ = _visual_request(module)
+    response = copy.deepcopy(mock_provider.default_visual_vision_response())
+    for row in response:
+        for region in row["visual_evidence"]["balloon_regions"]:
+            region["mask_status"] = "mask_required"
+    mock_provider.reset_vision_state()
+    mock_provider.set_vision_response_content(json.dumps(response))
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url=mock_provider_url,
+        model="mock-large",
+        api_key=mock_provider.GOOD_KEY,
+    )
+
+    observations = provider.observe(request)
+
+    assert len(observations) == len(_panels())
+    for observation in observations:
+        sidecar = observation["visual_evidence"]
+        regions = sidecar["balloon_regions"]
+        if sidecar["balloon_mask_status"] == "known_nonempty":
+            assert regions
+            assert all(region["mask_status"] == "known_nonempty" for region in regions)
+
+
+def test_visual_sidecar_normalizes_provider_balloon_semantic_aliases(
+    mock_provider_url,
+):
+    module = _vision_module()
+    import mock_provider
+
+    request, _, _, _ = _visual_request(module)
+    response = copy.deepcopy(mock_provider.default_visual_vision_response())
+    aliases = ("tail", "speech")
+    for row in response:
+        regions = row["visual_evidence"]["balloon_regions"]
+        for index, region in enumerate(regions):
+            region["kind"] = aliases[index % len(aliases)]
+            region["mask_status"] = "covered"
+    mock_provider.reset_vision_state()
+    mock_provider.set_vision_response_content(json.dumps(response))
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url=mock_provider_url,
+        model="mock-large",
+        api_key=mock_provider.GOOD_KEY,
+    )
+
+    observations = provider.observe(request)
+
+    assert len(observations) == len(_panels())
+    for observation in observations:
+        sidecar = observation["visual_evidence"]
+        if sidecar["balloon_mask_status"] == "known_nonempty":
+            assert sidecar["balloon_regions"]
+            assert all(
+                region["kind"] == "speech_balloon"
+                and region["mask_status"] == "known_nonempty"
+                for region in sidecar["balloon_regions"]
+            )
+
+
 def test_visual_prompt_snapshot_is_normalized_and_local_hash_owned():
     scoring = importlib.import_module("app.services.visual_scoring")
     loader = getattr(scoring, "load_visual_evidence_instruction", None)
@@ -378,6 +624,10 @@ def test_visual_prompt_snapshot_is_normalized_and_local_hash_owned():
     assert snapshot.read_text(encoding="utf-8").strip() == digest
     assert text.endswith("\n")
     assert "evidence_hash" not in text
+    assert "Never label OCR-only geometry as known_nonempty or known_empty" in text
+    assert "every balloon region MUST use kind speech_balloon" in text
+    assert "unknown is only for unavailable or insufficient visual geometry" in text
+    assert "Geometry must be tight and visibly grounded" in text
 
 
 @pytest.mark.parametrize(

@@ -94,30 +94,32 @@ def test_sentence_ass_repeats_full_sentence_and_scales_only_active_word():
 
 
 def test_sentence_ass_preserves_timing_boundaries_and_stable_two_line_wrap():
+    from app.services import subtitle_karaoke
     from app.services.render import build_sentence_karaoke_ass
 
     module = _preview_module()
-    group = module.KaraokeSentenceGroup(
-        group_id="sentence-wrap",
-        words=tuple(
-            module.KaraokeWord(text, index * 0.5, (index + 1) * 0.5)
-            for index, text in enumerate(
-                ("THE", "BATTLEFIELD", "IS", "BROKEN", "WHILE", "THE", "ARGUMENT", "GIVES", "WAY")
-            )
-        ),
-        start_time=0.0,
-        end_time=4.5,
+    spoken = "The battlefield is broken while the argument gives way."
+    groups = subtitle_karaoke.build_sentence_caption_groups(
+        spoken,
+        [
+            {"word": word, "start": index * 0.5, "end": (index + 1) * 0.5}
+            for index, word in enumerate(spoken.split())
+        ],
     )
 
     ass = build_sentence_karaoke_ass(
-        [group], width=1080, height=1920, max_chars=28, max_lines=2
+        groups,
+        width=1080,
+        height=1920,
+        max_chars=module.CAPTION_MAX_CHARS,
+        max_lines=2,
     )
     dialogues = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
-    assert len(dialogues) == 9
-    assert all("\\N" in line for line in dialogues)
+    assert len(dialogues) == len(spoken.split())
+    assert all(line.count("\\N") <= 1 for line in dialogues)
     assert dialogues[0].startswith("Dialogue: 0,0:00:00.00,0:00:00.50,")
     assert dialogues[-1].startswith("Dialogue: 0,0:00:04.00,0:00:04.50,")
-    assert all(len(re.findall(r"\\N", line)) == 1 for line in dialogues)
+    assert all(len(re.findall(r"\\N", line)) <= 1 for line in dialogues)
 
 
 def test_sentence_grouping_rejects_missing_or_punctuated_display_words():

@@ -19,6 +19,7 @@ import json
 import secrets
 import time
 from collections.abc import Mapping, Sequence
+from copy import copy as shallow_copy
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -72,6 +73,7 @@ from app.services import (
     narrative_identity,
     reference_profile,
     reference_visual_review,
+    review_source_upscale,
     segmentation,
     storage,
     subtitle_karaoke,
@@ -414,6 +416,61 @@ def _asset_source_bounds(asset: SourceAsset) -> tuple[int, int, int, int]:
     if x < 0 or y < 0 or width <= 0 or height <= 0:
         raise ValueError("source bounds are not positive")
     return x, y, x + width, y + height
+
+
+def _review_reference_source_path(
+    asset: SourceAsset,
+    *,
+    source_root: Path | None,
+) -> Path:
+    """Resolve the full original strip for an explicit silent review.
+
+    Segmented ``SourceAsset`` rows point at cropped storage bytes, while their
+    persisted bounds remain global to the original strip. Review mode may
+    supply the immutable input directory so checksum, dimensions, and panel
+    bounds all refer to the same source coordinate space. Without that
+    directory only a byte-identical, full-dimension stored source is accepted.
+    """
+    source_checksum = str(
+        getattr(asset, "original_checksum", "")
+        or getattr(asset, "checksum", "")
+        or ""
+    )
+    source_dimensions = (
+        int(getattr(asset, "original_width", 0) or getattr(asset, "width", 0) or 0),
+        int(getattr(asset, "original_height", 0) or getattr(asset, "height", 0) or 0),
+    )
+    if not source_checksum or min(source_dimensions) <= 0:
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: original source lineage is incomplete"
+        )
+    if source_root is not None:
+        try:
+            return review_source_upscale.resolve_original_source_path(
+                source_root,
+                source_checksum=source_checksum,
+                source_dimensions=source_dimensions,
+            )
+        except review_source_upscale.ReviewSourceUpscaleError as exc:
+            raise PipelineError(f"{exc.code}: {exc}") from exc
+    path = storage.path_for(asset.storage_key)
+    if not path.is_file() or asset.checksum != source_checksum:
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: original source bytes are unavailable"
+        )
+    try:
+        with Image.open(path) as source:
+            if tuple(source.size) != source_dimensions:
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: stored source is a segmented crop"
+                )
+    except PipelineError:
+        raise
+    except (OSError, UnidentifiedImageError, ValueError):
+        raise PipelineError(
+            "visual.panel_lineage_unavailable: original source cannot be decoded"
+        ) from None
+    return path
 
 
 def _build_source_inputs(
@@ -2179,6 +2236,7 @@ def _build_reference_panel_fallback_candidates(
     section_citations: Mapping[str, Sequence[int]],
     beats_by_section: Mapping[str, Sequence[str]],
     profile: object,
+    source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[object, ...]:
     """Compatibility wrapper for the exact panel-keyed review builder."""
     try:
@@ -2190,6 +2248,7 @@ def _build_reference_panel_fallback_candidates(
             section_citations=section_citations,
             beats_by_section=beats_by_section,
             profile=profile,
+            source_upscale_manifests_by_region_id=source_upscale_manifests_by_region_id,
         )
     except reference_visual_review.ReferenceReviewError as exc:
         raise PipelineError(f"{exc.code}: {exc}") from exc
@@ -2201,6 +2260,12 @@ def _load_reference_panel_fallback_candidates(
     script: ScriptVersion,
     images: Sequence[SourceAsset],
     profile: object,
+    *,
+    review_source_upscale_policy: review_source_upscale.ReviewSourceUpscalePolicy | None = None,
+    section_evidence_panel_ids: Mapping[str, Sequence[str]] | None = None,
+    section_citations: Mapping[str, Sequence[int]] | None = None,
+    beats_by_section: Mapping[str, Sequence[str]] | None = None,
+    review_source_root: Path | None = None,
 ) -> tuple[object, ...]:
     """Read each exact persisted panel crop before planner selection."""
     analysis = latest_analysis(db, project_id)
@@ -2209,15 +2274,22 @@ def _load_reference_panel_fallback_candidates(
     regions = list(
         db.scalars(
             select(PanelRegion)
-            .where(PanelRegion.story_analysis_id == analysis.id)
+            .where(
+                PanelRegion.story_analysis_id == analysis.id,
+                PanelRegion.source_order > 0,
+            )
             .order_by(PanelRegion.source_order, PanelRegion.panel_id, PanelRegion.id)
         )
     )
+    regions = [region for region in regions if int(region.source_order) > 0]
     if not regions:
         return ()
     assets = {asset.id: asset for asset in images}
     panel_crops: dict[str, Image.Image] = {}
     panel_candidates: dict[str, object] = {}
+    panel_regions_for_builder: list[PanelRegion] = []
+    source_upscale_manifests: dict[str, Mapping[str, Any]] = {}
+    resolved_source_paths: dict[str, Path] = {}
     for region in regions:
         asset = assets.get(region.source_asset_id)
         if asset is None:
@@ -2231,16 +2303,46 @@ def _load_reference_panel_fallback_candidates(
                 "visual.panel_lineage_unavailable: panel source checksum is stale"
             )
         try:
-            source = Image.open(io.BytesIO(storage.read_bytes(asset.storage_key)))
-            source.load()
+            if review_source_upscale_policy is None:
+                source = Image.open(io.BytesIO(storage.read_bytes(asset.storage_key)))
+                source.load()
+            else:
+                source_path = resolved_source_paths.get(str(asset.id))
+                if source_path is None:
+                    source_path = _review_reference_source_path(
+                        asset,
+                        source_root=review_source_root,
+                    )
+                    resolved_source_paths[str(asset.id)] = source_path
+                source = Image.open(source_path)
+                source.load()
+            source_dimensions = tuple(int(value) for value in source.size)
             bounds = _panel_region_bounds(region)
             crop = source.convert("RGB").crop(bounds)
             source.close()
             if crop.size != (bounds[2] - bounds[0], bounds[3] - bounds[1]):
                 raise ValueError("panel crop dimensions changed")
+            prepared_crop = crop
+            builder_region = region
+            if review_source_upscale_policy is not None:
+                prepared_crop, manifest = review_source_upscale.prepare_review_panel(
+                    crop,
+                    policy=review_source_upscale_policy,
+                    source_asset_id=str(asset.id),
+                    panel_region_id=str(region.id),
+                    source_asset_checksum=current_checksum,
+                    source_panel_bounds=bounds,
+                    source_dimensions=source_dimensions,
+                )
+                builder_region = shallow_copy(region)
+                builder_region.bounds_json = _panel_bounds_json(
+                    review_source_upscale.transform_panel_bounds(bounds, manifest)
+                )
+                source_upscale_manifests[str(region.id)] = manifest
             encoded = io.BytesIO()
-            crop.save(encoded, format="PNG")
-            panel_crops[str(region.id)] = crop.copy()
+            prepared_crop.save(encoded, format="PNG")
+            panel_crops[str(region.id)] = prepared_crop.copy()
+            panel_regions_for_builder.append(builder_region)
             panel_candidates[str(region.id)] = visual_scoring.analyze_panel(
                 encoded.getvalue(),
                 asset_id=str(asset.id),
@@ -2248,22 +2350,27 @@ def _load_reference_panel_fallback_candidates(
                 source_family=str(asset.source_family or ""),
             )
             crop.close()
+            if prepared_crop is not crop:
+                prepared_crop.close()
+        except review_source_upscale.ReviewSourceUpscaleError as exc:
+            raise PipelineError(f"{exc.code}: {exc}") from exc
         except (OSError, UnidentifiedImageError, ValueError, storage.StorageError):
             # An empty exact registry still routes through the explicit planner
             # boundary, which raises visual.panel_lineage_unavailable. This keeps
             # pre-Task7 callers from receiving a source-path traceback.
             return ()
-    section_evidence, section_citations, beats_by_section = (
+    default_evidence, default_citations, default_beats = (
         reference_visual_review.section_evidence_maps(script)
     )
     return _build_reference_panel_fallback_candidates(
-        panel_regions=regions,
+        panel_regions=panel_regions_for_builder or regions,
         panel_candidates_by_region_id=panel_candidates,
         panel_crops_by_region_id=panel_crops,
-        section_evidence_panel_ids=section_evidence,
-        section_citations=section_citations,
-        beats_by_section=beats_by_section,
+        section_evidence_panel_ids=section_evidence_panel_ids or default_evidence,
+        section_citations=section_citations or default_citations,
+        beats_by_section=beats_by_section or default_beats,
         profile=profile,
+        source_upscale_manifests_by_region_id=source_upscale_manifests,
     )
 
 
@@ -2275,6 +2382,7 @@ def _bind_reference_panel_regions(
     planned: list[dict[str, Any]],
     *,
     candidate_registry: Mapping[str, object] | None = None,
+    review_source_upscale_policy: review_source_upscale.ReviewSourceUpscalePolicy | None = None,
 ) -> list[dict[str, Any]]:
     """Bind every reference shot to its cited, persisted panel region."""
     if candidate_registry is not None:
@@ -2288,6 +2396,20 @@ def _bind_reference_panel_regions(
                 .order_by(PanelRegion.source_order, PanelRegion.panel_id, PanelRegion.id)
             )
         )
+        if review_source_upscale_policy is not None:
+            prepared_regions: list[PanelRegion] = []
+            for region in regions:
+                candidate = candidate_registry.get(str(region.id))
+                manifest = getattr(candidate, "source_upscale_manifest", None)
+                if isinstance(manifest, Mapping):
+                    prepared_region = shallow_copy(region)
+                    prepared_region.bounds_json = _panel_bounds_json(
+                        tuple(int(value) for value in candidate.panel_bounds)
+                    )
+                    prepared_regions.append(prepared_region)
+                else:
+                    prepared_regions.append(region)
+            regions = prepared_regions
         try:
             return reference_visual_review.bind_reference_panel_shots(
                 planned,
@@ -2421,26 +2543,141 @@ def _bind_reference_panel_regions(
 # --- stage: timeline and subtitles ----------------------------------------
 
 
-def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[TimelineScene]:
-    """Derive scenes and subtitle cues from the current voice-over."""
+def _review_provisional_spans(
+    script: ScriptVersion,
+    duration_s: float,
+) -> list[timeline_svc.AudioSpan]:
+    """Build explicitly non-authoritative display pacing for silent review."""
+    if not 50.0 <= float(duration_s) <= 60.0:
+        raise PipelineError(
+            "review.provisional_duration_invalid: silent review duration must be 50-60 seconds"
+        )
+    sections: list[tuple[str, str, float]] = []
+    for raw in getattr(script, "sections", ()) or ():
+        if not isinstance(raw, Mapping):
+            continue
+        section = str(raw.get("section", "")).strip()
+        text = str(raw.get("spoken_text") or raw.get("text") or "").strip()
+        if not section or not text:
+            continue
+        try:
+            requested = float(raw.get("estimated_duration", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            requested = 0.0
+        weight = requested if requested > 0.0 else float(max(1, len(text.split())))
+        sections.append((section, text, weight))
+    if not sections:
+        raise PipelineError(
+            "review.provisional_script_missing: spoken script sections are required"
+        )
+    total_weight = sum(weight for _, _, weight in sections)
+    spans: list[timeline_svc.AudioSpan] = []
+    cursor = 0.0
+    for index, (section, text, weight) in enumerate(sections):
+        end = (
+            float(duration_s)
+            if index == len(sections) - 1
+            else round(cursor + float(duration_s) * weight / total_weight, 3)
+        )
+        tokens = text.split()
+        word_timings: list[dict[str, object]] = []
+        slice_duration = max(0.001, end - cursor)
+        for token_index, token in enumerate(tokens):
+            start = cursor + slice_duration * token_index / len(tokens)
+            token_end = cursor + slice_duration * (token_index + 1) / len(tokens)
+            word_timings.append(
+                {
+                    "word": token,
+                    "spoken_token_index": token_index,
+                    "start": round(start, 3),
+                    "end": round(token_end, 3),
+                }
+            )
+        spans.append(
+            timeline_svc.AudioSpan(
+                section=section,
+                text=text,
+                start_time=round(cursor, 3),
+                end_time=round(end, 3),
+                word_timings=word_timings,
+            )
+        )
+        cursor = end
+    return spans
+
+
+def _reference_duration_bounds(profile: object, *, silent_reference_review: bool) -> tuple[float, float]:
+    """Return review-only pacing bounds without changing voiced profile gates."""
+
+    if silent_reference_review:
+        return 50.0, 60.0
+    return float(profile.duration_min_s), float(profile.duration_max_s)
+
+
+def build_timeline(
+    db: Session,
+    project_id: str,
+    actor_id: str = "",
+    *,
+    silent_reference_review: bool = False,
+    review_source_upscale_policy: str | None = None,
+    provisional_duration_s: float | None = None,
+    reference_section_panel_ids: Mapping[str, Sequence[str]] | None = None,
+    reference_section_citations: Mapping[str, Sequence[int]] | None = None,
+    reference_beats_by_section: Mapping[str, Sequence[str]] | None = None,
+    review_source_root: Path | None = None,
+) -> list[TimelineScene]:
+    """Derive scenes/cues from voice timing or explicit silent-review pacing."""
     project = get_project(db, project_id)
     profile = reference_profile.resolve_reference_profile(project.template)
     script = _script_for_media(db, project_id)
 
-    segments = audio_segments(db, script.id)
-    if not segments:
-        raise PipelineError("generate the voice-over before building the timeline")
-
-    audio_duration = max((float(segment.end_time) for segment in segments), default=0.0)
-    if profile is not None and not profile.duration_min_s <= audio_duration <= profile.duration_max_s:
+    review_policy = None
+    if silent_reference_review:
+        if profile is None:
+            raise PipelineError(
+                "review.upscale_requires_reference_profile: silent review requires reference mode"
+            )
+        try:
+            review_policy = review_source_upscale.validate_review_upscale_request(
+                review_source_upscale_policy,
+                silent_reference_review=True,
+                publish_allowed=False,
+            )
+        except review_source_upscale.ReviewSourceUpscaleError as exc:
+            raise PipelineError(str(exc)) from exc
+        if review_policy is None:
+            raise PipelineError(
+                "review.upscale_policy_required: silent source review requires the explicit upscale policy"
+            )
+        audio_duration = float(
+            provisional_duration_s
+            if provisional_duration_s is not None
+            else getattr(script, "estimated_duration", 0.0) or 0.0
+        )
+        if not audio_duration:
+            audio_duration = 51.3
+        spans = _review_provisional_spans(script, audio_duration)
+        segments: list[object] = []
+    else:
+        segments = audio_segments(db, script.id)
+        if not segments:
+            raise PipelineError("generate the voice-over before building the timeline")
+        audio_duration = max((float(segment.end_time) for segment in segments), default=0.0)
+        spans = spans_from_segments(segments)
+    duration_min_s, duration_max_s = (
+        _reference_duration_bounds(profile, silent_reference_review=silent_reference_review)
+        if profile is not None
+        else (0.0, float("inf"))
+    )
+    if profile is not None and not duration_min_s <= audio_duration <= duration_max_s:
         raise PipelineError(
             f"{profile.profile_id} requires audio duration between "
-            f"{profile.duration_min_s:.1f} and {profile.duration_max_s:.1f} seconds"
+            f"{duration_min_s:.1f} and {duration_max_s:.1f} seconds"
         )
 
     assets = project_assets(db, project_id)
     images = image_assets(assets)
-    spans = spans_from_segments(segments)
 
     scored = visual_scoring.analyze_assets(images, storage.read_bytes)
     # Director decides story beats and visual timing first. The Shot Sequencer
@@ -2451,9 +2688,31 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
     candidate_registry: dict[str, object] = {}
     reference_candidates: tuple[object, ...] | None = None
     if profile is not None:
-        reference_candidates = _load_reference_panel_fallback_candidates(
-            db, project_id, script, images, profile
-        )
+        if any(
+            value is not None
+            for value in (
+                review_policy,
+                reference_section_panel_ids,
+                reference_section_citations,
+                reference_beats_by_section,
+            )
+        ):
+            reference_candidates = _load_reference_panel_fallback_candidates(
+                db,
+                project_id,
+                script,
+                images,
+                profile,
+                review_source_upscale_policy=review_policy,
+                section_evidence_panel_ids=reference_section_panel_ids,
+                section_citations=reference_section_citations,
+                beats_by_section=reference_beats_by_section,
+                review_source_root=review_source_root,
+            )
+        else:
+            reference_candidates = _load_reference_panel_fallback_candidates(
+                db, project_id, script, images, profile
+            )
         candidate_registry = {
             str(candidate.panel_region_id): candidate
             for candidate in reference_candidates
@@ -2466,6 +2725,12 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             cited_asset_ids_by_section=None if profile is not None else None,
             citation_alignment_reasons_by_section=None if profile is not None else None,
             reference_panel_candidates=reference_candidates,
+            allow_source_resolution_warning=bool(
+                review_policy is not None
+                and review_policy.allow_low_source_resolution_warning
+            ),
+            allow_review_cadence_adaptation=silent_reference_review,
+            allow_review_duration=silent_reference_review,
         )
     except editorial_visual_planner.ReferencePlanningError as exc:
         raise PipelineError(
@@ -2480,6 +2745,7 @@ def build_timeline(db: Session, project_id: str, actor_id: str = "") -> list[Tim
             images,
             planned,
             candidate_registry=candidate_registry,
+            review_source_upscale_policy=review_policy,
         )
         for shot in planned:
             ledger = shot.get("fallback_attempts")
@@ -2627,6 +2893,8 @@ def _materialize_reference_panel_crop(
     asset: SourceAsset,
     scene: TimelineScene,
     destination: Path,
+    review_source_upscale_policy: review_source_upscale.ReviewSourceUpscalePolicy | None = None,
+    review_source_root: Path | None = None,
 ) -> Path:
     """Materialize a persisted panel snapshot in its original source space."""
     region_id = getattr(scene, "panel_region_id", None)
@@ -2668,7 +2936,40 @@ def _materialize_reference_panel_crop(
         raise PipelineError(
             "visual.panel_lineage_unavailable: persisted asset checksum is stale"
         )
-    if _panel_region_bounds(region) != bounds:
+    source_bounds = _panel_region_bounds(region)
+    accepted_manifest = None
+    if review_source_upscale_policy is not None:
+        ledger = list(getattr(scene, "rejected_candidates", []) or [])
+        accepted = [
+            entry
+            for entry in ledger
+            if isinstance(entry, Mapping) and entry.get("accepted") is True
+        ]
+        if len(accepted) != 1 or not isinstance(
+            accepted[0].get("source_upscale_manifest"), Mapping
+        ):
+            raise PipelineError(
+                "review.upscale_manifest_invalid: accepted source-upscale manifest is missing"
+            )
+        accepted_manifest = dict(accepted[0]["source_upscale_manifest"])
+        try:
+            review_source_upscale.validate_review_manifest_dimensions(
+                accepted_manifest,
+                (bounds[2] - bounds[0], bounds[3] - bounds[1]),
+            )
+        except review_source_upscale.ReviewSourceUpscaleError as exc:
+            raise PipelineError(f"{exc.code}: {exc}") from exc
+        if (
+            tuple(accepted_manifest.get("source_panel_bounds", ())) != source_bounds
+            or tuple(accepted_manifest.get("prepared_panel_bounds", ())) != bounds
+            or accepted_manifest.get("source_asset_id") != str(asset.id)
+            or accepted_manifest.get("panel_region_id") != str(region.id)
+            or accepted_manifest.get("source_asset_checksum") != asset_checksum
+        ):
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: source-upscale lineage is stale"
+            )
+    elif source_bounds != bounds:
         raise PipelineError(
             "visual.panel_lineage_unavailable: panel bounds snapshot is stale"
         )
@@ -2686,7 +2987,11 @@ def _materialize_reference_panel_crop(
         raise PipelineError(
             "visual.panel_lineage_unavailable: visual evidence snapshot is stale"
         )
-    source_path = storage.path_for(asset.storage_key)
+    source_path = (
+        _review_reference_source_path(asset, source_root=review_source_root)
+        if review_source_upscale_policy is not None
+        else storage.path_for(asset.storage_key)
+    )
     if not source_path.is_file():
         raise PipelineError(
             "visual.panel_lineage_unavailable: source asset file is unavailable"
@@ -2696,18 +3001,40 @@ def _materialize_reference_panel_crop(
         with Image.open(source_path) as source:
             source.load()
             source_width, source_height = source.size
-            if bounds[2] > source_width or bounds[3] > source_height:
+            if source_bounds[2] > source_width or source_bounds[3] > source_height:
                 raise PipelineError(
                     "visual.panel_lineage_unavailable: panel exceeds source dimensions"
                 )
-            cropped = source.convert("RGB").crop(bounds)
-            expected_size = (bounds[2] - bounds[0], bounds[3] - bounds[1])
-            if cropped.size != expected_size:
+            cropped = source.convert("RGB").crop(source_bounds)
+            if review_source_upscale_policy is not None:
+                prepared, generated_manifest = review_source_upscale.prepare_review_panel(
+                    cropped,
+                    policy=review_source_upscale_policy,
+                    source_asset_id=str(asset.id),
+                    panel_region_id=str(region.id),
+                    source_asset_checksum=asset_checksum,
+                    source_panel_bounds=source_bounds,
+                    source_dimensions=(source_width, source_height),
+                )
+                if _canonical_json(generated_manifest) != _canonical_json(accepted_manifest):
+                    raise PipelineError(
+                        "review.upscale_manifest_invalid: source-upscale manifest changed"
+                    )
+                try:
+                    review_source_upscale.validate_review_manifest(
+                        accepted_manifest, prepared
+                    )
+                except review_source_upscale.ReviewSourceUpscaleError as exc:
+                    raise PipelineError(f"{exc.code}: {exc}") from exc
+            else:
+                prepared = cropped
+            expected_size = prepared.size
+            if prepared.size != (bounds[2] - bounds[0], bounds[3] - bounds[1]):
                 raise PipelineError(
                     "visual.panel_lineage_unavailable: panel crop dimensions changed"
                 )
-            expected_hash = _reference_rgb_content_hash(cropped)
-            cropped.save(destination, format="PNG")
+            expected_hash = _reference_rgb_content_hash(prepared)
+            prepared.save(destination, format="PNG")
             try:
                 with Image.open(destination) as written:
                     written.load()
@@ -2978,6 +3305,8 @@ def _reference_scene_inputs(
     profile: object,
     *,
     require_fallback_ledger: bool,
+    review_source_upscale_policy: review_source_upscale.ReviewSourceUpscalePolicy | None = None,
+    review_source_root: Path | None = None,
 ) -> list[object]:
     """Reconstruct exact panel crops and accepted Task 6 identity for render."""
     from app.services import render as render_svc
@@ -2996,7 +3325,14 @@ def _reference_scene_inputs(
                 "visual.panel_lineage_unavailable: reference scene asset is unavailable"
             )
         destination = workspace / f"scene-{index:04d}.png"
-        image_path = _materialize_reference_panel_crop(db, asset, scene, destination)
+        image_path = _materialize_reference_panel_crop(
+            db,
+            asset,
+            scene,
+            destination,
+            review_source_upscale_policy=review_source_upscale_policy,
+            review_source_root=review_source_root,
+        )
         ledger = list(getattr(scene, "rejected_candidates", []) or [])
         if require_fallback_ledger and not ledger:
             raise PipelineError(
@@ -3011,6 +3347,11 @@ def _reference_scene_inputs(
                 "visual.panel_lineage_unavailable: accepted fallback ledger is invalid"
             )
         accepted_entry = accepted[0] if accepted else {}
+        source_upscale_manifest = (
+            accepted_entry.get("source_upscale_manifest")
+            if isinstance(accepted_entry, Mapping)
+            else None
+        )
         telemetry = (
             accepted_entry.get("telemetry")
             if isinstance(accepted_entry, Mapping)
@@ -3129,6 +3470,7 @@ def _reference_scene_inputs(
                 fallback_attempts=ledger,
                 framing_telemetry=telemetry,
                 publish_allowed=False,
+                review_source_upscale_manifest=source_upscale_manifest,
             )
         )
     return inputs
@@ -3141,6 +3483,8 @@ def _build_silent_reference_request(
     profile: object,
     *,
     output_override: Path | None,
+    review_source_upscale_policy: review_source_upscale.ReviewSourceUpscalePolicy | None = None,
+    review_source_root: Path | None = None,
 ):
     from app.services import render as render_svc
 
@@ -3153,14 +3497,72 @@ def _build_silent_reference_request(
         scenes,
         profile,
         require_fallback_ledger=True,
+        review_source_upscale_policy=review_source_upscale_policy,
+        review_source_root=review_source_root,
     )
     media_duration = max(float(scene.end_time) for scene in scenes)
     if any(scene.publish_allowed is not False for scene in scene_inputs):
         raise PipelineError(
             "reference.publish_not_allowed: publish_allowed must be false for silent review scenes"
         )
-    persisted_cues = project_cues(db, job.project_id)
-    cues = cue_specs(persisted_cues)
+    if review_source_upscale_policy is not None:
+        script = _script_for_media(db, job.project_id)
+        provisional_spans = _review_provisional_spans(script, media_duration)
+        sentence_groups: list[object] = []
+        for span_index, span in enumerate(provisional_spans):
+            timed_cues = [
+                {
+                    "spoken_token_index": index,
+                    "word": timing["word"],
+                    "start": timing["start"],
+                    "end": timing["end"],
+                }
+                for index, timing in enumerate(span.word_timings)
+            ]
+            try:
+                sentence_groups.extend(
+                    subtitle_karaoke.build_sentence_caption_groups(
+                        span.text,
+                        timed_cues,
+                        group_prefix=f"review-provisional-{span_index + 1}",
+                    )
+                )
+            except ValueError as exc:
+                raise PipelineError(str(exc)) from exc
+        try:
+            sentence_groups = list(
+                render_svc.fit_sentence_karaoke_groups(
+                    sentence_groups,
+                    profile.final_width,
+                    profile.final_height,
+                    max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
+                    max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
+                    active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
+                    font_height_ratio=subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO,
+                    safe_margin_px=subtitle_karaoke.CAPTION_SAFE_MARGIN_PX,
+                )
+            )
+        except render_svc.RenderError as exc:
+            raise PipelineError(f"{exc.code}: {exc}") from exc
+        persisted_cues = timeline_svc.build_cues(
+            provisional_spans,
+            media_duration=media_duration,
+        )
+        cues = [
+            cue
+            for cue in persisted_cues
+            if any(
+                float(scene.start_time) - 1e-9 <= float(cue.start_time)
+                and float(cue.end_time) <= float(scene.end_time) + 1e-9
+                for scene in scenes
+            )
+        ]
+        subtitle_timing_source = "review_provisional_display_pacing_v1"
+    else:
+        persisted_cues = project_cues(db, job.project_id)
+        cues = cue_specs(persisted_cues)
+        sentence_groups = []
+        subtitle_timing_source = ""
     warnings = timeline_svc.validate_cues(
         cues,
         max_chars=MAX_SUBTITLE_CHARS_PER_LINE,
@@ -3206,7 +3608,105 @@ def _build_silent_reference_request(
         silent_reference_review=True,
         output_override=output,
         sidecar_path=output.with_suffix(".review.json"),
+        sentence_groups=sentence_groups,
+        subtitle_contract_version=subtitle_karaoke.SUBTITLE_CONTRACT_VERSION,
+        subtitle_timing_source=subtitle_timing_source,
+        subtitle_contract=subtitle_karaoke.contract_manifest(profile),
+        review_source_upscale_policy=(
+            review_source_upscale_policy.policy_id
+            if review_source_upscale_policy is not None
+            else None
+        ),
     )
+
+
+def render_silent_review_preview(
+    db: Session,
+    project_id: str,
+    *,
+    actor_id: str = "",
+    review_source_upscale_policy: str = review_source_upscale.REVIEW_SOURCE_UPSCALE_POLICY_ID,
+    review_source_root: Path,
+    output_dir: Path | None = None,
+) -> tuple[RenderJob, object]:
+    """Render and persist one video-only review attempt through the regular path."""
+
+    from app.services import render as render_svc
+    from app.services import review_preview
+
+    project = get_project(db, project_id)
+    if not project_scenes(db, project_id):
+        raise PipelineError("visual.panel_lineage_unavailable: build the review timeline first")
+    root = Path(output_dir or settings.output_dir) / project_id / "review"
+    output = root / "silent_preview.mp4"
+    job = RenderJob(
+        project_id=project_id,
+        kind="preview",
+        status=JobStatus.QUEUED,
+        stage="review-preview-queued",
+        encoder_requested="auto",
+        render_profile="Auto",
+    )
+    db.add(job)
+    db.flush()
+    started = time.monotonic()
+    try:
+        request = build_render_request(
+            db,
+            job,
+            silent_reference_review=True,
+            output_override=output,
+            review_source_upscale_policy=review_source_upscale_policy,
+            review_source_root=Path(review_source_root),
+        )
+        result = render_svc.render_video(request)
+        artifacts = review_preview.write_review_preview_bundle(
+            db,
+            project_id,
+            result,
+            output_dir=root,
+            subtitle_contract=request.subtitle_contract,
+            subtitle_timing_source=request.subtitle_timing_source,
+        )
+    except (render_svc.RenderError, PipelineError, review_preview.ReviewPreviewError) as exc:
+        job.status = JobStatus.FAILED
+        job.stage = "review-preview-failed"
+        job.error_code = str(getattr(exc, "code", "review.preview_failed"))[:80]
+        job.error_message = str(exc)[:1000]
+        project.status = ProjectStatus.REVIEW
+        db.flush()
+        raise PipelineError(f"{job.error_code}: review preview failed") from exc
+    job.status = JobStatus.SUCCEEDED
+    job.progress = 100
+    job.stage = "review-preview-ready"
+    job.completed_at = _now()
+    job.output_key = str(result.output_path)
+    job.subtitle_key = str(result.subtitle_path) if result.subtitle_path else ""
+    job.checksum = result.checksum
+    job.duration = result.duration
+    job.width = result.width
+    job.height = result.height
+    job.encoder = result.encoder
+    job.encoder_hardware = result.encoder_hardware
+    job.encoder_fell_back = result.encoder_fell_back
+    job.encoder_reason = result.encoder_reason[:1000]
+    job.render_wall_seconds = round(time.monotonic() - started, 3)
+    project.status = ProjectStatus.REVIEW
+    project.error_message = ""
+    audit(
+        db,
+        "review.preview.ready",
+        "render_job",
+        job.id,
+        actor_id,
+        output=str(result.output_path),
+        checksum=result.checksum,
+        duration=result.duration,
+        publish_allowed=False,
+        voice_state="VISUAL_ONLY_WAITING_FOR_VOICE",
+    )
+    db.flush()
+    return job, artifacts
 
 def build_render_request(
     db: Session,
@@ -3214,12 +3714,26 @@ def build_render_request(
     *,
     silent_reference_review: bool = False,
     output_override: Path | None = None,
+    review_source_upscale_policy: str | None = None,
+    review_source_root: Path | None = None,
 ):
     """Assemble a RenderRequest from persisted state."""
     from app.services import render as render_svc
 
     project = get_project(db, job.project_id)
     editorial_profile = reference_profile.resolve_reference_profile(project.template)
+    try:
+        upscale_policy = review_source_upscale.validate_review_upscale_request(
+            review_source_upscale_policy,
+            silent_reference_review=silent_reference_review,
+            publish_allowed=False,
+        )
+    except review_source_upscale.ReviewSourceUpscaleError as exc:
+        raise PipelineError(str(exc)) from exc
+    if upscale_policy is not None and editorial_profile is None:
+        raise PipelineError(
+            "review.upscale_requires_reference_profile: source upscale requires reference mode"
+        )
     if silent_reference_review and editorial_profile is not None:
         return _build_silent_reference_request(
             db,
@@ -3227,6 +3741,8 @@ def build_render_request(
             project,
             editorial_profile,
             output_override=output_override,
+            review_source_upscale_policy=upscale_policy,
+            review_source_root=review_source_root,
         )
     script = current_script(db, job.project_id)
     if script is None:
@@ -3263,6 +3779,19 @@ def build_render_request(
             sentence_groups = subtitle_karaoke.build_sentence_groups_from_segments(segments)
         except ValueError as exc:
             raise PipelineError(str(exc)) from exc
+        try:
+            sentence_groups = render_svc.fit_sentence_karaoke_groups(
+                sentence_groups,
+                editorial_profile.final_width,
+                editorial_profile.final_height,
+                max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
+                max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
+                active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
+                font_height_ratio=subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO,
+                safe_margin_px=subtitle_karaoke.CAPTION_SAFE_MARGIN_PX,
+            )
+        except render_svc.RenderError as exc:
+            raise PipelineError(f"{exc.code}: {exc}") from exc
         subtitle_contract = subtitle_karaoke.contract_manifest(editorial_profile)
         subtitle_contract_version = subtitle_karaoke.SUBTITLE_CONTRACT_VERSION
         subtitle_timing_source = "audio_segment.word_timings"

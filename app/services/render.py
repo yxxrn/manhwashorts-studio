@@ -28,7 +28,7 @@ from pathlib import Path
 from random import Random
 from typing import TYPE_CHECKING, Any
 
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 from app.config import settings
 from app.constants import MAX_SUBTITLE_CHARS_PER_LINE, SUBTITLE_SAFE_BOTTOM
@@ -146,6 +146,7 @@ class SceneInput:
     fallback_attempts: list[Mapping[str, Any]] = field(default_factory=list)
     framing_telemetry: Mapping[str, Any] | None = None
     publish_allowed: bool = True
+    review_source_upscale_manifest: Mapping[str, Any] | None = None
 
     @property
     def duration(self) -> float:
@@ -178,6 +179,7 @@ class RenderRequest:
     subtitle_timing_source: str = ""
     subtitle_contract: Mapping[str, Any] | None = None
     persisted_reference_framing: bool = False
+    review_source_upscale_policy: str | None = None
 
 
 @dataclass
@@ -1170,13 +1172,222 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return header + "\n".join(lines) + "\n"
 
 
+def _load_karaoke_layout_font(font_size: int) -> object | None:
+    try:
+        font_path = Path(settings.subtitle_font)
+        if font_path.is_file():
+            return ImageFont.truetype(str(font_path), font_size)
+    except OSError:
+        pass
+    return None
+
+
+def _karaoke_line_layout(
+    words: Sequence[str],
+    *,
+    layout_font: object | None,
+    safe_text_width: int,
+    max_chars: int,
+    max_lines: int,
+    active_scale: float,
+) -> tuple[str, ...]:
+    """Return a deterministic one/two-line layout using real font metrics."""
+
+    def line_metrics(start: int, end: int) -> tuple[str, float]:
+        text = " ".join(words[start:end])
+        if layout_font is None:
+            return text, float(len(text))
+        getlength = getattr(layout_font, "getlength")
+        base = float(getlength(text))
+        active_bump = (active_scale - 1.0) * max(
+            (float(getlength(word)) for word in words[start:end]),
+            default=0.0,
+        )
+        return text, base + active_bump
+
+    def acceptable(start: int, end: int) -> bool:
+        text, width_value = line_metrics(start, end)
+        return len(text) <= max_chars and width_value <= safe_text_width
+
+    if acceptable(0, len(words)):
+        return (" ".join(words),)
+    if max_lines < 2:
+        raise RenderError(
+            "subtitle overflow: rendered sentence cannot fit the safe width",
+            code="reference.subtitle_overflow",
+        )
+    candidates: list[tuple[tuple[float, float, tuple[int, ...]], tuple[str, ...]]] = []
+    for split in range(2, len(words) - 1):
+        if not acceptable(0, split) or not acceptable(split, len(words)):
+            continue
+        first, first_width = line_metrics(0, split)
+        second, second_width = line_metrics(split, len(words))
+        candidates.append(
+            (
+                (
+                    max(first_width, second_width),
+                    abs(first_width - second_width),
+                    (split,),
+                ),
+                (first, second),
+            )
+        )
+    if not candidates:
+        raise RenderError(
+            "subtitle overflow: rendered sentence cannot fit the safe width",
+            code="reference.subtitle_overflow",
+        )
+    return min(candidates, key=lambda candidate: candidate[0])[1]
+
+
+def fit_sentence_karaoke_groups(
+    groups: Sequence[KaraokeSentenceGroup],
+    width: int,
+    height: int,
+    *,
+    max_chars: int = subtitle_karaoke.CAPTION_MAX_CHARS,
+    max_lines: int = subtitle_karaoke.CAPTION_MAX_LINES,
+    active_scale: float = subtitle_karaoke.CAPTION_ACTIVE_SCALE,
+    font_height_ratio: float = subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO,
+    outline_pixels: int = 6,
+    safe_margin_px: int = subtitle_karaoke.CAPTION_SAFE_MARGIN_PX,
+) -> tuple[KaraokeSentenceGroup, ...]:
+    """Split logical groups that pass char limits but cannot fit actual pixels.
+
+    The operation only changes display chunk boundaries. Word text and timing
+    remain immutable, and every resulting chunk contains at least two words.
+    """
+
+    if width <= 0 or height <= 0 or max_chars <= 0 or not 0 < max_lines <= 2:
+        raise RenderError(
+            "subtitle layout dimensions are invalid",
+            code="reference.subtitle_layout_invalid",
+        )
+    if not 1.0 < active_scale <= 1.25 or not math.isfinite(active_scale):
+        raise RenderError("subtitle active scale is invalid", code="reference.subtitle_scale_invalid")
+    if not 0.0 < font_height_ratio <= 0.2 or not math.isfinite(font_height_ratio):
+        raise RenderError("subtitle font ratio is invalid", code="reference.subtitle_layout_invalid")
+    if safe_margin_px * 2 >= width or outline_pixels < 0:
+        raise RenderError("subtitle style is invalid", code="reference.subtitle_layout_invalid")
+
+    font_size = max(1, round(height * font_height_ratio))
+    layout_font = _load_karaoke_layout_font(font_size)
+    safe_text_width = width - (2 * safe_margin_px) - (2 * outline_pixels)
+
+    def layout(words: Sequence[KaraokeWord]) -> tuple[str, ...]:
+        return _karaoke_line_layout(
+            [word.text for word in words],
+            layout_font=layout_font,
+            safe_text_width=safe_text_width,
+            max_chars=max_chars,
+            max_lines=max_lines,
+            active_scale=active_scale,
+        )
+
+    def width_of(words: Sequence[KaraokeWord]) -> float:
+        lines = layout(words)
+        if layout_font is None:
+            return float(max(map(len, lines), default=0))
+        getlength = getattr(layout_font, "getlength")
+        return max(
+            float(getlength(line))
+            + (active_scale - 1.0)
+            * max((float(getlength(word)) for word in line.split()), default=0.0)
+            for line in lines
+        )
+
+    def split_group(group: KaraokeSentenceGroup) -> tuple[KaraokeSentenceGroup, ...]:
+        try:
+            layout(group.words)
+            return (group,)
+        except RenderError as exc:
+            if exc.code != "reference.subtitle_overflow":
+                raise
+
+        words = tuple(group.words)
+        if len(words) < 4:
+            raise RenderError(
+                "subtitle overflow: rendered sentence cannot fit the safe width",
+                code="reference.subtitle_overflow",
+            )
+        memo: dict[int, tuple[tuple[KaraokeWord, ...], ...] | None] = {}
+
+        def solve(start: int) -> tuple[tuple[KaraokeWord, ...], ...] | None:
+            if start == len(words):
+                return ()
+            if start in memo:
+                return memo[start]
+            candidates: list[tuple[tuple[float, float, tuple[int, ...]], tuple[tuple[KaraokeWord, ...], ...]]] = []
+            for end in range(start + 2, len(words) + 1):
+                if len(words) - end == 1:
+                    continue
+                chunk = words[start:end]
+                try:
+                    layout(chunk)
+                except RenderError as exc:
+                    if exc.code == "reference.subtitle_overflow":
+                        continue
+                    raise
+                remainder = solve(end)
+                if remainder is None:
+                    continue
+                parts = (chunk,) + remainder
+                target = len(words) / len(parts)
+                score = (
+                    float(len(parts)),
+                    max(width_of(part) for part in parts),
+                    sum(abs(len(part) - target) for part in parts),
+                    tuple(len(part) for part in parts),
+                )
+                candidates.append((score, parts))
+            memo[start] = min(candidates, key=lambda item: item[0])[1] if candidates else None
+            return memo[start]
+
+        parts = solve(0)
+        if parts is None:
+            raise RenderError(
+                "subtitle overflow: rendered sentence cannot fit the safe width",
+                code="reference.subtitle_overflow",
+            )
+        return tuple(
+            KaraokeSentenceGroup(
+                group_id=f"{group.group_id}-chunk-{index}",
+                words=part,
+                start_time=group.start_time if index == 1 else part[0].start_time,
+                end_time=group.end_time if index == len(parts) else part[-1].end_time,
+            )
+            for index, part in enumerate(parts, start=1)
+        )
+
+    logical_groups: list[KaraokeSentenceGroup] = []
+    for group in groups:
+        sentence_id = re.sub(r"-chunk-\d+$", "", group.group_id)
+        if logical_groups:
+            previous = logical_groups[-1]
+            previous_id = re.sub(r"-chunk-\d+$", "", previous.group_id)
+            if sentence_id == previous_id:
+                logical_groups[-1] = KaraokeSentenceGroup(
+                    group_id=previous.group_id,
+                    words=previous.words + group.words,
+                    start_time=previous.start_time,
+                    end_time=group.end_time,
+                )
+                continue
+        logical_groups.append(group)
+
+    prepared: list[KaraokeSentenceGroup] = []
+    for group in logical_groups:
+        prepared.extend(split_group(group))
+    return tuple(prepared)
+
+
 def build_sentence_karaoke_ass(
     groups: Sequence[KaraokeSentenceGroup],
     width: int,
     height: int,
     *,
     font_name: str = "DejaVu Sans",
-    max_chars: int = 36,
+    max_chars: int = subtitle_karaoke.CAPTION_MAX_CHARS,
     max_lines: int = 2,
     active_scale: float = 1.08,
     anchor: tuple[float, float] = (0.50, 0.56),
@@ -1232,7 +1443,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines: list[str] = []
     previous_group_end = 0.0
-    for group in groups:
+    prepared_groups = fit_sentence_karaoke_groups(
+        groups,
+        width,
+        height,
+        max_chars=max_chars,
+        max_lines=max_lines,
+        active_scale=active_scale,
+        font_height_ratio=font_height_ratio,
+        outline_pixels=outline_pixels,
+        safe_margin_px=safe_margin_px,
+    )
+    layout_font = _load_karaoke_layout_font(font_size)
+    safe_text_width = width - (2 * safe_margin_px) - (2 * outline_pixels)
+
+    for group in prepared_groups:
         if group.start_time < previous_group_end:
             raise RenderError(
                 "subtitle sentence groups overlap",
@@ -1240,12 +1465,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             )
         previous_group_end = group.end_time
         display_words = [word.text for word in group.words]
-        wrapped = wrap_caption(" ".join(display_words), max_chars)
-        if (
-            len(wrapped) > max_lines
-            or any(len(line) > max_chars for line in wrapped)
-            or (len(wrapped) > 1 and any(len(line.split()) < 2 for line in wrapped))
-        ):
+        if len(display_words) < 2:
+            raise RenderError(
+                "subtitle overflow: sentence chunks require at least two words",
+                code="reference.subtitle_overflow",
+            )
+        wrapped = _karaoke_line_layout(
+            display_words,
+            layout_font=layout_font,
+            safe_text_width=safe_text_width,
+            max_chars=max_chars,
+            max_lines=max_lines,
+            active_scale=active_scale,
+        )
+        if len(wrapped) > max_lines or any(len(line.split()) < 2 for line in wrapped[1:]):
             raise RenderError(
                 "subtitle overflow: sentence exceeds the configured line budget",
                 code="reference.subtitle_overflow",
@@ -1411,6 +1644,7 @@ def _prepare_exact_reference_frame(
     width: int,
     height: int,
     profile: ReferenceProfileConfig,
+    allow_source_resolution_warning: bool = False,
 ) -> Path:
     """Prepare the persisted ROI exactly, without candidate search or reselection."""
     if scene.publish_allowed is not False:
@@ -1523,12 +1757,16 @@ def _prepare_exact_reference_frame(
             code="visual.panel_lineage_unavailable",
         ) from exc
     try:
+        feasibility_kwargs: dict[str, object] = {}
+        if allow_source_resolution_warning:
+            feasibility_kwargs["allow_source_resolution_warning"] = True
         feasible, telemetry = framing_analysis.candidate_is_feasible(
             crop_box,
             evidence,
             mask,
             panel_size,
             (width, height),
+            **feasibility_kwargs,
         )
     except visual_scoring.VisualEvidenceError as exc:
         raise RenderError(str(exc), code=exc.code) from exc
@@ -1624,6 +1862,7 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
                 "selected_roi": scene.selected_roi,
                 "fallback_attempts": attempts,
                 "framing_telemetry": scene.framing_telemetry,
+                "source_upscale_manifest": scene.review_source_upscale_manifest,
                 "reason": scene.motion_reason,
                 "rejection_code": None,
             }
@@ -1635,6 +1874,20 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
         "publish_allowed": False,
         "audio_stream_expected": False,
         "audio_stream_present": bool(info.get("has_audio")),
+        "source_upscale_policy": getattr(request, "review_source_upscale_policy", None),
+        "source_upscale_resolution_states": sorted(
+            {
+                str(
+                    manifest.get("resolution_state", "")
+                )
+                for manifest in (
+                    scene.review_source_upscale_manifest
+                    for scene in request.scenes
+                    if isinstance(scene.review_source_upscale_manifest, Mapping)
+                )
+                if manifest.get("resolution_state")
+            }
+        ),
         "shots": shots,
     }
 
@@ -1723,6 +1976,32 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         raise RenderError("video dimensions must be even for H.264", code="bad_dimensions")
     if not request.scenes:
         raise RenderError("nothing to render: the timeline has no scenes", code="no_scenes")
+    if request.review_source_upscale_policy is not None:
+        from app.services import review_source_upscale
+
+        if request.profile is None:
+            raise RenderError(
+                "review.upscale_requires_reference_profile: source upscale requires reference mode",
+                code="review.upscale_requires_reference_profile",
+            )
+        try:
+            review_source_upscale.validate_review_upscale_request(
+                request.review_source_upscale_policy,
+                silent_reference_review=request.silent_reference_review,
+                publish_allowed=any(
+                    scene.publish_allowed is not False for scene in request.scenes
+                ),
+            )
+        except review_source_upscale.ReviewSourceUpscaleError as exc:
+            raise RenderError(str(exc), code=exc.code) from exc
+        if any(
+            not isinstance(scene.review_source_upscale_manifest, Mapping)
+            for scene in request.scenes
+        ):
+            raise RenderError(
+                "review.upscale_manifest_invalid: every silent review scene needs a source-upscale manifest",
+                code="review.upscale_manifest_invalid",
+            )
     if request.profile is not None and not request.silent_reference_review and not request.persisted_reference_framing:
         raise RenderError(
             "visual.panel_lineage_unavailable: regular reference render requires persisted panel framing",
@@ -1848,13 +2127,25 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         elif scene.image_path and Path(scene.image_path).is_file():
             try:
                 if request.silent_reference_review or request.persisted_reference_framing:
-                    _prepare_exact_reference_frame(
-                        scene=scene,
-                        dest=prepared,
-                        width=width,
-                        height=height,
-                        profile=request.profile,
-                    )
+                    exact_prepare_kwargs: dict[str, object] = {
+                        "scene": scene,
+                        "dest": prepared,
+                        "width": width,
+                        "height": height,
+                        "profile": request.profile,
+                    }
+                    if (
+                        request.silent_reference_review
+                        and request.review_source_upscale_policy
+                        == "review_silent_source_upscale_v1"
+                        and isinstance(scene.review_source_upscale_manifest, Mapping)
+                        and scene.review_source_upscale_manifest.get("resolution_state")
+                        == "LOW_SOURCE_RESOLUTION"
+                        and scene.review_source_upscale_manifest.get("non_native_warning")
+                        == "review.low_source_resolution"
+                    ):
+                        exact_prepare_kwargs["allow_source_resolution_warning"] = True
+                    _prepare_exact_reference_frame(**exact_prepare_kwargs)
                 else:
                     editorial_frame(
                         Path(scene.image_path), prepared, width, height,

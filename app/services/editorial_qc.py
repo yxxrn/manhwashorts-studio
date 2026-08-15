@@ -232,9 +232,10 @@ def screen_narrative_naturalness(
     )
     cta_hits = tuple(marker for marker in _NARRATIVE_CTA_MARKERS if marker in lower_text)
 
-    complete_passages = 0
     unsupported_claim = False
     evidence_missing = False
+    required_claim_evidence: dict[str, set[str]] = {}
+    covered_claim_evidence: dict[str, set[str]] = {}
     for passage in passages:
         claim_ids = passage.get("claim_ids", [])
         evidence_ids = passage.get("evidence_panel_ids", [])
@@ -244,7 +245,7 @@ def screen_narrative_naturalness(
         if not isinstance(evidence_ids, Sequence) or isinstance(evidence_ids, (str, bytes)):
             evidence_missing = True
             continue
-        required: set[str] = set()
+        evidence_set = {str(item) for item in evidence_ids}
         valid = bool(claim_ids)
         for claim_id in claim_ids:
             claim = claims.get(claim_id) if isinstance(claim_id, str) else None
@@ -259,15 +260,21 @@ def screen_narrative_naturalness(
                 evidence_missing = True
                 valid = False
                 continue
-            required.update(str(item) for item in claim_evidence)
+            claim_key = str(claim_id)
+            required = {str(item) for item in claim_evidence}
+            required_claim_evidence.setdefault(claim_key, set()).update(required)
+            covered_claim_evidence.setdefault(claim_key, set()).update(required & evidence_set)
+            if not required & evidence_set:
+                evidence_missing = True
+                valid = False
             for dialogue in _narrative_dialogue_values(claim):
                 if _narrative_contains_sequence(passage.get("text", ""), dialogue):
                     evidence_missing = True
-        if not required <= {str(item) for item in evidence_ids}:
-            evidence_missing = True
-            valid = False
-        if valid:
-            complete_passages += 1
+    if any(
+        covered_claim_evidence.get(claim_id, set()) != required
+        for claim_id, required in required_claim_evidence.items()
+    ) or len(required_claim_evidence) != len(claims):
+        evidence_missing = True
 
     interpretations = [
         claim
@@ -320,8 +327,17 @@ def screen_narrative_naturalness(
         contraction_count=contraction_count,
         generic_hype_hits=generic_hype_hits,
         cta_hits=cta_hits,
-        claim_evidence_coverage_ratio=_narrative_ratio(
-            complete_passages, len(passages)
+        claim_evidence_coverage_ratio=(
+            round(
+                sum(
+                    covered_claim_evidence.get(claim_id, set()) >= required
+                    for claim_id, required in required_claim_evidence.items()
+                )
+                / len(claims),
+                6,
+            )
+            if claims
+            else 1.0
         ),
         qualified_interpretation_coverage_ratio=(
             round(qualified / len(interpretations), 6) if interpretations else 1.0
