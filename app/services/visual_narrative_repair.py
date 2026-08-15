@@ -86,7 +86,7 @@ class FeasibleVisualRecord:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "FeasibleVisualRecord":
+    def from_dict(cls, value: Mapping[str, Any]) -> FeasibleVisualRecord:
         try:
             return cls(
                 panel_region_id=str(value["panel_region_id"]),
@@ -139,7 +139,7 @@ class FeasibleVisualLedger:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "FeasibleVisualLedger":
+    def from_dict(cls, value: Mapping[str, Any]) -> FeasibleVisualLedger:
         try:
             ledger = cls(
                 entries=tuple(FeasibleVisualRecord.from_dict(item) for item in value["entries"]),
@@ -190,7 +190,7 @@ def build_feasible_visual_ledger(
             feasible_rois.append({
                 "kind": str(roi.kind),
                 "roi_label": str(roi.roi_label),
-                "crop_box": list(tuple(int(value) for value in roi.crop_box)),
+                "crop_box": [int(value) for value in roi.crop_box],
                 "telemetry": telemetry_dict,
             })
         if not feasible_rois:
@@ -555,7 +555,6 @@ def validate_repaired_panel_references(
         if not set(map(str, claim_ids)) <= set(claim_refs) or not {str(ref) for ref in refs} <= feasible:
             raise VisualNarrativeRepairError("repair passage cites unsupported evidence", "visual.narrative_repair_ungrounded")
         passage_refs = {str(ref) for ref in refs}
-        required = set().union(*(claim_refs[str(claim_id)] for claim_id in claim_ids))
         for claim_id in map(str, claim_ids):
             covered_claim_refs[claim_id].update(passage_refs & claim_refs[claim_id])
         if passage_index > 0:

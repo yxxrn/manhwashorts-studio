@@ -283,9 +283,7 @@ def _reference_section_shot_durations(
     *,
     allow_review_cadence_adaptation: bool = False,
 ) -> list[float]:
-    if allow_review_cadence_adaptation:
-        values = [section_duration / shot_count] * shot_count
-    elif emphasis_count <= 0:
+    if allow_review_cadence_adaptation or emphasis_count <= 0:
         values = [section_duration / shot_count] * shot_count
     else:
         emphasis_duration = min(

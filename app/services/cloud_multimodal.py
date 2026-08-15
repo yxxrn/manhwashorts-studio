@@ -27,8 +27,8 @@ from app.services import (
     quality,
     script,
     strip_segmentation,
-    visual_scoring,
     visual_narrative_repair,
+    visual_scoring,
 )
 from app.services.vision_adapter import VisionObservationRequest
 
@@ -1932,7 +1932,7 @@ def _build_ephemeral_review_candidates(
             panel_candidates_by_region_id=panel_candidates,
             panel_crops_by_region_id=panel_crops,
             section_evidence_panel_ids=section_evidence,
-            section_citations={section: () for section in section_to_beats},
+            section_citations=dict.fromkeys(section_to_beats, ()),
             beats_by_section=section_to_beats,
             profile=profile,
             source_upscale_manifests_by_region_id=upscale_manifests,
@@ -2120,7 +2120,7 @@ class CloudBatchService:
                 profile,
                 review_source_upscale_policy=policy,
                 section_evidence_panel_ids=beat_panel_ids,
-                section_citations={beat_id: () for beat_id in beat_panel_ids},
+                section_citations=dict.fromkeys(beat_panel_ids, ()),
                 beats_by_section={beat_id: (beat_id,) for beat_id in beat_panel_ids},
                 review_source_root=review_source_root,
             )

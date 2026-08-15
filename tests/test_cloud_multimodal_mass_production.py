@@ -837,8 +837,9 @@ def test_live_visual_request_panel_cap_is_bounded_for_response_size():
 
 def test_visual_chunk_budget_uses_provider_bound_payload_size():
     module = _module()
-    from PIL import Image
     import io
+
+    from PIL import Image
 
     image = Image.effect_noise((900, 5334), 100).convert("RGB")
     output = io.BytesIO()
@@ -868,8 +869,9 @@ def test_visual_chunk_budget_uses_provider_bound_payload_size():
 
 def test_large_visual_provider_payload_is_downsampled_without_mutating_panel():
     module = _module()
-    from PIL import Image
     import io
+
+    from PIL import Image
 
     image = Image.effect_noise((900, 5334), 100).convert("RGB")
     output = io.BytesIO()

@@ -560,9 +560,6 @@ def _validate_script_passages_v3(
         evidence = set(
             _panel_refs(passage["evidence_panel_ids"], expected, "passage evidence")
         )
-        required = set().union(
-            *(claim_evidence[claim_id] for claim_id in claim_ids)
-        )
         for claim_id in claim_ids:
             covered_claim_evidence[claim_id].update(evidence & claim_evidence[claim_id])
     if any(

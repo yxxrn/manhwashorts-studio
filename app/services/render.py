@@ -1230,7 +1230,7 @@ def _karaoke_line_layout(
         text = " ".join(words[start:end])
         if layout_font is None:
             return text, float(len(text))
-        getlength = getattr(layout_font, "getlength")
+        getlength = layout_font.getlength
         base = float(getlength(text))
         active_bump = (active_scale - 1.0) * max(
             (float(getlength(word)) for word in words[start:end]),
@@ -1321,7 +1321,7 @@ def fit_sentence_karaoke_groups(
         lines = layout(words)
         if layout_font is None:
             return float(max(map(len, lines), default=0))
-        getlength = getattr(layout_font, "getlength")
+        getlength = layout_font.getlength
         return max(
             float(getlength(line))
             + (active_scale - 1.0)
@@ -1456,8 +1456,6 @@ def build_sentence_karaoke_ass(
         raise RenderError("subtitle style is invalid", code="reference.subtitle_layout_invalid")
 
     font_size = max(1, round(height * font_height_ratio))
-    anchor_x = round(width * anchor[0])
-    anchor_y = round(height * anchor[1])
     italic_flag = -1 if italic else 0
     shadow_alpha = round((1.0 - shadow_alpha_max) * 255)
     active_percent = round(active_scale * 100)

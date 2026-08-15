@@ -141,7 +141,7 @@ def test_reference_profile_declares_content_framing_and_hashes_every_field():
         "framing_safe_area_margin": 0.05,
     }
     assert profile.framing_contract_version == "COLOR_AGNOSTIC_BALLOON_FREE_V1"
-    assert profile.framing_blank_target_fraction == pytest.approx(0.0)
+    assert profile.framing_blank_target_fraction == pytest.approx(0.03)
     assert profile.framing_balloon_intersection_max == pytest.approx(0.0)
     assert profile.framing_mask_grid_long_edge == 256
     assert profile.framing_safe_area_margin == pytest.approx(0.03)

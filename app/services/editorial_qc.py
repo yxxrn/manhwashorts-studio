@@ -246,19 +246,16 @@ def screen_narrative_naturalness(
             evidence_missing = True
             continue
         evidence_set = {str(item) for item in evidence_ids}
-        valid = bool(claim_ids)
         for claim_id in claim_ids:
             claim = claims.get(claim_id) if isinstance(claim_id, str) else None
             if not isinstance(claim, Mapping):
                 unsupported_claim = True
-                valid = False
                 continue
             claim_evidence = claim.get("evidence_panel_ids")
             if not isinstance(claim_evidence, Sequence) or isinstance(
                 claim_evidence, (str, bytes)
             ) or not claim_evidence:
                 evidence_missing = True
-                valid = False
                 continue
             claim_key = str(claim_id)
             required = {str(item) for item in claim_evidence}
@@ -266,7 +263,6 @@ def screen_narrative_naturalness(
             covered_claim_evidence.setdefault(claim_key, set()).update(required & evidence_set)
             if not required & evidence_set:
                 evidence_missing = True
-                valid = False
             for dialogue in _narrative_dialogue_values(claim):
                 if _narrative_contains_sequence(passage.get("text", ""), dialogue):
                     evidence_missing = True
