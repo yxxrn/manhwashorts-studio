@@ -112,8 +112,22 @@ call), persisting geometry through a validated service boundary.
 - Verification: `tests/test_agent_visual_observation.py` 13 passed plus the
   69-test matrix (82 combined), ruff/compileall clean.
 
-Status: boundary implemented and green; beat_1 agent observation execution is the
-next step and must report honest geometry (balloons recorded when present).
+Status: boundary implemented and green; beat_1 agent observation EXECUTED on
+2026-08-15. All 14 opening panels were visually inspected by the agent, honest
+geometry was persisted through the boundary (agent label `claude-visual-beat1`,
+evidence source `agent_visual_geometry_v1`, ledger at
+`data/_beat1_agent_observation/agent-observation-ledger.json`), and a
+deterministic feasibility sweep then measured **0/14 feasible crops** — balloon
+overlap on orders 00/01/02/10, protected subject/face retention everywhere else.
+Balloon corrections were recorded honestly (orders 04/05/07/08/09/11 corrected
+to `known_empty`; order 11's claimed "balloon" is floating caption text). The
+negative result is genuine: with honest geometry, the protected-retention gate
+(subject/face ≥0.98 inside any crop) leaves no 9:16 window in any opening panel
+— e.g. order 11 needs ≥397 px crop width to retain its left-half figure but a
+672-px-tall 9:16 crop is ≤378 px wide. The remaining sanctioned option is
+alternate opening-beat source art that is genuinely balloon/protected/blank-clean
+(or a user/provider decision redefining opening evidence). Do not weaken gates
+to force an MP4.
 
 ## Exact resume (only after the opening-beat evidence problem is resolved)
 

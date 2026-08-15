@@ -2,6 +2,44 @@
 
 Updated: 2026-08-15
 
+## Beat_1 agent-vision observation executed - honest result: still 0/14 feasible crops - 2026-08-15
+
+- The review-only agent observation pathway was executed end-to-end on all 14
+  beat_1 opening panels: crops exported from the persisted panel bounds +
+  `final_test` sources, every crop visually inspected by the agent directly,
+  honest balloon/protected geometry recorded in
+  `data/_beat1_agent_observation/observation-notes.md`, encoded into
+  `observations.json`, and applied through
+  `scripts/review/apply_agent_visual_observation.py` (review-only:
+  `publish_allowed=false`, silent-review ack, agent label `claude-visual-beat1`,
+  evidence source `agent_visual_geometry_v1`, ledger at
+  `data/_beat1_agent_observation/agent-observation-ledger.json`). All 14
+  panels applied; lineage/checksum verified; no provider call; no gate changed.
+- Honest balloon corrections vs provider evidence (as seen by direct
+  inspection): orders 04, 05, 07, 08 (provider claimed 1/1/1/3 balloons), 09,
+  11 -> **known_empty** (order 11's "balloon" is floating caption text, not an
+  enclosure). Balloons confirmed present exactly as claimed on orders 00, 01,
+  02, 10; empty confirmed on 03, 06, 12, 13.
+- A deterministic feasibility sweep (14 zoom scales x 13x13 positions per panel)
+  through `framing_analysis.candidate_is_feasible` with the review upscale
+  warning enabled measured **0/14 feasible crops**. Rejection codes: balloon
+  overlap on the four balloon panels (00/01/02/10) and
+  `visual.protected_subject_coverage` / `protected_face_coverage` on the rest.
+- The negative result is genuine and not an artifact of box invention: the
+  protected-coverage gate is a *retention* gate (each declared protected region
+  must stay ≥90-98% inside any crop). With honest face/subject/effect geometry
+  spanning nearly every panel, no 9:16 window can exist. Worked example:
+  order 11 (900x672) — face+subject occupy the left half; retaining them needs a
+  crop width ≥397 px, but any 9:16 crop of a 672-px-tall panel is ≤378 px wide.
+  Even the one balloon-free, sky-open panel cannot host a compliant crop.
+- Consequence: `pipeline.build_timeline` would fail-closed with
+  `visual.visual_unavailable` again; no MP4 was rendered, no timeline rows
+  persisted, and no gate was weakened to force one.
+- Remaining sanctioned path per AGENTS.md: supply alternate opening-beat source
+  art that is genuinely balloon/protected/blank-clean (or a user/provider
+  decision redefining the opening evidence). The agent observation pathway
+  itself is proven working; the source art is the blocker.
+
 ## Agent-vision observation pathway (review-only option) - boundary green - 2026-08-15
 
 - User-approved option: when the executing agent supports vision, panel
