@@ -2,6 +2,32 @@
 
 Updated: 2026-08-15
 
+## Agent-vision observation pathway (review-only option) - boundary green - 2026-08-15
+
+- User-approved option: when the executing agent supports vision, panel
+  observation may be performed by the agent directly (no provider call),
+  persisting balloon/protected geometry through a validated service boundary.
+- Implemented `app/services/agent_visual_observation.py`
+  (`validate_agent_panel_observation`, `apply_agent_panel_observations`) and the
+  entrypoint `scripts/review/apply_agent_visual_observation.py`. Contract
+  `agent_visual_observation_v1`; persisted evidence source
+  `agent_visual_geometry_v1`; `mask_reason` prefixed `agent:<label>; `.
+- Hard rules enforced by code: review-only (`publish_allowed=false` plus
+  explicit silent-review acknowledgment; `agent_observation.publish_forbidden`),
+  no supplied `evidence_hash`/`contract_version`/`evidence_source`/lineage
+  fields (local canonical hash only), no `unknown` status, unit-frame geometry
+  validation, lineage/checksum verification, surgical update of
+  `observation_json['visual_evidence']` with all other observation fields
+  preserved, and an ignored JSON ledger. Every framing gate (balloon=0, blank
+  ≤3%, protected retention, lineage, chronology, font, subtitle) consumes the
+  geometry unchanged; the pathway only supplies geometry.
+- Verification: `tests/test_agent_visual_observation.py` 13 passed; combined
+  with the 69-test matrix `82 passed`; ruff and compileall clean.
+- Next: agent visual inspection of the 14 beat_1 opening panel crops with honest
+  geometry recording (balloons recorded when present), then apply through the
+  service and rebuild `pipeline.build_timeline`. A negative feasibility result
+  is a valid outcome.
+
 ## Strict silent acceptance rebuild - opening beat infeasible, gates intact - 2026-08-15
 
 - Resumed from `AGENTS.md` on branch
