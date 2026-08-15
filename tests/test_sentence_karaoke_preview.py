@@ -89,7 +89,7 @@ def test_sentence_ass_repeats_full_sentence_and_scales_only_active_word():
     assert all("\\c&H0000FFFF&" in line for line in dialogues)
     assert all("\\fscx108\\fscy108" in line for line in dialogues)
     assert all("\\fscx100\\fscy100" in line for line in dialogues)
-    assert all("\\pos(540,1075)" in line for line in dialogues)
+    assert all("\\pos(" not in line for line in dialogues)
     assert all("?" not in line and "!" not in line for line in dialogues)
 
 
@@ -135,8 +135,8 @@ def test_sentence_grouping_rejects_missing_or_punctuated_display_words():
         module.KaraokeWord("WORD", -0.1, 1.0)
 
 
-def test_sentence_ass_rejects_three_line_overflow():
-    from app.services.render import RenderError, build_sentence_karaoke_ass
+def test_sentence_ass_splits_three_line_overflow_into_safe_chunks():
+    from app.services.render import build_sentence_karaoke_ass
 
     module = _preview_module()
     words = tuple(
@@ -145,8 +145,11 @@ def test_sentence_ass_rejects_three_line_overflow():
     )
     group = module.KaraokeSentenceGroup("too-long", words, 0.0, 4.0)
 
-    with pytest.raises(RenderError, match="subtitle overflow"):
-        build_sentence_karaoke_ass([group], 1080, 1920, max_chars=20, max_lines=2)
+    ass = build_sentence_karaoke_ass([group], 1080, 1920, max_chars=20, max_lines=2)
+    dialogues = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
+
+    assert len(dialogues) == len(words)
+    assert all(line.count("\\N") <= 1 for line in dialogues)
 
 
 def test_semantic_chunking_is_deterministic_and_avoids_orphans():
@@ -216,8 +219,8 @@ def test_sentence_ass_has_hard_two_line_default_and_phone_readable_style():
     assert "WrapStyle: 2" in ass
 
 
-def test_sentence_ass_default_rejects_any_three_line_group():
-    from app.services.render import RenderError, build_sentence_karaoke_ass
+def test_sentence_ass_default_splits_any_three_line_group():
+    from app.services.render import build_sentence_karaoke_ass
 
     module = _preview_module()
     words = tuple(
@@ -226,5 +229,8 @@ def test_sentence_ass_default_rejects_any_three_line_group():
     )
     group = module.KaraokeSentenceGroup("default-overflow", words, 0.0, 4.0)
 
-    with pytest.raises(RenderError, match="subtitle overflow"):
-        build_sentence_karaoke_ass([group], 1080, 1920, max_chars=20)
+    ass = build_sentence_karaoke_ass([group], 1080, 1920, max_chars=20)
+    dialogues = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
+
+    assert len(dialogues) == len(words)
+    assert all(line.count("\\N") <= 1 for line in dialogues)

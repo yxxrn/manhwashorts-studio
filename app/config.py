@@ -88,7 +88,7 @@ class Settings(BaseSettings):
         description="auto | cpu | nvenc | qsv | vaapi | videotoolbox",
     )
     subtitle_font: str = str(BASE_DIR / "assets" / "fonts" / "BarberChop.otf")
-    subtitle_font_name: str = "BarberChop"
+    subtitle_font_name: str = "Barber Chop"
     # "legacy" accepts the original {text, format} endpoint; "openai" sends
     # {input, response_format} to a generic OpenAI-compatible speech endpoint.
     tts_http_protocol: str = "legacy"

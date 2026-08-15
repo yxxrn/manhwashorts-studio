@@ -1182,6 +1182,30 @@ def _load_karaoke_layout_font(font_size: int) -> object | None:
     return None
 
 
+def _require_karaoke_layout_font(font_size: int, font_name: str) -> object:
+    """Load the exact checked-in font and reject aliases/fallbacks."""
+
+    font = _load_karaoke_layout_font(font_size)
+    if font is None:
+        raise RenderError(
+            "subtitle font file is unavailable",
+            code="reference.subtitle_font_unavailable",
+        )
+    try:
+        embedded_family = str(font.getname()[0])
+    except (AttributeError, OSError, TypeError, IndexError) as exc:
+        raise RenderError(
+            "subtitle font identity cannot be verified",
+            code="reference.subtitle_font_unavailable",
+        ) from exc
+    if font_name != embedded_family:
+        raise RenderError(
+            f"subtitle_font_mismatch: requested {font_name!r}, embedded family is {embedded_family!r}",
+            code="reference.subtitle_font_mismatch",
+        )
+    return font
+
+
 def _karaoke_line_layout(
     words: Sequence[str],
     *,
@@ -1271,7 +1295,7 @@ def fit_sentence_karaoke_groups(
         raise RenderError("subtitle style is invalid", code="reference.subtitle_layout_invalid")
 
     font_size = max(1, round(height * font_height_ratio))
-    layout_font = _load_karaoke_layout_font(font_size)
+    layout_font = _require_karaoke_layout_font(font_size, settings.subtitle_font_name)
     safe_text_width = width - (2 * safe_margin_px) - (2 * outline_pixels)
 
     def layout(words: Sequence[KaraokeWord]) -> tuple[str, ...]:
@@ -1386,7 +1410,7 @@ def build_sentence_karaoke_ass(
     width: int,
     height: int,
     *,
-    font_name: str = "DejaVu Sans",
+    font_name: str | None = None,
     max_chars: int = subtitle_karaoke.CAPTION_MAX_CHARS,
     max_lines: int = 2,
     active_scale: float = 1.08,
@@ -1404,6 +1428,7 @@ def build_sentence_karaoke_ass(
     whose interval owns that event is yellow and slightly enlarged; the next
     sentence replaces the complete block at its own first word boundary.
     """
+    font_name = font_name or settings.subtitle_font_name
     if width <= 0 or height <= 0 or max_chars <= 0 or not 0 < max_lines <= 2:
         raise RenderError("subtitle layout dimensions are invalid", code="reference.subtitle_layout_invalid")
     if not 1.0 < active_scale <= 1.25 or not math.isfinite(active_scale):
@@ -1454,7 +1479,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         outline_pixels=outline_pixels,
         safe_margin_px=safe_margin_px,
     )
-    layout_font = _load_karaoke_layout_font(font_size)
+    layout_font = _require_karaoke_layout_font(font_size, font_name)
     safe_text_width = width - (2 * safe_margin_px) - (2 * outline_pixels)
 
     for group in prepared_groups:
@@ -1502,7 +1527,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             display_text = "\\N".join(rendered)
             lines.append(
                 f"Dialogue: 0,{_ass_time(word.start_time)},{_ass_time(word.end_time)},"
-                f"Caption,,0,0,0,,{{\\pos({anchor_x},{anchor_y})}}{display_text}"
+                f"Caption,,0,0,0,,{display_text}"
             )
     return header + "\n".join(lines) + "\n"
 
@@ -1514,17 +1539,55 @@ def _subtitle_manifest_evidence(
     timing_source: str = "audio_segment.word_timings",
 ) -> dict[str, Any]:
     """Summarize measured subtitle facts for regular-render audit manifests."""
+    width, height = 1080, 1920
+    font_size = round(height * subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO)
+    font_name = settings.subtitle_font_name
+    font = _require_karaoke_layout_font(font_size, font_name)
+    safe_width = width - (2 * subtitle_karaoke.CAPTION_SAFE_MARGIN_PX) - 12
+    fitted = fit_sentence_karaoke_groups(
+        groups,
+        width,
+        height,
+        max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
+        max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
+        active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
+        font_height_ratio=subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO,
+        safe_margin_px=subtitle_karaoke.CAPTION_SAFE_MARGIN_PX,
+    )
+    measured_widths: list[float] = []
+    measured_lines: list[tuple[str, ...]] = []
+    for group in fitted:
+        lines = _karaoke_line_layout(
+            [word.text for word in group.words],
+            layout_font=font,
+            safe_text_width=safe_width,
+            max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
+            max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
+            active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
+        )
+        measured_lines.append(lines)
+        for line in lines:
+            words = line.split()
+            widest_active = max((float(font.getlength(word)) for word in words), default=0.0)
+            measured_widths.append(
+                float(font.getlength(line))
+                + (subtitle_karaoke.CAPTION_ACTIVE_SCALE - 1.0) * widest_active
+            )
+    maximum_width = max(measured_widths, default=0.0)
+    font_path = Path(settings.subtitle_font)
     return {
-        "max_lines_measured": max(
-            (len(subtitle_karaoke.sentence_group_lines(group.words)) for group in groups),
-            default=0,
-        ),
+        "max_lines_measured": max((len(lines) for lines in measured_lines), default=0),
         "active_word_events": sum(len(group.words) for group in groups),
         "display_word_count": sum(len(group.words) for group in groups),
         "timing_source": timing_source,
         "spoken_text_immutable": True,
         "contract_version": subtitle_karaoke.SUBTITLE_CONTRACT_VERSION,
         "profile_id": getattr(profile, "profile_id", None),
+        "font_name": font_name,
+        "font_file_sha256": hashlib.sha256(font_path.read_bytes()).hexdigest(),
+        "max_active_text_width_px": round(maximum_width, 3),
+        "safe_text_width_px": safe_width,
+        "minimum_horizontal_clearance_px": round((width - maximum_width) / 2.0, 3),
     }
 
 

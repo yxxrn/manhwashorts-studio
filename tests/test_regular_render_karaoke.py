@@ -210,7 +210,7 @@ def test_regular_ass_holds_complete_chunk_with_two_lines_and_active_word_style()
         groups,
         1080,
         1920,
-        font_name="BarberChop",
+        font_name="Barber Chop",
         max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
         max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
         active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
@@ -219,7 +219,7 @@ def test_regular_ass_holds_complete_chunk_with_two_lines_and_active_word_style()
     )
 
     style = next(line for line in ass.splitlines() if line.startswith("Style: Caption"))
-    assert ",BarberChop,77," in style
+    assert ",Barber Chop,77," in style
     assert ",120,120," in style
     events = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
     assert events
@@ -257,7 +257,7 @@ def test_regular_ass_keeps_long_sentence_chunks_inside_font_safe_width():
         groups,
         1080,
         1920,
-        font_name="BarberChop",
+        font_name="Barber Chop",
         max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
         max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
         active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
@@ -270,7 +270,42 @@ def test_regular_ass_keeps_long_sentence_chunks_inside_font_safe_width():
         payload = event.rsplit(",,", 1)[1].replace("\\N", "|")
         display_lines = re.sub(r"\{[^}]*\}", "", payload).split("|")
         assert len(display_lines) <= subtitle_karaoke.CAPTION_MAX_LINES
-        assert all(font.getlength(line) <= safe_width for line in display_lines)
+        active_scale = subtitle_karaoke.CAPTION_ACTIVE_SCALE
+        for line in display_lines:
+            words = line.split()
+            widest_active = max((font.getlength(word) for word in words), default=0.0)
+            measured = font.getlength(line) + (active_scale - 1.0) * widest_active
+            assert measured <= safe_width
+
+
+def test_regular_ass_rejects_font_alias_that_is_not_the_embedded_family():
+    from app.services import render, subtitle_karaoke
+
+    groups = subtitle_karaoke.build_sentence_caption_groups(
+        "First turn.",
+        _timings(("First", 0.0, 0.5), ("turn.", 0.5, 1.0)),
+    )
+
+    with pytest.raises(render.RenderError, match="subtitle_font_mismatch"):
+        render.build_sentence_karaoke_ass(
+            groups,
+            1080,
+            1920,
+            font_name="BarberChop",
+        )
+
+
+def test_regular_ass_does_not_use_absolute_position_that_bypasses_safe_margins():
+    from app.services import render, subtitle_karaoke
+
+    groups = subtitle_karaoke.build_sentence_caption_groups(
+        "First turn.",
+        _timings(("First", 0.0, 0.5), ("turn.", 0.5, 1.0)),
+    )
+
+    ass = render.build_sentence_karaoke_ass(groups, 1080, 1920, font_name="Barber Chop")
+
+    assert "\\pos(" not in ass
 
 
 def test_regular_ass_splits_character_fit_chunk_when_font_pixels_require_it():
@@ -296,7 +331,7 @@ def test_regular_ass_splits_character_fit_chunk_when_font_pixels_require_it():
         groups,
         1080,
         1920,
-        font_name="BarberChop",
+        font_name="Barber Chop",
         max_chars=22,
         max_lines=2,
         active_scale=1.08,
@@ -372,12 +407,14 @@ def test_regular_manifest_records_measured_subtitle_contract_evidence():
         profile=reference_profile.REFERENCE_MATCHED_SHORTS_V2,
     )
 
-    assert evidence == {
-        "max_lines_measured": 1,
-        "active_word_events": 2,
-        "display_word_count": 2,
-        "timing_source": "audio_segment.word_timings",
-        "spoken_text_immutable": True,
-        "contract_version": subtitle_karaoke.SUBTITLE_CONTRACT_VERSION,
-        "profile_id": reference_profile.REFERENCE_MATCHED_SHORTS_V2.profile_id,
-    }
+    assert evidence["max_lines_measured"] == 1
+    assert evidence["active_word_events"] == 2
+    assert evidence["display_word_count"] == 2
+    assert evidence["timing_source"] == "audio_segment.word_timings"
+    assert evidence["spoken_text_immutable"] is True
+    assert evidence["contract_version"] == subtitle_karaoke.SUBTITLE_CONTRACT_VERSION
+    assert evidence["profile_id"] == reference_profile.REFERENCE_MATCHED_SHORTS_V2.profile_id
+    assert evidence["font_name"] == "Barber Chop"
+    assert evidence["font_file_sha256"]
+    assert 0 < evidence["max_active_text_width_px"] <= evidence["safe_text_width_px"]
+    assert evidence["minimum_horizontal_clearance_px"] >= 120
