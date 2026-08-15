@@ -1,6 +1,42 @@
 # Current status
 
-Updated: 2026-08-14
+Updated: 2026-08-15
+
+## Strict silent acceptance rebuild - opening beat infeasible, gates intact - 2026-08-15
+
+- Resumed from `AGENTS.md` on branch
+  `codex/final-production-silent-acceptance`. Local equals
+  `origin/...` at `f00d822`; the 69-test matrix re-ran GREEN (`69 passed` in
+  14.55 s) before any pipeline call. No provider call was made.
+- `pipeline.build_timeline` was executed through the normal service boundary
+  (no manual DB edits, no monkeypatch, no script bypass) against
+  `data/_final_acceptance_live/live.db` with `final_test` as
+  `review_source_root`, the `review_silent_source_upscale_v1` policy,
+  `provisional_duration_s=51.29`, and section panel IDs/citations read from the
+  latest `ScriptVersion` exactly like `cloud_multimodal.py`. It fail-closed with
+  `reference_planning_failed: visual.visual_unavailable` and persisted zero
+  timeline rows; `render_silent_review_preview` was never reached, no MP4 exists,
+  and `timeline_scenes=0`/`render_jobs=0` remain.
+- Root cause proven genuine by deterministic crop sweeps through
+  `framing_analysis.candidate_is_feasible` with the review low-resolution warning
+  enabled (no gate relaxed): hook -> `beat_1_interrogation` (all 14 opening
+  panels) has **zero** feasible crops - every one of ~2,500 positions/scales per
+  panel fails `visual.balloon_mask_overlap` or
+  `visual.protected_subject_coverage`. The four script-cited evidence panels
+  (source orders 35, 83, 54, 81) are likewise infeasible across ~8,400 crops
+  each (balloon overlap or protected-subject coverage). Planner section
+  capacities: hook 0, setup 0 (its one clean crop, order 25 blank 0.0000, lies
+  outside the 3 enumerated ROI phases), conflict 8, twist 1, cta 7. Strict clean
+  panels exist only at source orders 25, 49, 52, 85, 90, 108 - all in beats 2/3/
+  5/6, none in the opening beat.
+- The audit numbers are preserved in the ignored
+  `data/_final_acceptance_strict_v2_diagnostic/feasibility-audit.txt`.
+- The next move requires a user/provider decision: re-observe the opening panels
+  to persist balloon/protected geometry that admits a clean crop, or supply
+  alternate evidence-covered opening art. Moving later-beat evidence into the
+  opening, weakening the balloon/protected/blank/lineage/font/subtitle gates,
+  fabricating masks, or bypassing `build_timeline` were all refused; `main`
+  remains unmerged and the old rejected MP4 must not be delivered.
 
 ## Final-test review-only source resolution policy checkpoint - 2026-08-14
 
