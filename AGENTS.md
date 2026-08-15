@@ -93,6 +93,28 @@ the forbidden moves, all of which were refused:
 
 None were done. The gates are intact and the render correctly fails closed.
 
+## User-approved option: agent-vision observation pathway (review-only)
+
+On 2026-08-15 the user approved a sanctioned option: when the executing agent
+supports vision, the agent may perform panel observation directly (no provider
+call), persisting geometry through a validated service boundary.
+
+- Boundary: `app/services/agent_visual_observation.py`
+  (`validate_agent_panel_observation`, `apply_agent_panel_observations`);
+  entrypoint `scripts/review/apply_agent_visual_observation.py`.
+  Contract `agent_visual_observation_v1`, evidence source
+  `agent_visual_geometry_v1`, `mask_reason` prefixed `agent:<label>; `.
+- Hard rules: review-only (`publish_allowed=false` + silent-review ack required),
+  no supplied hash/contract/source/lineage (local canonical hash only), no
+  `unknown` status, surgical update of `observation_json['visual_evidence']`
+  only, ledger JSON under the ignored output dir. All framing gates consume the
+  geometry unchanged; the pathway only supplies geometry.
+- Verification: `tests/test_agent_visual_observation.py` 13 passed plus the
+  69-test matrix (82 combined), ruff/compileall clean.
+
+Status: boundary implemented and green; beat_1 agent observation execution is the
+next step and must report honest geometry (balloons recorded when present).
+
 ## Exact resume (only after the opening-beat evidence problem is resolved)
 
 1. Confirm `git status --short --branch`, `git log -3 --oneline`; expect HEAD at or
