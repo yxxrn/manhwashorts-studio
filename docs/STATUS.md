@@ -1219,3 +1219,10 @@ fallback/QC consumer of panel lineage and feasibility telemetry. Reference
 output remains unavailable until all lineage, balloon, protected-region, and
 rights gates are fulfilled. VPS GitHub SSH is unavailable, so approved
 commits are published through the isolated Windows transport workflow.
+
+## 2026-08-15 strict visual acceptance checkpoint
+
+- The first `final_test` review MP4 was playable but visually rejected: captions crossed horizontal bounds, font alias/fallback was inconsistent, and crops retained blank bands up to roughly 16%.
+- Design checkpoint `69f0415`; exact-font/pixel-safe karaoke checkpoint `46d5b9c` (21 focused tests passed); strict 3% framing and measured-QC checkpoint `0c5d1e7` (69 relevant tests plus the strict fallback regression passed). All are pushed on `codex/final-production-silent-acceptance`.
+- A normal-service timeline rebuild was interrupted before persistence. Current `live.db` has zero timeline scenes and zero render jobs. No replacement MP4 exists and no FFmpeg process was active at stop.
+- `main` remains intentionally unmerged. Root `AGENTS.md` contains exact resume environment, commands, known test issues, acceptance gates, and rollback points.
