@@ -643,9 +643,7 @@ def check_reference_framing(
                     "Reference crop telemetry contains a hard rejection.",
                 )
             )
-        elif blank > float(profile.framing_blank_target_fraction) and _telemetry_field(
-            telemetry, "fallback_reason"
-        ) != "visual.blank_infeasible":
+        elif blank > float(profile.framing_blank_target_fraction):
             results.append(
                 _fail(
                     "visual.blank_infeasible",

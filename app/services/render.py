@@ -683,7 +683,16 @@ def prepare_reference_frame(
             _rank, telemetry = max(candidates, key=lambda item: item[0])
             box = telemetry.crop_box
             if telemetry.edge_connected_blank_fraction > profile.framing_blank_target_fraction + 1e-9:
-                telemetry = replace(telemetry, fallback_reason="visual.blank_infeasible")
+                telemetry = replace(
+                    telemetry,
+                    fallback_reason="visual.blank_infeasible",
+                    rejection_code="visual.blank_infeasible",
+                )
+                raise RenderError(
+                    "visual.blank_infeasible: crop exceeds the strict edge-blank target",
+                    code="visual.blank_infeasible",
+                    telemetry=telemetry,
+                )
             prepared = image.crop(box).resize(output_size, Image.Resampling.LANCZOS)
             dest.parent.mkdir(parents=True, exist_ok=True)
             prepared.save(dest, "JPEG", quality=94)

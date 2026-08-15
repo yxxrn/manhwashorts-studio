@@ -1086,3 +1086,48 @@ def test_reference_ledger_rejects_non_mapping_selected_roi():
             selected_roi=None,
             framing_telemetry=telemetry_json,
         )
+def test_review_qc_rejects_hardcoded_subtitle_contract_without_measurements():
+    from app.services import review_preview
+
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_subtitle_qc(
+            {},
+            {"font_name": "Barber Chop", "safe_margin_px": 120},
+        )
+
+    assert exc.value.code == "review.subtitle_measurement_missing"
+
+
+def test_review_qc_rejects_sixteen_percent_blank_shot():
+    from app.services import review_preview
+
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(
+            {"shots": [{"framing_telemetry": {"edge_connected_blank_fraction": 0.16}}]}
+        )
+
+    assert exc.value.code == "review.blank_space_exceeds_target"
+
+
+def test_review_qc_accepts_measured_pixel_safe_subtitle_and_three_percent_blank():
+    from app.services import review_preview
+
+    subtitle = review_preview._measured_subtitle_qc(
+        {
+            "subtitle_evidence": {
+                "font_name": "Barber Chop",
+                "font_file_sha256": "abc",
+                "max_active_text_width_px": 820,
+                "safe_text_width_px": 828,
+                "minimum_horizontal_clearance_px": 130,
+                "max_lines_measured": 2,
+            }
+        },
+        {"font_name": "Barber Chop", "safe_margin_px": 120},
+    )
+    visual = review_preview._measured_visual_qc(
+        {"shots": [{"framing_telemetry": {"edge_connected_blank_fraction": 0.03}}]}
+    )
+
+    assert subtitle["font_file_sha256"] == "abc"
+    assert visual["max_edge_blank_fraction"] == 0.03

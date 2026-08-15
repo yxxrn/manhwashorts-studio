@@ -34,6 +34,56 @@ class ReviewPreviewError(RuntimeError):
         super().__init__(message)
 
 
+def _measured_subtitle_qc(
+    sidecar: Mapping[str, object], contract: Mapping[str, object]
+) -> dict[str, object]:
+    evidence = sidecar.get("subtitle_evidence")
+    if not isinstance(evidence, Mapping):
+        raise ReviewPreviewError("review.subtitle_measurement_missing")
+    try:
+        safe_margin = float(contract.get("safe_margin_px", 0))
+        maximum_width = float(evidence["max_active_text_width_px"])
+        safe_width = float(evidence["safe_text_width_px"])
+        clearance = float(evidence["minimum_horizontal_clearance_px"])
+        lines = int(evidence["max_lines_measured"])
+        font_name = str(evidence["font_name"])
+        font_hash = str(evidence["font_file_sha256"])
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ReviewPreviewError("review.subtitle_measurement_invalid") from exc
+    if (
+        not font_hash
+        or font_name != str(contract.get("font_name", ""))
+        or lines > 2
+        or maximum_width > safe_width + 0.5
+        or clearance + 0.5 < safe_margin
+    ):
+        raise ReviewPreviewError("review.subtitle_measurement_invalid")
+    return dict(evidence)
+
+
+def _measured_visual_qc(sidecar: Mapping[str, object]) -> dict[str, object]:
+    shots = sidecar.get("shots")
+    if not isinstance(shots, list) or not shots:
+        raise ReviewPreviewError("review.framing_measurement_missing")
+    fractions: list[float] = []
+    for shot in shots:
+        telemetry = shot.get("framing_telemetry") if isinstance(shot, Mapping) else None
+        if not isinstance(telemetry, Mapping):
+            raise ReviewPreviewError("review.framing_measurement_missing")
+        try:
+            fraction = float(telemetry["edge_connected_blank_fraction"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ReviewPreviewError("review.framing_measurement_invalid") from exc
+        if not 0.0 <= fraction <= 0.03 + 1e-9:
+            raise ReviewPreviewError("review.blank_space_exceeds_target")
+        fractions.append(fraction)
+    return {
+        "blank_target_fraction": 0.03,
+        "max_edge_blank_fraction": max(fractions),
+        "per_shot_edge_blank_fraction": fractions,
+    }
+
+
 @dataclass(frozen=True)
 class ReviewPreviewArtifacts:
     output_path: Path
@@ -328,6 +378,8 @@ def write_review_preview_bundle(
         sidecar = json.loads(Path(result.sidecar_path).read_text(encoding="utf-8"))
     else:
         sidecar = {"shots": [], "publish_allowed": False}
+    measured_subtitle = _measured_subtitle_qc(sidecar, subtitle_contract or {})
+    measured_visual = _measured_visual_qc(sidecar)
     _write_json(output_dir / "edit_shot_plan.json", {"schema_version": "review_silent_edit_plan_v1", "provenance": PROVENANCE, "mp4": str(output), "render_sidecar": str(result.sidecar_path or ""), "shots": sidecar.get("shots", []), "audio_stream_expected": False, "publish_allowed": False})
 
     ffprobe_path, contact_sheet, blackdetect_path = _render_audit(output, output_dir, float(result.duration))
@@ -341,8 +393,8 @@ def write_review_preview_bundle(
         "approval_state": "PENDING_EDITORIAL_REVIEW",
         "publish_allowed": False,
         "technical": {"duration_s": float(result.duration), "width": result.width, "height": result.height, "codec": video_streams[0].get("codec_name") if video_streams else "", "profile": video_streams[0].get("profile") if video_streams else "", "pix_fmt": video_streams[0].get("pix_fmt") if video_streams else "", "fps": video_streams[0].get("avg_frame_rate") if video_streams else "", "video_streams": len(video_streams), "audio_streams": len(audio_streams), "sha256": _sha256(output), "size_bytes": output.stat().st_size},
-        "visual": {"panel_regions_analyzed": len(regions), "story_panel_regions_analyzed": len([item for item in regions if item.source_order > 0]), "rendered_shots": len(sidecar.get("shots", [])), "balloon_overlap_hard_gate": all(float(item.get("balloon_mask_intersection_ratio", 1.0)) == 0.0 for item in telemetry), "max_edge_blank_fraction": max((float(item.get("edge_connected_blank_fraction", 1.0)) for item in telemetry), default=0.0), "protected_retention_min": min((float(item.get("protected_retained_fraction", 0.0)) for item in telemetry), default=0.0), "contact_sheet": str(contact_sheet), "source_upscale_policy": sidecar.get("source_upscale_policy")},
-        "subtitle": {"contract_version": SUBTITLE_CONTRACT_VERSION, "contract": subtitle_contract or {}, "timing_source": subtitle_timing_source, "timing_authoritative": False, "spoken_text_unchanged": True, "punctuation_free_display": True, "active_word_color": "yellow", "active_word_scale": 1.08, "font_px": 77, "safe_margin_px": 120, "hard_max_lines": 2, "measured_max_lines": 2, "word_cues": len(cues)},
+        "visual": {"panel_regions_analyzed": len(regions), "story_panel_regions_analyzed": len([item for item in regions if item.source_order > 0]), "rendered_shots": len(sidecar.get("shots", [])), "balloon_overlap_hard_gate": all(float(item.get("balloon_mask_intersection_ratio", 1.0)) == 0.0 for item in telemetry), **measured_visual, "protected_retention_min": min((float(item.get("protected_retained_fraction", 0.0)) for item in telemetry), default=0.0), "contact_sheet": str(contact_sheet), "source_upscale_policy": sidecar.get("source_upscale_policy")},
+        "subtitle": {"contract_version": SUBTITLE_CONTRACT_VERSION, "contract": subtitle_contract or {}, "timing_source": subtitle_timing_source, "timing_authoritative": False, "spoken_text_unchanged": True, "punctuation_free_display": True, "active_word_color": "yellow", "active_word_scale": 1.08, "word_cues": len(cues), "measured": measured_subtitle},
         "blackdetect": {"events_found": False, "report": str(blackdetect_path)},
         "warnings": ["review.source_upscale_non_native", "visual_review_pending"],
         "blocking_codes": [],

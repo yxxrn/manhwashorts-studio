@@ -1434,6 +1434,33 @@ def test_task6_qc_rejects_nonfinite_or_out_of_range_telemetry(field, value):
     assert "visual.panel_lineage_unavailable" in {result.code for result in results}
 
 
+def test_task6_qc_rejects_large_blank_even_when_renderer_marked_it_infeasible():
+    from dataclasses import replace
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    candidate = _task6_wrapper("panel-blank", "asset-blank", 1, framing=framing)
+    telemetry = _task6_telemetry(framing, candidate.visual_evidence, candidate.border_mask)
+    telemetry = replace(
+        telemetry,
+        edge_connected_blank_fraction=0.16,
+        fallback_reason="visual.blank_infeasible",
+    )
+    scene = _task6_qc_scene(candidate, telemetry)
+    key = (candidate.source_asset_id, candidate.panel_region_id)
+
+    results = quality.check_reference_framing(
+        [scene],
+        {key: candidate.visual_evidence},
+        {key: candidate.border_mask},
+        {key: candidate.panel_size},
+        {key: telemetry},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+
+    assert reference_profile.REFERENCE_MATCHED_SHORTS_V1.framing_blank_target_fraction == 0.03
+    assert "visual.blank_infeasible" in {result.code for result in results}
+
+
 def test_task6_alternate_panel_runs_all_roi_phases(monkeypatch):
     from dataclasses import replace
 
