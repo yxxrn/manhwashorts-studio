@@ -396,3 +396,28 @@ The targeted narration repair follow-up is now verified against parent d539c88. 
 Failure persistence now records the runner request counter and estimated cost before a reviewable failure is written, so a failed repair cannot falsely appear to have made zero calls. This preserves the same pinned model, strict scope/grounding gates, three-attempt bound, and no visual-stage rerun.
 
 Verification: focused identity/repair matrix 5 passed; complete `tests/test_cloud_multimodal_mass_production.py` 57 passed; Ruff and diff-check passed. No live retry, MP4, voice, or QC result is proven yet. Resume only through the checked-in batch entrypoint after checking for an active process; do not repeat the 701-panel visual stage.\n
+## 2026-08-21 strict narration candidate/repair cache checkpoint
+
+The 172-word, 69.57-second four-passage artifact is a typed
+narration-repair-candidate-v1 only. It is never admitted as the final
+narration-final-v1 cache result. Final admission requires 115-125 words,
+50-60 seconds, prompt/model/visual/story identity, ordered grounding and
+citations, and derived display words.
+
+The bounded repair uses the same pinned model and prompt identity, preserves
+retained passage/claim/evidence lineage and causal order, and may remove only
+complete low-priority passages while retaining at least four passages. Repair
+results use narration-repair-result-v1; cache resume is idempotent and makes
+no provider call when the typed repair result is valid. Focused RED was
+collection-clean with 5 collected, 4 passed, and 1 intended body failure.
+GREEN is 5 focused tests, 58/58 cloud mass-production tests, Ruff,
+compileall, and diff-check. The related 155-test matrix had 142 passes and
+13 failures in the existing draft-pipeline fixture path; those failures are
+outside this two-file source/test slice and are not claimed green.
+
+The live job remains STORY_MAPPED with the canonical 701-panel visual cache;
+the last bounded narration attempt was stopped after about 28m50s with four
+sanitized cloud.narrative_not_grounded chunk failures. No narration, MP4,
+voice, or QC result is proven by this checkpoint. Resume only through the
+normal batch entrypoint after confirming no active process; do not repeat
+cached visual calls.

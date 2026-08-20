@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -53,11 +54,17 @@ NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
 NARRATION_REPAIR_VERSION = "narration-targeted-repair-v1"
 NARRATION_REPAIR_MAX_ATTEMPTS = 3
+NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
+NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v1"
+NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_INSTRUCTION = (
-    "TARGETED NARRATION REPAIR: preserve the previous script exact passage IDs, "
-    "claim IDs and text, evidence panel IDs, observations, ending kind, and story "
-    "spine. Rewrite only passage text to satisfy the stated word and duration "
-    "contract. Do not add claims, citations, panels, or new story facts."
+    "TARGETED NARRATION REPAIR: preserve every retained passage's exact IDs, "
+    "claim IDs, evidence panel IDs, observations, ending kind, story spine, "
+    "qualification, and causal order. Rewrite prose naturally to satisfy the "
+    "word and duration contract; never truncate a sentence mechanically. Remove "
+    "only complete low-priority passages listed in removable_passage_ids, and "
+    "only when at least four passages remain. Do not add claims, citations, "
+    "panels, names, facts, or new story events."
 )
 EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
@@ -247,6 +254,9 @@ class MemoryStageCache:
     def put(self, key: str, value: Mapping[str, Any]) -> None:
         self._values[key] = json.loads(json.dumps(value))
 
+    def delete(self, key: str) -> None:
+        self._values.pop(key, None)
+
 
 class FileStageCache:
     """Atomic JSON stage cache for restartable local production jobs."""
@@ -278,6 +288,10 @@ class FileStageCache:
         temporary = path.with_suffix(f".{os.getpid()}.tmp")
         temporary.write_text(_canonical(value), encoding="utf-8")
         temporary.replace(path)
+
+    def delete(self, key: str) -> None:
+        with suppress(FileNotFoundError):
+            self._path(key).unlink()
 
 
 @dataclass(frozen=True)
@@ -466,8 +480,9 @@ def _narration_result_is_usable(
     visual: VisualStageResult,
     *,
     require_duration: bool,
+    require_grounding: bool = False,
 ) -> bool:
-    """Reject stale partial narration caches before they can enter repair/render."""
+    """Reject stale or incomplete narration caches before repair/render."""
 
     try:
         if result.visual_evidence_hash != visual.visual_evidence_hash:
@@ -480,8 +495,52 @@ def _narration_result_is_usable(
             return False
         if int(result.word_count) <= 0 and not re.findall(r"[A-Za-z0-9]+", result.spoken_text):
             return False
-        if require_duration and not 40.0 <= float(result.estimated_duration_s) <= 180.0:
+        if require_duration and not 50.0 <= float(result.estimated_duration_s) <= 60.0:
             return False
+        if require_duration and not 115 <= int(result.word_count) <= 125:
+            return False
+        if require_grounding:
+            expected_display = tuple(re.findall(r"[A-Z0-9]+", result.spoken_text.upper()))
+            if tuple(str(word) for word in result.display_words) != expected_display:
+                return False
+            observation_ids = tuple(
+                str(item.get("panel_id", "")) for item in result.observations
+            )
+            visual_ids = tuple(
+                str(item.get("panel_id", "")) for item in visual.panels
+            )
+            if observation_ids != visual_ids:
+                return False
+            claims = result.evidence_graph.get("claims", ())
+            if not isinstance(claims, (list, tuple)) or not claims:
+                return False
+            panel_ids = set(observation_ids)
+            claim_map: dict[str, Mapping[str, Any]] = {}
+            for claim in claims:
+                if not isinstance(claim, Mapping):
+                    return False
+                claim_id = str(claim.get("claim_id", "")).strip()
+                refs = claim.get("evidence_panel_ids", claim.get("panel_ids", ()))
+                if not claim_id or claim_id in claim_map or not refs:
+                    return False
+                if any(str(panel_id) not in panel_ids for panel_id in refs):
+                    return False
+                claim_map[claim_id] = claim
+            referenced_claim_ids: set[str] = set()
+            for passage in result.passages:
+                if not isinstance(passage, Mapping):
+                    return False
+                passage_claims = passage.get("claim_ids", ())
+                passage_refs = passage.get("evidence_panel_ids", ())
+                if not passage_claims or not passage_refs:
+                    return False
+                if any(str(claim_id) not in claim_map for claim_id in passage_claims):
+                    return False
+                if any(str(panel_id) not in panel_ids for panel_id in passage_refs):
+                    return False
+                referenced_claim_ids.update(str(claim_id) for claim_id in passage_claims)
+            if referenced_claim_ids != set(claim_map):
+                return False
     except (AttributeError, TypeError, ValueError, OverflowError):
         return False
     return True
@@ -1871,25 +1930,83 @@ class CloudStageRunner:
             },
         }
         key = _cache_key("narration", source, self.model_identity, prompt)
+        result: NarrationResult | None = None
+        failure_codes: tuple[str, ...] = ()
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
             try:
                 cached_result = NarrationResult.from_dict(cached)
             except (KeyError, TypeError, ValueError):
                 cached_result = None
-            if (
+            cache_identity_matches = (
                 cached_result is not None
+                and cached_result.model_identity_hash == self.model_identity.identity_hash
+                and cached_result.prompt_version == prompt[0]
+                and cached_result.prompt_sha256 == prompt[1]
                 and cached_result.visual_evidence_hash == visual.visual_evidence_hash
+            )
+            final_metadata_matches = (
+                cached_result is not None
+                and cached_result.qc_report.get("editorial_selection", {}).get(
+                    "selection_hash"
+                )
+                == selection.selection_hash
+                and cached_result.qc_report.get("narration_topology")
+                == "chapter_evidence_reduce_v1"
+                and cached_result.qc_report.get("narration_cache_contract")
+                == "narration-final-v1"
+                and cached_result.qc_report.get("story_map_hash")
+                == selected_story.story_map_hash
+                and cached_result.qc_report.get("visual_evidence_hash")
+                == visual.visual_evidence_hash
+                and cached_result.qc_report.get("model_identity_hash")
+                == self.model_identity.identity_hash
+                and cached_result.qc_report.get("prompt_version") == prompt[0]
+                and cached_result.qc_report.get("prompt_sha256") == prompt[1]
+            )
+            if (
+                cache_identity_matches
+                and final_metadata_matches
                 and _narration_result_is_usable(
                     cached_result,
                     visual,
                     require_duration=True,
+                    require_grounding=True,
                 )
-                and cached_result.qc_report.get("editorial_selection", {}).get("selection_hash")
-                == selection.selection_hash
             ):
                 return cached_result
+            if (
+                cache_identity_matches
+                and _narration_result_is_usable(
+                    cached_result,
+                    visual,
+                    require_duration=False,
+                    require_grounding=True,
+                )
+            ):
+                failure_codes = self._narration_contract_failures(cached_result)
+                if failure_codes:
+                    self._store_narration_repair_candidate(
+                        source=source,
+                        prompt=prompt,
+                        result=cached_result,
+                        failure_codes=failure_codes,
+                    )
+                    deleter = getattr(self.cache, "delete", None)
+                    if callable(deleter):
+                        deleter(key)
+                    result = cached_result
 
-        result = self._run_narration_batched(
+        if result is None:
+            loaded_candidate = self._load_narration_repair_candidate(
+                source=source,
+                prompt=prompt,
+                visual=selected_visual,
+            )
+            if loaded_candidate is not None:
+                result, failure_codes = loaded_candidate
+
+        if result is None:
+            result = self._run_narration_batched(
             prompt,
             source,
             selected_observations,
@@ -1898,8 +2015,15 @@ class CloudStageRunner:
             selected_visual,
             enforce_duration=True,
         )
-        failure_codes = self._narration_contract_failures(result)
+        if not failure_codes:
+            failure_codes = self._narration_contract_failures(result)
         if failure_codes:
+            self._store_narration_repair_candidate(
+                source=source,
+                prompt=prompt,
+                result=result,
+                failure_codes=failure_codes,
+            )
             try:
                 result = self._run_targeted_narration_repair(
                     prompt,
@@ -1924,12 +2048,31 @@ class CloudStageRunner:
         qc_report = dict(result.qc_report)
         qc_report["editorial_selection"] = selection.as_dict()
         qc_report["narration_topology"] = "chapter_evidence_reduce_v1"
+        qc_report["narration_cache_contract"] = "narration-final-v1"
+        qc_report["story_map_hash"] = selected_story.story_map_hash
+        qc_report["visual_evidence_hash"] = visual.visual_evidence_hash
+        qc_report["model_identity_hash"] = self.model_identity.identity_hash
+        qc_report["prompt_version"] = prompt[0]
+        qc_report["prompt_sha256"] = prompt[1]
         result = replace(
             result,
             observations=tuple(observations),
             visual_evidence_hash=visual.visual_evidence_hash,
             qc_report=qc_report,
         )
+        if not _narration_result_is_usable(
+            result,
+            visual,
+            require_duration=True,
+            require_grounding=True,
+        ):
+            self._last_narration_result = result
+            if self._narration_contract_failures(result):
+                raise CloudStageError(
+                    "cloud.narrative_duration_out_of_range",
+                    reviewable=True,
+                )
+            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
         if self.cache is not None:
             self.cache.put(key, result.as_dict())
         return result
@@ -2169,7 +2312,12 @@ class CloudStageRunner:
             self._last_narration_result = result
             raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
         full_key = _cache_key("narration", source, self.model_identity, prompt)
-        if self.cache is not None:
+        if self.cache is not None and _narration_result_is_usable(
+            result,
+            visual,
+            require_duration=True,
+            require_grounding=True,
+        ):
             self.cache.put(full_key, result.as_dict())
         return result
 
@@ -2235,6 +2383,290 @@ class CloudStageRunner:
             }
         )
 
+    @staticmethod
+    def _repair_cache_source(
+        source: Mapping[str, Any],
+        targeted_repair: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        cache_source = dict(source)
+        cache_source["targeted_repair"] = {
+            str(key): value
+            for key, value in targeted_repair.items()
+            if str(key) != "repair_attempt"
+        }
+        return cache_source
+
+    def _narration_repair_candidate_key(
+        self,
+        source: Mapping[str, Any],
+        prompt: tuple[str, str, str],
+    ) -> str:
+        return _cache_key(
+            NARRATION_REPAIR_CANDIDATE_STAGE,
+            source,
+            self.model_identity,
+            prompt,
+        )
+
+    def _store_narration_repair_candidate(
+        self,
+        *,
+        source: Mapping[str, Any],
+        prompt: tuple[str, str, str],
+        result: NarrationResult,
+        failure_codes: Sequence[str],
+    ) -> None:
+        if self.cache is None:
+            return
+        payload = result.as_dict()
+        self.cache.put(
+            self._narration_repair_candidate_key(source, prompt),
+            {
+                "cache_type": NARRATION_REPAIR_CANDIDATE_VERSION,
+                "candidate": payload,
+                "candidate_hash": _hash(payload),
+                "source_identity_hash": _hash(source),
+                "model_identity_hash": self.model_identity.identity_hash,
+                "prompt_version": prompt[0],
+                "prompt_sha256": prompt[1],
+                "visual_evidence_hash": result.visual_evidence_hash,
+                "failure_codes": list(dict.fromkeys(str(code) for code in failure_codes)),
+            },
+        )
+
+    def _load_narration_repair_candidate(
+        self,
+        *,
+        source: Mapping[str, Any],
+        prompt: tuple[str, str, str],
+        visual: VisualStageResult,
+    ) -> tuple[NarrationResult, tuple[str, ...]] | None:
+        if self.cache is None:
+            return None
+        record = self.cache.get(self._narration_repair_candidate_key(source, prompt))
+        if not isinstance(record, Mapping) or record.get("cache_type") != NARRATION_REPAIR_CANDIDATE_VERSION:
+            return None
+        payload = record.get("candidate")
+        if not isinstance(payload, Mapping):
+            return None
+        try:
+            candidate = NarrationResult.from_dict(payload)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if (
+            record.get("candidate_hash") != _hash(candidate.as_dict())
+            or record.get("source_identity_hash") != _hash(source)
+            or record.get("model_identity_hash") != self.model_identity.identity_hash
+            or record.get("prompt_version") != prompt[0]
+            or record.get("prompt_sha256") != prompt[1]
+            or candidate.visual_evidence_hash != visual.visual_evidence_hash
+            or not _narration_result_is_usable(
+                candidate,
+                visual,
+                require_duration=False,
+                require_grounding=True,
+            )
+        ):
+            return None
+        failures = tuple(str(code) for code in record.get("failure_codes", ()))
+        expected = self._narration_contract_failures(candidate)
+        if not failures or tuple(dict.fromkeys(failures)) != expected:
+            return None
+        return candidate, expected
+
+    def _narration_repair_result_key(
+        self,
+        *,
+        source: Mapping[str, Any],
+        targeted_repair: Mapping[str, Any],
+        prompt: tuple[str, str, str],
+    ) -> str:
+        return _cache_key(
+            NARRATION_REPAIR_VERSION,
+            self._repair_cache_source(source, targeted_repair),
+            self.model_identity,
+            prompt,
+        )
+
+    def _store_narration_repair_result(
+        self,
+        *,
+        source: Mapping[str, Any],
+        targeted_repair: Mapping[str, Any],
+        prompt: tuple[str, str, str],
+        result: NarrationResult,
+    ) -> None:
+        if self.cache is None:
+            return
+        payload = result.as_dict()
+        self.cache.put(
+            self._narration_repair_result_key(
+                source=source,
+                targeted_repair=targeted_repair,
+                prompt=prompt,
+            ),
+            {
+                "cache_type": NARRATION_REPAIR_RESULT_VERSION,
+                "result": payload,
+                "result_hash": _hash(payload),
+                "source_identity_hash": _hash(source),
+                "model_identity_hash": self.model_identity.identity_hash,
+                "prompt_version": prompt[0],
+                "prompt_sha256": prompt[1],
+                "repair_attempt": int(targeted_repair.get("repair_attempt", 1)),
+                "candidate_hash": str(targeted_repair.get("candidate_hash", "")),
+            },
+        )
+
+    def _load_narration_repair_result(
+        self,
+        *,
+        source: Mapping[str, Any],
+        targeted_repair: Mapping[str, Any],
+        prompt: tuple[str, str, str],
+        candidate: NarrationResult,
+        visual: VisualStageResult,
+        removable_passage_ids: Sequence[str],
+    ) -> NarrationResult | None:
+        if self.cache is None:
+            return None
+        record = self.cache.get(
+            self._narration_repair_result_key(
+                source=source,
+                targeted_repair=targeted_repair,
+                prompt=prompt,
+            )
+        )
+        if not isinstance(record, Mapping) or record.get("cache_type") != NARRATION_REPAIR_RESULT_VERSION:
+            return None
+        payload = record.get("result")
+        if not isinstance(payload, Mapping):
+            return None
+        try:
+            result = NarrationResult.from_dict(payload)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if (
+            record.get("result_hash") != _hash(result.as_dict())
+            or record.get("source_identity_hash") != _hash(source)
+            or record.get("model_identity_hash") != self.model_identity.identity_hash
+            or record.get("prompt_version") != prompt[0]
+            or record.get("prompt_sha256") != prompt[1]
+            or record.get("candidate_hash") != str(targeted_repair.get("candidate_hash", ""))
+            or not _narration_result_is_usable(
+                result,
+                visual,
+                require_duration=True,
+                require_grounding=True,
+            )
+            or not self._narration_repair_scope_compatible(
+                candidate,
+                result,
+                removable_passage_ids,
+            )
+        ):
+            return None
+        report = dict(result.qc_report)
+        report["narration_repair"] = {
+            "contract_version": NARRATION_REPAIR_VERSION,
+            "scope": "passage_text_or_low_priority_compaction",
+            "candidate_hash": str(targeted_repair.get("candidate_hash", "")),
+            "failure_codes": list(targeted_repair.get("failure_codes", ())),
+            "attempts": int(record.get("repair_attempt", 1)),
+            "provider_stage": "narration_repair",
+            "cache_reused": True,
+        }
+        return replace(result, qc_report=report)
+
+    @staticmethod
+    def _narration_passage_ids(result: NarrationResult) -> tuple[str, ...]:
+        return tuple(
+            str(passage.get("passage_id", ""))
+            for passage in result.passages
+        )
+
+    @staticmethod
+    def _removable_narration_passage_ids(
+        candidate: NarrationResult,
+    ) -> tuple[str, ...]:
+        if len(candidate.passages) <= 4:
+            return ()
+        rows = [
+            passage
+            for passage in candidate.passages[:-1]
+            if str(passage.get("passage_id", "")).strip()
+        ]
+        rows.sort(
+            key=lambda passage: (
+                len(passage.get("claim_ids", ())),
+                len(passage.get("evidence_panel_ids", ())),
+                str(passage.get("passage_id", "")),
+            )
+        )
+        return tuple(
+            str(passage["passage_id"])
+            for passage in rows[: max(0, len(candidate.passages) - 4)]
+        )
+
+    @staticmethod
+    def _narration_repair_scope_compatible(
+        candidate: NarrationResult,
+        repaired: NarrationResult,
+        removable_passage_ids: Sequence[str],
+    ) -> bool:
+        if CloudStageRunner._narration_scope_signature(candidate) == CloudStageRunner._narration_scope_signature(repaired):
+            return True
+        if (
+            candidate.ending_kind != repaired.ending_kind
+            or candidate.story_spine != repaired.story_spine
+            or tuple(candidate.observations) != tuple(repaired.observations)
+            or len(repaired.passages) < 4
+        ):
+            return False
+        candidate_passages = {
+            str(item.get("passage_id", "")): item for item in candidate.passages
+        }
+        repaired_passages = {
+            str(item.get("passage_id", "")): item for item in repaired.passages
+        }
+        removed_passage_ids = set(candidate_passages) - set(repaired_passages)
+        if (
+            not removed_passage_ids
+            or not removed_passage_ids.issubset(set(removable_passage_ids))
+            or set(repaired_passages) - set(candidate_passages)
+        ):
+            return False
+        for passage_id in set(repaired_passages) & set(candidate_passages):
+            before = candidate_passages[passage_id]
+            after = repaired_passages[passage_id]
+            for key in ("claim_ids", "evidence_panel_ids", "editorial_role"):
+                if before.get(key) != after.get(key):
+                    return False
+        candidate_claims = {
+            str(item.get("claim_id", "")): item
+            for item in candidate.evidence_graph.get("claims", ())
+            if isinstance(item, Mapping)
+        }
+        repaired_claims = {
+            str(item.get("claim_id", "")): item
+            for item in repaired.evidence_graph.get("claims", ())
+            if isinstance(item, Mapping)
+        }
+        if set(repaired_claims) - set(candidate_claims):
+            return False
+        if any(
+            candidate_claims[claim_id] != repaired_claims[claim_id]
+            for claim_id in repaired_claims
+        ):
+            return False
+        removed_claim_ids = set(candidate_claims) - set(repaired_claims)
+        retained_claim_ids = {
+            str(claim_id)
+            for passage in repaired.passages
+            for claim_id in passage.get("claim_ids", ())
+        }
+        return not removed_claim_ids & retained_claim_ids
+
     def _run_targeted_narration_repair(
         self,
         prompt: tuple[str, str, str],
@@ -2246,13 +2678,15 @@ class CloudStageRunner:
         candidate: NarrationResult,
         failure_codes: Sequence[str],
     ) -> NarrationResult:
-        """Repair only prose/timing while preserving validated evidence scope."""
+        """Repair prose or complete low-priority passages without changing evidence scope."""
 
         candidate_hash = _hash(candidate.as_dict())
+        removable_passage_ids = self._removable_narration_passage_ids(candidate)
         repair_context = {
             "contract_version": NARRATION_REPAIR_VERSION,
             "failure_codes": list(dict.fromkeys(str(code) for code in failure_codes)),
             "candidate_hash": candidate_hash,
+            "removable_passage_ids": list(removable_passage_ids),
             "immutable_scope": [
                 "passage_id",
                 "claim_ids",
@@ -2268,7 +2702,24 @@ class CloudStageRunner:
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        expected_scope = self._narration_scope_signature(candidate)
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-repair-v1"
+        repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
+        repair_prompt = (
+            repair_prompt_version,
+            _hash(repair_prompt_text),
+            repair_prompt_text,
+        )
+        cached_repair = self._load_narration_repair_result(
+            source=source,
+            targeted_repair=repair_context,
+            prompt=repair_prompt,
+            candidate=candidate,
+            visual=visual,
+            removable_passage_ids=removable_passage_ids,
+        )
+        if cached_repair is not None:
+            return cached_repair
+
         last_error = CloudStageError(
             "cloud.narrative_duration_out_of_range",
             reviewable=True,
@@ -2279,9 +2730,6 @@ class CloudStageRunner:
                 "repair_attempt": attempt + 1,
             }
             try:
-                repair_prompt_text = (
-                    f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
-                )
                 repaired = self._run_narration_batched(
                     prompt,
                     source,
@@ -2292,34 +2740,57 @@ class CloudStageRunner:
                     enforce_duration=False,
                     stage="narration_repair",
                     targeted_repair=context,
-                    request_prompt_version=(
-                        "vision-first-story-analyzer-v3-targeted-repair-v1"
-                    ),
-                    request_prompt_sha256=_hash(repair_prompt_text),
+                    request_prompt_version=repair_prompt_version,
+                    request_prompt_sha256=repair_prompt[1],
                     request_prompt_text=repair_prompt_text,
                 )
-                if self._narration_scope_signature(repaired) != expected_scope:
+                if not self._narration_repair_scope_compatible(
+                    candidate,
+                    repaired,
+                    removable_passage_ids,
+                ):
                     raise CloudStageError(
                         "cloud.narrative_repair_scope_invalid",
                         reviewable=True,
                     )
-                remaining = self._narration_contract_failures(repaired)
-                if remaining:
+                if not _narration_result_is_usable(
+                    repaired,
+                    visual,
+                    require_duration=True,
+                    require_grounding=True,
+                ):
+                    failures = self._narration_contract_failures(repaired)
                     last_error = CloudStageError(
-                        "cloud.narrative_duration_out_of_range",
+                        failures[0]
+                        if failures
+                        else "cloud.narrative_not_grounded",
                         reviewable=True,
                     )
                     continue
                 report = dict(repaired.qc_report)
                 report["narration_repair"] = {
                     "contract_version": NARRATION_REPAIR_VERSION,
-                    "scope": "passage_text_only",
+                    "scope": "passage_text_or_low_priority_compaction",
                     "candidate_hash": candidate_hash,
                     "failure_codes": list(repair_context["failure_codes"]),
+                    "removable_passage_ids": list(removable_passage_ids),
+                    "removed_passage_ids": [
+                        passage_id
+                        for passage_id in self._narration_passage_ids(candidate)
+                        if passage_id not in self._narration_passage_ids(repaired)
+                    ],
                     "attempts": attempt + 1,
                     "provider_stage": "narration_repair",
+                    "cache_reused": False,
                 }
-                return replace(repaired, qc_report=report)
+                repaired = replace(repaired, qc_report=report)
+                self._store_narration_repair_result(
+                    source=source,
+                    targeted_repair=context,
+                    prompt=repair_prompt,
+                    result=repaired,
+                )
+                return repaired
             except CloudStageError as exc:
                 last_error = exc
                 if attempt + 1 >= NARRATION_REPAIR_MAX_ATTEMPTS:
@@ -2624,13 +3095,38 @@ class CloudStageRunner:
             visual_evidence_hash=visual.visual_evidence_hash,
         )
         if self.cache is not None:
-            cache_source = dict(source)
-            if targeted_repair is not None:
-                cache_source["targeted_repair"] = dict(targeted_repair)
-            self.cache.put(
-                _cache_key(stage, cache_source, self.model_identity, prompt),
-                result.as_dict(),
+            cache_prompt = (
+                request_prompt_version or prompt[0],
+                request_prompt_sha256 or prompt[1],
+                request_prompt_text or prompt[2],
             )
+            if stage == "narration":
+                if _narration_result_is_usable(
+                    result,
+                    visual,
+                    require_duration=True,
+                    require_grounding=True,
+                ):
+                    self.cache.put(
+                        _cache_key(
+                            stage,
+                            source,
+                            self.model_identity,
+                            cache_prompt,
+                        ),
+                        result.as_dict(),
+                    )
+                else:
+                    failures = self._narration_contract_failures(result)
+                    if failures:
+                        self._store_narration_repair_candidate(
+                            source=source,
+                            prompt=cache_prompt,
+                            result=result,
+                            failure_codes=failures,
+                        )
+            # narration_repair results are written only after scope validation
+            # by _run_targeted_narration_repair.
         return result
     def run_visual_narrative_repair(
         self,
@@ -3667,6 +4163,7 @@ class CloudBatchService:
                     narration,
                     visual,
                     require_duration=True,
+                    require_grounding=True,
                 )
             ):
                 raise KeyError("stale_narration_cache")

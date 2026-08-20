@@ -434,3 +434,23 @@ PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal
 Source checkpoint: parent d539c88. The repair boundary now uses a distinct prompt version/hash and `narration_repair` stage/cache identity, so a targeted repair cannot overwrite or be mistaken for the ordinary narration result. The ordinary chunk helper uses the ordinary `narration` identity. `_record_failure` persists the live request counter and estimated cost before writing NEEDS_REVIEW/FAILED.
 
 Verification is 5 focused cache/repair tests, 57/57 cloud mass-production tests, Ruff, and diff-check. No provider retry or MP4 is claimed in this checkpoint. Resume with the existing command below only after confirming no active process; reuse the migrated visual cache and do not rerun cached visual panels.\n
+## Typed narration candidate and repair cache handoff - 2026-08-21
+
+The current code keeps the observed 172-word/69.57-second four-passage
+narration as narration-repair-candidate-v1, never as an accepted final
+narration result. Final admission requires 115-125 words, 50-60 seconds,
+grounding/citations, ordered visual coverage, prompt/model/visual/story
+identity, and independent display derivation. A bounded same-model repair
+preserves retained claim/evidence lineage and causal order; only complete
+low-priority passages may be removed, with at least four retained.
+narration-repair-result-v1 is idempotent: a valid repair cache resumes with
+zero additional provider calls.
+
+Verification is green for the focused 5-test matrix and the complete
+cloud-multimodal file (58 passed), Ruff, compileall, and diff-check. The
+related 155-test matrix is not green: 142 passed and 13 current
+tests/test_pipeline.py draft-fixture failures remain outside this slice.
+The runtime job is still STORY_MAPPED with 701 visual rows and no proven
+narration, MP4, voice, or QC. The last bounded attempt stopped around 28m50s
+after four sanitized cloud.narrative_not_grounded chunk failures; do not
+infer a provider count from the unsaved aggregate usage field.

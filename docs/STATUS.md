@@ -1554,3 +1554,28 @@ must be rechecked before proceeding.\n\n## 2026-08-21 narration repair cache/pro
 Follow-up to d539c88: targeted repairs now carry an explicit repair prompt identity and write to a separate `narration_repair` cache namespace, while normal narration remains `narration`. The accidental repair-only stage reference in the ordinary narration chunk helper was corrected. Reviewable failure persistence records request count and estimated cost before state is saved.
 
 Evidence: focused cache/repair matrix 5 passed; cloud mass-production file 57 passed; Ruff and diff-check passed. The prior canonical 703-to-701 visual migration remains valid and no visual provider call is required for this fix. The current production job still has no proven MP4/voice/QC result; next action is a bounded normal resume with the durable visual cache rechecked first.\n
+## 2026-08-21 strict narration candidate/repair cache checkpoint
+
+The out-of-range four-passage candidate (172 words, 69.57 seconds) is stored
+only as narration-repair-candidate-v1; it cannot occupy or satisfy the final
+narration-final-v1 cache contract. Final cache admission now checks the
+115-125 word and 50-60 second contract, prompt/model/visual/story identity,
+ordered observation coverage, claim/evidence citations, and display-word
+derivation. The targeted repair is typed as narration-repair-result-v1,
+preserves retained evidence and causal scope, and can remove only complete
+low-priority passages with at least four passages remaining.
+
+TDD evidence: RED was collection-clean at 5 collected, 4 passed, and 1
+intended failure. GREEN was 5 focused tests, 58/58 cloud mass-production
+tests, Ruff, compileall, and diff-check. A related 155-test matrix produced
+142 passes and 13 failures in the existing tests/test_pipeline.py draft
+fixture path; this targeted cache slice does not alter pipeline behavior and
+does not claim that matrix green.
+
+The live project remains at STORY_MAPPED with 701 canonical visual rows. The
+last bounded resume stopped at about 28m50s after four sanitized
+cloud.narrative_not_grounded chunk failures; aggregate usage was not saved
+by that interrupted process, so no exact live request count is claimed here.
+No MP4, voice, or final QC is proven. Next step is the normal resume command
+with the migrated visual cache reused and the typed candidate routed directly
+to bounded repair.

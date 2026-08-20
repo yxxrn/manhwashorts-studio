@@ -7,6 +7,7 @@ missing implementation is a collection-clean, body-level RED result.
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import dataclass, replace
 
 import pytest
@@ -2032,6 +2033,21 @@ def test_narration_cache_requires_complete_grounded_result_even_with_matching_vi
         visual,
         require_duration=True,
     ) is False
+    contract_invalid = replace(
+        valid,
+        word_count=172,
+        estimated_duration_s=69.57,
+    )
+    assert module._narration_result_is_usable(
+        contract_invalid,
+        visual,
+        require_duration=True,
+    ) is False
+    assert module._narration_result_is_usable(
+        contract_invalid,
+        visual,
+        require_duration=False,
+    ) is True
 
 def test_editorial_selection_is_bounded_ordered_and_panel_keyed():
     module = _module()
@@ -2442,8 +2458,8 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeyp
             display_words=module.derive_display_words(spoken),
             passages=tuple(dict(item) for item in output["script_passages"]),
             ending_kind=str(output["narrative_outline"]["ending_kind"]),
-            word_count=100,
-            estimated_duration_s=42.0,
+            word_count=172,
+            estimated_duration_s=69.57,
             qc_report={"signals": {}, "warnings": []},
             model_identity_hash=_identity(module).identity_hash,
             prompt_version="vision-first-story-analyzer-v3",
@@ -2463,6 +2479,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeyp
 
         def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
             if stage == "narration_repair":
+                self.calls.append((stage, prompt_version, prompt_sha256))
                 self.repair_payloads.append(dict(payload))
                 self.repair_prompts.append(
                     (prompt_version, prompt_sha256, prompt_text)
@@ -2527,8 +2544,89 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeyp
     ]
     assert result.estimated_duration_s >= 50.0
     assert 115 <= result.word_count <= 125
-    assert result.qc_report["narration_repair"]["scope"] == "passage_text_only"
+    assert result.qc_report["narration_repair"]["scope"] == (
+        "passage_text_or_low_priority_compaction"
+    )
     assert result.qc_report["narration_repair"]["candidate_hash"]
+    assert [call[0] for call in provider.calls] == ["narration_repair"]
+
+    cache_root = tmp_path / "targeted-repair-cache"
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in cache_root.glob("*.json")
+    ]
+    assert any(
+        record.get("cache_type") == module.NARRATION_REPAIR_CANDIDATE_VERSION
+        for record in records
+    )
+    assert any(
+        record.get("cache_type") == module.NARRATION_REPAIR_RESULT_VERSION
+        for record in records
+    )
+
+    for path in cache_root.glob("*.json"):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if "cache_type" not in record:
+            path.unlink()
+
+    provider.calls.clear()
+    resumed = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(cache_root),
+        max_attempts=1,
+    ).run_narration(visual, story_map, panels=panels)
+    assert provider.calls == []
+    assert resumed.qc_report["narration_repair"]["cache_reused"] is True
+
+
+def test_out_of_range_candidate_stays_out_of_final_narration_cache():
+    module = _module()
+    identity = _identity(module)
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+        cache=module.MemoryStageCache(),
+    )
+    prompt = runner.prompts["narration"]
+    source = {
+        "visual_evidence_hash": "v" * 64,
+        "story_map_hash": "s" * 64,
+        "selection_hash": "e" * 64,
+    }
+    candidate = module.NarrationResult(
+        spoken_text="A candidate that needs repair.",
+        display_words=("A", "CANDIDATE"),
+        passages=(),
+        ending_kind="consequence",
+        word_count=172,
+        estimated_duration_s=69.57,
+        observations=(),
+        continuity_ledger={},
+        evidence_graph={},
+        story_spine={},
+        qc_report={},
+        model_identity_hash=identity.identity_hash,
+        prompt_version=prompt[0],
+        prompt_sha256=prompt[1],
+        visual_evidence_hash=source["visual_evidence_hash"],
+    )
+    runner._store_narration_repair_candidate(
+        source=source,
+        prompt=prompt,
+        result=candidate,
+        failure_codes=(
+            "cloud.narrative_duration_out_of_range",
+            "cloud.narrative_word_count_out_of_range",
+        ),
+    )
+    candidate_record = runner.cache.get(
+        runner._narration_repair_candidate_key(source, prompt)
+    )
+    assert candidate_record["cache_type"] == module.NARRATION_REPAIR_CANDIDATE_VERSION
+    assert runner.cache.get(
+        module._cache_key("narration", source, identity, prompt)
+    ) is None
 
 
 def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp_path):
@@ -2597,8 +2695,8 @@ def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp
         display_words=module.derive_display_words(spoken),
         passages=tuple(dict(item) for item in output["script_passages"]),
         ending_kind=str(output["narrative_outline"]["ending_kind"]),
-        word_count=100,
-        estimated_duration_s=42.0,
+        word_count=172,
+        estimated_duration_s=69.57,
         qc_report={"signals": {}, "warnings": []},
         model_identity_hash=_identity(module).identity_hash,
         prompt_version="vision-first-story-analyzer-v3",
