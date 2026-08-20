@@ -3306,6 +3306,36 @@ def _subsample_panels(panels: Sequence[Any], limit: int) -> tuple[Any, ...]:
     return tuple(panels[idx] for idx in indices)
 
 
+
+def _panels_for_cached_visual_stage(
+    panels: Sequence[CloudPanelInput],
+    cached_visual: Mapping[str, Any] | None,
+) -> tuple[CloudPanelInput, ...]:
+    """Align the resume input with a valid persisted visual subset.
+
+    A review run may have durably dropped poison panels after visual
+    reconciliation. Filtering before run_job lets its existing source-hash
+    check compare the same ordered panel set instead of resending the dropped
+    inputs. A malformed/empty cache never filters the live input.
+    """
+
+    ordered = tuple(panels)
+    if not isinstance(cached_visual, Mapping):
+        return ordered
+    raw_rows = cached_visual.get("panels")
+    if not isinstance(raw_rows, list):
+        return ordered
+    cached_ids = {
+        str(row.get("panel_id"))
+        for row in raw_rows
+        if isinstance(row, Mapping) and str(row.get("panel_id", "")).strip()
+    }
+    if not cached_ids:
+        return ordered
+    filtered = tuple(panel for panel in ordered if str(panel.panel_id) in cached_ids)
+    return filtered if filtered else ordered
+
+
 class CloudBatchService:
     def __init__(
         self,
@@ -3611,6 +3641,10 @@ class CloudBatchService:
                 ),
             )
             panels, segmentation_state = prepared
+            panels = _panels_for_cached_visual_stage(
+                panels,
+                record.stage_results.get("visual"),
+            )
             if max_cloud_panels is not None and len(panels) > max_cloud_panels:
                 panels = _subsample_panels(panels, max_cloud_panels)
             record.stage_results["segmentation"] = segmentation_state

@@ -28,6 +28,12 @@ alias and canonicalizes it to local evidence_panel_ids; feasibility, claim,
 chronology, and duration gates remain unchanged. RED was one intended body
 failure; GREEN is 1 focused regression plus 50 cloud-stage tests.
 
+The resume boundary now filters the live panel tuple to a persisted visual
+subset before run_job, preventing a 703-to-701 source-hash mismatch and
+duplicate visual calls. Malformed or empty cached rows leave the input
+unchanged. RED was one intended body failure; GREEN is 1 focused regression
+plus 51 cloud-stage tests.
+
 
 # CURRENT ORACLE EXECUTION CHECKPOINT - 2026-08-20
 

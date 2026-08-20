@@ -1881,6 +1881,25 @@ def test_repaired_visual_evidence_hash_invalidates_downstream_stage_identity():
     )
     assert story.visual_evidence_hash != changed.visual_evidence_hash
 
+
+def test_resume_filters_poison_panels_before_cached_visual_source_hash():
+    module = _module()
+    panels = _panels(module, prefix="resume")
+    cached_visual = {
+        "panels": [
+            {"panel_id": panels[0].panel_id},
+            {"panel_id": panels[2].panel_id},
+        ],
+    }
+
+    filtered = module._panels_for_cached_visual_stage(panels, cached_visual)
+
+    assert [panel.panel_id for panel in filtered] == [
+        panels[0].panel_id,
+        panels[2].panel_id,
+    ]
+
+
 def test_visual_repair_normalizes_panel_ids_alias_before_grounding_validation():
     repair = importlib.import_module("app.services.visual_narrative_repair")
     record = repair.FeasibleVisualRecord(
