@@ -1,8 +1,9 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
-Authoritative repository: Oracle `/home/ubuntu/manhwashorts`, `main`, based on
-published `383d8336b12dcca8bfec7b729a5320c795034a4a`. The current source/test
-checkpoint is intentionally uncommitted while static gates run; only
+Authoritative repository: Oracle `/home/ubuntu/manhwashorts`, `main`, published
+at `cb196da8e230cab1353e85eac1a335d33535564e` with parent
+`383d8336b12dcca8bfec7b729a5320c795034a4a`. The source/test/docs checkpoint
+contains only
 `app/services/cloud_multimodal.py` and
 `tests/test_cloud_multimodal_mass_production.py` are authored changes. The
 untracked `data` symlink and `ms_env.sh` are protected runtime/credential
@@ -35,12 +36,10 @@ after publication is the same isolated repair boundary, at most one request,
 then normal persistence/render only after a 115-125-word, 50-60-second,
 fully grounded result is admitted. Do not weaken grounding or invent claims.
 
-Keep the named current diff recoverable until the source/test/docs commit is
-published. Required verification before staging is scoped Ruff, compileall,
-diff-check, no-churn/secret/allowlist review, followed by exact-object
-fast-forward publication. The related legacy matrix remains a named baseline
-exception at 142 passed/13 prerequisite failures and is not a green
-production gate.
+The checkpoint's scoped Ruff, compileall, diff-check, no-churn/secret review,
+and exact-object fast-forward publication are complete. The related legacy
+matrix remains a named baseline exception at 142 passed/13 prerequisite
+failures and is not a green production gate.
 
 # TARGETED REPAIR SCOPE HARDENING - 2026-08-21
 

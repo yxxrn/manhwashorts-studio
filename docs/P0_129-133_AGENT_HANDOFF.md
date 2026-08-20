@@ -1,8 +1,8 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
-Oracle `/home/ubuntu/manhwashorts` is the authority. The published rollback
-point is `383d8336b12dcca8bfec7b729a5320c795034a4a`; current source/test
-changes are a compact narration-repair checkpoint based on that commit.
+Oracle `/home/ubuntu/manhwashorts` is the authority. The published compact
+narration-repair checkpoint is `cb196da8e230cab1353e85eac1a335d33535564e`,
+parent `383d8336b12dcca8bfec7b729a5320c795034a4a`.
 Only `app/services/cloud_multimodal.py` and
 `tests/test_cloud_multimodal_mass_production.py` are in-scope authored files;
 the `data` symlink and `ms_env.sh` must remain untracked and secret-safe.
@@ -35,8 +35,8 @@ project runtime with the correct database
 most one bounded repair request after the isolated fake-provider contract is
 green.
 
-Before publication, run scoped Ruff/compileall/diff-check, no-churn and
-secret/allowlist scans. Keep the current related matrix exception explicit:
+Scoped Ruff/compileall/diff-check, no-churn and secret/allowlist scans passed
+before publication. Keep the current related matrix exception explicit:
 142 passed and 13 unchanged prerequisite failures at `pipeline.py:4362` on
 both the parent and current comparison. No production readiness or preview
 claim is valid until a grounded 115-125-word result is durably admitted and a

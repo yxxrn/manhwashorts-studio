@@ -1,8 +1,9 @@
 # CURRENT CHECKPOINT - COMPACT NARRATION REPAIR - 2026-08-21
 
-Published source/test baseline and rollback point: Oracle `/home/ubuntu/manhwashorts`
-`main` at `383d8336b12dcca8bfec7b729a5320c795034a4a`, with GitHub `main`
-matching before this checkpoint. The intended current diff is limited to
+Published source/test/docs checkpoint: Oracle `/home/ubuntu/manhwashorts`
+`main` at `cb196da8e230cab1353e85eac1a335d33535564e` (parent
+`383d8336b12dcca8bfec7b729a5320c795034a4a`), with GitHub `main` matching.
+The tracked scope is limited to
 `app/services/cloud_multimodal.py` and
 `tests/test_cloud_multimodal_mass_production.py`; protected untracked `data`
 and `ms_env.sh` remain outside Git.
@@ -48,8 +49,8 @@ attempt, then atomic result persistence and only then normal narration/render.
 The related pipeline matrix remains `142 passed, 13 failed`, reproduced on the
 parent with the same unchanged prerequisite at `pipeline.py:4362` (`run vision
 analysis before generating a draft`). It is explicitly a non-regression
-exception, not a full-green claim. Scoped static gates and source/test/docs
-publication still must be recorded before commit. Rollback is
+exception, not a full-green claim. Scoped static gates and exact-object
+source/test/docs publication are complete. Rollback is
 `383d8336b12dcca8bfec7b729a5320c795034a4a`.
 
 # TARGETED REPAIR SCOPE HARDENING - 2026-08-21
