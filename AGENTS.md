@@ -5,10 +5,8 @@ history below. The repository is being executed on Oracle, not the historical
 Windows/VPS workspaces.
 
 - Repository: /home/ubuntu/manhwashorts; branch main.
-- HEAD: 3559ad0553fc9a044dde89db28f7106d4cd64a5a.
-- origin/main: b6f72cd87c4c3be517a30d547c55b20a9ad8f464; local is one commit
-  ahead. Do not push until the current source/tests/docs checkpoint is green
-  and the remote is rechecked.
+- HEAD: 00b82b069a8ac3bf6910c1b2903e0847f66129e1.
+- GitHub origin/main is verified at the same 00b82b069a8ac3bf6910c1b2903e0847f66129e1 through the isolated Windows exact-history transport. The Oracle origin/main tracking ref is stale at b6f72cd because VPS HTTPS push/fetch authentication is unavailable; use the transport boundary for the next publication.
 - The worktree is intentionally dirty. Existing tracked edits are preserved;
   do not reset, checkout, normalize unrelated files, or force-push.
 - Runtime-only paths remain outside Git: /data/data/p0-aws-acceptance,
@@ -31,8 +29,7 @@ test-fixture, or commit its contents.
   entry contains 701 reconciled panels; the checkpoint ledger has 736 lines.
   This proves durable artifact transfer, not completion of later stages or a
   new provider run.
-- Proven complete in this checkpoint: local cache/checkpoint boundary and
-  focused reconciliation/persistence regressions. Not yet proven: story map,
+- Proven complete in this checkpoint: local cache/checkpoint boundary, focused reconciliation/persistence regressions, and exact-history GitHub publication. Not yet proven: story map,
   narration, timeline/render, silent MP4, voice/TTS, final QC, or publication.
   The next implementation slice is bounded story-map and narration chunking
   with four workers, approximately 180 panels per chunk, deterministic ordered

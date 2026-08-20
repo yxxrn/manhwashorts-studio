@@ -2,11 +2,13 @@
 
 ## Phase 0 cache/reconciliation checkpoint
 
-Authoritative execution is now Oracle at
+Authoritative execution is Oracle at
 /home/ubuntu/manhwashorts, branch main, HEAD
-3559ad0553fc9a044dde89db28f7106d4cd64a5a. origin/main is
-b6f72cd87c4c3be517a30d547c55b20a9ad8f464; local is one commit ahead. The
-worktree is intentionally dirty and preserves prior agents' source changes.
+00b82b069a8ac3bf6910c1b2903e0847f66129e1. GitHub origin/main is verified at
+the same SHA through the isolated Windows exact-history transport. Oracle's
+origin/main tracking ref remains stale at b6f72cd because VPS HTTPS
+authentication is unavailable. The tracked worktree is clean; only the
+protected data symlink and ms_env.sh are untracked.
 
 The focused Phase 0 matrix is green: 169 passed, 35 warnings:
 
@@ -76,9 +78,9 @@ render path. Voice/TTS remains deferred until a real silent MP4 passes all
 technical and visual gates. No provider call, media render, or publication is
 claimed by this checkpoint.
 
-Rollback point for the current dirty source baseline is
-3559ad0553fc9a044dde89db28f7106d4cd64a5a; recheck origin/main before any
-commit or push. Keep the secret-bearing ms_env.sh untracked and never quote
+Published rollback/checkpoint commit is
+00b82b069a8ac3bf6910c1b2903e0847f66129e1; use the isolated Windows
+transport for the next push because Oracle HTTPS authentication is unavailable. Keep the secret-bearing ms_env.sh untracked and never quote
 its value in output.
 
 # Current status

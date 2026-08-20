@@ -153,9 +153,10 @@ Catatan batas waktu per run dari user: **stop + debug kembali** kalau melewati j
 ## Oracle interruption-safe checkpoint 2026-08-20
 
 - Authority is /home/ubuntu/manhwashorts on Oracle, branch main.
-- HEAD is 3559ad0553fc9a044dde89db28f7106d4cd64a5a; origin/main is
-  b6f72cd87c4c3be517a30d547c55b20a9ad8f464, so the local branch is one commit
-  ahead. The tracked worktree intentionally remains dirty; no reset, checkout,
+- The checkpoint commit is 00b82b069a8ac3bf6910c1b2903e0847f66129e1.
+  GitHub main is verified at the same SHA through the isolated Windows exact-
+  history transport. Oracle's origin/main tracking ref is stale at b6f72cd
+  because VPS HTTPS authentication is unavailable. The tracked worktree intentionally remains dirty; no reset, checkout,
   force push, or unrelated cleanup is authorized.
 - Phase 0 focused verification is green: 169 passed with 35 existing Pillow
   deprecation warnings. The two checkpoint/cache regressions and the two
