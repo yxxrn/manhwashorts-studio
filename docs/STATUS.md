@@ -1470,3 +1470,34 @@ commits are published through the isolated Windows transport workflow.
 - Design checkpoint `69f0415`; exact-font/pixel-safe karaoke checkpoint `46d5b9c` (21 focused tests passed); strict 3% framing and measured-QC checkpoint `0c5d1e7` (69 relevant tests plus the strict fallback regression passed). All are pushed on `codex/final-production-silent-acceptance`.
 - A normal-service timeline rebuild was interrupted before persistence. Current `live.db` has zero timeline scenes and zero render jobs. No replacement MP4 exists and no FFmpeg process was active at stop.
 - `main` remains intentionally unmerged. Root `AGENTS.md` contains exact resume environment, commands, known test issues, acceptance gates, and rollback points.
+
+## Current cache-identity correction - 2026-08-20
+
+The published parent for this checkpoint is
+27d86c44bb97fd03bf9f61d556bda195c244eac8. The duplicate visual-call defect
+was caused by preparation assigning source_order from the full 703-region
+enumeration; filtering to the valid 701-panel subset left gaps and changed the
+old descriptor hash. The new visual-cache-identity-v2 uses only canonical
+ordered panel ID/index, immutable source checksum, normalized crop transform,
+deterministic provider-rendered payload hash/parameters, and pinned
+model/prompt identity. It excludes temporary paths, DB row order, timestamps,
+mutable review metadata, and serialization order.
+
+Legacy cache migration is fail-closed and local: exact ordered IDs, source-asset
+IDs/checksums, monotonic persisted order, and a recomputed legacy descriptor
+hash (including current payload checksums) are required before the cache is
+rewritten with per-panel identity hashes and the canonical whole-stage hash.
+New checkpoint rows carry a per-panel identity and chunk key, so only a changed
+chunk is invalidated by crop/payload changes; model or prompt changes invalidate
+their stage keys. No provider calls were made by this source/test/docs
+checkpoint. RED: collection-clean, 51 existing passes plus 3 intended body
+failures. GREEN: 54 cloud-stage tests; Ruff, compileall, and diff checks pass.
+
+The exact normal resume command is the one in the current root AGENTS.md
+checkpoint and uses scripts/run_cloud_multimodal_batch.py with project
+22876a6014a842f48bfca58c10a592b5, the durable /data/data/p0-aws-acceptance
+state/cache paths, and pinned grok-4.3. It must report request count and cache
+reuse before later story-map, narration, silent-render, or voice claims. No MP4,
+voice, or final QC is proven. The configured grok-voice-latest voice remains
+authorized only after a verified silent preview/QC gate. publish_allowed remains
+false and all runtime data/credentials stay ignored.

@@ -1,3 +1,58 @@
+# CURRENT CACHE-IDENTITY CHECKPOINT - 2026-08-20
+
+Authority remains Oracle /home/ubuntu/manhwashorts, branch main, parent
+27d86c44bb97fd03bf9f61d556bda195c244eac8. This green checkpoint fixes the
+703-to-701 duplicate-visual-call defect without weakening evidence or model
+identity gates.
+
+The old visual source hash included preparation enumeration source_order and
+other descriptor metadata. A full 703-region preparation therefore changed the
+hash of an equivalent persisted 701-panel subset when two poison regions were
+removed. The canonical visual identity now contains only ordered panel index
+and panel ID, immutable source-asset checksum, exact normalized crop transform,
+deterministic rendered provider-payload SHA-256 plus payload policy/mime, and
+the pinned model/prompt identity at stage and chunk keys. Temporary paths,
+database row order, timestamps, mutable review metadata, and serialization
+ordering do not participate.
+
+A legacy cache is accepted only when its ordered panel IDs, source-asset IDs
+and checksums, monotonic cached source order, and recomputed legacy descriptor
+hash (including current payload checksums) all match. It is migrated locally to
+visual-cache-identity-v2 with ordered per-panel identity hashes and the new
+whole-stage source hash. Any mismatch invalidates the visual cache and requires
+a normal provider run; no rows are copied across model identities. New visual
+checkpoints also carry the per-panel identity and exact chunk key, so a crop
+change invalidates only its chunk while model/prompt changes invalidate all
+affected stage keys.
+
+TDD evidence for this checkpoint: the intended RED collected cleanly with
+51 existing cloud tests passing and 3 body failures for the missing identity
+helpers; GREEN is 54 passed in
+tests/test_cloud_multimodal_mass_production.py. Scoped Ruff, compileall, and
+semantic diff checks are green. This source/test/docs checkpoint itself made
+zero provider calls. The interrupted pre-fix retry was not accepted as a
+production result; its first duplicate visual request must not be counted as a
+successful stage completion. No MP4, narration, voice, or QC is proven yet.
+
+Safe resume after this checkpoint, using the normal checked-in service boundary:
+~~~bash
+cd /home/ubuntu/manhwashorts
+set -a; source /tmp/ms_env.sh >/dev/null 2>&1; set +a
+export MS_DATABASE_URL=sqlite:////data/data/p0-aws-acceptance/sample.db
+export MS_STORAGE_DIR=/data/data/p0-aws-acceptance/storage
+export MS_DATA_DIR=/data/data/p0-aws-acceptance
+export MS_OUTPUT_DIR=/data/data/p0-aws-acceptance/output
+export MS_TMP_DIR=/data/data/p0-aws-acceptance/tmp
+export MS_TTS_PROVIDER=null
+export MS_ENVIRONMENT=local
+export MS_REQUIRE_RIGHTS_DECLARATION=false
+PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal_batch.py   --project-id 22876a6014a842f48bfca58c10a592b5   --state-dir /data/data/p0-aws-acceptance/cloud-jobs   --segmentation-review-dir /data/data/p0-aws-acceptance/segmentation-review   --model grok-4.3 --max-attempts 3 --min-request-interval-s 0.3
+~~~
+The script resumes the durable job; the runner's request counter and stage
+state must be recorded before any claim of visual/story/narration completion.
+Runtime data, caches, DB/WAL, logs, media, data, and ms_env.sh remain
+untracked and must never enter Git.
+
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
 Source/test fix checkpoint:

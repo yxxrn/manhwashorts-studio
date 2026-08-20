@@ -2129,3 +2129,196 @@ def test_narration_duration_failure_retains_candidate_for_visual_repair(monkeypa
 
     assert caught.value.code == "cloud.narrative_duration_out_of_range"
     assert runner._last_narration_result is invalid
+
+def test_visual_cache_identity_ignores_transient_preparation_fields():
+    module = _module()
+    panels = _panels(module, "identity")
+    equivalent = tuple(
+        replace(
+            panel,
+            source_order=panel.source_order + 700,
+            source_family="temporary-preparation-family",
+            strip_region_id=f"temporary-{panel.panel_id}",
+            coverage_map_version="new-review-metadata",
+            coverage_map_hash="c" * 64,
+            segmentation_version="new-segmentation-metadata",
+        )
+        for panel in panels
+    )
+    ordered = module.CloudStageRunner._ordered_panels(panels)
+    equivalent_ordered = module.CloudStageRunner._ordered_panels(equivalent)
+
+    assert module._visual_panel_identity_hashes(ordered) == module._visual_panel_identity_hashes(
+        equivalent_ordered
+    )
+    assert module._visual_source_hash(ordered) == module._visual_source_hash(equivalent_ordered)
+
+    changed_crop = list(panels)
+    changed_crop[0] = replace(changed_crop[0], panel_bounds=(0, 0, 90, 100))
+    assert module._visual_panel_identity_hashes(ordered)[0] != module._visual_panel_identity_hashes(
+        module.CloudStageRunner._ordered_panels(tuple(changed_crop))
+    )[0]
+
+
+def test_visual_chunk_identity_invalidates_only_changed_chunk_and_tracks_model_prompt():
+    module = _module()
+    panels = _panels(module, "chunk-identity")
+    identity = _identity(module)
+    prompt = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+    ).prompts["visual"]
+    ordered = module.CloudStageRunner._ordered_panels(panels)
+    chunks = module._visual_panel_chunks(ordered, max_panels=1, overlap=0)
+    keys = [
+        module._visual_chunk_cache_key(
+            chunk,
+            chunk_index=index,
+            batch_count=len(chunks),
+            model_identity=identity,
+            prompt=prompt,
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+
+    changed = list(panels)
+    changed[0] = replace(changed[0], payload=b"changed-chunk-payload", payload_checksum="")
+    changed_chunks = module._visual_panel_chunks(
+        module.CloudStageRunner._ordered_panels(tuple(changed)),
+        max_panels=1,
+        overlap=0,
+    )
+    changed_keys = [
+        module._visual_chunk_cache_key(
+            chunk,
+            chunk_index=index,
+            batch_count=len(changed_chunks),
+            model_identity=identity,
+            prompt=prompt,
+        )
+        for index, chunk in enumerate(changed_chunks)
+    ]
+    assert keys[0] != changed_keys[0]
+    assert keys[1:] == changed_keys[1:]
+
+    changed_model = replace(identity, model="different-pinned-model")
+    model_keys = [
+        module._visual_chunk_cache_key(
+            chunk,
+            chunk_index=index,
+            batch_count=len(chunks),
+            model_identity=changed_model,
+            prompt=prompt,
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+    changed_prompt = ("visual-contract-next", "d" * 64, prompt[2])
+    prompt_keys = [
+        module._visual_chunk_cache_key(
+            chunk,
+            chunk_index=index,
+            batch_count=len(chunks),
+            model_identity=identity,
+            prompt=changed_prompt,
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+    assert model_keys != keys
+    assert prompt_keys != keys
+
+
+def test_equivalent_preparation_migrates_legacy_visual_cache_without_provider_call():
+    module = _module()
+    panels = _panels(module, "migration")
+    identity = _identity(module)
+    runner = module.CloudStageRunner(provider=_FakeProvider(), model_identity=identity)
+    prompt = runner.prompts["visual"]
+    legacy = module.VisualStageResult(
+        panels=tuple(
+            _visual_row(panel.descriptor())
+            | {
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+            }
+            for panel in panels
+        ),
+        source_hash=module._hash([panel.descriptor() for panel in panels]),
+        model_identity_hash=identity.identity_hash,
+        prompt_version=prompt[0],
+        prompt_sha256=prompt[1],
+    ).as_dict()
+
+    migrated = module._migrate_visual_cache_identity(
+        legacy,
+        panels,
+        model_identity=identity,
+        prompt=prompt,
+    )
+
+    assert migrated is not None
+    assert migrated["source_hash"] == module._visual_source_hash(
+        module.CloudStageRunner._ordered_panels(panels)
+    )
+    assert migrated["cache_identity_version"] == module.VISUAL_CACHE_IDENTITY_VERSION
+    assert len(migrated["panel_identity_hashes"]) == len(panels)
+
+    changed = list(panels)
+    changed[-1] = replace(changed[-1], payload=b"tampered-payload", payload_checksum="")
+    assert (
+        module._migrate_visual_cache_identity(
+            legacy,
+            tuple(changed),
+            model_identity=identity,
+            prompt=prompt,
+        )
+        is None
+    )
+
+def test_batch_resume_migrates_legacy_visual_without_visual_provider_call(tmp_path):
+    module = _module()
+    panels = _panels(module, "service-migration")
+    identity = _identity(module)
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+    )
+    prompt = runner.prompts["visual"]
+    legacy = module.VisualStageResult(
+        panels=tuple(
+            _visual_row(panel.descriptor())
+            | {
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+            }
+            for panel in panels
+        ),
+        source_hash=module._hash([panel.descriptor() for panel in panels]),
+        model_identity_hash=identity.identity_hash,
+        prompt_version=prompt[0],
+        prompt_sha256=prompt[1],
+    ).as_dict()
+    store = module.JsonJobStore(tmp_path)
+    record = module.ChapterJobRecord(job_id="service-migration")
+    record.stage_results["visual"] = legacy
+    store.save(record)
+
+    provider = _FakeProvider()
+    service = module.CloudBatchService(
+        runner=module.CloudStageRunner(provider=provider, model_identity=identity),
+        store=store,
+    )
+    result = service.run_job("service-migration", panels)
+
+    # The compact fixture intentionally stops at the existing story-map
+    # grounding gate; migration has already happened before that boundary.
+    assert result.state == module.ChapterState.NEEDS_REVIEW
+    assert result.error_code == "cloud.narrative_not_grounded"
+    assert not [call for call in provider.calls if call[0] == "visual"]
+    persisted = store.load("service-migration")
+    assert persisted is not None
+    assert (
+        persisted.stage_results["visual"]["cache_identity_version"]
+        == module.VISUAL_CACHE_IDENTITY_VERSION
+    )

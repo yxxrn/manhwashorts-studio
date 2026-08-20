@@ -339,3 +339,38 @@ Catatan batas waktu per run dari user: **stop + debug kembali** kalau melewati j
   tests/test_vision_pipeline.py tests/test_story_evidence.py
   tests/test_strip_segmentation.py tests/test_strips.py -ra
   Do not print the environment file or its values.
+
+## Cache identity correction checkpoint - 2026-08-20
+
+The current source/test parent is
+27d86c44bb97fd03bf9f61d556bda195c244eac8. Before resuming the target job,
+the duplicate visual-call defect was corrected in the cloud runner. Equivalent
+full-preparation 703-to-701 inputs now have the same per-panel and whole-stage
+identity because transient enumeration order and mutable metadata are excluded.
+Identity includes ordered panel ID/index, immutable source checksum, normalized
+crop transform, rendered provider-payload hash plus fixed payload policy, and
+model/prompt identity.
+
+A persisted legacy visual result is accepted only after exact ordered panel ID,
+source-asset ID/checksum, monotonic persisted order, and recomputed legacy
+descriptor/payload hash checks. It is then locally migrated to v2 with canonical
+per-panel hashes; otherwise the visual stage is invalidated safely. The
+source change/test checkpoint made zero provider calls. RED was 3 intended body
+failures after 51 existing passes; GREEN is 54 cloud-stage tests plus scoped
+Ruff/compileall/diff checks. No new narration, MP4, voice, or QC result exists.
+
+Resume only through the normal checked-in entrypoint after verifying no active
+process:
+~~~bash
+cd /home/ubuntu/manhwashorts
+set -a; source /tmp/ms_env.sh >/dev/null 2>&1; set +a
+export MS_DATABASE_URL=sqlite:////data/data/p0-aws-acceptance/sample.db
+export MS_STORAGE_DIR=/data/data/p0-aws-acceptance/storage
+export MS_DATA_DIR=/data/data/p0-aws-acceptance
+export MS_OUTPUT_DIR=/data/data/p0-aws-acceptance/output
+export MS_TTS_PROVIDER=null
+PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal_batch.py   --project-id 22876a6014a842f48bfca58c10a592b5   --state-dir /data/data/p0-aws-acceptance/cloud-jobs   --segmentation-review-dir /data/data/p0-aws-acceptance/segmentation-review   --model grok-4.3 --max-attempts 3 --min-request-interval-s 0.3
+~~~
+Do not print ms_env.sh; keep data, DB/WAL, caches, logs, media, and secrets
+untracked. The normal command must report the runner request count and durable
+state before any subsequent story-map/narration/render/voice claim.

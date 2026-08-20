@@ -280,6 +280,8 @@ class VisualStageResult:
     prompt_version: str
     prompt_sha256: str
     reconciled: bool = True
+    cache_identity_version: str = "legacy-descriptor-v1"
+    panel_identity_hashes: tuple[str, ...] = ()
 
     @property
     def panel_ids(self) -> tuple[str, ...]:
@@ -307,7 +309,13 @@ class VisualStageResult:
             model_identity_hash=str(value["model_identity_hash"]),
             prompt_version=str(value["prompt_version"]),
             prompt_sha256=str(value["prompt_sha256"]),
-            reconciled=bool(value["reconciled"]),
+            reconciled=bool(value.get("reconciled", True)),
+            cache_identity_version=str(
+                value.get("cache_identity_version", "legacy-descriptor-v1")
+            ),
+            panel_identity_hashes=tuple(
+                str(item) for item in value.get("panel_identity_hashes", ())
+            ),
         )
 
 
@@ -852,7 +860,7 @@ class CloudStageRunner:
     ) -> str:
         return _hash(
             {
-                "source": list(source),
+                "checkpoint_version": VISUAL_CHECKPOINT_VERSION,
                 "model_identity_hash": self.model_identity.identity_hash,
                 "prompt_version": prompt[0],
                 "prompt_sha256": prompt[1],
@@ -873,7 +881,11 @@ class CloudStageRunner:
                 item = json.loads(line)
             except (TypeError, ValueError):
                 continue
-            if not isinstance(item, Mapping) or item.get("checkpoint_scope") != scope:
+            if (
+                not isinstance(item, Mapping)
+                or item.get("checkpoint_scope") != scope
+                or item.get("checkpoint_version") != VISUAL_CHECKPOINT_VERSION
+            ):
                 continue
             panel_id = item.get("panel_id")
             if isinstance(panel_id, str) and panel_id.strip():
@@ -889,7 +901,7 @@ class CloudStageRunner:
             return
         record = dict(entry)
         record["checkpoint_scope"] = scope
-        record["checkpoint_version"] = "visual-checkpoint-v1"
+        record["checkpoint_version"] = VISUAL_CHECKPOINT_VERSION
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
@@ -901,7 +913,7 @@ class CloudStageRunner:
     def run_visual_evidence(self, panels: Sequence[CloudPanelInput]) -> VisualStageResult:
         ordered = self._ordered_panels(panels)
         prompt = self.prompts["visual"]
-        source = [item.descriptor() for item in ordered]
+        source = list(_visual_panel_identities(ordered))
         key = _cache_key("visual", source, self.model_identity, prompt)
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
             return VisualStageResult.from_dict(cached)
@@ -915,14 +927,35 @@ class CloudStageRunner:
         VISUAL_PARALLEL_WORKERS = 8  # preview-only: real observe 27s/call, 16x triggers rate-limit
         checkpoint_scope = self._checkpoint_scope(source, prompt)
         _checkpoint_seed = self._checkpoint_load(checkpoint_scope)
+        panel_identity_by_id = {
+            panel.panel_id: identity_hash
+            for panel, identity_hash in zip(
+                ordered,
+                _visual_panel_identity_hashes(ordered),
+                strict=True,
+            )
+        }
 
         def observe_chunk(chunk_index: int, chunk: Sequence[CloudPanelInput]) -> None:
             # every error path reports + skips the chunk; never raises
             nonlocal reconciled_by_id
+            chunk_cache_key = _visual_chunk_cache_key(
+                chunk,
+                chunk_index=chunk_index,
+                batch_count=len(chunks),
+                model_identity=self.model_identity,
+                prompt=prompt,
+            )
             seeded = {
                 item.panel_id
                 for item in chunk
-                if item.panel_id in _checkpoint_seed
+                if (
+                    item.panel_id in _checkpoint_seed
+                    and _checkpoint_seed[item.panel_id].get("cache_identity_hash")
+                    == panel_identity_by_id[item.panel_id]
+                    and _checkpoint_seed[item.panel_id].get("chunk_cache_key")
+                    == chunk_cache_key
+                )
             }
             if seeded:
                 with reconcile_lock:
@@ -1038,6 +1071,16 @@ class CloudStageRunner:
                     with reconcile_lock:
                         reconciled_by_id.update(chunk_reconciled)
                     for _entry in chunk_reconciled.values():
+                        panel_id = str(_entry["panel_id"])
+                        _entry["cache_identity_hash"] = panel_identity_by_id[panel_id]
+                        _entry["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
+                        _entry["chunk_cache_key"] = _visual_chunk_cache_key(
+                            chunk,
+                            chunk_index=chunk_index,
+                            batch_count=len(chunks),
+                            model_identity=self.model_identity,
+                            prompt=prompt,
+                        )
                         self._checkpoint_append(checkpoint_scope, _entry)
                     print(f"VISUAL_CHUNK_OK chunk={chunk_index} panels={len(chunk)}", file=sys.stderr, flush=True)
                     return
@@ -1106,6 +1149,8 @@ class CloudStageRunner:
             model_identity_hash=self.model_identity.identity_hash,
             prompt_version=prompt[0],
             prompt_sha256=prompt[1],
+            cache_identity_version=VISUAL_CACHE_IDENTITY_VERSION,
+            panel_identity_hashes=tuple(_hash(item) for item in source),
         )
         if self.cache is not None:
             self.cache.put(key, result.as_dict())
@@ -2635,7 +2680,7 @@ class CloudStageRunner:
 
     def run_chapter(self, panels: Sequence[CloudPanelInput]) -> ChapterResult:
         ordered = self._ordered_panels(panels)
-        source = [item.descriptor() for item in ordered]
+        source = list(_visual_panel_identities(ordered))
         key = _cache_key("chapter", source, self.model_identity, self.prompts["narration"])
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
             return ChapterResult.from_dict(cached)
@@ -3356,10 +3401,19 @@ class CloudBatchService:
         record.model_identity_hash = self.runner.model_identity.identity_hash
         try:
             ordered = self.runner._ordered_panels(tuple(panels))
-            source_hash = _hash([item.descriptor() for item in ordered])
-            visual = VisualStageResult.from_dict(record.stage_results["visual"])
-            if visual.source_hash != source_hash or visual.model_identity_hash != self.runner.model_identity.identity_hash:
+            cached_visual = record.stage_results.get("visual")
+            migrated_visual = _migrate_visual_cache_identity(
+                cached_visual,
+                ordered,
+                model_identity=self.runner.model_identity,
+                prompt=self.runner.prompts["visual"],
+            )
+            if migrated_visual is None:
                 raise KeyError("stale_visual_cache")
+            visual = VisualStageResult.from_dict(migrated_visual)
+            if migrated_visual != cached_visual:
+                record.stage_results["visual"] = migrated_visual
+                self.store.save(record)
             if "visual" not in record.stage_results:
                 raise KeyError("visual_missing")
         except (KeyError, TypeError, ValueError):
@@ -4008,3 +4062,175 @@ __all__ = [
     "resolve_cloud_runner",
     "review_only_render_gate",
 ]
+
+VISUAL_CACHE_IDENTITY_VERSION = "visual-cache-identity-v2"
+LEGACY_VISUAL_CACHE_IDENTITY_VERSION = "legacy-descriptor-v1"
+VISUAL_RENDER_PAYLOAD_VERSION = (
+    "visual-provider-payload-v1:max-bytes=180000:max-size=384x576:"
+    "jpeg-quality=68:subsampling=2:lanczos"
+)
+VISUAL_CHECKPOINT_VERSION = "visual-checkpoint-v2"
+
+
+def _visual_panel_identity(panel: CloudPanelInput, ordered_index: int) -> dict[str, Any]:
+    """Return only stable values that change the visual model input."""
+
+    bounds = panel.panel_bounds
+    dimensions = panel.source_dimensions
+    if bounds is not None and dimensions is not None:
+        source_width, source_height = dimensions
+        normalized_crop = [
+            f"{coordinate}/{denominator}"
+            for coordinate, denominator in (
+                (bounds[0], source_width),
+                (bounds[1], source_height),
+                (bounds[2], source_width),
+                (bounds[3], source_height),
+            )
+        ]
+        crop_transform: dict[str, Any] = {
+            "source_dimensions": [source_width, source_height],
+            "normalized_crop_box": normalized_crop,
+            "crop_size": [bounds[2] - bounds[0], bounds[3] - bounds[1]],
+        }
+    else:
+        crop_transform = {
+            "source_dimensions": list(dimensions) if dimensions is not None else None,
+            "normalized_crop_box": None,
+            "crop_size": None,
+        }
+    rendered_payload, rendered_mime = _visual_provider_payload(panel)
+    return {
+        "ordered_panel_index": int(ordered_index),
+        "panel_id": panel.panel_id,
+        "source_asset_checksum": panel.source_checksum,
+        "crop_transform": crop_transform,
+        "rendered_payload": {
+            "policy_version": VISUAL_RENDER_PAYLOAD_VERSION,
+            "mime_type": rendered_mime,
+            "sha256": hashlib.sha256(rendered_payload).hexdigest(),
+        },
+    }
+
+
+def _visual_panel_identities(
+    panels: Sequence[CloudPanelInput],
+) -> tuple[dict[str, Any], ...]:
+    return tuple(
+        _visual_panel_identity(panel, ordered_index)
+        for ordered_index, panel in enumerate(panels)
+    )
+
+
+def _visual_panel_identity_hashes(
+    panels: Sequence[CloudPanelInput],
+) -> tuple[str, ...]:
+    return tuple(
+        _hash(identity)
+        for identity in _visual_panel_identities(tuple(panels))
+    )
+
+
+def _visual_source_hash(panels: Sequence[CloudPanelInput]) -> str:
+    return _hash(list(_visual_panel_identities(tuple(panels))))
+
+
+def _visual_chunk_cache_key(
+    chunk: Sequence[CloudPanelInput],
+    *,
+    chunk_index: int,
+    batch_count: int,
+    model_identity: CloudModelIdentity,
+    prompt: tuple[str, str, str],
+) -> str:
+    source = {
+        "identity_version": VISUAL_CACHE_IDENTITY_VERSION,
+        "chunk_index": int(chunk_index),
+        "batch_count": int(batch_count),
+        "panels": list(_visual_panel_identities(tuple(chunk))),
+    }
+    return _cache_key("visual_chunk", source, model_identity, prompt)
+
+
+def _migrate_visual_cache_identity(
+    cached: Mapping[str, Any] | None,
+    panels: Sequence[CloudPanelInput],
+    *,
+    model_identity: CloudModelIdentity,
+    prompt: tuple[str, str, str],
+) -> dict[str, Any] | None:
+    """Validate or migrate a legacy visual cache without provider calls."""
+
+    if not isinstance(cached, Mapping):
+        return None
+    if (
+        str(cached.get("model_identity_hash", "")) != model_identity.identity_hash
+        or str(cached.get("prompt_version", "")) != prompt[0]
+        or str(cached.get("prompt_sha256", "")) != prompt[1]
+        or not bool(cached.get("reconciled", False))
+    ):
+        return None
+    raw_rows = cached.get("panels")
+    if not isinstance(raw_rows, list):
+        return None
+    try:
+        ordered = CloudStageRunner._ordered_panels(tuple(panels))
+    except (CloudStageError, TypeError, ValueError):
+        return None
+    if len(raw_rows) != len(ordered):
+        return None
+    expected_ids = tuple(panel.panel_id for panel in ordered)
+    cached_ids = tuple(
+        str(row.get("panel_id", ""))
+        for row in raw_rows
+        if isinstance(row, Mapping)
+    )
+    if cached_ids != expected_ids or len(set(cached_ids)) != len(cached_ids):
+        return None
+    cached_orders: list[int] = []
+    for panel, row in zip(ordered, raw_rows, strict=True):
+        if not isinstance(row, Mapping):
+            return None
+        row_order = row.get("source_order")
+        if (
+            isinstance(row_order, bool)
+            or not isinstance(row_order, int)
+            or row_order < 0
+            or str(row.get("source_asset_id", "")) != panel.source_asset_id
+            or str(row.get("source_checksum", "")) != panel.source_checksum
+        ):
+            return None
+        cached_orders.append(row_order)
+    if cached_orders != sorted(set(cached_orders)):
+        return None
+
+    identities = _visual_panel_identities(ordered)
+    identity_hashes = tuple(_hash(identity) for identity in identities)
+    expected_source_hash = _hash(list(identities))
+    identity_version = str(cached.get("cache_identity_version", ""))
+    if identity_version == VISUAL_CACHE_IDENTITY_VERSION:
+        persisted_hashes = tuple(str(item) for item in cached.get("panel_identity_hashes", ()))
+        if (
+            str(cached.get("source_hash", "")) != expected_source_hash
+            or persisted_hashes != identity_hashes
+        ):
+            return None
+        return dict(cached)
+
+    if identity_version not in {"", LEGACY_VISUAL_CACHE_IDENTITY_VERSION}:
+        return None
+    legacy_descriptors: list[dict[str, Any]] = []
+    for panel, row in zip(ordered, raw_rows, strict=True):
+        descriptor = panel.descriptor()
+        descriptor["source_order"] = int(row["source_order"])
+        legacy_descriptors.append(descriptor)
+    legacy_source_hash = _hash(legacy_descriptors)
+    if str(cached.get("source_hash", "")) != legacy_source_hash:
+        return None
+
+    migrated = dict(cached)
+    migrated["source_hash"] = expected_source_hash
+    migrated["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
+    migrated["panel_identity_hashes"] = list(identity_hashes)
+    migrated["legacy_source_hash"] = legacy_source_hash
+    return migrated
