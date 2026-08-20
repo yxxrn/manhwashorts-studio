@@ -1,11 +1,8 @@
 # CURRENT ORACLE PHASE 1 CHECKPOINT - 2026-08-20
 
 Authoritative worktree: /home/ubuntu/manhwashorts on Oracle, branch main.
-Published base is 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9; Oracle's tracking
-ref remains stale because HTTPS authentication is unavailable. The only
-uncommitted source/test paths for this slice are
-app/services/cloud_multimodal.py and
-tests/test_cloud_multimodal_mass_production.py. data, ms_env.sh, DB/WAL,
+Current published HEAD is 91b005b150f75923c86f8b301d0d1f4fb5328dd1 (parent 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9); Oracle's tracking
+ref remains stale because HTTPS authentication is unavailable. The Phase 1 source/test paths are committed in the published checkpoint. data, ms_env.sh, DB/WAL,
 caches, media, provider state, and generated logs remain runtime-only.
 
 ## Phase 1 bounded stage implementation
@@ -50,8 +47,7 @@ Phase 0 visual cache durability remains proven at
 /data/data/p0-aws-acceptance/cloud-stage-cache, with 9 byte-verified files
 and 7,855,981 bytes; the visual cache entry has 701 reconciled panels and the
 checkpoint ledger has 736 lines. Story map, narration, timeline, silent MP4,
-voice/TTS, and final QC remain unproven. The next action after publication is
-the normal cloud service run for story map then narration using the durable
+voice/TTS, and final QC remain unproven. The next action is the normal cloud service run for story map then narration using the durable
 visual cache, followed by a fail-closed silent-render attempt. No voice call
 is allowed before a verified silent MP4.
 

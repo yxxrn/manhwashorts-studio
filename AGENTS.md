@@ -5,13 +5,11 @@ history below. Execution is on Oracle at /home/ubuntu/manhwashorts, not the
 historical Windows/VPS workspaces.
 
 - Repository: /home/ubuntu/manhwashorts; branch main.
-- Published base: 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9. The tracked
+- Current published HEAD: 91b005b150f75923c86f8b301d0d1f4fb5328dd1; parent 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9. The tracked
   origin/main ref on Oracle is stale at b6f72cd because Oracle HTTPS
   authentication is unavailable; the next publication must use the retained
   Windows exact-object transport clone.
-- Current uncommitted Phase 1 source/test paths are only
-  app/services/cloud_multimodal.py and
-  tests/test_cloud_multimodal_mass_production.py. Protected runtime paths
+- Phase 1 source/test paths are committed in the current published checkpoint. Protected runtime paths
   remain untracked: data, ms_env.sh, DB/WAL, caches, media, and provider
   state. ms_env.sh contains credentials; source it only in-process and never
   print, copy, log, fixture, or commit its contents.
@@ -35,9 +33,7 @@ historical Windows/VPS workspaces.
   /data/data/p0-aws-acceptance/cloud-stage-cache (9 files / 7,855,981 bytes).
   This is not a claim that story mapping, narration, timeline, rendering,
   voice, or QC has completed.
-- Next: commit and publish this Phase 1 source/test/docs checkpoint, then run
-  story mapping and narration through the normal service boundary using the
-  durable cache. Only after reconciled narration is persisted may the normal
+- The Phase 1 source/test/docs checkpoint is published. Next, run story mapping and narration through the normal service boundary using the durable cache. Only after reconciled narration is persisted may the normal
   silent render be attempted; voice/TTS remains after a verified silent MP4.
   publish_allowed remains false and no timing may be invented.
 

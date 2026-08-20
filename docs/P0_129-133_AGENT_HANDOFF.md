@@ -1,7 +1,7 @@
 # CURRENT ORACLE PHASE 1 CHECKPOINT - 2026-08-20
 
 - Authority: /home/ubuntu/manhwashorts, branch main, published base
-  27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9. The Oracle tracking ref is
+  91b005b150f75923c86f8b301d0d1f4fb5328dd1 (parent 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9). The Oracle tracking ref is
   stale at b6f72cd; publish through the Windows exact-object transport.
 - Protected untracked paths: data symlink, ms_env.sh, DB/WAL, provider
   state, caches, logs, and media. Never print or commit ms_env.sh.
@@ -9,9 +9,7 @@
   under /data/data/p0-aws-acceptance/cloud-stage-cache is byte-identical,
   9 files, 7,855,981 bytes. No visual provider rerun is needed for the next
   stage unless cache identity invalidates.
-- Phase 1 implementation is uncommitted only in
-  app/services/cloud_multimodal.py and
-  tests/test_cloud_multimodal_mass_production.py.
+- Phase 1 implementation is committed and published in the current checkpoint; its source/test paths are app/services/cloud_multimodal.py and tests/test_cloud_multimodal_mass_production.py.
 - RED was collection-clean with three intended failures. GREEN is 38 cloud
   regression tests plus the expanded matrix at 239 passed and 1 existing
   fixture skip. The full non-slow run is 1068 collected, 1062 passed, 4
@@ -21,7 +19,7 @@
   180-panel chunks, deterministic ordered merge, per-chunk cache keys,
   bounded retry, and resume without repeat provider calls. No provider raw
   payload, hash, credential, DB, or media is persisted by this slice.
-- Next command after publication is the normal story-map/narration service
+- Next command is the normal story-map/narration service
   run against the durable visual cache. Then attempt the regular silent MP4
   path and inspect FFprobe/blackdetect/contact-sheet/QC. Voice/TTS remains
   deferred until the silent preview is proven.
