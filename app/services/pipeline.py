@@ -149,7 +149,10 @@ def text_sources(assets: list[SourceAsset]) -> list[tuple[int, str]]:
 def image_assets(assets: list[SourceAsset]) -> list[SourceAsset]:
     from app.constants import AssetType
 
-    return [a for a in assets if a.type == AssetType.IMAGE and getattr(a, "panel_decision", "accept") != "reject"]
+    # Do not drop blank/gutter slices here. A sliced strip still needs every
+    # piece for source-lineage coverage; the segmentation stage classifies
+    # gutters (region_class "verified_gutter") so they never become panels.
+    return [a for a in assets if a.type == AssetType.IMAGE]
 
 
 # --- stage: analyse --------------------------------------------------------
@@ -1450,10 +1453,12 @@ def _validated_persisted_vision_output(
     if not panels:
         raise PipelineError("analysis has no persisted panel evidence")
     expected_panel_ids = tuple(panel.panel_id for panel in panels)
+    source_orders = [panel.source_order for panel in panels]
     if (
         len(set(expected_panel_ids)) != len(expected_panel_ids)
         or any(not panel_id for panel_id in expected_panel_ids)
-        or [panel.source_order for panel in panels] != list(range(len(panels)))
+        or len(set(source_orders)) != len(source_orders)
+        or any(a >= b for a, b in zip(source_orders, source_orders[1:]))  # noqa: B905 - adjacent pairs, strict raises
     ):
         raise PipelineError("persisted panel evidence is not ordered")
     if manifest.get("total_panels") != len(panels) or manifest.get(
@@ -2237,6 +2242,7 @@ def _build_reference_panel_fallback_candidates(
     beats_by_section: Mapping[str, Sequence[str]],
     profile: object,
     source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
+    allow_missing_explicit: bool = False,
 ) -> tuple[object, ...]:
     """Compatibility wrapper for the exact panel-keyed review builder."""
     try:
@@ -2244,6 +2250,7 @@ def _build_reference_panel_fallback_candidates(
             panel_regions=panel_regions,
             panel_candidates_by_region_id=panel_candidates_by_region_id,
             panel_crops_by_region_id=panel_crops_by_region_id,
+            allow_missing_explicit=allow_missing_explicit,
             section_evidence_panel_ids=section_evidence_panel_ids,
             section_citations=section_citations,
             beats_by_section=beats_by_section,
@@ -2318,10 +2325,29 @@ def _load_reference_panel_fallback_candidates(
                 source.load()
             source_dimensions = tuple(int(value) for value in source.size)
             bounds = _panel_region_bounds(region)
-            crop = source.convert("RGB").crop(bounds)
+            # Clamp stale/legacy panel bounds to the source asset. Regions whose
+            # bounds lie completely outside the asset are corrupt and cannot be
+            # framed meaningfully; skip them instead of cropping garbage text.
+            src_w, src_h = source_dimensions
+            if bounds[0] >= src_w or bounds[1] >= src_h or bounds[2] <= 0 or bounds[3] <= 0:
+                continue
+            clamped = (
+                max(0, bounds[0]),
+                max(0, bounds[1]),
+                min(src_w, bounds[2]),
+                min(src_h, bounds[3]),
+            )
+            crop = source.convert("RGB").crop(clamped)
             source.close()
-            if crop.size != (bounds[2] - bounds[0], bounds[3] - bounds[1]):
+            if crop.size != (clamped[2] - clamped[0], clamped[3] - clamped[1]):
                 raise ValueError("panel crop dimensions changed")
+            if crop.width < 32 or crop.height < 32:
+                continue
+            # Extremely thin slices (segmentation artifacts that cut a single
+            # panel into horizontal slivers) cannot frame meaningful content
+            # and read as jarring close-ups. Skip them.
+            if crop.height < 400:
+                continue
             prepared_crop = crop
             builder_region = region
             if review_source_upscale_policy is not None:
@@ -2331,12 +2357,12 @@ def _load_reference_panel_fallback_candidates(
                     source_asset_id=str(asset.id),
                     panel_region_id=str(region.id),
                     source_asset_checksum=current_checksum,
-                    source_panel_bounds=bounds,
+                    source_panel_bounds=clamped,
                     source_dimensions=source_dimensions,
                 )
                 builder_region = shallow_copy(region)
                 builder_region.bounds_json = _panel_bounds_json(
-                    review_source_upscale.transform_panel_bounds(bounds, manifest)
+                    review_source_upscale.transform_panel_bounds(clamped, manifest)
                 )
                 source_upscale_manifests[str(region.id)] = manifest
             encoded = io.BytesIO()
@@ -2371,6 +2397,7 @@ def _load_reference_panel_fallback_candidates(
         beats_by_section=beats_by_section or default_beats,
         profile=profile,
         source_upscale_manifests_by_region_id=source_upscale_manifests,
+        allow_missing_explicit=review_source_upscale_policy is not None,
     )
 
 

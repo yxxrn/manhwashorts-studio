@@ -483,7 +483,7 @@ def test_exact_reference_preparation_uses_persisted_roi_pixels(monkeypatch, tmp_
     )
     calls = []
 
-    def feasible(box, *_args):
+    def feasible(box, *_args, **_kwargs):
         calls.append(box)
         return True, telemetry
 

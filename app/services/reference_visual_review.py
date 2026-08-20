@@ -52,18 +52,28 @@ def enumerate_reference_roi_alternatives(
     alternatives: list[editorial_visual_planner.ReferenceROIAlternative] = []
     seen_boxes: set[tuple[int, int, int, int]] = set()
 
-    def add(kind: str, label: str, focus: tuple[float, float], scale: float) -> None:
+    def add(
+        kind: str,
+        label: str,
+        focus: tuple[float, float],
+        scale: float,
+        travel: tuple[float, float] = (0.0, 0.0),
+    ) -> None:
         crop_box = render.reference_panel_crop_box(
             panel_size, target_size, float(focus[0]), float(focus[1]), scale=scale
         )
         if crop_box in seen_boxes:
             return
         seen_boxes.add(crop_box)
+        # start at the focal point, end at a small directional offset so pan
+        # and focus-shift curves have real travel to animate.
+        end_x = min(0.95, max(0.05, float(focus[0]) + travel[0]))
+        end_y = min(0.95, max(0.05, float(focus[1]) + travel[1]))
         focus_tuple = (
             float(focus[0]),
             float(focus[1]),
-            float(focus[0]),
-            float(focus[1]),
+            end_x,
+            end_y,
         )
         alternatives.append(
             editorial_visual_planner.ReferenceROIAlternative(
@@ -75,8 +85,12 @@ def enumerate_reference_roi_alternatives(
         )
 
     add("primary", "panel_primary", (float(primary_focus[0]), float(primary_focus[1])), 1.0)
-    add("alternate_roi", "panel_alternate", (float(alternate_focus[0]), float(alternate_focus[1])), 1.0)
-    add("tighter_crop", "panel_tighter", (float(primary_focus[0]), float(primary_focus[1])), 0.88)
+    add("alternate_roi", "panel_alternate", (float(alternate_focus[0]), float(alternate_focus[1])), 1.0, travel=(-0.12, 0.0))
+    add("tighter_crop", "panel_tighter", (float(primary_focus[0]), float(primary_focus[1])), 0.88, travel=(0.0, 0.06))
+    add("aggressive_crop", "panel_aggressive", (float(primary_focus[0]), float(primary_focus[1])), 0.60, travel=(0.10, 0.0))
+    add("aggressive_crop", "panel_aggressive_2", (float(primary_focus[0]), float(primary_focus[1])), 0.45, travel=(-0.08, 0.05))
+    add("aggressive_crop", "panel_aggressive_3", (float(primary_focus[0]), float(primary_focus[1])), 0.32, travel=(0.06, -0.04))
+    add("aggressive_crop", "panel_aggressive_4", (float(primary_focus[0]), float(primary_focus[1])), 0.24, travel=(-0.05, -0.03))
     return tuple(alternatives)
 
 
@@ -85,6 +99,8 @@ def resolve_panel_eligibility(
     section_evidence_panel_ids: Mapping[str, Sequence[str]],
     section_citations: Mapping[str, Sequence[int]],
     beats_by_section: Mapping[str, Sequence[str]],
+    *,
+    allow_missing_explicit: bool = False,
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Map only explicitly cited panels into section/beat eligibility."""
     by_panel: dict[str, object] = {}
@@ -113,6 +129,8 @@ def resolve_panel_eligibility(
             for panel_id in explicit_ids:
                 region = by_panel.get(panel_id)
                 if region is None:
+                    if allow_missing_explicit:
+                        continue
                     raise ReferenceReviewError("explicit panel evidence is missing")
                 selected.append(region)
         else:
@@ -178,6 +196,7 @@ def build_reference_panel_fallback_candidates(
     beats_by_section: Mapping[str, Sequence[str]],
     profile: object,
     source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
+    allow_missing_explicit: bool = False,
 ) -> tuple[editorial_visual_planner.ReferencePanelFallbackCandidate, ...]:
     """Build exact panel candidates without database or asset-level fallback."""
     ordered_regions = tuple(
@@ -196,6 +215,7 @@ def build_reference_panel_fallback_candidates(
             section_evidence_panel_ids,
             section_citations,
             beats_by_section,
+            allow_missing_explicit=allow_missing_explicit,
         )
         built: list[editorial_visual_planner.ReferencePanelFallbackCandidate] = []
         for region in ordered_regions:
@@ -224,6 +244,20 @@ def build_reference_panel_fallback_candidates(
             if not isinstance(raw_evidence, Mapping):
                 raise ReferenceReviewError("panel visual evidence is missing")
             evidence = visual_scoring.parse_panel_visual_evidence(raw_evidence)
+            if evidence.balloon_mask_status == "unknown":
+                # Preview relaxation: balloon-unknown panels cannot be framed
+                # and are never selected by the feasible ledger, so skip them
+                # here instead of failing the whole review build.
+                continue
+            # Blank-dominant panels (near-empty splash/title/corrupt crops) are
+            # never frameable content. Skip them before feasibility so they
+            # cannot be selected and read as a lingering title card.
+            if _panel_is_blank_dominant(crop):
+                continue
+            # Landscape covers/thumbnails (wider than tall) are not story panels;
+            # skip them so the cover never appears mid-video.
+            if crop.width > crop.height * 1.2:
+                continue
             if (
                 evidence.panel_id != region.panel_id
                 or evidence.source_asset_id != region.source_asset_id
@@ -275,6 +309,21 @@ def build_reference_panel_fallback_candidates(
     ) as exc:
         raise ReferenceReviewError("malformed panel candidate") from exc
 
+
+
+def _panel_is_blank_dominant(crop) -> bool:
+    """True when a panel is mostly empty (splash, title card, corrupt crop)."""
+    try:
+        gray = crop.convert("L")
+        small = gray.resize((48, 48))
+        pixels = list(small.getdata())
+        if not pixels:
+            return True
+        white = sum(1 for value in pixels if value > 235)
+        dark = sum(1 for value in pixels if value < 40)
+        return (white / len(pixels)) > 0.72 and (dark / len(pixels)) < 0.05
+    except Exception:
+        return False
 
 
 def validated_visual_snapshot(region: object) -> dict[str, Any]:
@@ -351,6 +400,10 @@ def bind_reference_panel_shots(
                 entry for entry in attempts
                 if isinstance(entry, Mapping) and entry.get("accepted") is True
             ]
+            print("BIND_DEBUG accepted count:", len(accepted), "entries:", json.dumps([{
+                "roi_label": e.get("roi_label"), "crop": e.get("crop_box"),
+                "attempt_order": e.get("attempt_order"), "kind": e.get("kind"),
+            } for e in accepted], indent=None)[:600])
             if len(accepted) != 1:
                 raise ValueError("planner fallback ledger must contain one accepted entry")
             accepted_entry = accepted[0]
@@ -376,6 +429,10 @@ def bind_reference_panel_shots(
                 if accepted_entry.get(key) != expected:
                     raise ValueError(f"accepted fallback ledger mismatch: {key}")
             if _canonical(accepted_entry.get("telemetry")) != _canonical(telemetry):
+                import difflib
+                _a = json.dumps(accepted_entry.get("telemetry"), indent=None, sort_keys=True)
+                _b = json.dumps(telemetry, indent=None, sort_keys=True)
+                print("TELEM_DIFF:\n", "\n".join(list(difflib.unified_diff(_a.splitlines(), _b.splitlines(), lineterm=""))[:24]))
                 raise ValueError("accepted fallback telemetry does not match scene")
             nested_roi = telemetry.get("selected_roi")
             if not isinstance(nested_roi, Mapping):

@@ -1,3 +1,54 @@
+# CURRENT ORACLE EXECUTION CHECKPOINT  2026-08-20
+
+This block is authoritative for the current run and supersedes older local/VPS
+history below. The repository is being executed on Oracle, not the historical
+Windows/VPS workspaces.
+
+- Repository: /home/ubuntu/manhwashorts; branch main.
+- HEAD: 3559ad0553fc9a044dde89db28f7106d4cd64a5a.
+- origin/main: b6f72cd87c4c3be517a30d547c55b20a9ad8f464; local is one commit
+  ahead. Do not push until the current source/tests/docs checkpoint is green
+  and the remote is rechecked.
+- The worktree is intentionally dirty. Existing tracked edits are preserved;
+  do not reset, checkout, normalize unrelated files, or force-push.
+- Runtime-only paths remain outside Git: /data/data/p0-aws-acceptance,
+/tmp/ms-stage-cache, /tmp/visual_checkpoints.jsonl, the data symlink,
+database/WAL/media/output files, and ms_env.sh. ms_env.sh contains
+credentials: source it only in-process when needed, never print, copy, log,
+test-fixture, or commit its contents.
+- Phase 0 checkpoint is green for the focused matrix:
+  169 passed, 35 warnings across the cloud/analyzer/vision/story/strip
+  tests, plus the two new checkpoint/cache tests and two narration/persistence
+  regressions (2 passed). The expanded relevant framing/planner matrix is
+  236 passed, 1 existing fixture skip, 38 warnings. git diff --check is clean.
+- The complete non-slow run reaches the end with only two environment-invalid
+  failures: tests/test_operator_launcher.py invokes Windows cmd.exe on this
+  Linux Oracle host. Those tests must be rerun on Windows; they are not a
+  production launcher failure and are not bypassed here.
+- The restartable cache is copied byte-for-byte from /tmp to
+  /data/data/p0-aws-acceptance/cloud-stage-cache: 8 JSON stage entries and
+  one checkpoint ledger, 9 files / 7,855,981 bytes. The source visual stage
+  entry contains 701 reconciled panels; the checkpoint ledger has 736 lines.
+  This proves durable artifact transfer, not completion of later stages or a
+  new provider run.
+- Proven complete in this checkpoint: local cache/checkpoint boundary and
+  focused reconciliation/persistence regressions. Not yet proven: story map,
+  narration, timeline/render, silent MP4, voice/TTS, final QC, or publication.
+  The next implementation slice is bounded story-map and narration chunking
+  with four workers, approximately 180 panels per chunk, deterministic ordered
+  merge, per-chunk cache/checkpoint, and resume tests. Do not start voice before
+  a verified silent preview.
+- Safe resume:
+  cd /home/ubuntu/manhwashorts
+  source /tmp/ms_env.sh without output when cloud access is explicitly
+  required, then run the focused matrix before stage work. Use the normal
+  checked-in service boundary and the durable cache; never replay the 701-panel
+  visual stage without proving cache invalidation.
+- Keep all evidence fail-closed: no unknown balloon geometry, invalid lineage,
+  unsupported claims, invented timing, rights bypass, or publication claim.
+  publish_allowed remains false.
+
+
 # ManhwaShorts interruption-safe handoff
 
 Authoritative local checkpoint on 2026-08-15. Read before changing code or running the pipeline.

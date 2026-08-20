@@ -13,7 +13,7 @@ import httpx
 
 from app.services import visual_scoring
 
-VISION_REQUEST_TIMEOUT = 30.0
+VISION_REQUEST_TIMEOUT = 600.0
 
 _REQUIRED_OBSERVATION_KEYS = frozenset(
     {
@@ -487,6 +487,8 @@ class OpenAICompatibleVisionProvider:
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0,
+            "max_tokens": 65536,
+
         }
         try:
             response = httpx.post(
@@ -681,6 +683,8 @@ def _build_payload(
         "messages": [{"role": "user", "content": content}],
         "response_format": {"type": "json_object"},
         "temperature": 0,
+        "max_tokens": 65536,
+
     }
 
 
@@ -1207,6 +1211,8 @@ def _build_synthesis_payload(
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0,
+        "max_tokens": 65536,
+
     }
     if profile is not None:
         payload["narrative_identity"] = {

@@ -19,7 +19,7 @@ from app.services import framing_analysis
 
 REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v1"
 VISUAL_SECTION_REMAP_VERSION = "visual_section_remap_v1"
-REPAIR_PROMPT_VERSION = "visual-narrative-repair-v1"
+REPAIR_PROMPT_VERSION = "visual-narrative-repair-v2"
 MAX_REPAIR_ATTEMPTS = 3
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "visual_narrative_repair_v1.txt"
 
@@ -181,6 +181,7 @@ def build_feasible_visual_ledger(
                     tuple(int(value) for value in candidate.panel_size),
                     target_size,
                     allow_source_resolution_warning=allow_source_resolution_warning,
+                    review_aggressive_crop=allow_source_resolution_warning,
                 )
             except Exception:
                 continue

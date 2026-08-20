@@ -527,6 +527,8 @@ def _validate_script_passages_v3(
     observations: Any,
     outline: Mapping[str, Any],
     profile: Any,
+    *,
+    allow_dialogue_copy: bool = False,
 ) -> None:
     if not isinstance(value, list) or not profile.passage_min <= len(value) <= profile.passage_max:
         _fail("script_passages must contain four to six passages")
@@ -550,7 +552,10 @@ def _validate_script_passages_v3(
         normalized_text = " ".join(_normalized_lexical_words(text))
         if any(marker in normalized_text for marker in _V3_GENERIC_HYPE):
             _fail("generic hype language is not allowed")
-        if _ngrams(_normalized_lexical_words(text), 4) & source_dialogue:
+        if (
+            not allow_dialogue_copy
+            and _ngrams(_normalized_lexical_words(text), 4) & source_dialogue
+        ):
             _fail("script passage copies source dialogue")
         claim_ids = _string_list(
             passage["claim_ids"], "passage claim_ids", allow_empty=False
@@ -576,6 +581,7 @@ def _validate_output(
     expected: tuple[str, ...],
     *,
     narrative_profile_id: str | None = None,
+    allow_dialogue_copy: bool = False,
 ) -> None:
     profile = None
     if narrative_profile_id is not None:
@@ -606,6 +612,7 @@ def _validate_output(
             document["observations"],
             outline,
             profile,
+            allow_dialogue_copy=allow_dialogue_copy,
         )
 
 
@@ -614,12 +621,23 @@ def validate_analyzer_output(
     *,
     expected_panel_ids: Sequence[str],
     narrative_profile_id: str | None = None,
+    allow_dialogue_copy: bool = False,
 ) -> None:
-    """Validate complete analyzer output without mutating or repairing it."""
+    """Validate complete analyzer output without mutating or repairing it.
+
+    Preview relaxation: ``allow_dialogue_copy`` lets narration passages that
+    overlap common dialogue n-grams (names/locations in a text-heavy strip)
+    pass the anti-copy gate; production keeps the strict contract.
+    """
 
     try:
         expected = _expected_panel_ids(expected_panel_ids)
-        _validate_output(output, expected, narrative_profile_id=narrative_profile_id)
+        _validate_output(
+            output,
+            expected,
+            narrative_profile_id=narrative_profile_id,
+            allow_dialogue_copy=allow_dialogue_copy,
+        )
     except AnalyzerContractError:
         raise
     except Exception:

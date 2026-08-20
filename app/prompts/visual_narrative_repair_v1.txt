@@ -1,4 +1,4 @@
-Version: visual-narrative-repair-v1
+Version: visual-narrative-repair-v2
 
 You are repairing a Sharp Friend v1 chapter narration for a review-only visual
 edit. The local system has already rejected some panels as unsafe to frame.
@@ -96,6 +96,12 @@ filler. The final ending kind controls punctuation: open_question ends
 with an evidence-grounded question; cliffhanger and consequence do not need a
 question mark. Do not generate display_text or subtitle cues; those are derived
 locally from the approved spoken text.
+
+Every passage is captioned locally in two lines of at most 22 characters each,
+so keep each sentence short (roughly 6-12 words), split long thoughts into
+separate sentences, and avoid words longer than 12 letters (no invented
+compound words such as "DAGGERPIERCED" or "HIGHSTAKES"). A sentence that needs
+more than two caption lines will be rejected.
 
 Return JSON only. Do not include provider hashes, prompt hashes, source image
 payloads, credentials, or internal error details.

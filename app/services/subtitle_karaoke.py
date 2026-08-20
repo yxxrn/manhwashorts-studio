@@ -18,7 +18,9 @@ CAPTION_ACTIVE_SCALE = 1.08
 CAPTION_FONT_HEIGHT_RATIO = 0.04
 CAPTION_SAFE_MARGIN_PX = 120
 CAPTION_MIN_CHUNK_WORDS = 2
-CAPTION_MIN_CHUNK_DURATION_SECONDS = 1.0
+# Two-word chunks at the provisional review pacing (~0.43s/word) run about
+# 0.87s; a 1.0s floor left many valid two-line sentences unpartitionable.
+CAPTION_MIN_CHUNK_DURATION_SECONDS = 0.8
 SEMANTIC_BREAK_WORDS = frozenset(
     {
         "AND",

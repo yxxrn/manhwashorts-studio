@@ -1,5 +1,16 @@
 # Changelog
 
+- Oracle P0 checkpoint: the local cloud stage now has an atomic
+  FileStageCache and per-run scoped visual checkpoints; the focused reconciliation
+  matrix is green at 169 passed with 35 existing Pillow warnings. Existing
+  701-panel visual cache/checkpoint data was copied byte-for-byte to
+  /data/data/p0-aws-acceptance/cloud-stage-cache (runtime-only, not Git).
+  Story-map, narration, silent render, voice, and final QC remain unimplemented
+  or unverified; the next bounded slice is four-worker, approximately 180-panel
+  chunking with deterministic merge and resume tests. No provider payload,
+  credential, DB, media, or publication claim is included.
+
+
 Notable changes per release. Dates are ISO 8601.
 
 - Added the versioned review-only source policy

@@ -277,7 +277,13 @@ class HttpProvider:
         if settings.tts_http_key:
             headers["Authorization"] = f"Bearer {settings.tts_http_key.get_secret_value()}"
 
-        if settings.tts_http_protocol == "openai":
+        if settings.tts_http_protocol == "grok":
+            payload = {
+                "model": settings.tts_http_model,
+                "text": text,
+                "language": "id" if voice_id.startswith("id") else settings.tts_http_language,
+            }
+        elif settings.tts_http_protocol == "openai":
             payload = {
                 "model": settings.tts_http_model,
                 "input": text,

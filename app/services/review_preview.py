@@ -62,7 +62,11 @@ def _measured_subtitle_qc(
     return dict(evidence)
 
 
-def _measured_visual_qc(sidecar: Mapping[str, object]) -> dict[str, object]:
+def _measured_visual_qc(
+    sidecar: Mapping[str, object],
+    *,
+    blank_target_fraction: float = 0.03,
+) -> dict[str, object]:
     shots = sidecar.get("shots")
     if not isinstance(shots, list) or not shots:
         raise ReviewPreviewError("review.framing_measurement_missing")
@@ -75,11 +79,11 @@ def _measured_visual_qc(sidecar: Mapping[str, object]) -> dict[str, object]:
             fraction = float(telemetry["edge_connected_blank_fraction"])
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise ReviewPreviewError("review.framing_measurement_invalid") from exc
-        if not 0.0 <= fraction <= 0.03 + 1e-9:
+        if not 0.0 <= fraction <= blank_target_fraction + 1e-9:
             raise ReviewPreviewError("review.blank_space_exceeds_target")
         fractions.append(fraction)
     return {
-        "blank_target_fraction": 0.03,
+        "blank_target_fraction": blank_target_fraction,
         "max_edge_blank_fraction": max(fractions),
         "per_shot_edge_blank_fraction": fractions,
     }
@@ -250,6 +254,7 @@ def write_review_preview_bundle(
     output_dir: Path,
     subtitle_contract: Mapping[str, object] | None = None,
     subtitle_timing_source: str = DISPLAY_TIMING_VERSION,
+    blank_target_fraction: float = 0.03,
 ) -> ReviewPreviewArtifacts:
     """Persist a sanitized local bundle beside the video-only preview."""
 
@@ -380,7 +385,10 @@ def write_review_preview_bundle(
     else:
         sidecar = {"shots": [], "publish_allowed": False}
     measured_subtitle = _measured_subtitle_qc(sidecar, subtitle_contract or {})
-    measured_visual = _measured_visual_qc(sidecar)
+    measured_visual = _measured_visual_qc(
+        sidecar,
+        blank_target_fraction=blank_target_fraction,
+    )
     _write_json(output_dir / "edit_shot_plan.json", {"schema_version": "review_silent_edit_plan_v1", "provenance": PROVENANCE, "mp4": str(output), "render_sidecar": str(result.sidecar_path or ""), "shots": sidecar.get("shots", []), "audio_stream_expected": False, "publish_allowed": False})
 
     ffprobe_path, contact_sheet, blackdetect_path = _render_audit(output, output_dir, float(result.duration))

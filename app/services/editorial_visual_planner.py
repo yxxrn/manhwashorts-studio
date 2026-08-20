@@ -37,6 +37,7 @@ _REFERENCE_ROI_KIND_ORDER = {
     "primary": 0,
     "alternate_roi": 1,
     "tighter_crop": 2,
+    "aggressive_crop": 3,
 }
 _REFERENCE_ROI_KINDS = frozenset(_REFERENCE_ROI_KIND_ORDER)
 
@@ -695,11 +696,31 @@ def _roi_key(roi: ReferenceROIAlternative) -> tuple[object, ...]:
     return (roi.roi_label, roi.crop_box, roi.focus)
 
 
+def _is_title_page_family(source_family: str) -> bool:
+    # A chapter's page 1 ("129__001", "204__001") is the cover/title splash and
+    # must never be selected. Content strips are page 2 onward and stay usable.
+    parts = [part for part in str(source_family or "").split("__") if part]
+    if len(parts) == 2 and parts[-1] == "001":
+        return True
+    # A three-segment panel at page 2 panel 1 ("204__002__001") is a chapter
+    # title splash in the pre-sliced source layout; exclude it too.
+    return len(parts) == 3 and parts[1] == "002" and parts[2] == "001"
+
+
 def _candidate_is_eligible(
     candidate: ReferencePanelFallbackCandidate,
     section: str,
     beat: str,
 ) -> bool:
+    if _is_title_page_family(
+        str(getattr(getattr(candidate, "panel_candidate", None), "source_family", "") or "")
+    ):
+        return False
+    # An exact candidate without any explicit section/beat provenance is not
+    # eligible for every section.  Treating empty eligibility as a wildcard
+    # silently reintroduces the asset-level fallback that Task 7 forbids.
+    if not candidate.eligible_sections and not candidate.eligible_beats:
+        return False
     return (
         (not candidate.eligible_sections or section in candidate.eligible_sections)
         and (not candidate.eligible_beats or beat in candidate.eligible_beats)
@@ -738,6 +759,7 @@ def _reference_panel_attempt(
     previously_used: bool,
     used_rois: set[tuple[object, ...]],
     allow_source_resolution_warning: bool = False,
+    review_aggressive_crop: bool = False,
 ) -> tuple[bool, object, dict]:
     evidence = candidate.visual_evidence
     entry_kind = phase_kind
@@ -785,6 +807,8 @@ def _reference_panel_attempt(
     feasibility_kwargs: dict[str, object] = {}
     if allow_low_resolution:
         feasibility_kwargs["allow_source_resolution_warning"] = True
+    if review_aggressive_crop:
+        feasibility_kwargs["review_aggressive_crop"] = True
     try:
         feasible, telemetry = framing_analysis.candidate_is_feasible(
             roi.crop_box,
@@ -869,6 +893,7 @@ def _feasible_roi_capacity(
     profile: object,
     *,
     allow_source_resolution_warning: bool,
+    review_aggressive_crop: bool = False,
 ) -> int:
     """Count exact feasible ROI alternatives for review cadence allocation."""
     source_manifest = candidate.source_upscale_manifest
@@ -882,6 +907,8 @@ def _feasible_roi_capacity(
     feasibility_kwargs: dict[str, object] = {}
     if allow_low_resolution:
         feasibility_kwargs["allow_source_resolution_warning"] = True
+    if review_aggressive_crop:
+        feasibility_kwargs["review_aggressive_crop"] = True
     ready = visual_scoring.require_reference_ready_visual_evidence(
         candidate.visual_evidence
     )
@@ -970,23 +997,42 @@ def _plan_reference_panel_candidates(
         eligible_for_section = [
             candidate
             for candidate in ordered
-            if not candidate.eligible_sections or section in candidate.eligible_sections
+            if _candidate_is_eligible(candidate, section, "")
+            and (not candidate.eligible_sections or section in candidate.eligible_sections)
         ]
+        if not allow_review_cadence_adaptation:
+            # The normal exact-panel path evaluates each ROI exactly once while
+            # emitting the ordered fallback ledger below.  A speculative
+            # feasibility pass here both duplicates expensive work and can
+            # consume stateful test/provider seams before the ledger exists.
+            section_capacity[section] = max(
+                0,
+                len({candidate.panel_id for candidate in eligible_for_section})
+                * max(1, int(profile.max_canonical_panel_uses)),
+            )
+            continue
         capacities = [
             _feasible_roi_capacity(
                 candidate,
                 profile,
                 allow_source_resolution_warning=allow_source_resolution_warning,
+                review_aggressive_crop=allow_review_cadence_adaptation,
             )
             for candidate in eligible_for_section
         ]
         # A single eligible panel cannot be selected twice in succession. Its
         # feasible ROI count is still useful for multi-panel reuse, but must
         # not inflate this section's cadence capacity beyond one shot.
-        if len({candidate.panel_id for candidate in eligible_for_section}) == 1:
-            section_capacity[section] = 1 if any(capacity > 0 for capacity in capacities) else 0
+        unique_feasible = {
+            candidate.panel_id
+            for candidate, capacity in zip(eligible_for_section, capacities, strict=True)
+            if capacity > 0
+        }
+        if len(unique_feasible) <= 1:
+            section_capacity[section] = 1 if unique_feasible else 0
         else:
-            section_capacity[section] = sum(capacities)
+            # Silent review: one shot per unique feasible panel at most.
+            section_capacity[section] = len(unique_feasible)
     if allow_review_cadence_adaptation and any(
         capacity < 1 for capacity in section_capacity.values()
     ):
@@ -1012,15 +1058,31 @@ def _plan_reference_panel_candidates(
         section = str(shot.get("section", ""))
         beat = str(shot.get("camera_intent", "") or "")
         rotated = ordered[shot_index % len(ordered) :] + ordered[: shot_index % len(ordered)]
+        panel_uses_cap = (
+            min(1, int(profile.max_canonical_panel_uses))
+            if allow_review_cadence_adaptation
+            else int(profile.max_canonical_panel_uses)
+        )
         eligible = [
             candidate
             for candidate in rotated
             if _candidate_is_eligible(candidate, section, beat)
-            and uses.get(candidate.panel_id, 0) < profile.max_canonical_panel_uses
+            and uses.get(candidate.panel_id, 0) < panel_uses_cap
             and candidate.panel_id != last_panel_id
         ]
         eligible = list(_prioritize_resolution_candidates(eligible))
         if allow_review_cadence_adaptation:
+            # Silent review must follow the chapter/source order (204 -> 205 ->
+            # 206) so the narration timeline does not jump backwards across
+            # chapters. Sort eligible panels by their source family first, then
+            # page order; the planner then picks the earliest unused panel.
+            eligible.sort(
+                key=lambda candidate: (
+                    str(getattr(getattr(candidate, "panel_candidate", None), "source_family", "") or ""),
+                    candidate.source_order,
+                    candidate.panel_id,
+                )
+            )
             eligible = [
                 candidate
                 for candidate in eligible
@@ -1028,24 +1090,37 @@ def _plan_reference_panel_candidates(
                     candidate,
                     profile,
                     allow_source_resolution_warning=allow_source_resolution_warning,
+                    review_aggressive_crop=allow_review_cadence_adaptation,
                 )
                 > len(used_rois.get(candidate.panel_id, set()))
             ]
-            eligible.sort(
-                key=lambda candidate: (
-                    -(
-                        _feasible_roi_capacity(
-                            candidate,
-                            profile,
-                            allow_source_resolution_warning=allow_source_resolution_warning,
-                        )
-                        - len(used_rois.get(candidate.panel_id, set()))
-                    ),
-                    candidate.source_order,
-                    candidate.panel_id,
-                    candidate.panel_region_id,
+            if allow_review_cadence_adaptation:
+                # Keep the chapter-ordered sequence for silent review; capacity
+                # only breaks ties within the same source family.
+                eligible.sort(
+                    key=lambda candidate: (
+                        str(getattr(getattr(candidate, "panel_candidate", None), "source_family", "") or ""),
+                        candidate.source_order,
+                        candidate.panel_id,
+                        candidate.panel_region_id,
+                    )
                 )
-            )
+            else:
+                eligible.sort(
+                    key=lambda candidate: (
+                        -(
+                            _feasible_roi_capacity(
+                                candidate,
+                                profile,
+                                allow_source_resolution_warning=allow_source_resolution_warning,
+                            )
+                            - len(used_rois.get(candidate.panel_id, set()))
+                        ),
+                        candidate.source_order,
+                        candidate.panel_id,
+                        candidate.panel_region_id,
+                    )
+                )
         if not eligible:
             raise ReferencePlanningError(
                 f"no exact panel candidate is eligible for section {section}",
@@ -1069,6 +1144,9 @@ def _plan_reference_panel_candidates(
                     (roi, "alternate_panel")
                     for roi in _ordered_roi_alternatives(candidate)
                 )
+            accepted_attempts: list[
+                tuple[float, object, object, object, str]
+            ] = []
             for roi, phase_kind in roi_plan:
                 accepted, telemetry, entry = _reference_panel_attempt(
                     candidate,
@@ -1079,14 +1157,37 @@ def _plan_reference_panel_candidates(
                     previously_used=previous_uses > 0,
                     used_rois=used_rois.get(candidate.panel_id, set()),
                     allow_source_resolution_warning=allow_source_resolution_warning,
+                    review_aggressive_crop=allow_review_cadence_adaptation,
                 )
                 attempts.append(entry)
                 if accepted:
-                    accepted_candidate = candidate
-                    accepted_roi = roi
-                    accepted_telemetry = telemetry
-                    accepted_phase = phase_kind
-                    break
+                    # Silent review may pick the least-blank accepted ROI so a
+                    # full webtoon page crops to its dominant subject instead of
+                    # the first (largest) feasible window. Evaluate every ROI
+                    # before choosing; the regular path keeps first-wins.
+                    blank = float(
+                        getattr(telemetry, "edge_connected_blank_fraction", 0.0)
+                        if not isinstance(telemetry, Mapping)
+                        else telemetry.get("edge_connected_blank_fraction", 0.0)
+                    )
+                    accepted_attempts.append((blank, roi, telemetry, entry, phase_kind))
+                    if not allow_review_cadence_adaptation:
+                        break
+            if accepted_attempts:
+                if allow_review_cadence_adaptation:
+                    accepted_attempts.sort(key=lambda item: item[0])
+                    _blank, roi, telemetry, entry, phase_kind = accepted_attempts[0]
+                    chosen = entry
+                    for _b2, _r2, _t2, other_entry, _p2 in accepted_attempts:
+                        if other_entry is not chosen and isinstance(other_entry, dict):
+                            other_entry["accepted"] = False
+                else:
+                    _blank, roi, telemetry, entry, phase_kind = accepted_attempts[0]
+                accepted_candidate = candidate
+                accepted_roi = roi
+                accepted_telemetry = telemetry
+                accepted_phase = phase_kind
+                break
             if accepted_candidate is not None:
                 break
         if accepted_candidate is None or accepted_roi is None or accepted_telemetry is None:
@@ -1154,11 +1255,23 @@ def _plan_reference_panel_candidates(
                 "planned_target_shots"
             )
         telemetry_record = _canonical_json_mapping(telemetry_record)
-        accepted_attempt_order = len(attempts) - 1
+        accepted_index = next(
+            (
+                index
+                for index, item in enumerate(attempts)
+                if isinstance(item, dict) and item.get("accepted") is True
+            ),
+            len(attempts) - 1,
+        )
+        accepted_attempt_order = accepted_index
         attempts[accepted_attempt_order]["telemetry"] = telemetry_record
         shot.update(
             {
                 "asset_id": candidate.source_asset_id,
+                "source_family": str(
+                    getattr(getattr(candidate, "panel_candidate", None), "source_family", "")
+                    or ""
+                ),
                 "panel_region_id": candidate.panel_region_id,
                 "panel_id": candidate.panel_id,
                 "source_order": candidate.source_order,
@@ -1188,6 +1301,19 @@ def _plan_reference_panel_candidates(
         )
         selected_shots.append(shot)
         last_panel_id = candidate.panel_id
+    # A pan/focus_shift curve with no focus travel renders as sub-pixel zoom
+    # jitter. Degrade those shots to a pure zoom curve.
+    for shot in selected_shots:
+        curve = str(shot.get("camera_curve", ""))
+        if curve in {"pan_horizontal", "focus_shift"}:
+            fx = float(shot.get("focus_x", 0.0))
+            fy = float(shot.get("focus_y", 0.0))
+            ex = float(shot.get("focus_end_x", fx))
+            ey = float(shot.get("focus_end_y", fy))
+            if abs(ex - fx) < 1e-6 and abs(ey - fy) < 1e-6:
+                shot["camera_curve"] = "slow_push_in"
+                shot["motion_mode"] = "slow_push"
+                shot["motion_reason"] = "static focus: pan/focus_shift downgraded to zoom"
     return selected_shots
 
 
@@ -1216,10 +1342,19 @@ def _plan_reference(
             f"{profile.profile_id} requires duration between "
             f"{duration_min_s:.1f} and {duration_max_s:.1f} seconds"
         )
-    nominal_target = max(
-        profile.shot_min,
-        min(profile.shot_max, round(total_duration / _REFERENCE_SHOT_INTERVAL_SECONDS)),
-    )
+    if allow_review_cadence_adaptation:
+        # Review cadence may exceed the production shot cap when the narration
+        # duration requires more shots to stay inside the mean-duration band;
+        # the feasible panel capacity still bounds it below.
+        nominal_target = max(
+            profile.shot_min,
+            round(total_duration / _REFERENCE_SHOT_INTERVAL_SECONDS),
+        )
+    else:
+        nominal_target = max(
+            profile.shot_min,
+            min(profile.shot_max, round(total_duration / _REFERENCE_SHOT_INTERVAL_SECONDS)),
+        )
     target = nominal_target
     capacity = len(candidates) * profile.max_canonical_panel_uses
     if max_shots_by_section is not None:
@@ -1244,7 +1379,7 @@ def _plan_reference(
             f"{profile.profile_id} cannot satisfy the panel reuse cap for "
             f"{target} shots"
         )
-    cadence_adapted = target != nominal_target
+    cadence_adapted = target != nominal_target or allow_review_cadence_adaptation
 
     beats = _coalesce_beats(
         director.analyze_story(spans),
@@ -1509,6 +1644,17 @@ def plan(
             roi_label=shot.get("roi_label", ""), duration=shot["end_time"] - shot["start_time"],
             history=history, seed=42, index=index,
         )
+        static_focus = (
+            abs(float(shot.get("focus_end_x", shot.get("focus_x", 0.0))) - float(shot.get("focus_x", 0.0))) < 1e-6
+            and abs(float(shot.get("focus_end_y", shot.get("focus_y", 0.0))) - float(shot.get("focus_y", 0.0))) < 1e-6
+        )
+        if static_focus and motion.mode in {"guided_pan", "focus_shift"}:
+            # A pan/focus curve with no focus travel renders as a jittery
+            # sub-pixel zoom. Degrade to a pure zoom curve.
+            motion = motion_director.MotionPlan(
+                mode="slow_push", intensity="low",
+                reason="static focus: pan/focus_shift downgraded to zoom",
+            )
         history.append(motion.mode)
         motion_plans.append(motion)
         shot["motion_mode"] = motion.mode

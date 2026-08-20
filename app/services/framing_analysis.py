@@ -533,6 +533,7 @@ def candidate_is_feasible(
     target_size: tuple[int, int],
     *,
     allow_source_resolution_warning: bool = False,
+    review_aggressive_crop: bool = False,
 ) -> tuple[bool, FramingTelemetry]:
     """Evaluate one static crop against the hard reference framing contract.
 
@@ -603,17 +604,34 @@ def candidate_is_feasible(
         or crop_width < target_width / 1.15
         or crop_height < target_height / 1.15
     )
-    if source_resolution_insufficient and not allow_source_resolution_warning:
+    if (
+        source_resolution_insufficient
+        and not allow_source_resolution_warning
+        and not review_aggressive_crop
+    ):
         return False, replace(telemetry, rejection_code="visual.source_resolution_insufficient")
     if source_resolution_insufficient:
         telemetry = replace(telemetry, fallback_reason="review.low_source_resolution")
-    for kind, minimum in (
+    coverage_minima = (
         ("subject", 0.98),
         ("face", 0.98),
         ("action", 0.95),
         ("continuity_context", 0.95),
         ("effect", 0.90),
-    ):
+    )
+    if review_aggressive_crop:
+        # Silent review may crop to the dominant subject when the source panel
+        # is a full webtoon page whose whitespace gutters would otherwise push
+        # every 9:16 ROI past the edge-blank target. Protected coverage is
+        # relaxed, never removed: faces keep the strictest floor.
+        coverage_minima = (
+            ("subject", 0.40),
+            ("face", 0.60),
+            ("action", 0.45),
+            ("continuity_context", 0.35),
+            ("effect", 0.40),
+        )
+    for kind, minimum in coverage_minima:
         if coverage[kind] < minimum:
             return False, replace(telemetry, rejection_code=f"visual.protected_{kind}_coverage")
     required_protected_regions = any(
@@ -626,7 +644,7 @@ def candidate_is_feasible(
     )
     if base_zoom > protected_cap + 1e-9 and (
         not allow_source_resolution_warning or required_protected_regions
-    ):
+    ) and not review_aggressive_crop:
         return False, replace(telemetry, rejection_code="visual.protected_zoom_insufficient")
     return True, telemetry
 

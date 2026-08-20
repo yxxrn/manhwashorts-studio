@@ -1,3 +1,86 @@
+# CURRENT ORACLE P0 CHECKPOINT  2026-08-20
+
+## Phase 0 cache/reconciliation checkpoint
+
+Authoritative execution is now Oracle at
+/home/ubuntu/manhwashorts, branch main, HEAD
+3559ad0553fc9a044dde89db28f7106d4cd64a5a. origin/main is
+b6f72cd87c4c3be517a30d547c55b20a9ad8f464; local is one commit ahead. The
+worktree is intentionally dirty and preserves prior agents' source changes.
+
+The focused Phase 0 matrix is green: 169 passed, 35 warnings:
+
+.venv/bin/python -m pytest tests/test_cloud_multimodal_mass_production.py
+tests/test_analyzer_contract.py tests/test_vision_adapter.py
+tests/test_vision_pipeline.py tests/test_story_evidence.py
+tests/test_strip_segmentation.py tests/test_strips.py -ra
+
+The two checkpoint/cache regressions are green, and the two targeted
+narration/persistence regressions are green (2 passed). Collection was
+clean throughout. Warnings are existing Pillow deprecations; they are not
+failures. The expanded relevant matrix including strict framing and exact
+panel fallback is 236 passed, 1 existing fixture skip, 38 warnings. The
+complete non-slow run reaches the end with only two environment-invalid
+failures because tests/test_operator_launcher.py invokes Windows cmd.exe on
+this Linux Oracle host; launcher behavior is not weakened or skipped as a
+production claim.
+
+The visual-stage cache is now restart-safe on the approved data volume:
+/data/data/p0-aws-acceptance/cloud-stage-cache. The existing
+/tmp/ms-stage-cache contents were copied without deletion and verified
+byte-for-byte: 8 JSON stage entries plus visual_checkpoints.jsonl, 9 files /
+7,855,981 bytes. The source visual entry contains 701 panels;
+/tmp/visual_checkpoints.jsonl contains 736 lines. This is a durable
+cache-transfer proof, not a claim that story map, narration, rendering, voice,
+or QC has completed.
+
+## Exact current boundary
+
+Tracked files currently modified by the preserved worktree include:
+
+app/prompts/cloud_causal_map_v1.txt
+app/prompts/visual_narrative_repair_v1.txt
+app/services/analyzer_contract.py
+app/services/cloud_multimodal.py
+app/services/editorial_visual_planner.py
+app/services/framing_analysis.py
+app/services/ingest.py
+app/services/pipeline.py
+app/services/reference_visual_review.py
+app/services/render.py
+app/services/review_preview.py
+app/services/review_source_upscale.py
+app/services/strip_segmentation.py
+app/services/strips.py
+app/services/subtitle_karaoke.py
+app/services/tts.py
+app/services/vision_adapter.py
+app/services/visual_narrative_repair.py
+tests/test_cloud_multimodal_mass_production.py
+tests/test_reference_visual_review.py
+tests/test_review_source_upscale.py
+tests/test_strip_segmentation.py
+
+Runtime/untracked paths include the data symlink, ms_env.sh, database/WAL,
+provider state, caches, media/output, and the handoff document. No secret,
+database, media, or runtime artifact is part of the intended source commit.
+
+## Next executable slice
+
+Implement and test the bounded story-map/narration stage through the existing
+cloud service boundary: four workers, approximately 180 panels per chunk,
+deterministic ordered merge, per-chunk durable cache/checkpoint, complete
+coverage, bounded retries, and resume without repeating cached work. Then
+persist the reconciled narration and only afterward attempt the normal silent
+render path. Voice/TTS remains deferred until a real silent MP4 passes all
+technical and visual gates. No provider call, media render, or publication is
+claimed by this checkpoint.
+
+Rollback point for the current dirty source baseline is
+3559ad0553fc9a044dde89db28f7106d4cd64a5a; recheck origin/main before any
+commit or push. Keep the secret-bearing ms_env.sh untracked and never quote
+its value in output.
+
 # Current status
 
 Updated: 2026-08-15

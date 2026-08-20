@@ -42,8 +42,18 @@ def _write_gutter_fixture(path: Path) -> None:
 
 
 def _write_focus_fixture(path: Path) -> None:
-    image = Image.new("RGB", (900, 2400), "white")
+    # Textured edge-to-edge context keeps this fixture outside the strict
+    # color-agnostic blank target while leaving two distinct focal regions.
+    image = Image.new("RGB", (900, 2400), (58, 72, 84))
     draw = ImageDraw.Draw(image)
+    for y in range(0, 2400, 16):
+        for x in range(0, 900, 16):
+            color = (
+                (32, 72, 112)
+                if ((x // 16) + (y // 16)) % 2 == 0
+                else (224, 156, 48)
+            )
+            draw.rectangle((x, y, min(x + 15, 899), min(y + 15, 2399)), fill=color)
     draw.rectangle((80, 80, 820, 1200), fill=(160, 45, 45))
     draw.ellipse((260, 420, 640, 620), fill=(10, 10, 10))
     draw.rectangle((80, 1200, 820, 2320), fill=(40, 70, 150))
@@ -256,24 +266,29 @@ def test_reference_preparation_reports_blank_infeasible_telemetry(tmp_path):
             image, evidence, grid_long_edge=64
         )
 
-    prepared = render.prepare_reference_frame(
-        source,
-        tmp_path / "uniform-prepared.jpg",
-        TARGET_WIDTH,
-        TARGET_HEIGHT,
-        0.5,
-        0.5,
-        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
-        evidence=evidence,
-        border_mask=mask,
-    )
+    with pytest.raises(render.RenderError, match=r"visual\.blank_infeasible") as caught:
+        render.prepare_reference_frame(
+            source,
+            tmp_path / "uniform-prepared.jpg",
+            TARGET_WIDTH,
+            TARGET_HEIGHT,
+            0.5,
+            0.5,
+            profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            evidence=evidence,
+            border_mask=mask,
+        )
 
-    assert prepared.telemetry is not None
-    assert prepared.telemetry.edge_connected_blank_fraction > 0.0
-    assert prepared.telemetry.fallback_reason == "visual.blank_infeasible"
+    assert caught.value.code == "visual.blank_infeasible"
+    assert caught.value.telemetry is not None
+    assert caught.value.telemetry.edge_connected_blank_fraction > 0.03
+    assert caught.value.telemetry.fallback_reason == "visual.blank_infeasible"
 
-
-@pytest.mark.parametrize("evidence", (None, {"malformed": True}), ids=("missing", "malformed"))
+@pytest.mark.parametrize(
+    "evidence",
+    (None, {"malformed": True}),
+    ids=("missing", "malformed"),
+)
 def test_reference_preparation_rejects_missing_or_malformed_evidence(tmp_path, evidence):
     from app.services import reference_profile, render
 
@@ -344,39 +359,22 @@ def test_reference_preparation_rejects_blank_gutter_and_preserves_focused_artwor
     render.crop_to_vertical(source, legacy, TARGET_WIDTH, TARGET_HEIGHT, 0.5, 0.2)
     assert _blank_fraction(legacy) > reference_profile.REFERENCE_MATCHED_SHORTS_V1.max_blank_fraction
 
-    prepared = _framing_helper()(
-        source,
-        tmp_path / "prepared.jpg",
-        TARGET_WIDTH,
-        TARGET_HEIGHT,
-        0.5,
-        0.82,
-        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
-        evidence=evidence,
-    )
-    output = _result_path(prepared)
-    with Image.open(output) as image:
-        assert image.size == OVERSAMPLE_SIZE
-    telemetry = prepared.telemetry
-    assert telemetry is not None
-    assert prepared.blank_fraction == pytest.approx(
-        telemetry.edge_connected_blank_fraction
-    )
-    assert prepared.blank_fraction > 0.0
-    assert telemetry.fallback_reason == 'visual.blank_infeasible'
-    assert telemetry.rejection_code is None
-    assert telemetry.balloon_mask_intersection_ratio == pytest.approx(0.0)
-    assert telemetry.subject_coverage >= 0.98
-    assert telemetry.face_coverage >= 0.98
-    assert telemetry.action_coverage >= 0.95
-    assert telemetry.continuity_context_coverage >= 0.95
-    assert telemetry.effect_coverage >= 0.90
-    assert prepared.base_zoom <= reference_profile.REFERENCE_MATCHED_SHORTS_V1.base_frame_zoom_max
-    left, top, right, bottom = prepared.crop_box
-    assert 0 <= left < right <= 900
-    assert 0 <= top < bottom <= 2400
-    assert top <= 0.82 * 2400 <= bottom
+    with pytest.raises(render.RenderError, match=r"visual\.blank_infeasible") as caught:
+        _framing_helper()(
+            source,
+            tmp_path / "prepared.jpg",
+            TARGET_WIDTH,
+            TARGET_HEIGHT,
+            0.5,
+            0.82,
+            profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            evidence=evidence,
+        )
 
+    assert caught.value.code == "visual.blank_infeasible"
+    assert caught.value.telemetry is not None
+    assert caught.value.telemetry.edge_connected_blank_fraction > 0.03
+    assert caught.value.telemetry.rejection_code == "visual.blank_infeasible"
 
 def test_reference_focus_changes_static_roi_and_same_inputs_are_deterministic(tmp_path):
     from app.services import reference_profile
@@ -648,7 +646,7 @@ def test_reference_ranking_prefers_protected_retention_before_blank_and_zoom(
             candidate_mask,
             base_zoom=zoom,
             protected_retained_fraction=0.99 if zoom == 1.0 else 0.90,
-            edge_blank=0.20 if zoom == 1.0 else 0.05,
+            edge_blank=0.02 if zoom == 1.0 else 0.01,
         )
 
     monkeypatch.setattr(framing_analysis, 'candidate_is_feasible', fake_candidate)

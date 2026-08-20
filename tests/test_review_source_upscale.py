@@ -49,7 +49,7 @@ def test_review_policy_prepares_900px_panel_and_transforms_bounds():
     assert manifest["original_dimensions"] == [900, 1600]
     assert manifest["prepared_dimensions"] == [1080, 1920]
     assert manifest["scale_factor"] == 1.2
-    assert policy.max_scale == 1.5
+    assert policy.max_scale == 2.5
     assert manifest["resolution_state"] == "UPSCALED"
     assert manifest["resample_filter"] == "LANCZOS"
     assert manifest["prepared_content_sha256"] == module.canonical_rgb_hash(prepared)
@@ -88,14 +88,14 @@ def test_review_policy_allows_over_cap_only_as_low_source_resolution_warning():
         "review_silent_source_upscale_v1"
     )
     prepared, manifest = module.prepare_review_panel(
-        Image.new("RGB", (600, 1000)),
+        Image.new("RGB", (320, 800)),
         policy=policy,
         source_asset_id="asset-a",
         panel_region_id="region-a",
         source_asset_checksum="a" * 64,
     )
-    assert prepared.size == (1080, 1800)
-    assert manifest["scale_factor"] == 1.8
+    assert prepared.size == (1080, 2700)
+    assert manifest["scale_factor"] == 3.375
     assert manifest["resolution_state"] == "LOW_SOURCE_RESOLUTION"
     assert manifest["non_native_warning"] == "review.low_source_resolution"
     module.validate_review_manifest(manifest, prepared)
@@ -107,7 +107,7 @@ def test_review_policy_scales_short_panel_for_the_native_resolution_floor():
         "review_silent_source_upscale_v1"
     )
     prepared, manifest = module.prepare_review_panel(
-        Image.new("RGB", (900, 800)),
+        Image.new("RGB", (900, 500)),
         policy=policy,
         source_asset_id="asset-a",
         panel_region_id="region-a",

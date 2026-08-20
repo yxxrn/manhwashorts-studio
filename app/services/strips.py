@@ -136,7 +136,7 @@ def _row_structure_features(
 def color_agnostic_separator_candidates(
     img: Image.Image,
     *,
-    max_pixels: int = 8_000_000,
+    max_pixels: int = 24_000_000,
 ) -> tuple[SeparatorCandidate, ...]:
     """Find sustained structural gutters without assuming white or black.
 

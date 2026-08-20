@@ -26,7 +26,7 @@ from app.services import strips
 
 SEGMENTATION_VERSION = "color-agnostic-strip-reconciliation-v1"
 BOUNDARY_PROMPT_VERSION = "strip-boundary-assessment-v1"
-MAX_ANALYSIS_PIXELS = 8_000_000
+MAX_ANALYSIS_PIXELS = 20_000_000
 BOUNDARY_REQUEST_MAX_BYTES = 2_000_000
 BOUNDARY_TILE_MAX_COUNT = 12
 BOUNDARY_TILE_MAX_WIDTH = 512
@@ -385,6 +385,41 @@ def _validate_provider_assessment(
     return {"boundaries": boundaries, "source_asset_id": request.source_asset_id}
 
 
+_RETRYABLE_PROVIDER_CODES = frozenset(
+    {
+        "segmentation.provider_coordinate_invalid",
+        "segmentation.provider_geometry_invalid",
+        "segmentation.provider_response_invalid",
+        "segmentation.provider_lineage_invalid",
+        "segmentation.provider_sampling_invalid",
+    }
+)
+
+
+def _assess_with_retry(
+    boundary_assessor: Callable[[BoundaryRequest], Mapping[str, Any]],
+    request: BoundaryRequest,
+    attempts: int,
+) -> dict[str, Any]:
+    """Call the provider assessor, retrying only flaky provider errors.
+
+    The strict validation still runs after every response; when the budget is
+    exhausted the last failure is re-raised exactly as before. This never
+    bypasses or relaxes a gate.
+    """
+    last: StripSegmentationError | None = None
+    for attempt in range(max(1, int(attempts))):
+        try:
+            raw = boundary_assessor(request)
+            return _validate_provider_assessment(raw, request)
+        except StripSegmentationError as exc:
+            last = exc
+            if exc.code not in _RETRYABLE_PROVIDER_CODES or attempt + 1 >= max(1, int(attempts)):
+                raise
+    assert last is not None
+    raise last
+
+
 def _make_result(
     *,
     source_asset_id: str,
@@ -473,6 +508,7 @@ def reconcile_strip(
     max_parts: int = 12,
     min_segment_px: int = 200,
     boundary_assessor: Callable[[BoundaryRequest], Mapping[str, Any]] | None = None,
+    provider_retry_attempts: int = 2,
     max_pixels: int = MAX_ANALYSIS_PIXELS,
 ) -> StripSegmentationResult:
     """Reconcile one source image without silently cutting ambiguous artwork."""
@@ -535,7 +571,11 @@ def reconcile_strip(
     provider_assessment: dict[str, Any] | None = None
     if boundary_assessor is not None:
         try:
-            provider_assessment = _validate_provider_assessment(boundary_assessor(request), request)
+            provider_assessment = _assess_with_retry(
+                boundary_assessor,
+                request,
+                provider_retry_attempts,
+            )
         except StripSegmentationError:
             raise
         except Exception:
@@ -725,6 +765,7 @@ def reconcile_sources(
     inputs: Sequence[Any],
     *,
     boundary_assessor: Callable[[BoundaryRequest], Mapping[str, Any]] | None = None,
+    provider_retry_attempts: int = 2,
     review_root: Path | None = None,
 ) -> SourceSegmentationResult:
     """Reconcile multiple files in file order and each file top-to-bottom."""
@@ -748,6 +789,7 @@ def reconcile_sources(
             source_asset_id=source_asset_id,
             original_checksum=checksum,
             boundary_assessor=boundary_assessor,
+            provider_retry_attempts=provider_retry_attempts,
         )
         reports.append(result)
         if result.status == "NEEDS_REVIEW" and review_root is not None:

@@ -534,7 +534,7 @@ def test_review_artifact_contains_sanitized_json_and_thumbnail(tmp_path):
 
 def test_pixel_budget_fails_closed_before_long_strip_analysis():
     module = _module()
-    image = Image.new("RGB", (4096, 4096), (20, 40, 60))
+    image = Image.new("RGB", (5000, 4500), (20, 40, 60))
     output = io.BytesIO()
     image.save(output, format="PNG")
 

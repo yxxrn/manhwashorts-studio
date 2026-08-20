@@ -811,11 +811,11 @@ def _motion_filter(
     elif safe_effect in {"push_in", "reveal"}:
         z = f"(1+{impact_delta:.2f}*{smooth})"
     elif safe_effect == "static_emphasis":
-        z = "1.02"
+        z = f"(1+{normal_delta * 0.45:.3f}*{smooth})"
     elif safe_effect == "atmospheric":
-        z = "1.03"
+        z = f"(1+{normal_delta * 0.55:.3f}*{smooth})"
     else:
-        z = "1.04"
+        z = f"(1+{normal_delta:.2f}*{smooth})"
     crop_w = f"floor(iw/{z}/2)*2"
     crop_h = f"floor(ih/{z}/2)*2"
     x_raw = f"floor(((iw-{crop_w})*{fx})/2)*2"
@@ -1361,6 +1361,17 @@ def fit_sentence_karaoke_groups(
                     if exc.code == "reference.subtitle_overflow":
                         continue
                     raise
+                display_lines = wrap_caption(
+                    " ".join(str(word.text) for word in chunk),
+                    max_chars,
+                )
+                if len(display_lines) > max_lines or (
+                    len(display_lines) > 1
+                    and any(len(line.split()) < 2 for line in display_lines)
+                ):
+                    # The shared display contract (validate_sentence_groups)
+                    # requires every rendered line to keep at least two words.
+                    continue
                 remainder = solve(end)
                 if remainder is None:
                     continue
@@ -1830,6 +1841,12 @@ def _prepare_exact_reference_frame(
         feasibility_kwargs: dict[str, object] = {}
         if allow_source_resolution_warning:
             feasibility_kwargs["allow_source_resolution_warning"] = True
+        if scene.publish_allowed is False:
+            # Silent review plans with relaxed protected coverage so a
+            # dominant-subject crop can fit a full webtoon page; the render
+            # re-check must use the same contract or it will reject the very
+            # ROI the planner accepted.
+            feasibility_kwargs["review_aggressive_crop"] = True
         feasible, telemetry = framing_analysis.candidate_is_feasible(
             crop_box,
             evidence,
@@ -1937,6 +1954,13 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
                 "rejection_code": None,
             }
         )
+    subtitle_evidence: dict[str, Any] | None = None
+    if getattr(request, "sentence_groups", None):
+        subtitle_evidence = _subtitle_manifest_evidence(
+            request.sentence_groups,
+            profile=request.profile,
+            timing_source=getattr(request, "subtitle_timing_source", "review_provisional_display_pacing_v1"),
+        )
     return {
         "schema_version": "reference_visual_review_v1",
         "project_id": request.project_id,
@@ -1944,6 +1968,7 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
         "publish_allowed": False,
         "audio_stream_expected": False,
         "audio_stream_present": bool(info.get("has_audio")),
+        "subtitle_evidence": subtitle_evidence,
         "source_upscale_policy": getattr(request, "review_source_upscale_policy", None),
         "source_upscale_resolution_states": sorted(
             {

@@ -393,8 +393,62 @@ def _is_document(suffix: str, mime_type: str) -> bool:
 
 def _unsupported(filename: str) -> IngestError:
     return IngestError(
-        f"unsupported file type: {filename}. Accepted: JPG, PNG, WebP, WAV, MP3, OGG, M4A, FLAC, TXT, MD, PDF, DOCX"
+        f"unsupported file type: {filename}. Accepted: JPG, PNG, WebP, ZIP/CBZ, WAV, MP3, OGG, M4A, FLAC, TXT, MD, PDF, DOCX"
     )
+
+
+def _is_archive(suffix: str) -> bool:
+    return suffix in {".zip", ".cbz"}
+
+
+def _extract_archive_images(filename: str, data: bytes) -> list[tuple[str, bytes]]:
+    """List image entries from a ZIP/CBZ archive in deterministic order.
+
+    CBZ is just a ZIP of comic pages, so the same parser covers both. Non-image
+    entries (metadata, thumbnails, ``.txt`` sidecars) are ignored.
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = sorted(
+                (info.filename for info in archive.infolist() if not info.is_dir()),
+                key=lambda name: (name.casefold(), name),
+            )
+            images: list[tuple[str, bytes]] = []
+            for name in names:
+                suffix = Path(name).suffix.lower()
+                if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+                    continue
+                if name.casefold().startswith("__macosx/") or "/__macosx" in name.casefold():
+                    continue
+                try:
+                    images.append((name, archive.read(name)))
+                except (zipfile.BadZipFile, KeyError, OSError):
+                    continue
+            return images
+    except zipfile.BadZipFile as exc:
+        raise IngestError(f"{filename} is not a valid ZIP/CBZ archive") from exc
+
+
+def _ingest_archive_parts(
+    project_id: str, filename: str, data: bytes
+) -> list[IngestedAsset]:
+    """Ingest every image inside a ZIP/CBZ archive in reading order."""
+    images = _extract_archive_images(filename, data)
+    if not images:
+        raise IngestError(f"{filename}: archive contains no JPG, PNG, or WebP images")
+    assets: list[IngestedAsset] = []
+    for member_name, member_data in images:
+        try:
+            assets.extend(
+                ingest_image_parts(project_id, member_name, member_data)
+            )
+        except IngestError:
+            continue
+    if not assets:
+        raise IngestError(f"{filename}: no usable images found in archive")
+    return assets
 
 
 def ingest_upload(project_id: str, filename: str, mime_type: str, data: bytes) -> IngestedAsset:
@@ -404,6 +458,11 @@ def ingest_upload(project_id: str, filename: str, mime_type: str, data: bytes) -
     Use :func:`ingest_upload_parts` to have tall strips sliced.
     """
     suffix = Path(filename).suffix.lower()
+    if _is_archive(suffix):
+        assets = _ingest_archive_parts(project_id, filename, data)
+        if not assets:
+            raise _unsupported(filename)
+        return assets[0]
     if _is_image(suffix, mime_type):
         return ingest_image(project_id, filename, data)
     if _is_audio(suffix, mime_type):
@@ -423,6 +482,8 @@ def ingest_upload_parts(
     crop would discard. Documents and normal-shaped images return one asset.
     """
     suffix = Path(filename).suffix.lower()
+    if _is_archive(suffix):
+        return _ingest_archive_parts(project_id, filename, data)
     if _is_image(suffix, mime_type):
         return ingest_image_parts(project_id, filename, data)
     if _is_audio(suffix, mime_type):

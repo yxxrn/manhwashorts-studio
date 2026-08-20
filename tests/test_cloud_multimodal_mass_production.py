@@ -27,7 +27,7 @@ def _identity(module):
         endpoint="http://mock.invalid/v1",
         prompt_versions={
             "visual": "balloon-free-visual-evidence-v1",
-            "story_map": "cloud-causal-map-v1",
+            "story_map": "cloud-causal-map-v2",
             "narration": "vision-first-story-analyzer-v3",
         },
     )
@@ -497,9 +497,10 @@ def test_causal_map_prompt_declares_exact_reconciled_object_fields():
 
     version, digest, prompt = module._load_causal_prompt()
 
-    assert version == "cloud-causal-map-v1"
+    assert version == "cloud-causal-map-v2"
     assert len(digest) == 64
     assert "beat_id, panel_ids, summary" in prompt
+    assert "at least five ordered" in prompt
     assert "from_beat, to_beat, reason" in prompt
     assert "each claim has claim_id," in prompt
     assert "text, panel_ids, qualification" in prompt
@@ -596,7 +597,7 @@ def test_review_project_repairs_after_initial_narration_grounding_failure(monkey
         claims=({"claim_id": "claim-1", "panel_ids": [panel.panel_id for panel in panels], "qualification": "the panels support this"},),
         story_map_hash="s" * 64,
         model_identity_hash="m" * 64,
-        prompt_version="cloud-causal-map-v1",
+        prompt_version="cloud-causal-map-v2",
         prompt_sha256="c" * 64,
     )
     failed = module.ChapterJobRecord(
@@ -703,7 +704,7 @@ def test_ephemeral_review_registry_allows_title_visual_row_without_story_candida
         claims=(),
         story_map_hash="s" * 64,
         model_identity_hash="m" * 64,
-        prompt_version="cloud-causal-map-v1",
+        prompt_version="cloud-causal-map-v2",
         prompt_sha256="c" * 64,
     )
 
@@ -718,6 +719,40 @@ def test_ephemeral_review_registry_allows_title_visual_row_without_story_candida
     assert len(candidates) == 5
     assert all(candidate.source_order > 0 for candidate in candidates)
     assert len(section_to_beats) == 5
+
+
+def test_narration_observations_accept_provider_text_key_variants():
+    """Provider text keys (content/description/assertion) must not be rejected."""
+    module = _module()
+    panels = _panels(module)
+    visual = module.VisualStageResult(
+        panels=tuple(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "observation": {
+                    "panel_id": panel.panel_id,
+                    "visible_facts": [{"description": f"fact-{panel.panel_id}"}],
+                    "dialogue_or_ocr": [{"content": "say"}, {"detected_text": "sfx"}],
+                    "inferences": [{"assertion": "implied"}],
+                    "uncertainties": [{"issue": "unknown"}],
+                    "evidence_refs": [panel.panel_id],
+                },
+            }
+            for panel in panels
+        ),
+        source_hash="s" * 64,
+        model_identity_hash="m" * 64,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="p" * 64,
+    )
+    observations, _structural = module.CloudStageRunner._narration_observations(
+        visual, panels
+    )
+    assert len(observations) == len(panels)
+    assert observations[0]["visible_facts"] == [f"fact-{panels[0].panel_id}"]
+    assert "say" in observations[0]["dialogue_or_ocr"]
 
 
 def test_prepare_project_panels_reindexes_canonical_story_orders_after_gutters(monkeypatch):
@@ -825,13 +860,13 @@ def test_stage_runner_chunks_large_visual_requests_and_reconciles_full_order():
     result = runner.run_visual_evidence(panels)
 
     assert result.panel_ids == tuple(f"large-chapter-panel-{index}" for index in range(26))
-    assert len([call for call in provider.calls if call[0] == "visual"]) == 26
+    assert len([call for call in provider.calls if call[0] == "visual"]) == 4
 
 
 def test_live_visual_request_panel_cap_is_bounded_for_response_size():
     module = _module()
 
-    assert module.VISUAL_REQUEST_MAX_PANELS == 1
+    assert module.VISUAL_REQUEST_MAX_PANELS == 8
     assert module.VISUAL_REQUEST_OVERLAP == 0
 
 
@@ -916,7 +951,7 @@ def test_transient_unknown_visual_response_is_retried_atomically():
     result = runner.run_visual_evidence(_panels(module))
 
     assert result.reconciled is True
-    assert len([call for call in provider.calls if call[0] == "visual"]) == 4
+    assert len([call for call in provider.calls if call[0] == "visual"]) == 2
     assert provider.analysis_run_ids[0] != provider.analysis_run_ids[1]
 
 
@@ -1118,6 +1153,46 @@ def test_batch_operator_entrypoint_exposes_resume_safe_project_options():
     assert callable(cli.main)
 
 
+
+def test_visual_checkpoint_is_scoped_and_durable(tmp_path):
+    module = _module()
+    checkpoint = tmp_path / "visual-checkpoints.jsonl"
+    first_provider = _FakeProvider()
+    first = module.CloudStageRunner(
+        provider=first_provider,
+        model_identity=_identity(module),
+        visual_checkpoint_path=checkpoint,
+    )
+    first_result = first.run_visual_evidence(_panels(module, "checkpoint"))
+    assert first_result.reconciled is True
+    assert len([call for call in first_provider.calls if call[0] == "visual"]) == 1
+
+    resumed_provider = _FakeProvider()
+    resumed = module.CloudStageRunner(
+        provider=resumed_provider,
+        model_identity=_identity(module),
+        visual_checkpoint_path=checkpoint,
+    )
+    resumed_result = resumed.run_visual_evidence(_panels(module, "checkpoint"))
+    assert resumed_result == first_result
+    assert not [call for call in resumed_provider.calls if call[0] == "visual"]
+
+    unrelated_provider = _FakeProvider()
+    unrelated = module.CloudStageRunner(
+        provider=unrelated_provider,
+        model_identity=_identity(module),
+        visual_checkpoint_path=checkpoint,
+    )
+    unrelated.run_visual_evidence(_panels(module, "unrelated"))
+    assert len([call for call in unrelated_provider.calls if call[0] == "visual"]) == 1
+
+
+def test_file_stage_cache_round_trips_durable_values(tmp_path):
+    module = _module()
+    cache = module.FileStageCache(tmp_path / "stage-cache")
+    cache.put("visual-key", {"panels": [{"panel_id": "panel-a"}]})
+    assert cache.get("visual-key") == {"panels": [{"panel_id": "panel-a"}]}
+
 def test_openai_compatible_json_stage_uses_pinned_prompt_without_exposing_key(monkeypatch):
     from app.services import vision_adapter
 
@@ -1142,7 +1217,7 @@ def test_openai_compatible_json_stage_uses_pinned_prompt_without_exposing_key(mo
     )
     response = provider.complete_json(
         stage="story_map",
-        prompt_version="cloud-causal-map-v1",
+        prompt_version="cloud-causal-map-v2",
         prompt_sha256="b" * 64,
         prompt_text="Return a complete ordered causal map.",
         payload={"panel_ids": ["p1"]},
