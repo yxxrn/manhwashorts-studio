@@ -1,5 +1,16 @@
 # Changelog
 
+- Added a prepared-panel warm-resume manifest and strict typed narration-repair
+  checkpoint on Oracle. Metadata-only manifests preserve ordered panel/source
+  identities, checksums, bounds, segmentation state, and preparation metrics
+  without sending marker payloads to providers; review-only pixel paths remain
+  cold. A 172-word/69.57-second result is repair-candidate-only and cannot
+  enter the final narration cache; final admission remains 115-125 words,
+  50-60 seconds, grounded, identity-matched, and display-derived. Focused
+  verification is 65 passed; the related matrix remains a named baseline
+  exception at 142 passed/13 prerequisite failures. No real repair, narration,
+  MP4, voice, or QC result is claimed.
+
 - Published the bounded story-map compatibility checkpoint
   7f7ffe697b5b9aa6c9a8a95fa4c046597a0622d8: accepted the provider's
   ordered_beats envelope without trusting provider hashes, and added a

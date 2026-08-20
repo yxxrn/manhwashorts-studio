@@ -2388,7 +2388,7 @@ def test_batch_resume_migrates_legacy_visual_without_visual_provider_call(tmp_pa
         == module.VISUAL_CACHE_IDENTITY_VERSION
     )
 
-def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeypatch, tmp_path):
+def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_path):
     module = _module()
     panels = _panels(module)
     panel_ids = [panel.panel_id for panel in panels]
@@ -2514,17 +2514,14 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeyp
         candidate,
         observations=tuple(local_observations),
         continuity_ledger=dict(local_structural["continuity_ledger"]),
+        prompt_sha256=runner.prompts["narration"][1],
     )
-    original_batched = runner._run_narration_batched
-
-    def first_candidate(*args, **kwargs):
-        if kwargs.get("stage") == "narration_repair":
-            return original_batched(*args, **kwargs)
-        return candidate
-
-    monkeypatch.setattr(runner, "_run_narration_batched", first_candidate)
-
-    result = runner.run_narration(visual, story_map, panels=panels)
+    result = runner.run_narration_repair_candidate(
+        candidate,
+        visual,
+        story_map,
+        panels=panels,
+    )
 
     assert len(provider.repair_payloads) == 1
     assert len(provider.repair_prompts) == 1
@@ -2549,6 +2546,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeyp
     )
     assert result.qc_report["narration_repair"]["candidate_hash"]
     assert [call[0] for call in provider.calls] == ["narration_repair"]
+    assert runner.request_count == 1
 
     cache_root = tmp_path / "targeted-repair-cache"
     records = [
@@ -2575,7 +2573,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeyp
         model_identity=_identity(module),
         cache=module.FileStageCache(cache_root),
         max_attempts=1,
-    ).run_narration(visual, story_map, panels=panels)
+    ).run_narration_repair_candidate(candidate, visual, story_map, panels=panels)
     assert provider.calls == []
     assert resumed.qc_report["narration_repair"]["cache_reused"] is True
 

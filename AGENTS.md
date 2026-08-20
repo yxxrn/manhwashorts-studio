@@ -1,3 +1,54 @@
+# PREPARED MANIFEST + TARGETED REPAIR CHECKPOINT - 2026-08-21
+
+Authoritative worktree: Oracle `/home/ubuntu/manhwashorts`, branch `main`.
+Rollback parent for this checkpoint is `3330700dc7e4c310b19441d5c50099abbbae2b1d`.
+The current uncommitted scope is limited to `app/services/cloud_multimodal.py`,
+new `app/services/prepared_panel_manifest.py`, the two corresponding focused
+test files, and this handoff documentation. `data`, `ms_env.sh`, databases,
+WAL files, caches, logs, media, and provider credentials remain untracked and
+must never be staged.
+
+The warm-resume defect was measured before this slice: preparation decoded the
+large panel object graph (about 529 MB on disk and about 784 MB peak RSS in the
+stopped attempt) before cached visual rows could be reused. The new
+`prepared-panel-manifest-v1` is payload-free and content-addressed. It records
+ordered panel/source identities, immutable source checksums, integer bounds,
+segmentation state, and optional feasible-ledger/crop hashes. A validated
+manifest restores metadata-only panel markers; no marker can reach a provider.
+Review-only pixel paths deliberately keep cold materialization. Persisted
+`preparation_metrics` records mode, panel count, elapsed seconds, payload bytes,
+peak RSS, and whether source decode was required. A stale fingerprint or
+lineage mismatch falls back to safe cold preparation instead of accepting a
+wrong cache.
+
+The strict narration cache now treats a structurally grounded 172-word /
+69.57-second result as typed `narration_repair_candidate-v1`, never as a final
+cache entry. Final admission still requires the final cache contract,
+115-125 words, 50-60 seconds, complete grounding/citations, model/prompt/
+visual/story identities, and independently derived display text. The bounded
+repair harness preserves retained passage/claim/evidence IDs and causal order,
+removes only complete low-priority passages, and stores a typed repair result
+atomically. Fake-provider coverage proves one repair request, zero repeated
+normal-narration calls, cache-resume idempotency, and no ordinary-cache
+admission for the invalid candidate.
+
+Verification at this handoff: the focused manifest/cloud suite is 65 passed
+with five existing Pillow deprecation warnings; Ruff, compileall, and
+`git diff --check` are clean. The related matrix is not green: current and
+clean-parent comparison both reproduce 142 passed and 13 failed pipeline nodes
+at `PipelineError: run vision analysis before generating a draft`. This named
+baseline exception is not a production-readiness claim. No real repair request
+has been made in this checkpoint, and no story-map, narration, silent MP4,
+voice, or QC artifact is proven.
+
+After this source/test/docs checkpoint is published, resume through the normal
+service boundary with the existing `/tmp/ms_env.sh` sourced without output,
+reuse the 701-row visual cache, exercise at most one bounded real targeted
+repair call, and persist only a contract-valid result. Do not restart visual
+analysis or bypass grounding. The next acceptance gates are durable repair
+success, narration artifact/QC, a real silent MP4, and only then the configured
+voice stage.
+
 # FOLLOW-UP CACHE MIGRATION PROOF - 2026-08-20
 
 The first post-publication normal resume was stopped after exactly two

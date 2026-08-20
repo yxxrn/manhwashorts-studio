@@ -1,3 +1,39 @@
+# PREPARED MANIFEST + TARGETED REPAIR CHECKPOINT - 2026-08-21
+
+Oracle authority remains `/home/ubuntu/manhwashorts` on `main`; rollback parent
+is `3330700dc7e4c310b19441d5c50099abbbae2b1d`. This checkpoint contains the
+prepared-panel warm-resume manifest, strict typed narration repair boundary,
+focused tests, and handoff docs only. Never stage `data`, `ms_env.sh`, DB/WAL,
+provider caches, logs, media, or credentials.
+
+The new `prepared-panel-manifest-v1` is metadata-only: ordered panel IDs,
+source-asset checksums, integer crop bounds, segmentation identity, and
+feasible-ledger/crop hashes are canonicalized and validated before reuse.
+Metadata-only markers are blocked from provider observation. Review-only paths
+still cold-materialize pixels. `preparation_metrics` makes cold/warm mode,
+elapsed time, payload bytes, peak RSS, and source decoding auditable. Current
+warm benchmark evidence is pending; the prior stopped preparation loaded about
+529 MB of serialized panel data and reached about 784 MB peak RSS.
+
+The existing 172-word/69.57-second result is preserved as typed
+`narration-repair-candidate-v1` only. It cannot satisfy final cache admission;
+the final result must independently pass 115-125 words, 50-60 seconds,
+grounding/citations, model/prompt/visual/story identity, and display
+derivation. Repair keeps retained passage/claim/evidence IDs and causal order,
+removing only complete low-priority passages. The deterministic fake-provider
+repair harness proves one repair request, no repeated normal-narration call,
+atomic result caching, and idempotent resume.
+
+Focused evidence is `65 passed` with five existing Pillow deprecation warnings;
+Ruff, compileall, and diff-check are clean. Current and clean-parent related
+matrices both reproduce `142 passed, 13 failed`, all at the unchanged
+`run vision analysis before generating a draft` prerequisite in
+`pipeline.py:4362`; this is a named non-regression exception, not a green
+production gate. No real repair call, narration artifact, silent MP4, voice, or
+QC is proven. Resume next through the normal service entrypoint, reuse the
+701-row visual cache, make at most one bounded targeted repair request, and
+record request/cache/timing evidence before continuing to render.
+
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
 Source/test fix checkpoint:

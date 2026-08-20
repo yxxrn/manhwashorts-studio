@@ -1,3 +1,41 @@
+# PREPARED MANIFEST + TARGETED REPAIR CHECKPOINT - 2026-08-21
+
+Rollback parent: `3330700dc7e4c310b19441d5c50099abbbae2b1d` on Oracle `/home/ubuntu/manhwashorts`.
+The prepared-panel warm-resume and strict targeted-repair implementation is
+currently the only uncommitted source/test scope; runtime `data`, `ms_env.sh`,
+DB/WAL, caches, logs, and media remain untracked.
+
+Preparation now has a payload-free `prepared-panel-manifest-v1` with canonical
+ordered panel/source identities, immutable checksums, bounds, segmentation
+state, and optional feasible-ledger hashes. Warm resumes validate the current
+source fingerprint and restore metadata only, so cached visual rows do not
+re-enter the provider. Review-only pixel rendering intentionally retains cold
+materialization. `preparation_metrics` records mode, count, elapsed time,
+payload bytes, peak RSS, and source-decode requirement; a mismatch safely
+falls back to cold preparation. This addresses the stopped attempt's measured
+large-graph preparation cost (about 529 MB serialized input and about 784 MB
+peak RSS), but a live warm benchmark is still pending.
+
+The 172-word/69.57-second grounded output is now a typed repair candidate, not
+a final narration cache result. Final cache admission requires 115-125 words,
+50-60 seconds, complete ordered grounding/citations, prompt/model/
+visual/story identity, and independent display derivation. The isolated repair
+boundary removes only complete low-priority passages while preserving retained
+claim/evidence IDs and causal order. Fake-provider tests cover direct repair,
+zero repeated normal-narration calls, atomic typed candidate/result caching,
+and idempotent resume.
+
+Evidence: focused manifest/cloud tests are `65 passed` with five existing
+Pillow deprecation warnings; scoped Ruff, compileall, and diff-check pass. The
+related current matrix and clean-parent comparison both reproduce `142 passed,
+13 failed`; every failure is the same legacy prerequisite at
+`pipeline.py:4362` (`run vision analysis before generating a draft`). The
+matrix is therefore explicitly not green and full non-slow acceptance is not
+claimed. No real repair request, narration artifact, silent MP4, voice, or QC
+has been produced yet. Next command after publication is the normal bounded
+resume using the existing 701-row visual cache and one targeted repair attempt;
+do not rerun valid visual calls or weaken grounding.
+
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
 Source/test fix checkpoint:

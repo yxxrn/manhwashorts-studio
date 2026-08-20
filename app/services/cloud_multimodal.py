@@ -28,6 +28,7 @@ from app.services import (
     analyzer_contract,
     editorial_qc,
     narrative_identity,
+    prepared_panel_manifest,
     quality,
     script,
     strip_segmentation,
@@ -80,6 +81,18 @@ def _review_failure_code(message: str) -> str:
 
     match = _REVIEW_ERROR_CODE_PATTERN.search(str(message))
     return match.group(0) if match else "review.preview_failed"
+
+
+def _peak_rss_kb() -> int | None:
+    try:
+        import resource
+
+        value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        if sys.platform == "darwin":
+            value //= 1024
+        return value
+    except (ImportError, AttributeError, OSError, ValueError):
+        return None
 
 
 class CloudStageError(RuntimeError):
@@ -155,6 +168,10 @@ class CloudPanelInput:
     coverage_map_version: str = ""
     coverage_map_hash: str = ""
     segmentation_version: str = ""
+    identity_payload_checksum: str = ""
+    identity_descriptor_hash: str = ""
+    source_identity_hash: str = ""
+    metadata_only: bool = False
 
     def __post_init__(self) -> None:
         if not self.panel_id.strip() or not self.source_asset_id.strip():
@@ -163,6 +180,22 @@ class CloudPanelInput:
             raise CloudStageError("cloud.panel_lineage_invalid")
         if not self.mime_type.lower().startswith("image/") or not self.payload:
             raise CloudStageError("cloud.panel_payload_invalid")
+        if self.identity_payload_checksum and (
+            len(self.identity_payload_checksum) != 64
+            or any(character not in "0123456789abcdef" for character in self.identity_payload_checksum.lower())
+        ):
+            raise CloudStageError("cloud.payload_checksum_mismatch")
+        for _field_name, value in (
+            ("identity_descriptor_hash", self.identity_descriptor_hash),
+            ("source_identity_hash", self.source_identity_hash),
+        ):
+            if value and (
+                len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value.lower())
+            ):
+                raise CloudStageError("cloud.prepared_manifest_invalid")
+        if self.metadata_only and not self.identity_payload_checksum:
+            raise CloudStageError("cloud.prepared_manifest_invalid")
         payload_checksum = hashlib.sha256(self.payload).hexdigest()
         if self.payload_checksum and self.payload_checksum != payload_checksum:
             raise CloudStageError("cloud.payload_checksum_mismatch")
@@ -214,6 +247,14 @@ class CloudPanelInput:
             descriptor["coverage_map_hash"] = self.coverage_map_hash
         if self.segmentation_version:
             descriptor["segmentation_version"] = self.segmentation_version
+        if self.identity_payload_checksum:
+            descriptor["identity_payload_checksum"] = self.identity_payload_checksum
+        if self.identity_descriptor_hash:
+            descriptor["identity_descriptor_hash"] = self.identity_descriptor_hash
+        if self.source_identity_hash:
+            descriptor["source_identity_hash"] = self.source_identity_hash
+        if self.metadata_only:
+            descriptor["metadata_only"] = True
         return descriptor
 
 
@@ -978,6 +1019,8 @@ class CloudStageRunner:
             return
 
     def run_visual_evidence(self, panels: Sequence[CloudPanelInput]) -> VisualStageResult:
+        if any(getattr(panel, "metadata_only", False) for panel in panels):
+            raise CloudStageError("cloud.prepared_manifest_requires_materialization")
         ordered = self._ordered_panels(panels)
         prompt = self.prompts["visual"]
         source = list(_visual_panel_identities(ordered))
@@ -2667,6 +2710,66 @@ class CloudStageRunner:
         }
         return not removed_claim_ids & retained_claim_ids
 
+    def run_narration_repair_candidate(
+        self,
+        candidate: NarrationResult,
+        visual: VisualStageResult,
+        story_map: StoryMapResult,
+        *,
+        panels: Sequence[CloudPanelInput] | None = None,
+    ) -> NarrationResult:
+        """Run only the bounded compaction repair from compact durable stages.
+
+        This boundary deliberately accepts metadata-only visual rows and does
+        not call normal narration generation.  The candidate remains outside
+        the final narration cache until the strict final admission checks in
+        ``run_narration`` pass.
+        """
+
+        prompt = self.prompts["narration"]
+        if (
+            candidate.visual_evidence_hash != visual.visual_evidence_hash
+            or story_map.visual_evidence_hash != visual.visual_evidence_hash
+            or candidate.model_identity_hash != self.model_identity.identity_hash
+            or candidate.prompt_version != prompt[0]
+            or candidate.prompt_sha256 != prompt[1]
+        ):
+            raise CloudStageError("cloud.narrative_repair_identity_mismatch", reviewable=True)
+        failure_codes = self._narration_contract_failures(candidate)
+        if not failure_codes:
+            raise CloudStageError("cloud.narrative_repair_not_needed")
+        observations, structural = self._narration_observations(visual, panels)
+        source = {
+            "editorial_selection_version": EDITORIAL_SELECTION_VERSION,
+            "panel_ids": list(visual.panel_ids),
+            "visual_source_hash": visual.source_hash,
+            "visual_evidence_hash": visual.visual_evidence_hash,
+            "visual_observations": observations,
+            "story_map": story_map.as_dict(),
+            "duration_contract": {
+                "minimum_s": 50.0,
+                "maximum_s": 60.0,
+                "target_word_min": 115,
+                "target_word_max": 125,
+            },
+        }
+        self._store_narration_repair_candidate(
+            source=source,
+            prompt=prompt,
+            result=candidate,
+            failure_codes=failure_codes,
+        )
+        return self._run_targeted_narration_repair(
+            prompt,
+            source,
+            observations,
+            structural,
+            story_map,
+            visual,
+            candidate,
+            failure_codes,
+        )
+
     def _run_targeted_narration_repair(
         self,
         prompt: tuple[str, str, str],
@@ -3524,6 +3627,182 @@ def prepare_project_panels(
     return result
 
 
+def _project_source_asset_metadata(db: Any, project_id: str) -> tuple[dict[str, Any], ...]:
+    from app.services import pipeline
+
+    assets = pipeline.image_assets(pipeline.project_assets(db, project_id))
+    return prepared_panel_manifest.source_asset_metadata(assets)
+
+
+def _build_project_prepared_manifest(
+    db: Any,
+    project_id: str,
+    panels: Sequence[CloudPanelInput],
+    segmentation_state: Mapping[str, Any],
+    *,
+    feasible_visual_ledger: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_assets = _project_source_asset_metadata(db, project_id)
+    return prepared_panel_manifest.build_manifest(
+        panels,
+        segmentation_state,
+        panel_identity_hashes=_visual_panel_identity_hashes(tuple(panels)),
+        source_identity_hash=_visual_source_hash(tuple(panels)),
+        source_assets=source_assets,
+        feasible_visual_ledger=feasible_visual_ledger,
+    )
+
+
+def _build_cached_prepared_manifest(
+    db: Any,
+    project_id: str,
+    visual_stage: Mapping[str, Any],
+    segmentation_state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reconcile a metadata-only manifest from durable visual/strip stages."""
+
+    visual = VisualStageResult.from_dict(visual_stage)
+    source_assets = _project_source_asset_metadata(db, project_id)
+    asset_by_id = {str(item["source_asset_id"]): item for item in source_assets}
+    reports = segmentation_state.get("reports")
+    if not isinstance(reports, list) or not reports:
+        raise prepared_panel_manifest.PreparedPanelManifestError(
+            "segmentation reports are unavailable"
+        )
+    reports_by_id = {
+        str(report.get("source_asset_id", "")): report
+        for report in reports
+        if isinstance(report, Mapping) and str(report.get("source_asset_id", "")).strip()
+    }
+    if len(reports_by_id) != len(reports):
+        raise prepared_panel_manifest.PreparedPanelManifestError(
+            "segmentation report lineage is duplicated"
+        )
+
+    def report_key(report: Mapping[str, Any]) -> tuple[int, int, str]:
+        asset = asset_by_id.get(str(report.get("source_asset_id", "")), {})
+        return (
+            int(asset.get("strip_order", 0)),
+            int(asset.get("region_order", 0)),
+            str(report.get("source_asset_id", "")),
+        )
+
+    canonical_regions: list[tuple[str, str, tuple[int, int], tuple[int, int, int, int], str]] = []
+    for report in sorted(reports_by_id.values(), key=report_key):
+        asset_id = str(report.get("source_asset_id", ""))
+        asset = asset_by_id.get(asset_id)
+        spans = report.get("spans")
+        dimensions = report.get("source_dimensions")
+        if asset is None or not isinstance(spans, list) or not isinstance(dimensions, list) or len(dimensions) != 2:
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "segmentation report geometry is malformed"
+            )
+        width, height = (int(dimensions[0]), int(dimensions[1]))
+        if width <= 0 or height <= 0:
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "segmentation report dimensions are invalid"
+            )
+        checksum = str(report.get("source_checksum", ""))
+        if checksum != asset["source_checksum"]:
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "segmentation report source checksum mismatch"
+            )
+        coverage_hash = str(report.get("analysis_hash", ""))
+        if len(coverage_hash) != 64:
+            coverage_hash = ""
+        for span in spans:
+            if (
+                not isinstance(span, list)
+                or len(span) != 2
+                or any(isinstance(value, bool) or not isinstance(value, int) for value in span)
+                or span[0] < 0
+                or span[1] <= span[0]
+                or span[1] > height
+            ):
+                raise prepared_panel_manifest.PreparedPanelManifestError(
+                    "segmentation span is invalid"
+                )
+            canonical_regions.append(
+                (
+                    asset_id,
+                    checksum,
+                    (width, height),
+                    (0, int(span[0]), width, int(span[1])),
+                    coverage_hash,
+                )
+            )
+
+    identity_hashes = tuple(str(item) for item in visual.panel_identity_hashes)
+    if len(identity_hashes) != len(visual.panels):
+        raise prepared_panel_manifest.PreparedPanelManifestError(
+            "cached visual identity count is incomplete"
+        )
+    descriptors: list[dict[str, Any]] = []
+    for visual_index, panel in enumerate(visual.panels):
+        try:
+            source_order = int(panel["source_order"])
+        except (KeyError, TypeError, ValueError):
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual source order is malformed"
+            ) from None
+        if source_order < 0 or source_order >= len(canonical_regions):
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual source order is outside segmentation coverage"
+            )
+        asset_id, checksum, dimensions, bounds, coverage_hash = canonical_regions[source_order]
+        if (
+            str(panel.get("source_asset_id", "")) != asset_id
+            or str(panel.get("source_checksum", "")) != checksum
+        ):
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual panel does not match segmentation lineage"
+            )
+        descriptors.append(
+            {
+                "panel_id": str(panel.get("panel_id", "")),
+                "source_asset_id": asset_id,
+                "source_order": source_order,
+                "source_checksum": checksum,
+                "panel_bounds": list(bounds),
+                "source_dimensions": list(dimensions),
+                "strip_region_id": str(panel.get("panel_id", "")),
+                "coverage_map_version": str(segmentation_state.get("version", "")),
+                "coverage_map_hash": coverage_hash,
+                "segmentation_version": str(segmentation_state.get("detector_version", "")),
+                "source_family": str(asset_by_id[asset_id].get("source_family", "")),
+                "identity_descriptor_hash": identity_hashes[visual_index],
+                "identity_payload_checksum": identity_hashes[visual_index],
+                "source_identity_hash": visual.source_hash,
+                "metadata_only": True,
+            }
+        )
+    return prepared_panel_manifest.build_manifest_from_descriptors(
+        descriptors,
+        segmentation_state,
+        panel_identity_hashes=identity_hashes,
+        source_identity_hash=visual.source_hash,
+        source_assets=source_assets,
+    )
+
+
+def _restore_project_prepared_manifest(
+    db: Any,
+    project_id: str,
+    raw_manifest: Mapping[str, Any],
+) -> tuple[tuple[CloudPanelInput, ...], dict[str, Any]]:
+    manifest = prepared_panel_manifest.validate_manifest(raw_manifest)
+    prepared_panel_manifest.require_source_assets_match(
+        manifest,
+        _project_source_asset_metadata(db, project_id),
+    )
+    panels = prepared_panel_manifest.restore_cloud_panels(manifest, CloudPanelInput)
+    if _visual_source_hash(panels) != manifest.source_identity_hash:
+        raise prepared_panel_manifest.PreparedPanelManifestError(
+            "prepared panel source identity mismatch"
+        )
+    return panels, dict(manifest.segmentation_state)
+
+
 def _visual_panel_chunks(
     panels: Sequence[CloudPanelInput],
     *,
@@ -4378,19 +4657,48 @@ class CloudBatchService:
         try:
             record = self.store.load(project_id) or ChapterJobRecord(project_id)
             cached_segmentation = record.stage_results.get("segmentation")
-            prepared = prepare_project_panels(
-                db,
-                project_id,
-                boundary_assessor=self.runner.assess_strip_boundaries,
-                review_root=self.review_root,
-                return_segmentation=True,
-                review_only_auto_override=review_only_preview,
-                cached_segmentation=(
-                    cached_segmentation
-                    if isinstance(cached_segmentation, Mapping)
-                    else None
-                ),
-            )
+            prepared: tuple[tuple[CloudPanelInput, ...], dict[str, Any]] | None = None
+            manifest_loaded = False
+            preparation_started = time.monotonic()
+            if not review_only_preview:
+                manifest_raw = record.stage_results.get("prepared_panel_manifest")
+                try:
+                    if not isinstance(manifest_raw, Mapping):
+                        visual_stage = record.stage_results.get("visual")
+                        if not isinstance(visual_stage, Mapping) or not isinstance(cached_segmentation, Mapping):
+                            raise prepared_panel_manifest.PreparedPanelManifestError(
+                                "prepared manifest seed is unavailable"
+                            )
+                        manifest_raw = _build_cached_prepared_manifest(
+                            db,
+                            project_id,
+                            visual_stage,
+                            cached_segmentation,
+                        )
+                    prepared = _restore_project_prepared_manifest(
+                        db,
+                        project_id,
+                        manifest_raw,
+                    )
+                    record.stage_results["prepared_panel_manifest"] = manifest_raw
+                    self.store.save(record)
+                    manifest_loaded = True
+                except prepared_panel_manifest.PreparedPanelManifestError:
+                    prepared = None
+            if prepared is None:
+                prepared = prepare_project_panels(
+                    db,
+                    project_id,
+                    boundary_assessor=self.runner.assess_strip_boundaries,
+                    review_root=self.review_root,
+                    return_segmentation=True,
+                    review_only_auto_override=review_only_preview,
+                    cached_segmentation=(
+                        cached_segmentation
+                        if isinstance(cached_segmentation, Mapping)
+                        else None
+                    ),
+                )
             panels, segmentation_state = prepared
             panels = _panels_for_cached_visual_stage(
                 panels,
@@ -4399,6 +4707,22 @@ class CloudBatchService:
             if max_cloud_panels is not None and len(panels) > max_cloud_panels:
                 panels = _subsample_panels(panels, max_cloud_panels)
             record.stage_results["segmentation"] = segmentation_state
+            record.stage_results["preparation_metrics"] = {
+                "contract_version": "prepared-panel-preparation-v1",
+                "mode": "manifest_metadata_only" if manifest_loaded else "cold_materialization",
+                "panel_count": len(panels),
+                "payload_bytes": sum(len(panel.payload) for panel in panels),
+                "elapsed_s": round(time.monotonic() - preparation_started, 3),
+                "peak_rss_kb": _peak_rss_kb(),
+                "source_decode_required": not manifest_loaded,
+            }
+            if not review_only_preview and not manifest_loaded:
+                record.stage_results["prepared_panel_manifest"] = _build_project_prepared_manifest(
+                    db,
+                    project_id,
+                    panels,
+                    segmentation_state,
+                )
             self.store.save(record)
             record = self.run_job(project_id, panels)
             visual_stage = record.stage_results.get("visual")
@@ -4796,7 +5120,12 @@ def _visual_panel_identity(panel: CloudPanelInput, ordered_index: int) -> dict[s
             "normalized_crop_box": None,
             "crop_size": None,
         }
-    rendered_payload, rendered_mime = _visual_provider_payload(panel)
+    if panel.identity_payload_checksum:
+        rendered_payload_hash = panel.identity_payload_checksum
+        rendered_mime = panel.mime_type
+    else:
+        rendered_payload, rendered_mime = _visual_provider_payload(panel)
+        rendered_payload_hash = hashlib.sha256(rendered_payload).hexdigest()
     return {
         "ordered_panel_index": int(ordered_index),
         "panel_id": panel.panel_id,
@@ -4805,7 +5134,7 @@ def _visual_panel_identity(panel: CloudPanelInput, ordered_index: int) -> dict[s
         "rendered_payload": {
             "policy_version": VISUAL_RENDER_PAYLOAD_VERSION,
             "mime_type": rendered_mime,
-            "sha256": hashlib.sha256(rendered_payload).hexdigest(),
+            "sha256": rendered_payload_hash,
         },
     }
 
@@ -4819,16 +5148,32 @@ def _visual_panel_identities(
     )
 
 
+def _visual_panel_identity_hash(
+    panel: CloudPanelInput,
+    ordered_index: int,
+) -> str:
+    if panel.identity_descriptor_hash:
+        return panel.identity_descriptor_hash
+    return _hash(_visual_panel_identity(panel, ordered_index))
+
+
 def _visual_panel_identity_hashes(
     panels: Sequence[CloudPanelInput],
 ) -> tuple[str, ...]:
     return tuple(
-        _hash(identity)
-        for identity in _visual_panel_identities(tuple(panels))
+        _visual_panel_identity_hash(panel, ordered_index)
+        for ordered_index, panel in enumerate(tuple(panels))
     )
 
 
 def _visual_source_hash(panels: Sequence[CloudPanelInput]) -> str:
+    prepared_hashes = {
+        panel.source_identity_hash
+        for panel in panels
+        if panel.source_identity_hash
+    }
+    if len(prepared_hashes) == 1 and all(panel.identity_descriptor_hash for panel in panels):
+        return next(iter(prepared_hashes))
     return _hash(list(_visual_panel_identities(tuple(panels))))
 
 
@@ -4939,9 +5284,8 @@ def _migrate_visual_cache_identity(
     if cached_orders != sorted(set(cached_orders)):
         return None
 
-    identities = _visual_panel_identities(ordered)
-    identity_hashes = tuple(_hash(identity) for identity in identities)
-    expected_source_hash = _hash(list(identities))
+    identity_hashes = _visual_panel_identity_hashes(ordered)
+    expected_source_hash = _visual_source_hash(ordered)
     identity_version = str(cached.get("cache_identity_version", ""))
     if identity_version == VISUAL_CACHE_IDENTITY_VERSION:
         persisted_hashes = tuple(str(item) for item in cached.get("panel_identity_hashes", ()))
