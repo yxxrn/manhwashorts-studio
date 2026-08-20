@@ -1,5 +1,28 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## IMMUTABLE SLOT CHECKPOINT (pending publication)
+
+The current source/test work is based on rollback parent
+`161e26807050bda6f3e764811e0a1f92e93ec6b2`. It changes only the targeted
+narration repair boundary and its focused regression. Local code now derives
+`narration_slot_v1_*` identities from the already grounded candidate/story
+map. The provider may return only exact slot IDs, revised spoken text, and
+retained/dropped slot order; local reconciliation restores all claim and
+evidence lineage and rejects unknown, duplicate, missing, reordered, or
+provider-authored identifiers.
+
+TDD evidence is collection-clean RED with four intended body failures at the
+missing slot helper, followed by GREEN focused verification: 73 tests passed
+(66 cloud-multimodal and 7 prepared-manifest) with five existing Pillow
+deprecation warnings. Ruff, compileall, `git diff --check`, no-churn, and the
+scoped secret scan are clean. No real repair request has been made after this
+contract change; the durable candidate remains 160 words / 64.35 seconds and
+is repair-only. The next bounded operation is at most one real repair request
+using the same pinned model and matching visual/story identities. Do not rerun
+visual/story stages, admit the candidate to the final cache, or claim a
+narration/MP4/voice/QC artifact until the repaired result passes 115-125 words,
+50-60 seconds, grounding, and display derivation.
+
 Authoritative repository: Oracle `/home/ubuntu/manhwashorts`, `main`, published
 at `cb196da8e230cab1353e85eac1a335d33535564e` with parent
 `383d8336b12dcca8bfec7b729a5320c795034a4a`. The source/test/docs checkpoint

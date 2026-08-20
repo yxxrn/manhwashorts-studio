@@ -1,3 +1,24 @@
+# IMMUTABLE NARRATION REPAIR SLOTS - 2026-08-21
+
+Rollback parent: `161e26807050bda6f3e764811e0a1f92e93ec6b2` on Oracle
+`/home/ubuntu/manhwashorts`; this source/test/docs checkpoint is ready for
+the next exact-object publication. The implementation creates local frozen
+repair slots from the grounded candidate and story map. Slot IDs, trusted
+claim IDs, evidence panel IDs, beat/causal positions, priority, and removability
+are local data. Provider output is limited to exact slot IDs, revised prose,
+and an explicit retained/dropped order. Reconciliation copies trusted
+lineage, rejects unknown/duplicate/missing/out-of-order or provider-authored
+IDs, and includes the slot-registry hash in repair-result cache identity.
+
+TDD RED was collection-clean with four intended body failures because the slot
+builder did not yet exist. GREEN is 73 focused passes (66 cloud-multimodal,
+7 prepared-manifest) with five existing Pillow deprecation warnings. Ruff,
+compileall, diff-check, no-churn, and scoped secret scan pass. No real repair
+request has been issued after this correction. The durable 160-word/64.35s
+candidate remains typed repair-only; no narration, silent MP4, voice, or QC is
+proven. Next: one bounded real slot repair, then admit only a fully grounded
+115-125-word / 50-60-second result and resume normal persistence/render.
+
 # CURRENT CHECKPOINT - COMPACT NARRATION REPAIR - 2026-08-21
 
 Published source/test/docs checkpoint: Oracle `/home/ubuntu/manhwashorts`

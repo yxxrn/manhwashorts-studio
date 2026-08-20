@@ -53,19 +53,24 @@ STORY_MAP_COVERAGE_MIN_STEP = 30
 NARRATION_CHUNK_STEP = 180
 NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
-NARRATION_REPAIR_VERSION = "narration-targeted-repair-v1"
+NARRATION_REPAIR_VERSION = "narration-targeted-repair-v2"
 NARRATION_REPAIR_MAX_ATTEMPTS = 3
 NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
-NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v1"
+NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v2"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
+NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
 NARRATION_REPAIR_INSTRUCTION = (
-    "TARGETED NARRATION REPAIR: preserve every retained passage's exact IDs, "
-    "claim IDs, evidence panel IDs, observations, ending kind, story spine, "
-    "qualification, and causal order. Rewrite prose naturally to satisfy the "
-    "word and duration contract; never truncate a sentence mechanically. Remove "
-    "only complete low-priority passages listed in removable_passage_ids, and "
-    "only when at least four passages remain. Do not add claims, citations, "
-    "panels, names, facts, or new story events."
+    "TARGETED NARRATION SLOT REPAIR: return only a repair_slots object with "
+    "retained_slot_ids, dropped_slot_ids, and slots. Each slots entry must "
+    "contain exactly slot_id and revised spoken text. Use only the exact local "
+    "slot IDs supplied in the registry; never return, create, or rewrite claim "
+    "IDs, evidence panel IDs, passage IDs, observations, beat IDs, or hashes. "
+    "Retained and dropped IDs must together cover the registry exactly, retain "
+    "canonical causal order, and drop only listed removable slots while keeping "
+    "at least four passages. Rewrite retained prose naturally to satisfy the "
+    "115-125 word and 50-60 second contract; remove complete low-priority "
+    "slots only, never truncate mechanically, invent facts, add citations, or "
+    "copy dialogue."
 )
 EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
@@ -471,6 +476,55 @@ class NarrationResult:
             story_spine=dict(value.get("story_spine", {})),
             visual_evidence_hash=str(value.get("visual_evidence_hash", "")),
         )
+
+
+@dataclass(frozen=True)
+class NarrationRepairSlot:
+    """Locally trusted immutable identity for one repairable passage."""
+
+    slot_id: str
+    passage_id: str
+    claim_ids: tuple[str, ...]
+    evidence_panel_ids: tuple[str, ...]
+    beat_id: str
+    causal_position: int
+    priority: int
+    removable: bool
+
+    def __post_init__(self) -> None:
+        if (
+            not self.slot_id.startswith("narration_slot_v1_")
+            or not self.passage_id.strip()
+            or not self.claim_ids
+            or not self.evidence_panel_ids
+            or not self.beat_id.strip()
+            or isinstance(self.causal_position, bool)
+            or not isinstance(self.causal_position, int)
+            or self.causal_position < 0
+            or isinstance(self.priority, bool)
+            or not isinstance(self.priority, int)
+            or not isinstance(self.removable, bool)
+        ):
+            raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+        if (
+            any(not isinstance(value, str) or not value.strip() for value in self.claim_ids)
+            or any(not isinstance(value, str) or not value.strip() for value in self.evidence_panel_ids)
+            or len(set(self.claim_ids)) != len(self.claim_ids)
+            or len(set(self.evidence_panel_ids)) != len(self.evidence_panel_ids)
+        ):
+            raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "slot_id": self.slot_id,
+            "passage_id": self.passage_id,
+            "claim_ids": list(self.claim_ids),
+            "evidence_panel_ids": list(self.evidence_panel_ids),
+            "beat_id": self.beat_id,
+            "causal_position": self.causal_position,
+            "priority": self.priority,
+            "removable": self.removable,
+        }
 
 
 @dataclass(frozen=True)
@@ -2595,6 +2649,234 @@ class CloudStageRunner:
             raise CloudStageError("cloud.narrative_repair_identity_mismatch", reviewable=True)
         return compact_visual, compact_story
 
+    @staticmethod
+    def _build_narration_repair_slots(
+        candidate: NarrationResult,
+        story_map: StoryMapResult,
+    ) -> tuple[NarrationRepairSlot, ...]:
+        """Create stable local slot identities from already grounded records."""
+
+        candidate_passages = tuple(candidate.passages)
+        if len(candidate_passages) < 4:
+            raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+        candidate_claims = {
+            str(claim.get("claim_id", "")): claim
+            for claim in candidate.evidence_graph.get("claims", ())
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        story_claims = {
+            str(claim.get("claim_id", "")): claim
+            for claim in story_map.claims
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        story_panel_ids = {str(panel_id) for panel_id in story_map.panel_ids}
+        removable_passage_ids = set(
+            CloudStageRunner._removable_narration_passage_ids(candidate)
+        )
+        slots: list[NarrationRepairSlot] = []
+        seen_passage_ids: set[str] = set()
+        for passage_index, passage in enumerate(candidate_passages):
+            if not isinstance(passage, Mapping):
+                raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+            passage_id = str(passage.get("passage_id", "")).strip()
+            claim_ids_raw = passage.get("claim_ids")
+            evidence_panel_ids_raw = passage.get("evidence_panel_ids")
+            if (
+                not passage_id
+                or passage_id in seen_passage_ids
+                or not isinstance(claim_ids_raw, list)
+                or not isinstance(evidence_panel_ids_raw, list)
+                or not claim_ids_raw
+                or not evidence_panel_ids_raw
+            ):
+                raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+            seen_passage_ids.add(passage_id)
+            claim_ids = tuple(str(value) for value in claim_ids_raw)
+            evidence_panel_ids = tuple(str(value) for value in evidence_panel_ids_raw)
+            if (
+                any(not value.strip() for value in claim_ids)
+                or any(not value.strip() or value not in story_panel_ids for value in evidence_panel_ids)
+                or len(set(claim_ids)) != len(claim_ids)
+                or len(set(evidence_panel_ids)) != len(evidence_panel_ids)
+            ):
+                raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+            for claim_id in claim_ids:
+                candidate_claim = candidate_claims.get(claim_id)
+                story_claim = story_claims.get(claim_id)
+                if candidate_claim is None or story_claim is None:
+                    raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+                claim_refs = tuple(
+                    str(value)
+                    for value in story_claim.get(
+                        "evidence_panel_ids",
+                        story_claim.get("panel_ids", ()),
+                    )
+                )
+                if not claim_refs or not set(claim_refs).issubset(set(evidence_panel_ids)):
+                    raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+            matching_beats = [
+                (beat_index, beat)
+                for beat_index, beat in enumerate(story_map.beats)
+                if isinstance(beat, Mapping)
+                and {str(value) for value in beat.get("panel_ids", ())}
+                & set(evidence_panel_ids)
+            ]
+            if not matching_beats:
+                raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+            causal_position, beat = matching_beats[0]
+            beat_id = str(beat.get("beat_id", "")).strip()
+            if not beat_id:
+                raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+            priority = (
+                len(claim_ids) * 1000
+                + len(evidence_panel_ids) * 10
+                + len(candidate_passages)
+                - passage_index
+            )
+            identity_payload = {
+                "version": NARRATION_REPAIR_SLOT_REGISTRY_VERSION,
+                "candidate_visual_evidence_hash": candidate.visual_evidence_hash,
+                "story_map_hash": story_map.story_map_hash,
+                "passage_id": passage_id,
+                "claim_ids": list(claim_ids),
+                "evidence_panel_ids": list(evidence_panel_ids),
+                "beat_id": beat_id,
+                "causal_position": causal_position,
+            }
+            slots.append(
+                NarrationRepairSlot(
+                    slot_id=f"narration_slot_v1_{_hash(identity_payload)}",
+                    passage_id=passage_id,
+                    claim_ids=claim_ids,
+                    evidence_panel_ids=evidence_panel_ids,
+                    beat_id=beat_id,
+                    causal_position=causal_position,
+                    priority=priority,
+                    removable=passage_id in removable_passage_ids,
+                )
+            )
+        return tuple(slots)
+
+    @staticmethod
+    def _narration_repair_slot_registry(
+        slots: Sequence[NarrationRepairSlot],
+    ) -> dict[str, Any]:
+        slot_rows = [slot.as_dict() for slot in slots]
+        registry_identity = {
+            "version": NARRATION_REPAIR_SLOT_REGISTRY_VERSION,
+            "slots": slot_rows,
+        }
+        return {
+            **registry_identity,
+            "slot_ids": [slot.slot_id for slot in slots],
+            "removable_slot_ids": [slot.slot_id for slot in slots if slot.removable],
+            "registry_hash": _hash(registry_identity),
+        }
+
+    @staticmethod
+    def _reconcile_narration_repair_slots(
+        raw: Mapping[str, Any],
+        slots: Sequence[NarrationRepairSlot],
+        candidate: NarrationResult,
+    ) -> dict[str, Any]:
+        """Replace provider slot references with trusted local lineage."""
+
+        provider_output = raw.get("analyzer_output", raw) if isinstance(raw, Mapping) else raw
+        if not isinstance(provider_output, Mapping) or set(provider_output) != {"repair_slots"}:
+            raise CloudStageError("cloud.narrative_repair_slot_contract_invalid", reviewable=True)
+        envelope = provider_output.get("repair_slots")
+        if not isinstance(envelope, Mapping) or set(envelope) != {
+            "retained_slot_ids",
+            "dropped_slot_ids",
+            "slots",
+        }:
+            raise CloudStageError("cloud.narrative_repair_slot_contract_invalid", reviewable=True)
+        slot_by_id = {slot.slot_id: slot for slot in slots}
+        ordered_ids = [slot.slot_id for slot in slots]
+        retained = envelope["retained_slot_ids"]
+        dropped = envelope["dropped_slot_ids"]
+        if not isinstance(retained, list) or not isinstance(dropped, list):
+            raise CloudStageError("cloud.narrative_repair_slot_contract_invalid", reviewable=True)
+        for values in (retained, dropped):
+            if any(not isinstance(value, str) for value in values):
+                raise CloudStageError("cloud.narrative_repair_slot_contract_invalid", reviewable=True)
+            if any(value not in slot_by_id for value in values):
+                raise CloudStageError("cloud.narrative_repair_slot_unknown", reviewable=True)
+            if len(values) != len(set(values)):
+                raise CloudStageError("cloud.narrative_repair_slot_duplicate", reviewable=True)
+        if set(retained) & set(dropped):
+            raise CloudStageError("cloud.narrative_repair_slot_duplicate", reviewable=True)
+        if set(retained) | set(dropped) != set(ordered_ids):
+            raise CloudStageError("cloud.narrative_repair_slot_missing", reviewable=True)
+        canonical_retained = [slot_id for slot_id in ordered_ids if slot_id in set(retained)]
+        canonical_dropped = [slot_id for slot_id in ordered_ids if slot_id in set(dropped)]
+        if retained != canonical_retained or dropped != canonical_dropped:
+            raise CloudStageError("cloud.narrative_repair_slot_order_invalid", reviewable=True)
+        if len(retained) < 4:
+            raise CloudStageError("cloud.narrative_repair_slot_contract_invalid", reviewable=True)
+        if any(not slot_by_id[slot_id].removable for slot_id in dropped):
+            raise CloudStageError("cloud.narrative_repair_slot_drop_forbidden", reviewable=True)
+        rows = envelope["slots"]
+        if not isinstance(rows, list):
+            raise CloudStageError("cloud.narrative_repair_slot_contract_invalid", reviewable=True)
+        row_ids: list[str] = []
+        text_by_id: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, Mapping) or "slot_id" not in row:
+                raise CloudStageError("cloud.narrative_repair_slot_contract_invalid", reviewable=True)
+            slot_id = row.get("slot_id")
+            if not isinstance(slot_id, str):
+                raise CloudStageError("cloud.narrative_repair_slot_contract_invalid", reviewable=True)
+            if slot_id not in slot_by_id:
+                raise CloudStageError("cloud.narrative_repair_slot_unknown", reviewable=True)
+            if slot_id in row_ids:
+                raise CloudStageError("cloud.narrative_repair_slot_duplicate", reviewable=True)
+            if set(row) != {"slot_id", "text"} or not isinstance(row.get("text"), str) or not row["text"].strip():
+                raise CloudStageError("cloud.narrative_repair_slot_contract_invalid", reviewable=True)
+            row_ids.append(slot_id)
+            text_by_id[slot_id] = row["text"].strip()
+        if row_ids != canonical_retained:
+            raise CloudStageError("cloud.narrative_repair_slot_missing", reviewable=True)
+        candidate_by_passage_id = {
+            str(passage.get("passage_id", "")): passage
+            for passage in candidate.passages
+            if isinstance(passage, Mapping)
+        }
+        candidate_claims = {
+            str(claim.get("claim_id", "")): claim
+            for claim in candidate.evidence_graph.get("claims", ())
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        passages: list[dict[str, Any]] = []
+        retained_claim_ids: set[str] = set()
+        for slot_id in canonical_retained:
+            slot = slot_by_id[slot_id]
+            original = candidate_by_passage_id.get(slot.passage_id)
+            if original is None or any(claim_id not in candidate_claims for claim_id in slot.claim_ids):
+                raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+            passage = dict(original)
+            passage["text"] = text_by_id[slot_id]
+            passage["claim_ids"] = list(slot.claim_ids)
+            passage["evidence_panel_ids"] = list(slot.evidence_panel_ids)
+            passages.append(passage)
+            retained_claim_ids.update(slot.claim_ids)
+        claims = CloudStageRunner._normalize_narration_claims(
+            [
+                dict(claim)
+                for claim in candidate.evidence_graph.get("claims", ())
+                if isinstance(claim, Mapping)
+                and str(claim.get("claim_id", "")) in retained_claim_ids
+            ]
+        )
+        return {
+            "narrative_outline": {
+                "story_spine": dict(candidate.story_spine),
+                "ending_kind": candidate.ending_kind,
+            },
+            "script_passages": passages,
+            "evidence_graph": {"claims": claims},
+        }
+
     def _store_narration_repair_candidate(
         self,
         *,
@@ -2702,6 +2984,8 @@ class CloudStageRunner:
                 "prompt_sha256": prompt[1],
                 "repair_attempt": int(targeted_repair.get("repair_attempt", 1)),
                 "candidate_hash": str(targeted_repair.get("candidate_hash", "")),
+                "slot_registry_version": str(targeted_repair.get("slot_registry_version", "")),
+                "slot_registry_hash": str(targeted_repair.get("slot_registry_hash", "")),
             },
         )
 
@@ -2740,6 +3024,10 @@ class CloudStageRunner:
             or record.get("prompt_version") != prompt[0]
             or record.get("prompt_sha256") != prompt[1]
             or record.get("candidate_hash") != str(targeted_repair.get("candidate_hash", ""))
+            or record.get("slot_registry_version")
+            != str(targeted_repair.get("slot_registry_version", ""))
+            or record.get("slot_registry_hash")
+            != str(targeted_repair.get("slot_registry_hash", ""))
             or not _narration_result_is_usable(
                 result,
                 visual,
@@ -2760,6 +3048,8 @@ class CloudStageRunner:
             "contract_version": NARRATION_REPAIR_VERSION,
             "scope": "passage_text_or_low_priority_compaction",
             "candidate_hash": str(targeted_repair.get("candidate_hash", "")),
+            "slot_registry_version": str(targeted_repair.get("slot_registry_version", "")),
+            "slot_registry_hash": str(targeted_repair.get("slot_registry_hash", "")),
             "failure_codes": list(targeted_repair.get("failure_codes", ())),
             "attempts": int(record.get("repair_attempt", 1)),
             "provider_stage": "narration_repair",
@@ -3036,11 +3326,16 @@ class CloudStageRunner:
         """Repair prose or complete low-priority passages without changing evidence scope."""
 
         candidate_hash = _hash(candidate.as_dict())
+        repair_slots = self._build_narration_repair_slots(candidate, story_map)
+        slot_registry = self._narration_repair_slot_registry(repair_slots)
         removable_passage_ids = self._removable_narration_passage_ids(candidate)
         repair_context = {
             "contract_version": NARRATION_REPAIR_VERSION,
             "failure_codes": list(dict.fromkeys(str(code) for code in failure_codes)),
             "candidate_hash": candidate_hash,
+            "slot_registry_version": slot_registry["version"],
+            "slot_registry_hash": slot_registry["registry_hash"],
+            "slot_registry": slot_registry,
             "removable_passage_ids": list(removable_passage_ids),
             "immutable_scope": [
                 "passage_id",
@@ -3057,7 +3352,7 @@ class CloudStageRunner:
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-repair-v1"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-repair-v2"
         repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
         repair_prompt = (
             repair_prompt_version,
@@ -3098,6 +3393,8 @@ class CloudStageRunner:
                     request_prompt_version=repair_prompt_version,
                     request_prompt_sha256=repair_prompt[1],
                     request_prompt_text=repair_prompt_text,
+                    repair_slots=repair_slots,
+                    repair_candidate=candidate,
                 )
                 reconciled = self._narration_repair_scope_reconciled(
                     candidate,
@@ -3129,6 +3426,8 @@ class CloudStageRunner:
                     "contract_version": NARRATION_REPAIR_VERSION,
                     "scope": "passage_text_or_low_priority_compaction",
                     "candidate_hash": candidate_hash,
+                    "slot_registry_version": slot_registry["version"],
+                    "slot_registry_hash": slot_registry["registry_hash"],
                     "failure_codes": list(repair_context["failure_codes"]),
                     "removable_passage_ids": list(removable_passage_ids),
                     "removed_passage_ids": [
@@ -3173,6 +3472,8 @@ class CloudStageRunner:
         request_prompt_version: str | None = None,
         request_prompt_sha256: str | None = None,
         request_prompt_text: str | None = None,
+        repair_slots: Sequence[NarrationRepairSlot] | None = None,
+        repair_candidate: NarrationResult | None = None,
     ) -> NarrationResult:
         retryable_codes = {
             "cloud.provider_request_failed",
@@ -3272,6 +3573,17 @@ class CloudStageRunner:
                     provider_output = raw.get("analyzer_output", raw)
                     if not isinstance(provider_output, Mapping):
                         raise CloudStageError("cloud.provider_response_invalid")
+                    if repair_slots is not None:
+                        if repair_candidate is None:
+                            raise CloudStageError(
+                                "cloud.narrative_repair_slot_contract_invalid",
+                                reviewable=True,
+                            )
+                        provider_output = self._reconcile_narration_repair_slots(
+                            provider_output,
+                            repair_slots,
+                            repair_candidate,
+                        )
                     raw_claims = provider_output.get("evidence_graph")
                     if raw_claims is None:
                         raw_claims = self._claims_from_causal_map(

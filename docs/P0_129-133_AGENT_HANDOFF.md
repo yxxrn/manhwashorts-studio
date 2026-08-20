@@ -1,5 +1,23 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Next atomic checkpoint: immutable repair slots
+
+Rollback parent is `161e26807050bda6f3e764811e0a1f92e93ec6b2`. The focused
+source/test work is ready to publish after collection-clean RED and GREEN
+verification. The repair registry is locally derived from the durable 160
+word / 64.35 second candidate and compact trusted story identities; provider
+responses cannot supply or rewrite claim/evidence IDs. A valid response must
+cover every exact local slot in canonical order, with only revised prose and
+explicit retained/dropped slots. The registry hash is part of the atomic
+repair-result cache key and warm reuse must make zero provider calls.
+
+The 73-test matrix is green (66 cloud plus 7 prepared-manifest), with five
+existing Pillow warnings; Ruff, compileall, diff/no-churn, and secret scan are
+clean. No post-correction real repair request has been made, and no narration,
+MP4, voice, or QC artifact exists. Resume only after publication with the
+same pinned model and matching 701-panel visual/story identities, at most one
+repair request, and sanitized code/count diagnostics.
+
 Oracle `/home/ubuntu/manhwashorts` is the authority. The published compact
 narration-repair checkpoint is `cb196da8e230cab1353e85eac1a335d33535564e`,
 parent `383d8336b12dcca8bfec7b729a5320c795034a4a`.

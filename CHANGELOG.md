@@ -10,6 +10,15 @@
 
 # Changelog
 
+- Added immutable local narration-repair slots. Repair identities are derived
+  from the grounded candidate/story map; providers can return only exact slot
+  IDs, revised prose, and retained/dropped order. Local code restores trusted
+  claim/evidence lineage and rejects identifier drift. GREEN verification is
+  73 focused tests (66 cloud, 7 prepared-manifest) plus clean Ruff,
+  compileall, diff/no-churn, and secret gates. No post-correction real repair,
+  narration, MP4, voice, or QC result is claimed; the next bounded step is one
+  repair request against the existing visual/story cache.
+
 - Hardened the targeted narration-repair scope after a bounded real resume
   returned `cloud.narrative_repair_scope_invalid`. The local reconciler now
   restores candidate passage/claim/evidence lineage while allowing only safe

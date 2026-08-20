@@ -2133,6 +2133,10 @@ def test_narration_duration_failure_retains_candidate_for_visual_repair(monkeypa
     visual = runner.run_visual_evidence(panels)
     story_map = runner.run_story_map(visual)
     baseline = runner.run_narration(visual, story_map, panels=panels)
+    story_map = replace(
+        story_map,
+        claims=tuple(dict(item) for item in baseline.evidence_graph["claims"]),
+    )
     invalid = replace(baseline, estimated_duration_s=70.0)
     monkeypatch.setattr(
         runner,
@@ -2172,7 +2176,22 @@ def test_repair_harness_uses_compact_candidate_context_without_normal_call():
             if stage == "narration_repair":
                 self.calls.append((stage, prompt_version, prompt_sha256))
                 self.repair_panel_ids.append(tuple(str(item) for item in payload["panel_ids"]))
-                return _narrative_output("compact-repair-candidate", list(payload["panel_ids"]))
+                output = _narrative_output("compact-repair-candidate", list(payload["panel_ids"]))
+                slot_ids = payload["targeted_repair"]["slot_registry"]["slot_ids"]
+                return {
+                    "repair_slots": {
+                        "retained_slot_ids": slot_ids,
+                        "dropped_slot_ids": [],
+                        "slots": [
+                            {"slot_id": slot_id, "text": passage["text"]}
+                            for slot_id, passage in zip(
+                                slot_ids,
+                                output["script_passages"],
+                                strict=True,
+                            )
+                        ],
+                    }
+                }
             return super().complete_json(
                 stage=stage,
                 prompt_version=prompt_version,
@@ -2207,6 +2226,16 @@ def test_repair_harness_uses_compact_candidate_context_without_normal_call():
     selected_visual = replace(visual, panels=visual.panels[:3])
     selected_ids = tuple(str(item["panel_id"]) for item in selected_visual.panels)
     candidate_output = _narrative_output("compact-repair-candidate", list(selected_ids))
+    trusted_claim = dict(story_map.claims[0])
+    trusted_claim.setdefault("claim_type", "fact")
+    if "panel_ids" in trusted_claim:
+        trusted_claim["panel_ids"] = list(selected_ids)
+    if "evidence_panel_ids" in trusted_claim:
+        trusted_claim["evidence_panel_ids"] = list(selected_ids)
+    for passage in candidate_output["script_passages"]:
+        passage["claim_ids"] = [trusted_claim["claim_id"]]
+        passage["evidence_panel_ids"] = list(selected_ids)
+    candidate_output["evidence_graph"] = {"claims": [trusted_claim]}
     observations, structural = runner._narration_observations(selected_visual, None)
     spoken = "\n\n".join(str(item["text"]).strip() for item in candidate_output["script_passages"])
     candidate = module.NarrationResult(
@@ -2242,6 +2271,223 @@ def test_repair_harness_uses_compact_candidate_context_without_normal_call():
         value.get("cache_type") != "narration-final-v1"
         for value in cache._values.values()
     )
+
+
+def _immutable_slot_fixture(module):
+    base_panels = _panels(module, "immutable-slot")
+    panels = base_panels + tuple(
+        replace(
+            base_panels[-1],
+            panel_id=f"immutable-slot-panel-{index}",
+            source_asset_id=f"immutable-slot-asset-{index}",
+            source_order=index,
+            payload=f"immutable-slot-payload-{index}".encode(),
+            payload_checksum="",
+            source_checksum="",
+            strip_region_id=f"immutable-slot-region-{index}",
+        )
+        for index in (4, 5)
+    )
+    rows = []
+    for panel in panels:
+        observation = _visual_row(panel.descriptor())
+        rows.append(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+                "panel_bounds": list(panel.panel_bounds),
+                "source_dimensions": list(panel.source_dimensions),
+                "observation": observation,
+                "visual_evidence": observation["visual_evidence"],
+                "evidence_hash": "",
+            }
+        )
+    identity = _identity(module)
+    visual = module.VisualStageResult(
+        panels=tuple(rows),
+        source_hash="immutable-slot-source",
+        model_identity_hash=identity.identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    panel_ids = [panel.panel_id for panel in panels]
+    beats = tuple(
+        {
+            "beat_id": f"immutable-beat-{index}",
+            "panel_ids": [panel_id],
+            "summary": f"the sequence reaches beat {index}",
+        }
+        for index, panel_id in enumerate(panel_ids)
+    )
+    claims = tuple(
+        {
+            "claim_id": f"immutable-claim-{index}",
+            "claim_type": "fact",
+            "text": f"The visible beat {index} changes the situation.",
+            "panel_ids": [panel_id],
+            "evidence_panel_ids": [panel_id],
+            "qualification": "The ordered panel supports this reading.",
+        }
+        for index, panel_id in enumerate(panel_ids)
+    )
+    passages = tuple(
+        {
+            "passage_id": f"immutable-passage-{index}",
+            "editorial_role": "causal_turn",
+            "text": f"The sequence reaches beat {index} before the next turn.",
+            "claim_ids": [f"immutable-claim-{index}"],
+            "evidence_panel_ids": [panel_id],
+        }
+        for index, panel_id in enumerate(panel_ids)
+    )
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel_ids),
+        beats=beats,
+        causal_chain=tuple(
+            {
+                "from_beat": beats[index]["beat_id"],
+                "to_beat": beats[index + 1]["beat_id"],
+                "reason": "the next visible beat follows",
+            }
+            for index in range(len(beats) - 1)
+        ),
+        claims=claims,
+        story_map_hash="immutable-story-map",
+        model_identity_hash=identity.identity_hash,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="c" * 64,
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    prompt = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+    ).prompts["narration"]
+    candidate = module.NarrationResult(
+        spoken_text=" ".join(item["text"] for item in passages),
+        display_words=("THE", "SEQUENCE"),
+        passages=passages,
+        ending_kind="consequence",
+        word_count=160,
+        estimated_duration_s=64.35,
+        qc_report={},
+        model_identity_hash=identity.identity_hash,
+        prompt_version=prompt[0],
+        prompt_sha256=prompt[1],
+        observations=tuple(row["observation"] for row in rows),
+        continuity_ledger={},
+        evidence_graph={"claims": [dict(claim) for claim in claims]},
+        story_spine={
+            "wants": "understand the visible turn",
+            "obstacle": "the route changes",
+            "decision": "respond to the change",
+            "consequence": "the stakes move",
+            "changed_stakes": "the next beat matters",
+            "unresolved_direction": "what follows",
+        },
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+    )
+    return runner, candidate, visual, story_map
+
+
+def test_immutable_repair_slots_copy_trusted_lineage_and_reject_provider_ids():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    slots = runner._build_narration_repair_slots(candidate, story_map)
+    assert len(slots) == len(candidate.passages)
+    assert all(slot.slot_id.startswith("narration_slot_v1_") for slot in slots)
+    assert all(slot.claim_ids and slot.evidence_panel_ids for slot in slots)
+    assert [slot.causal_position for slot in slots] == list(range(len(slots)))
+    assert tuple(slots) == runner._build_narration_repair_slots(candidate, story_map)
+    registry = runner._narration_repair_slot_registry(slots)
+    assert registry["version"] == "narration-repair-slot-registry-v1"
+    assert registry["registry_hash"] == runner._narration_repair_slot_registry(slots)["registry_hash"]
+
+    valid_raw = {
+        "repair_slots": {
+            "retained_slot_ids": [slot.slot_id for slot in slots],
+            "dropped_slot_ids": [],
+            "slots": [
+                {"slot_id": slot.slot_id, "text": "A locally grounded repair sentence."}
+                for slot in slots
+            ],
+        }
+    }
+    reconciled = runner._reconcile_narration_repair_slots(
+        valid_raw,
+        slots,
+        candidate,
+    )
+    for original, repaired in zip(
+        candidate.passages,
+        reconciled["script_passages"],
+        strict=True,
+    ):
+        assert repaired["passage_id"] == original["passage_id"]
+        assert repaired["claim_ids"] == original["claim_ids"]
+        assert repaired["evidence_panel_ids"] == original["evidence_panel_ids"]
+
+    retained = [slot.slot_id for slot in slots]
+    dropped = []
+    raw = {
+        "repair_slots": {
+            "retained_slot_ids": retained,
+            "dropped_slot_ids": dropped,
+            "slots": [
+                {
+                    "slot_id": slot_id,
+                    "text": "A locally grounded repair sentence.",
+                    "claim_ids": ["provider-invented-claim"],
+                }
+                for slot_id in retained
+            ],
+        }
+    }
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_slots(raw, slots, candidate)
+    assert caught.value.code == "cloud.narrative_repair_slot_contract_invalid"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    (
+        ("unknown", "cloud.narrative_repair_slot_unknown"),
+        ("duplicate", "cloud.narrative_repair_slot_duplicate"),
+        ("missing", "cloud.narrative_repair_slot_missing"),
+    ),
+)
+def test_immutable_repair_slots_reject_unknown_duplicate_or_missing_ids(mutation, expected_code):
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    slots = runner._build_narration_repair_slots(candidate, story_map)
+    slot_ids = [slot.slot_id for slot in slots]
+    retained = slot_ids[:4]
+    dropped = slot_ids[4:]
+    if mutation == "unknown":
+        retained = ["narration_slot_v1_unknown", *retained[1:]]
+    elif mutation == "duplicate":
+        retained = [retained[0], retained[0], *retained[2:]]
+    else:
+        dropped = []
+    raw = {
+        "repair_slots": {
+            "retained_slot_ids": retained,
+            "dropped_slot_ids": dropped,
+            "slots": [
+                {"slot_id": slot_id, "text": "A grounded repair sentence."}
+                for slot_id in retained
+                if slot_id in slot_ids
+            ],
+        }
+    }
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_slots(raw, slots, candidate)
+    assert caught.value.code == expected_code
 
 
 def test_narration_contract_diagnostic_keeps_only_field_and_count():
@@ -2570,6 +2816,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
         claims=(
             {
                 "claim_id": "claim-all",
+                "claim_type": "fact",
                 "text": "The visible sequence develops.",
                 "panel_ids": panel_ids,
                 "qualification": "The ordered panels support this reading.",
@@ -2584,10 +2831,11 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
 
     def as_candidate():
         output = _narrative_output("repair", panel_ids)
+        trusted_claim = dict(story_map.claims[0])
         for passage in output["script_passages"]:
+            passage["claim_ids"] = [trusted_claim["claim_id"]]
             passage["evidence_panel_ids"] = list(panel_ids)
-        for claim in output["evidence_graph"]["claims"]:
-            claim["evidence_panel_ids"] = list(panel_ids)
+        output["evidence_graph"] = {"claims": [trusted_claim]}
         spoken = "\n\n".join(
             str(passage["text"]).strip() for passage in output["script_passages"]
         )
@@ -2623,11 +2871,21 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
                     (prompt_version, prompt_sha256, prompt_text)
                 )
                 output = _narrative_output("repair", list(payload["panel_ids"]))
-                for passage in output["script_passages"]:
-                    passage["evidence_panel_ids"] = list(payload["panel_ids"])
-                for claim in output["evidence_graph"]["claims"]:
-                    claim["evidence_panel_ids"] = list(payload["panel_ids"])
-                return output
+                slot_ids = payload["targeted_repair"]["slot_registry"]["slot_ids"]
+                return {
+                    "repair_slots": {
+                        "retained_slot_ids": slot_ids,
+                        "dropped_slot_ids": [],
+                        "slots": [
+                            {"slot_id": slot_id, "text": passage["text"]}
+                            for slot_id, passage in zip(
+                                slot_ids,
+                                output["script_passages"],
+                                strict=True,
+                            )
+                        ],
+                    }
+                }
             return super().complete_json(
                 stage=stage,
                 prompt_version=prompt_version,
@@ -2668,10 +2926,10 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-repair-v1"
+        == "vision-first-story-analyzer-v3-targeted-repair-v2"
     )
     assert len(repair_prompt_sha256) == 64
-    assert "TARGETED NARRATION REPAIR" in repair_prompt_text
+    assert "TARGETED NARRATION SLOT REPAIR" in repair_prompt_text
     assert repair_prompt_text != runner.prompts["narration"][2]
     assert provider.repair_payloads[0]["targeted_repair"]["failure_codes"] == [
         "cloud.narrative_duration_out_of_range",
@@ -2683,6 +2941,10 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
         "passage_text_or_low_priority_compaction"
     )
     assert result.qc_report["narration_repair"]["candidate_hash"]
+    assert result.qc_report["narration_repair"]["slot_registry_version"] == (
+        "narration-repair-slot-registry-v1"
+    )
+    assert result.qc_report["narration_repair"]["slot_registry_hash"]
     assert [call[0] for call in provider.calls] == ["narration_repair"]
     assert runner.request_count == 1
 
@@ -2697,6 +2959,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     )
     assert any(
         record.get("cache_type") == module.NARRATION_REPAIR_RESULT_VERSION
+        and record.get("slot_registry_hash")
         for record in records
     )
 
@@ -2809,6 +3072,7 @@ def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp
         claims=(
             {
                 "claim_id": "claim-all",
+                "claim_type": "fact",
                 "text": "The visible sequence develops.",
                 "panel_ids": panel_ids,
                 "qualification": "The ordered panels support this reading.",
@@ -2821,10 +3085,11 @@ def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp
         visual_evidence_hash=visual.visual_evidence_hash,
     )
     output = _narrative_output("repair-scope", panel_ids)
+    trusted_claim = dict(story_map.claims[0])
     for passage in output["script_passages"]:
+        passage["claim_ids"] = [trusted_claim["claim_id"]]
         passage["evidence_panel_ids"] = list(panel_ids)
-    for claim in output["evidence_graph"]["claims"]:
-        claim["evidence_panel_ids"] = list(panel_ids)
+    output["evidence_graph"] = {"claims": [trusted_claim]}
     spoken = "\n\n".join(str(item["text"]).strip() for item in output["script_passages"])
     candidate = module.NarrationResult(
         spoken_text=spoken,
@@ -2847,12 +3112,14 @@ def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp
     class ScopeChangingProvider(_FakeProvider):
         def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
             if stage == "narration_repair":
-                changed = _narrative_output("repair-scope", list(payload["panel_ids"]))
-                for passage in changed["script_passages"]:
-                    passage["evidence_panel_ids"] = [payload["panel_ids"][0]]
-                for claim in changed["evidence_graph"]["claims"]:
-                    claim["evidence_panel_ids"] = [payload["panel_ids"][0]]
-                return changed
+                slot_ids = payload["targeted_repair"]["slot_registry"]["slot_ids"]
+                return {
+                    "repair_slots": {
+                        "retained_slot_ids": [*slot_ids[:-1], "foreign-slot"],
+                        "dropped_slot_ids": [],
+                        "slots": [],
+                    }
+                }
             return super().complete_json(
                 stage=stage,
                 prompt_version=prompt_version,
@@ -2880,7 +3147,7 @@ def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp
     with pytest.raises(module.CloudStageError) as caught:
         runner.run_narration(visual, story_map, panels=panels)
 
-    assert caught.value.code == "cloud.narrative_repair_scope_invalid"
+    assert caught.value.code == "cloud.narrative_repair_slot_unknown"
 
 
 def test_narration_targeted_repair_canonicalizes_non_lineage_provider_drift():
