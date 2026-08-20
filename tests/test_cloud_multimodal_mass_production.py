@@ -2459,10 +2459,14 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeyp
         def __post_init__(self):
             super().__post_init__()
             self.repair_payloads = []
+            self.repair_prompts = []
 
         def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
             if stage == "narration_repair":
                 self.repair_payloads.append(dict(payload))
+                self.repair_prompts.append(
+                    (prompt_version, prompt_sha256, prompt_text)
+                )
                 output = _narrative_output("repair", list(payload["panel_ids"]))
                 for passage in output["script_passages"]:
                     passage["evidence_panel_ids"] = list(payload["panel_ids"])
@@ -2506,6 +2510,17 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeyp
     result = runner.run_narration(visual, story_map, panels=panels)
 
     assert len(provider.repair_payloads) == 1
+    assert len(provider.repair_prompts) == 1
+    repair_prompt_version, repair_prompt_sha256, repair_prompt_text = (
+        provider.repair_prompts[0]
+    )
+    assert (
+        repair_prompt_version
+        == "vision-first-story-analyzer-v3-targeted-repair-v1"
+    )
+    assert len(repair_prompt_sha256) == 64
+    assert "TARGETED NARRATION REPAIR" in repair_prompt_text
+    assert repair_prompt_text != runner.prompts["narration"][2]
     assert provider.repair_payloads[0]["targeted_repair"]["failure_codes"] == [
         "cloud.narrative_duration_out_of_range",
         "cloud.narrative_word_count_out_of_range",

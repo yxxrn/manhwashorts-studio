@@ -53,6 +53,12 @@ NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
 NARRATION_REPAIR_VERSION = "narration-targeted-repair-v1"
 NARRATION_REPAIR_MAX_ATTEMPTS = 3
+NARRATION_REPAIR_INSTRUCTION = (
+    "TARGETED NARRATION REPAIR: preserve the previous script exact passage IDs, "
+    "claim IDs and text, evidence panel IDs, observations, ending kind, and story "
+    "spine. Rewrite only passage text to satisfy the stated word and duration "
+    "contract. Do not add claims, citations, panels, or new story facts."
+)
 EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
 EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT = 4
@@ -2273,6 +2279,9 @@ class CloudStageRunner:
                 "repair_attempt": attempt + 1,
             }
             try:
+                repair_prompt_text = (
+                    f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
+                )
                 repaired = self._run_narration_batched(
                     prompt,
                     source,
@@ -2283,6 +2292,11 @@ class CloudStageRunner:
                     enforce_duration=False,
                     stage="narration_repair",
                     targeted_repair=context,
+                    request_prompt_version=(
+                        "vision-first-story-analyzer-v3-targeted-repair-v1"
+                    ),
+                    request_prompt_sha256=_hash(repair_prompt_text),
+                    request_prompt_text=repair_prompt_text,
                 )
                 if self._narration_scope_signature(repaired) != expected_scope:
                     raise CloudStageError(
@@ -2324,6 +2338,9 @@ class CloudStageRunner:
         enforce_duration: bool = True,
         stage: str = "narration",
         targeted_repair: Mapping[str, Any] | None = None,
+        request_prompt_version: str | None = None,
+        request_prompt_sha256: str | None = None,
+        request_prompt_text: str | None = None,
     ) -> NarrationResult:
         retryable_codes = {
             "cloud.provider_request_failed",
@@ -2412,9 +2429,9 @@ class CloudStageRunner:
                     raw = self._call(
                         lambda request_payload=request_payload: self.provider.complete_json(
                             stage=stage,
-                            prompt_version=prompt[0],
-                            prompt_sha256=prompt[1],
-                            prompt_text=prompt[2],
+                            prompt_version=request_prompt_version or prompt[0],
+                            prompt_sha256=request_prompt_sha256 or prompt[1],
+                            prompt_text=request_prompt_text or prompt[2],
                             payload=request_payload,
                         )
                     )
@@ -2607,7 +2624,13 @@ class CloudStageRunner:
             visual_evidence_hash=visual.visual_evidence_hash,
         )
         if self.cache is not None:
-            self.cache.put(_cache_key("narration", source, self.model_identity, prompt), result.as_dict())
+            cache_source = dict(source)
+            if targeted_repair is not None:
+                cache_source["targeted_repair"] = dict(targeted_repair)
+            self.cache.put(
+                _cache_key(stage, cache_source, self.model_identity, prompt),
+                result.as_dict(),
+            )
         return result
     def run_visual_narrative_repair(
         self,
@@ -3667,6 +3690,10 @@ class CloudBatchService:
             return self._record_failure(record, exc)
 
     def _record_failure(self, record: ChapterJobRecord, exc: CloudStageError) -> ChapterJobRecord:
+        record.stage_results["usage"] = {
+            "request_count": self.runner.request_count,
+            "estimated_cost_usd": round(self.runner.estimated_cost_usd, 8),
+        }
         record.state = ChapterState.NEEDS_REVIEW if exc.reviewable else ChapterState.FAILED
         record.error_code = exc.code
         record.error_message = str(exc)

@@ -1187,4 +1187,6 @@ Added narration-targeted-repair-v1 after the canonical visual-cache resume
 reached the story-map checkpoint but produced a narration duration/word-count
 candidate outside the strict 50-60 second / 115-125 word contract. The repair
 uses the same pinned model, preserves validated claim/evidence lineage locally,
-and is capped at three attempts. No MP4, voice, or publication claim is made.
+and is capped at three attempts. No MP4, voice, or publication claim is made.\n\n## 2026-08-21 - narration repair cache isolation
+
+Separated targeted narration repair prompt/stage/cache identity from ordinary narration and persisted request accounting on reviewable failure. Verified with 5 focused tests and 57 cloud mass-production tests. No MP4, voice, or publication claim.\n

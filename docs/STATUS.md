@@ -1549,4 +1549,8 @@ cloud.narrative_duration_out_of_range; its aggregate usage counter was not
 saved on that failure, so exact provider request count is unknown and is not
 claimed. No MP4, voice, or final QC is proven. Next command is the normal
 resume entrypoint with PYTHONPATH=/home/ubuntu/manhwashorts; visual cache reuse
-must be rechecked before proceeding.
+must be rechecked before proceeding.\n\n## 2026-08-21 narration repair cache/prompt isolation
+
+Follow-up to d539c88: targeted repairs now carry an explicit repair prompt identity and write to a separate `narration_repair` cache namespace, while normal narration remains `narration`. The accidental repair-only stage reference in the ordinary narration chunk helper was corrected. Reviewable failure persistence records request count and estimated cost before state is saved.
+
+Evidence: focused cache/repair matrix 5 passed; cloud mass-production file 57 passed; Ruff and diff-check passed. The prior canonical 703-to-701 visual migration remains valid and no visual provider call is required for this fix. The current production job still has no proven MP4/voice/QC result; next action is a bounded normal resume with the durable visual cache rechecked first.\n

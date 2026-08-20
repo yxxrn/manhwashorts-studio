@@ -429,4 +429,8 @@ PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal
   --state-dir /data/data/p0-aws-acceptance/cloud-jobs \
   --segmentation-review-dir /data/data/p0-aws-acceptance/segmentation-review \
   --model grok-4.3 --max-attempts 3 --min-request-interval-s 0.3
-~~~
+~~~\n\n## 2026-08-21 narration repair cache/prompt isolation
+
+Source checkpoint: parent d539c88. The repair boundary now uses a distinct prompt version/hash and `narration_repair` stage/cache identity, so a targeted repair cannot overwrite or be mistaken for the ordinary narration result. The ordinary chunk helper uses the ordinary `narration` identity. `_record_failure` persists the live request counter and estimated cost before writing NEEDS_REVIEW/FAILED.
+
+Verification is 5 focused cache/repair tests, 57/57 cloud mass-production tests, Ruff, and diff-check. No provider retry or MP4 is claimed in this checkpoint. Resume with the existing command below only after confirming no active process; reuse the migrated visual cache and do not rerun cached visual panels.\n

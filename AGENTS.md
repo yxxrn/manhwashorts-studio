@@ -389,4 +389,10 @@ durable request_count remains 0 and the exact provider-call count for that
 attempt is intentionally not claimed. Do not infer it from sockets/log size.
 Resume only after checking for no active process, using the normal checked-in
 entrypoint with PYTHONPATH=/home/ubuntu/manhwashorts and the existing
-/data/data/p0-aws-acceptance state/cache. Do not repeat the 701 visual stage.
+/data/data/p0-aws-acceptance state/cache. Do not repeat the 701 visual stage.\n\n## 2026-08-21 narration repair cache/prompt isolation
+
+The targeted narration repair follow-up is now verified against parent d539c88. Repair requests use the explicit versioned prompt suffix `vision-first-story-analyzer-v3-targeted-repair-v1`, the `narration_repair` provider stage, and a stage-specific cache identity; ordinary narration keeps the `narration` cache identity. The ordinary narration helper no longer references the repair-only stage.
+
+Failure persistence now records the runner request counter and estimated cost before a reviewable failure is written, so a failed repair cannot falsely appear to have made zero calls. This preserves the same pinned model, strict scope/grounding gates, three-attempt bound, and no visual-stage rerun.
+
+Verification: focused identity/repair matrix 5 passed; complete `tests/test_cloud_multimodal_mass_production.py` 57 passed; Ruff and diff-check passed. No live retry, MP4, voice, or QC result is proven yet. Resume only through the checked-in batch entrypoint after checking for an active process; do not repeat the 701-panel visual stage.\n
