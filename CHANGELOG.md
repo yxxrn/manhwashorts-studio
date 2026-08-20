@@ -10,6 +10,13 @@
 
 # Changelog
 
+- The separately bounded retry reused the 701-panel cache and issued exactly
+  one repair request, but failed closed again at
+  `cloud.narrative_repair_slot_contract_invalid`. The sanitized taxonomy is
+  persisted in the ignored runtime report; no raw provider payload, repair
+  result, narration, MP4, voice, or QC artifact is claimed, and automatic
+  retries are stopped pending a new response-schema diagnosis.
+
 - Clarified the immutable narration-repair wire schema with an exact
   `slot_id`/`text` row contract after one bounded real request failed closed
   at the sanitized slot contract boundary. Added the body-level regression;

@@ -1,3 +1,15 @@
+# FRESH BOUNDED RETRY RESULT - 2026-08-21
+
+The retry began from published `813ec6e342584b38e4a5e379a25391406df5440e`,
+reused the durable 160-word/64.35-second candidate and 701-panel visual/story
+identities, and issued exactly one `grok-4.3` request. It failed closed again
+as `cloud.narrative_repair_slot_contract_invalid`. Raw provider content was
+not stored or printed; no repair result entered the v2 cache, and no automatic
+retry is allowed. Sanitized report:
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-immutable-slot-schema-retry.json`.
+No final narration, silent MP4, voice, or QC artifact exists. A further call
+requires a new response-schema diagnosis and separately bounded authorization.
+
 # SLOT SCHEMA FOLLOW-UP - 2026-08-21
 
 Published correction: `25f1d6598643b0217504520d3e28f58994b41688`, parent

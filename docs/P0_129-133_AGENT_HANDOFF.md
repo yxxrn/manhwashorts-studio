@@ -1,5 +1,17 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Fresh retry blocker
+
+From published parent `813ec6e342584b38e4a5e379a25391406df5440e`, the isolated
+repair harness reused the exact durable candidate and 701-panel visual/story
+identities and made one request to `grok-4.3`. It failed closed with
+`cloud.narrative_repair_slot_contract_invalid` again. No provider payload or
+prose was retained, no result cache was admitted, and automatic retries are
+stopped. The sanitized runtime report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-immutable-slot-schema-retry.json`.
+No narration, MP4, voice, or QC artifact is available; a new response-schema
+diagnosis is required before another separately authorized request.
+
 ## Latest slot-schema repair checkpoint
 
 Published code correction is

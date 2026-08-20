@@ -1,5 +1,18 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## FRESH BOUNDED RETRY RESULT
+
+This retry started from published parent
+`813ec6e342584b38e4a5e379a25391406df5440e`. It reused the exact durable
+candidate and existing 701-panel visual/story identities and issued exactly
+one `grok-4.3` repair request. It failed closed again with
+`cloud.narrative_repair_slot_contract_invalid`; no provider prose or payload
+was stored or printed, no repair result was admitted, and no automatic retry
+is permitted. The sanitized runtime report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-immutable-slot-schema-retry.json`.
+No narration, MP4, voice, or QC artifact is proven. Further progress requires
+an explicit response-schema diagnosis and a new bounded authorization.
+
 ## SLOT SCHEMA FOLLOW-UP (published)
 
 Published correction `25f1d6598643b0217504520d3e28f58994b41688` has parent
