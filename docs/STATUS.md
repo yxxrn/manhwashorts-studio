@@ -1824,3 +1824,28 @@ no-churn, and key-shaped secret scan clean. This correction is not yet
 published; after publication, exactly one new bounded real request is allowed.
 Visual/story stages remain cached and untouched; no silent MP4, voice, or QC is
 proven.
+## Position-vector response-shape instrumentation - 2026-08-21
+
+After the published `1b2be08ae60a9a06ab8e5ec2e2972c22d9fb1e09` v2 boundary,
+one real position-vector request again failed closed with
+`cloud.narrative_repair_position_budget_invalid`; `request_count=1` and
+`retry_count=0`. No provider prose or raw payload was retained. The
+pre-instrumentation sanitized report remains at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`1194ac83c3aa32ef933be9897f6207188c0f7bce1f04397b7b93c3c8f3096f61`.
+
+The next correction persists only response-shape metadata before a budget
+failure: container type, top-level keys, rewrites array length/item types,
+per-position word counts, total word count, estimated duration, expected
+inclusive ranges, accepted bounds, and the exact failed predicate. It records
+that metadata through `CloudStageError.safe_metadata`, the runner, and the
+review queue; the temporary bounded harness writes an atomic sanitized report.
+The prompt now says exact 120 words as guidance, but local admission remains
+115-125 words and 50-60 seconds, so an in-range 118-word response is accepted.
+RED was collection-clean with one prompt assertion and one metrics assertion;
+GREEN is 142/142 focused cloud/manifest/adapter/synthesis tests (cloud 76,
+prepared manifest 7, adapter 23, synthesis 36), Ruff, compileall, diff-check,
+no-churn, and key-shaped secret scan. This checkpoint is not yet published;
+publish before one new bounded real request. Visual/story caches remain valid;
+no narration, silent MP4, voice, or QC is proven.

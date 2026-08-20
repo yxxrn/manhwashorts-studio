@@ -2395,6 +2395,8 @@ def test_targeted_repair_prompt_declares_exact_slot_wire_shape():
     instruction = module.NARRATION_REPAIR_INSTRUCTION
     assert '{"rewrites": ["text for position 0", "..."]}' in instruction
     assert "never return, create, or rewrite claim IDs" in instruction
+    assert "exactly 120 total words" in instruction
+    assert "word_budget_min/word_budget_max" in instruction
 
 
 def _position_rewrite_text(word_budget, prefix):
@@ -2537,6 +2539,54 @@ def test_position_repair_accepts_wide_deterministic_distribution_within_ranges()
     )
 
     assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 120
+
+
+def test_position_repair_budget_failure_exposes_sanitized_shape_metrics():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [6 if index % 2 == 0 else 18 for index in range(len(registry["positions"]))]
+    assert sum(counts) == 120
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"metrics{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    assert caught.value.code == "cloud.narrative_repair_position_budget_invalid"
+    metrics = caught.value.safe_metadata
+    assert metrics["container_type"] == "dict"
+    assert metrics["top_level_keys"] == ["rewrites"]
+    assert metrics["array_count"] == len(counts)
+    assert metrics["per_position_word_counts"] == counts
+    assert metrics["total_word_count"] == 120
+    assert metrics["estimated_duration_s"] == pytest.approx(120 / 2.3, abs=0.01)
+    assert metrics["failed_predicate"] == "position_word_budget"
+    assert len(metrics["expected_ranges"]) == len(counts)
+    assert all(set(item) == {"position", "target", "min", "max"} for item in metrics["expected_ranges"])
+    assert "metrics0_word" not in json.dumps(metrics)
+
+
+def test_position_repair_accepts_total_below_guidance_inside_final_bounds():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [10, *([12] * (len(registry["positions"]) - 1))]
+    assert sum(counts) == 118
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"bounded{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+
+    reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 118
 
 
 @pytest.mark.parametrize("mutation", ("old_id_wrapper", "wrong_count", "wrong_type"))
@@ -3082,7 +3132,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-position-repair-v1"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v2"
     )
     assert len(repair_prompt_sha256) == 64
     assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text

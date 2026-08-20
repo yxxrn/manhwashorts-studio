@@ -651,3 +651,16 @@ identity, and keeps strict total/duration gates. Historical RED is one
 collection-clean body failure on 6e8df19; GREEN is 140 focused tests plus
 Ruff/compile/diff/no-churn/secret checks. Publish before any further real
 request; never repeat visual/story calls.
+## Position-vector response-shape instrumentation (2026-08-21)
+
+After `1b2be08ae60a9a06ab8e5ec2e2972c22d9fb1e09` was published, one real
+position-vector request again failed closed with
+`cloud.narrative_repair_position_budget_invalid`; it used exactly one request
+and no retry. That pre-instrumentation attempt retained no response-shape
+metrics. The new boundary attaches only sanitized container/key, array count,
+per-position counts, total/duration, expected ranges, and failed-predicate
+metadata to the local error and durable review queue; provider text remains
+discarded. The prompt now states exact 120 words as guidance, while admission
+still accepts 115-125 words and 50-60 seconds. RED covered the prompt and
+metrics assertions; GREEN is 142 focused tests plus static/security gates.
+Publish this instrumentation before the next single real request.

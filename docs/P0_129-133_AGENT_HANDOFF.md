@@ -654,3 +654,19 @@ body failure against the old boundary; GREEN is 140/140 focused tests plus
 Ruff/compileall/diff/no-churn/secret checks. Publish this correction before
 one new real request. The project remains STORY_MAPPED with 701 visual rows;
 no narration, MP4, voice, or final QC is proven.
+## Position-vector response-shape instrumentation - 2026-08-21
+
+After `1b2be08ae60a9a06ab8e5ec2e2972c22d9fb1e09`, one real request again failed
+closed with `cloud.narrative_repair_position_budget_invalid` after exactly one
+request and no retry. The old report has no response-shape metrics; its SHA is
+`1194ac83c3aa32ef933be9897f6207188c0f7bce1f04397b7b93c3c8f3096f61`.
+
+The unpublished correction records sanitized container/keys, array length and
+types, per-position counts, total/duration, expected ranges, and the exact
+failed predicate before raising, then persists them in the review queue and
+the bounded harness report. Exact 120 words is guidance only; 115-125 words
+and 50-60 seconds remain the final gates, with a 118-word regression green.
+RED: one collection-clean prompt failure plus one collection-clean metrics
+failure. GREEN: 142/142 focused tests, Ruff, compileall, diff-check,
+no-churn, and secret scan. Publish before one new real request; never rerun
+visual/story stages. No narration, MP4, voice, or final QC is proven.

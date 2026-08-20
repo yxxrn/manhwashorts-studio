@@ -78,8 +78,9 @@ NARRATION_REPAIR_INSTRUCTION = (
     "never return, create, or rewrite claim IDs, evidence panel IDs, slot IDs, "
     "passage IDs, observations, beat IDs, or hashes. Preserve the supplied causal "
     "order and evidence-grounded meaning. Write natural English within each "
-    "position's inclusive word_budget_min/word_budget_max range so the total "
-    "is 115-125 words and 50-60 seconds. "
+    "position's inclusive word_budget_min/word_budget_max range. Target "
+    "exactly 120 total words; the accepted total is 115-125 words and "
+    "50-60 seconds. Count every rewrite before returning. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
     "metadata, or alternate key."
 )
@@ -114,9 +115,17 @@ def _peak_rss_kb() -> int | None:
 class CloudStageError(RuntimeError):
     """Safe, machine-readable failure at the cloud stage boundary."""
 
-    def __init__(self, code: str, message: str = "cloud stage failed", *, reviewable: bool = False):
+    def __init__(
+        self,
+        code: str,
+        message: str = "cloud stage failed",
+        *,
+        reviewable: bool = False,
+        safe_metadata: Mapping[str, Any] | None = None,
+    ):
         self.code = code
         self.reviewable = reviewable
+        self.safe_metadata = dict(safe_metadata or {})
         super().__init__(message)
 
 
@@ -1075,6 +1084,7 @@ class CloudStageRunner:
         self._checkpoint_lock = threading.Lock()
         self.request_count = 0
         self.estimated_cost_usd = 0.0
+        self.last_response_shape_metrics: dict[str, Any] = {}
         self._last_request_at = 0.0
         self.prompts = _prompt_specs()
         expected = dict(model_identity.prompt_versions)
@@ -3131,6 +3141,54 @@ class CloudStageRunner:
                 "cloud.narrative_repair_position_contract_invalid",
                 reviewable=True,
             )
+
+        def response_shape_metrics(
+            failed_predicate: str,
+            word_counts: Sequence[int | None],
+            total_words: int | None,
+            duration: float | None,
+        ) -> dict[str, Any]:
+            expected_ranges = []
+            for item in raw_positions:
+                if isinstance(item, Mapping):
+                    expected_ranges.append(
+                        {
+                            "position": item.get("position"),
+                            "target": item.get("word_budget"),
+                            "min": item.get("word_budget_min"),
+                            "max": item.get("word_budget_max"),
+                        }
+                    )
+                else:
+                    expected_ranges.append(
+                        {"position": None, "target": None, "min": None, "max": None}
+                    )
+            return {
+                "container_type": type(raw).__name__,
+                "top_level_keys": sorted(str(key) for key in raw),
+                "array_key": "rewrites",
+                "array_count": len(rewrites),
+                "array_item_types": [type(item).__name__ for item in rewrites],
+                "per_position_word_counts": list(word_counts),
+                "total_word_count": total_words,
+                "estimated_duration_s": duration,
+                "expected_ranges": expected_ranges,
+                "accepted_word_bounds": {"min": 115, "max": 125},
+                "accepted_duration_bounds_s": {"min": 50.0, "max": 60.0},
+                "failed_predicate": failed_predicate,
+            }
+
+        word_counts = [
+            len(re.findall(r"[A-Za-z0-9]+", text)) if isinstance(text, str) else None
+            for text in rewrites
+        ]
+        total_words = sum(count for count in word_counts if count is not None)
+        all_strings = all(count is not None for count in word_counts)
+        duration = (
+            script.estimate_duration(" ".join(rewrites), "dramatic")
+            if all_strings
+            else None
+        )
         positions: list[NarrationRepairPosition] = []
         for index, value in enumerate(raw_positions):
             try:
@@ -3175,6 +3233,12 @@ class CloudStageRunner:
                 raise CloudStageError(
                     "cloud.narrative_repair_position_budget_invalid",
                     reviewable=True,
+                    safe_metadata=response_shape_metrics(
+                        "position_word_budget",
+                        word_counts,
+                        total_words if all_strings else None,
+                        duration,
+                    ),
                 )
             trusted_ids = (
                 position.slot_id,
@@ -3191,11 +3255,21 @@ class CloudStageRunner:
         total_words = sum(
             len(re.findall(r"[A-Za-z0-9]+", str(text))) for text in rewrites
         )
-        duration = script.estimate_duration(" ".join(str(text) for text in rewrites), "dramatic")
         if not 115 <= total_words <= 125 or not 50.0 <= duration <= 60.0:
+            failed_predicate = (
+                "aggregate_word_count"
+                if not 115 <= total_words <= 125
+                else "aggregate_duration"
+            )
             raise CloudStageError(
                 "cloud.narrative_repair_position_budget_invalid",
                 reviewable=True,
+                safe_metadata=response_shape_metrics(
+                    failed_predicate,
+                    word_counts,
+                    total_words if all_strings else None,
+                    duration,
+                ),
             )
         candidate_passages = {
             str(passage.get("passage_id", "")): passage
@@ -3848,11 +3922,12 @@ class CloudStageRunner:
             ],
             "target_word_min": 115,
             "target_word_max": 125,
+            "target_word_count": position_registry["target_word_count"],
             "target_duration_min_s": 50.0,
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v1"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v2"
         repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
         repair_prompt = (
             repair_prompt_version,
@@ -4239,6 +4314,8 @@ class CloudStageRunner:
                         reviewable=True,
                     ) from None
                 except CloudStageError as exc:
+                    if exc.safe_metadata:
+                        self.last_response_shape_metrics = dict(exc.safe_metadata)
                     print(f"NARR_CHUNK_FAIL chunk={chunk_index} attempt={attempt} code={exc.code}", file=sys.stderr, flush=True)
                     if (
                         exc.code in retryable_codes
@@ -5567,7 +5644,10 @@ class CloudBatchService:
         record.error_code = exc.code
         record.error_message = str(exc)
         if exc.reviewable:
-            record.review_queue.append({"code": exc.code, "reason": str(exc)})
+            review_entry = {"code": exc.code, "reason": str(exc)}
+            if exc.safe_metadata:
+                review_entry["safe_metadata"] = dict(exc.safe_metadata)
+            record.review_queue.append(review_entry)
         self.store.save(record)
         return record
 
@@ -6070,7 +6150,10 @@ class CloudBatchService:
             record.error_code = exc.code
             record.error_message = str(exc)
             if exc.reviewable:
-                record.review_queue.append({"code": exc.code, "reason": str(exc)})
+                review_entry = {"code": exc.code, "reason": str(exc)}
+                if exc.safe_metadata:
+                    review_entry["safe_metadata"] = dict(exc.safe_metadata)
+                record.review_queue.append(review_entry)
             self.store.save(record)
             return record
 
