@@ -1,3 +1,23 @@
+# LIVE ORACLE TOPOLOGY CHECKPOINT - 2026-08-20
+
+The authoritative checkout is /home/ubuntu/manhwashorts on Oracle, branch main.
+The green source/test checkpoint is dfb8c26e6148bb8b3e098d25b1bf691e14f94cbd
+(parent 078715a77251b097e563aff41f696a6005d75b7b). It changes only the
+cloud multimodal runner and its mass-production tests: full visual coverage
+remains cached at 701 processed rows, story mapping is 701/701, and narration
+now selects grounded beats before one final prose reduce instead of
+concatenating chunk prose. The focused cloud suite is 48 passed.
+
+The last real resume before this slice ended NEEDS_REVIEW with
+cloud.narrative_not_grounded after 3 narration requests, 975.73 seconds wall
+time, and 8,397,748 KB peak RSS. No narration artifact, timeline, MP4, voice,
+or QC is proven. Do not weaken grounding or use the older model-identity cache.
+Runtime data, DB/WAL, data symlink, provider state, caches, logs, media, and
+ms_env.sh remain untracked; never print, copy, or commit credentials. The
+required handoff and cache/invalidation record is in
+docs/ARCHITECTURE_MAP_REDUCE.md and docs/P0_129-133_AGENT_HANDOFF.md.
+
+
 # CURRENT ORACLE EXECUTION CHECKPOINT - 2026-08-20
 
 This block is authoritative for the current run and supersedes older workspace

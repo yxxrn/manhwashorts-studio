@@ -1,3 +1,65 @@
+# CURRENT ORACLE EXECUTION CHECKPOINT - 2026-08-20
+
+This block is authoritative for the current Oracle run and supersedes older
+workspace histories below. Work directly in /home/ubuntu/manhwashorts on main;
+the Windows checkout is transport-only.
+
+- Source/test green checkpoint:
+  dfb8c26e6148bb8b3e098d25b1bf691e14f94cbd
+  (parent 078715a77251b097e563aff41f696a6005d75b7b).
+- The checkpoint contains only app/services/cloud_multimodal.py and
+  tests/test_cloud_multimodal_mass_production.py. Its focused topology
+  coverage is green; documentation publication is the next checkpoint.
+- Oracle's origin/main tracking ref is stale because Oracle HTTPS
+  authentication is unavailable. Publish the exact commit object through the
+  retained Windows transport clone only after docs and runtime gates are
+  green; never force-push, push all refs, tags, credentials, runtime state,
+  media, databases, caches, or logs.
+- Protected runtime paths are untracked: data (the /data/data symlink),
+  ms_env.sh, database/WAL files, provider state, caches, logs, and media.
+  ms_env.sh contains credentials. Source /tmp/ms_env.sh only with output
+  redirected and never print, copy, fixture, or commit its contents.
+
+## Current production topology
+
+- Visual map: 701 valid same-identity visual rows are cached under
+  /data/data/p0-aws-acceptance/cloud-stage-cache; 526 original rows plus
+  175 same-model repairs. The two poison source rows remain explicitly
+  skipped. No later stage may call the visual provider for a valid cached row.
+- Chapter story map: the last durable map covers 701/701 ordered panel IDs,
+  with deterministic chunk merge and complete-coverage validation.
+- Narration: the new code selects grounded editorial beats after full story
+  mapping and sends one final selected-evidence reduce request. It rejects
+  matching-hash but partial/stale narration caches and retains full-panel
+  observations for downstream lineage. The source/test proof is 48 passed in
+  tests/test_cloud_multimodal_mass_production.py.
+- Runtime is not yet complete: the last pre-slice resume ended
+  NEEDS_REVIEW with cloud.narrative_not_grounded, 3 narration requests,
+  approximately 975.73 seconds wall time, and peak RSS 8,397,748 KB. It
+  produced no narration artifact, timeline, MP4, voice output, or final QC.
+  This is a measured blocker, not permission to weaken grounding.
+
+## Resume and release gates
+
+Resume the normal checked-in service after verifying no active process and the
+job/cache state. Source /tmp/ms_env.sh with output redirected, set the
+MS_DATABASE_URL, MS_STORAGE_DIR, MS_DATA_DIR, MS_OUTPUT_DIR, MS_TMP_DIR, and
+MS_CLOUD_STAGE_CACHE_DIR variables to the /data/data/p0-aws-acceptance paths,
+then run:
+
+    .venv/bin/python -m pytest tests/test_cloud_multimodal_mass_production.py -q
+
+The next production command is the normal project service resume documented in
+docs/P0_129-133_AGENT_HANDOFF.md and docs/ARCHITECTURE_MAP_REDUCE.md; it must
+reuse the visual cache, persist story/narration artifacts, and reach a real
+silent MP4 before any claim of completion. Required acceptance remains:
+complete evidence/grounding, 115-125 words and 50-60 seconds, 1080x1920
+H.264 High/yuv420p video-only output, subtitle max two lines,
+black/balloon/blank/lineage/QC gates green, and a second resume with no
+unnecessary provider calls. Voice/TTS remains after the silent preview and
+publication remains blocked.
+
+
 # CURRENT ORACLE HANDOFF - 2026-08-20
 
 - Authority: /home/ubuntu/manhwashorts on Oracle, branch main.
