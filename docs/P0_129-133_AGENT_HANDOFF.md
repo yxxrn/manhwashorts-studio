@@ -601,3 +601,22 @@ The runtime job is still STORY_MAPPED with 701 visual rows and no proven
 narration, MP4, voice, or QC. The last bounded attempt stopped around 28m50s
 after four sanitized cloud.narrative_not_grounded chunk failures; do not
 infer a provider count from the unsaved aggregate usage field.
+## Position-locked rewrite-vector handoff - 2026-08-21
+The previous immutable-ID repair was not retried. The current repair boundary
+now preselects 8-12 trusted claim positions locally, in causal order, with a
+deterministic 120-word budget and `slot_order_hash` covering candidate/story/
+model/prompt identity plus lineage. The provider receives ordered context but
+returns only a positional `rewrites` array. Local reconciliation owns passage,
+claim, evidence, and display reconstruction; identifier wrappers, count/type
+drift, budget/duration drift, reordered positions, and unknown lineage fail
+closed. The position path is single-attempt and its result cache rejects
+position-registry or slot-order drift.
+RED: 6 collected, collection-clean, 6 intended body failures. GREEN: 138/138
+focused cloud/manifest/adapter/synthesis tests; Ruff, compileall,
+diff-check, no-churn, and secret scan clean. No real request has been made.
+After the source/test/docs checkpoint is published, run exactly one bounded
+repair request against the durable 160-word/64.35-second candidate. Do not
+repeat visual/story stages or issue an automatic retry. Continue to silent
+MP4, voice, and warm-resume only if the strict repaired result is admitted.
+Until then the durable job is STORY_MAPPED with 701 visual rows and no proven
+narration or media artifact.

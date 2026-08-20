@@ -2147,7 +2147,7 @@ def test_narration_duration_failure_retains_candidate_for_visual_repair(monkeypa
     with pytest.raises(module.CloudStageError) as caught:
         runner.run_narration(visual, story_map, panels=panels)
 
-    assert caught.value.code == "cloud.narrative_duration_out_of_range"
+    assert caught.value.code == "cloud.narrative_repair_position_selection_invalid"
     assert runner._last_narration_result is invalid
 
 def test_repair_harness_uses_compact_candidate_context_without_normal_call():
@@ -2176,22 +2176,7 @@ def test_repair_harness_uses_compact_candidate_context_without_normal_call():
             if stage == "narration_repair":
                 self.calls.append((stage, prompt_version, prompt_sha256))
                 self.repair_panel_ids.append(tuple(str(item) for item in payload["panel_ids"]))
-                output = _narrative_output("compact-repair-candidate", list(payload["panel_ids"]))
-                slot_ids = payload["targeted_repair"]["slot_registry"]["slot_ids"]
-                return {
-                    "repair_slots": {
-                        "retained_slot_ids": slot_ids,
-                        "dropped_slot_ids": [],
-                        "slots": [
-                            {"slot_id": slot_id, "text": passage["text"]}
-                            for slot_id, passage in zip(
-                                slot_ids,
-                                output["script_passages"],
-                                strict=True,
-                            )
-                        ],
-                    }
-                }
+                return _provider_position_vector(payload)
             return super().complete_json(
                 stage=stage,
                 prompt_version=prompt_version,
@@ -2226,16 +2211,22 @@ def test_repair_harness_uses_compact_candidate_context_without_normal_call():
     selected_visual = replace(visual, panels=visual.panels[:3])
     selected_ids = tuple(str(item["panel_id"]) for item in selected_visual.panels)
     candidate_output = _narrative_output("compact-repair-candidate", list(selected_ids))
-    trusted_claim = dict(story_map.claims[0])
-    trusted_claim.setdefault("claim_type", "fact")
-    if "panel_ids" in trusted_claim:
+    trusted_claims = []
+    for index in range(8):
+        trusted_claim = dict(story_map.claims[index % len(story_map.claims)])
+        trusted_claim["claim_id"] = f"compact-trusted-claim-{index}"
+        trusted_claim.setdefault("claim_type", "fact")
         trusted_claim["panel_ids"] = list(selected_ids)
-    if "evidence_panel_ids" in trusted_claim:
         trusted_claim["evidence_panel_ids"] = list(selected_ids)
-    for passage in candidate_output["script_passages"]:
-        passage["claim_ids"] = [trusted_claim["claim_id"]]
+        trusted_claims.append(trusted_claim)
+    story_map = replace(story_map, claims=tuple(trusted_claims))
+    for passage_index, passage in enumerate(candidate_output["script_passages"]):
+        passage["claim_ids"] = [
+            trusted_claims[passage_index * 2]["claim_id"],
+            trusted_claims[passage_index * 2 + 1]["claim_id"],
+        ]
         passage["evidence_panel_ids"] = list(selected_ids)
-    candidate_output["evidence_graph"] = {"claims": [trusted_claim]}
+    candidate_output["evidence_graph"] = {"claims": trusted_claims}
     observations, structural = runner._narration_observations(selected_visual, None)
     spoken = "\n\n".join(str(item["text"]).strip() for item in candidate_output["script_passages"])
     candidate = module.NarrationResult(
@@ -2323,21 +2314,25 @@ def _immutable_slot_fixture(module):
     )
     claims = tuple(
         {
-            "claim_id": f"immutable-claim-{index}",
+            "claim_id": f"immutable-claim-{index}-{claim_index}",
             "claim_type": "fact",
-            "text": f"The visible beat {index} changes the situation.",
+            "text": f"The visible beat {index} claim {claim_index} changes the situation.",
             "panel_ids": [panel_id],
             "evidence_panel_ids": [panel_id],
             "qualification": "The ordered panel supports this reading.",
         }
         for index, panel_id in enumerate(panel_ids)
+        for claim_index in range(2)
     )
     passages = tuple(
         {
             "passage_id": f"immutable-passage-{index}",
             "editorial_role": "causal_turn",
             "text": f"The sequence reaches beat {index} before the next turn.",
-            "claim_ids": [f"immutable-claim-{index}"],
+            "claim_ids": [
+                f"immutable-claim-{index}-0",
+                f"immutable-claim-{index}-1",
+            ],
             "evidence_panel_ids": [panel_id],
         }
         for index, panel_id in enumerate(panel_ids)
@@ -2398,8 +2393,126 @@ def _immutable_slot_fixture(module):
 def test_targeted_repair_prompt_declares_exact_slot_wire_shape():
     module = _module()
     instruction = module.NARRATION_REPAIR_INSTRUCTION
-    assert '{"slot_id": "...", "text": "..."}' in instruction
+    assert '{"rewrites": ["text for position 0", "..."]}' in instruction
     assert "never return, create, or rewrite claim IDs" in instruction
+
+
+def _position_rewrite_text(word_budget, prefix):
+    return " ".join(f"{prefix.rstrip('_')}word{index}" for index in range(word_budget))
+
+
+def _provider_position_vector(payload):
+    rows = payload["targeted_repair"]["position_context"]
+    vocabulary = [
+        "Now",
+        "the",
+        "visible",
+        "turn",
+        "changes",
+        "what",
+        "comes",
+        "next",
+        "because",
+        "the",
+        "stakes",
+        "shift",
+        "while",
+        "the",
+        "next",
+        "choice",
+        "keeps",
+        "pressure",
+        "moving",
+        "forward",
+    ]
+    return {
+        "rewrites": [
+            " ".join((vocabulary * ((row["word_budget"] // len(vocabulary)) + 1))[: row["word_budget"]])
+            for row in rows
+        ]
+    }
+
+
+def test_position_repair_preselection_is_deterministic_and_budgeted():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+
+    first = runner._build_narration_repair_position_registry(candidate, story_map)
+    second = runner._build_narration_repair_position_registry(candidate, story_map)
+
+    positions = first["positions"]
+    assert first["version"] == "narration-repair-position-registry-v1"
+    assert 8 <= len(positions) <= 12
+    assert 8 <= len({claim_id for row in positions for claim_id in row["claim_ids"]}) <= 12
+    assert 4 <= len({row["passage_id"] for row in positions}) <= 6
+    assert [row["causal_position"] for row in positions] == sorted(
+        row["causal_position"] for row in positions
+    )
+    assert sum(row["word_budget"] for row in positions) == 120
+    assert first["target_duration_s"] == pytest.approx(120 / 2.3, abs=0.01)
+    assert first["slot_order_hash"] == second["slot_order_hash"]
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._narration_repair_position_registry(
+            list(reversed(positions)),
+            candidate,
+            story_map,
+        )
+    assert caught.value.code == "cloud.narrative_repair_position_order_invalid"
+
+
+def test_position_repair_reconciles_vector_by_index_and_copies_trusted_lineage():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(row["word_budget"], f"position{index}_")
+            for index, row in enumerate(registry["positions"])
+        ]
+    }
+
+    reconciled = runner._reconcile_narration_repair_vector(
+        raw,
+        registry,
+        candidate,
+    )
+
+    original_by_id = {
+        str(passage["passage_id"]): passage for passage in candidate.passages
+    }
+    assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 120
+    for passage in reconciled["script_passages"]:
+        original = original_by_id[passage["passage_id"]]
+        assert set(passage["claim_ids"]).issubset(set(original["claim_ids"]))
+        assert set(passage["evidence_panel_ids"]).issubset(
+            set(original["evidence_panel_ids"])
+        )
+    assert all(
+        not any(identifier in str(passage["text"]) for identifier in passage["claim_ids"])
+        for passage in reconciled["script_passages"]
+    )
+
+
+@pytest.mark.parametrize("mutation", ("old_id_wrapper", "wrong_count", "wrong_type"))
+def test_position_repair_rejects_non_positional_provider_shapes(mutation):
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    valid = [
+        _position_rewrite_text(row["word_budget"], f"position{index}_")
+        for index, row in enumerate(registry["positions"])
+    ]
+    if mutation == "old_id_wrapper":
+        raw = {"repair_slots": {"retained_slot_ids": [], "slots": []}}
+    elif mutation == "wrong_count":
+        raw = {"rewrites": valid[:-1]}
+    else:
+        raw = {"rewrites": "not-an-array"}
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, registry, candidate)
+    assert caught.value.code == "cloud.narrative_repair_position_contract_invalid"
 
 
 def test_immutable_repair_slots_copy_trusted_lineage_and_reject_provider_ids():
@@ -2820,14 +2933,16 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
                 "reason": "the visible sequence continues",
             },
         ),
-        claims=(
+        claims=tuple(
             {
-                "claim_id": "claim-all",
+                "claim_id": f"claim-{index}",
                 "claim_type": "fact",
-                "text": "The visible sequence develops.",
+                "text": f"The visible sequence develops claim {index}.",
                 "panel_ids": panel_ids,
+                "evidence_panel_ids": panel_ids,
                 "qualification": "The ordered panels support this reading.",
-            },
+            }
+            for index in range(8)
         ),
         story_map_hash="s" * 64,
         model_identity_hash=_identity(module).identity_hash,
@@ -2838,11 +2953,15 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
 
     def as_candidate():
         output = _narrative_output("repair", panel_ids)
-        trusted_claim = dict(story_map.claims[0])
-        for passage in output["script_passages"]:
-            passage["claim_ids"] = [trusted_claim["claim_id"]]
+        for passage_index, passage in enumerate(output["script_passages"]):
+            passage["claim_ids"] = [
+                f"claim-{passage_index * 2}",
+                f"claim-{passage_index * 2 + 1}",
+            ]
             passage["evidence_panel_ids"] = list(panel_ids)
-        output["evidence_graph"] = {"claims": [trusted_claim]}
+        output["evidence_graph"] = {
+            "claims": [dict(claim) for claim in story_map.claims]
+        }
         spoken = "\n\n".join(
             str(passage["text"]).strip() for passage in output["script_passages"]
         )
@@ -2877,22 +2996,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
                 self.repair_prompts.append(
                     (prompt_version, prompt_sha256, prompt_text)
                 )
-                output = _narrative_output("repair", list(payload["panel_ids"]))
-                slot_ids = payload["targeted_repair"]["slot_registry"]["slot_ids"]
-                return {
-                    "repair_slots": {
-                        "retained_slot_ids": slot_ids,
-                        "dropped_slot_ids": [],
-                        "slots": [
-                            {"slot_id": slot_id, "text": passage["text"]}
-                            for slot_id, passage in zip(
-                                slot_ids,
-                                output["script_passages"],
-                                strict=True,
-                            )
-                        ],
-                    }
-                }
+                return _provider_position_vector(payload)
             return super().complete_json(
                 stage=stage,
                 prompt_version=prompt_version,
@@ -2933,10 +3037,10 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-repair-v2"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v1"
     )
     assert len(repair_prompt_sha256) == 64
-    assert "TARGETED NARRATION SLOT REPAIR" in repair_prompt_text
+    assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text
     assert repair_prompt_text != runner.prompts["narration"][2]
     assert provider.repair_payloads[0]["targeted_repair"]["failure_codes"] == [
         "cloud.narrative_duration_out_of_range",
@@ -2945,13 +3049,13 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     assert result.estimated_duration_s >= 50.0
     assert 115 <= result.word_count <= 125
     assert result.qc_report["narration_repair"]["scope"] == (
-        "passage_text_or_low_priority_compaction"
+        "position_locked_rewrite_vector"
     )
     assert result.qc_report["narration_repair"]["candidate_hash"]
-    assert result.qc_report["narration_repair"]["slot_registry_version"] == (
-        "narration-repair-slot-registry-v1"
+    assert result.qc_report["narration_repair"]["position_registry_version"] == (
+        "narration-repair-position-registry-v1"
     )
-    assert result.qc_report["narration_repair"]["slot_registry_hash"]
+    assert result.qc_report["narration_repair"]["slot_order_hash"]
     assert [call[0] for call in provider.calls] == ["narration_repair"]
     assert runner.request_count == 1
 
@@ -2966,7 +3070,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     )
     assert any(
         record.get("cache_type") == module.NARRATION_REPAIR_RESULT_VERSION
-        and record.get("slot_registry_hash")
+        and record.get("slot_order_hash")
         for record in records
     )
 
@@ -3035,7 +3139,7 @@ def test_out_of_range_candidate_stays_out_of_final_narration_cache():
     ) is None
 
 
-def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp_path):
+def test_narration_targeted_repair_rejects_insufficient_position_registry(monkeypatch, tmp_path):
     module = _module()
     panels = _panels(module)
     panel_ids = [panel.panel_id for panel in panels]
@@ -3154,7 +3258,7 @@ def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp
     with pytest.raises(module.CloudStageError) as caught:
         runner.run_narration(visual, story_map, panels=panels)
 
-    assert caught.value.code == "cloud.narrative_repair_slot_unknown"
+    assert caught.value.code == "cloud.narrative_repair_position_selection_invalid"
 
 
 def test_narration_targeted_repair_canonicalizes_non_lineage_provider_drift():

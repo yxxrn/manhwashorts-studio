@@ -1747,3 +1747,33 @@ by that interrupted process, so no exact live request count is claimed here.
 No MP4, voice, or final QC is proven. Next step is the normal resume command
 with the migrated visual cache reused and the typed candidate routed directly
 to bounded repair.
+## Position-locked narration repair vector - 2026-08-21
+The failed identifier-echo repair contract is replaced by a local positional
+rewrite vector. Before any provider request, the runner deterministically
+selects 8-12 grounded claim positions in causal order, drops only removable
+low-priority material while retaining at least four passages, and allocates a
+120-word budget (estimated 50-60 seconds). The local registry carries trusted
+slot/claim/evidence lineage and computes `slot_order_hash` from candidate,
+story, model, prompt, and ordered position identity. The provider receives
+ordered text/evidence context and may return only
+`{"rewrites": ["text for position 0", "..."]}`. Local index reconciliation
+reconstructs passages and copies all claim/evidence IDs; wrappers, wrong
+counts/types, identifier text, budget drift, reorder, and lineage drift fail
+closed. Position repair is single-attempt; valid repair cache reuse makes zero
+provider calls and requires the same `slot_order_hash`.
+TDD evidence before publication: RED was collection-clean, 6 collected, 0
+passed, and 6 intended body failures (old wrapper/prompt plus missing
+position boundary). GREEN focused matrix is 138/138: cloud multimodal 72,
+prepared manifest 7, vision adapter 23, and synthesis 36. Ruff, compileall,
+`git diff --check`, no-churn inspection, and key-shaped secret scan are clean.
+The existing adapter test proves the OpenAI-compatible request sends
+`response_format` as JSON object; no adapter change was needed.
+No real provider request was made by this checkpoint. The next bounded action
+after its GREEN commit is exactly one repair request using the durable
+160-word/64.35-second candidate and trusted local registry; no visual/story
+re-run and no automatic retry. Persist only a strict 115-125-word,
+50-60-second grounded result. On failure record only sanitized container/key/
+array-count/type metadata and the stable contract code. The project remains
+STORY_MAPPED with 701 visual rows; no narration, MP4, voice, or final QC is
+proven. `publish_allowed` remains false and runtime data, caches, media,
+`ms_env.sh`, and credentials remain ignored.

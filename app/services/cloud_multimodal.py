@@ -53,25 +53,25 @@ STORY_MAP_COVERAGE_MIN_STEP = 30
 NARRATION_CHUNK_STEP = 180
 NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
-NARRATION_REPAIR_VERSION = "narration-targeted-repair-v2"
+NARRATION_REPAIR_VERSION = "narration-targeted-repair-v3"
 NARRATION_REPAIR_MAX_ATTEMPTS = 3
+NARRATION_REPAIR_POSITION_MAX_ATTEMPTS = 1
 NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
-NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v2"
+NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v3"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
+NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v1"
 NARRATION_REPAIR_INSTRUCTION = (
-    "TARGETED NARRATION SLOT REPAIR: return only a repair_slots object with "
-    "retained_slot_ids, dropped_slot_ids, and slots. Each slots entry must "
-    "contain exactly {\"slot_id\": \"...\", \"text\": \"...\"}; the field "
-    "name for revised spoken text is exactly text. Use only the exact local "
-    "slot IDs supplied in the registry; never return, create, or rewrite claim "
-    "IDs, evidence panel IDs, passage IDs, observations, beat IDs, or hashes. "
-    "Retained and dropped IDs must together cover the registry exactly, retain "
-    "canonical causal order, and drop only listed removable slots while keeping "
-    "at least four passages. Rewrite retained prose naturally to satisfy the "
-    "115-125 word and 50-60 second contract; remove complete low-priority "
-    "slots only, never truncate mechanically, invent facts, add citations, or "
-    "copy dialogue."
+    "TARGETED NARRATION POSITION REPAIR: return exactly one JSON object with "
+    "the single top-level key {\"rewrites\": [\"text for position 0\", \"...\"]}. "
+    "The rewrites array must contain one revised spoken-text string for every "
+    "ordered position supplied in the context; array index N maps to position N. "
+    "never return, create, or rewrite claim IDs, evidence panel IDs, slot IDs, "
+    "passage IDs, observations, beat IDs, or hashes. Preserve the supplied causal "
+    "order and evidence-grounded meaning. Write natural English within each "
+    "position's word budget so the total is 115-125 words and 50-60 seconds. "
+    "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
+    "metadata, or alternate key."
 )
 EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
@@ -525,6 +525,62 @@ class NarrationRepairSlot:
             "causal_position": self.causal_position,
             "priority": self.priority,
             "removable": self.removable,
+        }
+
+
+@dataclass(frozen=True)
+class NarrationRepairPosition:
+    """Trusted claim-level rewrite position; provider never owns its identity."""
+
+    position: int
+    slot_id: str
+    passage_id: str
+    claim_ids: tuple[str, ...]
+    evidence_panel_ids: tuple[str, ...]
+    beat_id: str
+    causal_position: int
+    priority: int
+    removable: bool
+    word_budget: int
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.position, bool)
+            or not isinstance(self.position, int)
+            or self.position < 0
+            or not self.slot_id.startswith("narration_position_v1_")
+            or not self.passage_id.strip()
+            or not self.claim_ids
+            or not self.evidence_panel_ids
+            or not self.beat_id.strip()
+            or isinstance(self.causal_position, bool)
+            or not isinstance(self.causal_position, int)
+            or self.causal_position < 0
+            or isinstance(self.priority, bool)
+            or not isinstance(self.priority, int)
+            or not isinstance(self.removable, bool)
+            or isinstance(self.word_budget, bool)
+            or not isinstance(self.word_budget, int)
+            or self.word_budget <= 0
+            or any(not isinstance(value, str) or not value.strip() for value in self.claim_ids)
+            or any(not isinstance(value, str) or not value.strip() for value in self.evidence_panel_ids)
+            or len(set(self.claim_ids)) != len(self.claim_ids)
+            or len(set(self.evidence_panel_ids)) != len(self.evidence_panel_ids)
+        ):
+            raise CloudStageError("cloud.narrative_repair_position_selection_invalid", reviewable=True)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "position": self.position,
+            "slot_id": self.slot_id,
+            "passage_id": self.passage_id,
+            "claim_ids": list(self.claim_ids),
+            "evidence_panel_ids": list(self.evidence_panel_ids),
+            "beat_id": self.beat_id,
+            "causal_position": self.causal_position,
+            "priority": self.priority,
+            "removable": self.removable,
+            "word_budget": self.word_budget,
         }
 
 
@@ -2774,6 +2830,384 @@ class CloudStageRunner:
             "registry_hash": _hash(registry_identity),
         }
 
+    def _narration_repair_position_registry(
+        self,
+        positions: Sequence[NarrationRepairPosition | Mapping[str, Any]],
+        candidate: NarrationResult,
+        story_map: StoryMapResult,
+        *,
+        prompt: tuple[str, str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Canonicalize the ordered local rewrite registry and its cache identity."""
+
+        canonical_positions: list[NarrationRepairPosition] = []
+        for position_index, value in enumerate(positions):
+            try:
+                position = value if isinstance(value, NarrationRepairPosition) else NarrationRepairPosition(
+                    position=int(value["position"]),
+                    slot_id=str(value["slot_id"]),
+                    passage_id=str(value["passage_id"]),
+                    claim_ids=tuple(str(item) for item in value["claim_ids"]),
+                    evidence_panel_ids=tuple(str(item) for item in value["evidence_panel_ids"]),
+                    beat_id=str(value["beat_id"]),
+                    causal_position=int(value["causal_position"]),
+                    priority=int(value["priority"]),
+                    removable=bool(value["removable"]),
+                    word_budget=int(value["word_budget"]),
+                )
+                position = replace(position, position=position_index)
+            except (KeyError, TypeError, ValueError):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_selection_invalid",
+                    reviewable=True,
+                ) from None
+            canonical_positions.append(position)
+        if not 8 <= len(canonical_positions) <= 12:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_selection_invalid",
+                reviewable=True,
+            )
+        if [item.causal_position for item in canonical_positions] != sorted(
+            item.causal_position for item in canonical_positions
+        ):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_order_invalid",
+                reviewable=True,
+            )
+        if len({item.slot_id for item in canonical_positions}) != len(canonical_positions):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_selection_invalid",
+                reviewable=True,
+            )
+        rows = [item.as_dict() for item in canonical_positions]
+        selected_claim_ids = {
+            claim_id for item in canonical_positions for claim_id in item.claim_ids
+        }
+        if not 8 <= len(selected_claim_ids) <= 12:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_selection_invalid",
+                reviewable=True,
+            )
+        target_word_count = sum(item.word_budget for item in canonical_positions)
+        if not 115 <= target_word_count <= 125:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_budget_invalid",
+                reviewable=True,
+            )
+        selected_passage_ids = {item.passage_id for item in canonical_positions}
+        if len(selected_passage_ids) < 4:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_selection_invalid",
+                reviewable=True,
+            )
+        prompt_identity = prompt or self.prompts["narration"]
+        identity = {
+            "version": NARRATION_REPAIR_POSITION_REGISTRY_VERSION,
+            "candidate_hash": _hash(candidate.as_dict()),
+            "visual_evidence_hash": candidate.visual_evidence_hash,
+            "story_map_hash": story_map.story_map_hash,
+            "model_identity_hash": self.model_identity.identity_hash,
+            "prompt_version": prompt_identity[0],
+            "prompt_sha256": prompt_identity[1],
+            "positions": rows,
+        }
+        return {
+            **identity,
+            "positions": rows,
+            "target_word_count": target_word_count,
+            "target_duration_s": script.estimate_duration(
+                " ".join(["word"] * target_word_count),
+                "dramatic",
+            ),
+            "slot_order_hash": _hash(identity),
+        }
+
+    def _build_narration_repair_position_registry(
+        self,
+        candidate: NarrationResult,
+        story_map: StoryMapResult,
+        *,
+        prompt: tuple[str, str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Select 8-12 trusted claim positions before any provider request."""
+
+        slots = self._build_narration_repair_slots(candidate, story_map)
+        candidate_claims = {
+            str(claim.get("claim_id", "")): claim
+            for claim in candidate.evidence_graph.get("claims", ())
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        story_claims = {
+            str(claim.get("claim_id", "")): claim
+            for claim in story_map.claims
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        all_positions: list[NarrationRepairPosition] = []
+        for slot in slots:
+            for claim_index, claim_id in enumerate(slot.claim_ids):
+                candidate_claim = candidate_claims.get(claim_id)
+                story_claim = story_claims.get(claim_id)
+                if candidate_claim is None or story_claim is None:
+                    raise CloudStageError(
+                        "cloud.narrative_repair_position_lineage_invalid",
+                        reviewable=True,
+                    )
+                claim_refs = tuple(
+                    str(value)
+                    for value in story_claim.get(
+                        "evidence_panel_ids",
+                        story_claim.get("panel_ids", ()),
+                    )
+                )
+                if not claim_refs or not set(claim_refs).issubset(set(slot.evidence_panel_ids)):
+                    raise CloudStageError(
+                        "cloud.narrative_repair_position_lineage_invalid",
+                        reviewable=True,
+                    )
+                identity = {
+                    "version": NARRATION_REPAIR_POSITION_REGISTRY_VERSION,
+                    "candidate_hash": _hash(candidate.as_dict()),
+                    "story_map_hash": story_map.story_map_hash,
+                    "slot_id": slot.slot_id,
+                    "claim_id": claim_id,
+                    "causal_position": slot.causal_position,
+                }
+                all_positions.append(
+                    NarrationRepairPosition(
+                        position=len(all_positions),
+                        slot_id=f"narration_position_v1_{_hash(identity)}",
+                        passage_id=slot.passage_id,
+                        claim_ids=(claim_id,),
+                        evidence_panel_ids=slot.evidence_panel_ids,
+                        beat_id=slot.beat_id,
+                        causal_position=slot.causal_position,
+                        priority=slot.priority - claim_index,
+                        removable=slot.removable or len(slot.claim_ids) > 1,
+                        word_budget=1,
+                    )
+                )
+        if len(all_positions) < 8:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_selection_invalid",
+                reviewable=True,
+            )
+        selected = list(all_positions)
+        while len(selected) > 12:
+            counts: dict[str, int] = {}
+            for item in selected:
+                counts[item.passage_id] = counts.get(item.passage_id, 0) + 1
+            removable = [
+                item
+                for item in selected
+                if item.removable and counts[item.passage_id] > 1
+            ]
+            if not removable or len(selected) - 1 < 8:
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_selection_invalid",
+                    reviewable=True,
+                )
+            selected.remove(
+                min(
+                    removable,
+                    key=lambda item: (
+                        item.priority,
+                        item.causal_position,
+                        item.passage_id,
+                        item.claim_ids,
+                    ),
+                )
+            )
+        target_word_count = 120
+        base_budget, remainder = divmod(target_word_count, len(selected))
+        budgeted = [
+            replace(
+                item,
+                position=index,
+                word_budget=base_budget + (1 if index < remainder else 0),
+            )
+            for index, item in enumerate(selected)
+        ]
+        registry = self._narration_repair_position_registry(
+            budgeted,
+            candidate,
+            story_map,
+            prompt=prompt,
+        )
+        candidate_passages = {
+            str(passage.get("passage_id", "")): passage
+            for passage in candidate.passages
+            if isinstance(passage, Mapping)
+        }
+        provider_positions = []
+        for item in budgeted:
+            passage = candidate_passages[item.passage_id]
+            provider_positions.append(
+                {
+                    "position": item.position,
+                    "word_budget": item.word_budget,
+                    "passage_text": str(passage.get("text", "")),
+                    "claim_context": [
+                        {
+                            "text": str(candidate_claims[claim_id].get("text", "")),
+                            "qualification": str(candidate_claims[claim_id].get("qualification", "")),
+                        }
+                        for claim_id in item.claim_ids
+                    ],
+                    "evidence_panel_ids": list(item.evidence_panel_ids),
+                    "beat_context": item.beat_id,
+                }
+            )
+        registry["provider_positions"] = provider_positions
+        return registry
+
+    @staticmethod
+    def _reconcile_narration_repair_vector(
+        raw: Mapping[str, Any],
+        registry: Mapping[str, Any],
+        candidate: NarrationResult,
+    ) -> dict[str, Any]:
+        """Map provider rewrite index N to trusted local position N."""
+
+        if not isinstance(raw, Mapping) or set(raw) != {"rewrites"}:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_contract_invalid",
+                reviewable=True,
+            )
+        raw_positions = registry.get("positions")
+        rewrites = raw.get("rewrites")
+        if not isinstance(raw_positions, list) or not isinstance(rewrites, list):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_contract_invalid",
+                reviewable=True,
+            )
+        if len(rewrites) != len(raw_positions):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_contract_invalid",
+                reviewable=True,
+            )
+        positions: list[NarrationRepairPosition] = []
+        for index, value in enumerate(raw_positions):
+            try:
+                position = NarrationRepairPosition(
+                    position=index,
+                    slot_id=str(value["slot_id"]),
+                    passage_id=str(value["passage_id"]),
+                    claim_ids=tuple(str(item) for item in value["claim_ids"]),
+                    evidence_panel_ids=tuple(str(item) for item in value["evidence_panel_ids"]),
+                    beat_id=str(value["beat_id"]),
+                    causal_position=int(value["causal_position"]),
+                    priority=int(value["priority"]),
+                    removable=bool(value["removable"]),
+                    word_budget=int(value["word_budget"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_contract_invalid",
+                    reviewable=True,
+                ) from None
+            positions.append(position)
+            text = rewrites[index]
+            if not isinstance(text, str) or not text.strip():
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_contract_invalid",
+                    reviewable=True,
+                )
+            word_count = len(re.findall(r"[A-Za-z0-9]+", text))
+            if word_count > position.word_budget:
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_budget_invalid",
+                    reviewable=True,
+                )
+            trusted_ids = (
+                position.slot_id,
+                position.passage_id,
+                position.beat_id,
+                *position.claim_ids,
+                *position.evidence_panel_ids,
+            )
+            if any(identifier and identifier in text for identifier in trusted_ids):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_contract_invalid",
+                    reviewable=True,
+                )
+        total_words = sum(
+            len(re.findall(r"[A-Za-z0-9]+", str(text))) for text in rewrites
+        )
+        duration = script.estimate_duration(" ".join(str(text) for text in rewrites), "dramatic")
+        if not 115 <= total_words <= 125 or not 50.0 <= duration <= 60.0:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_budget_invalid",
+                reviewable=True,
+            )
+        candidate_passages = {
+            str(passage.get("passage_id", "")): passage
+            for passage in candidate.passages
+            if isinstance(passage, Mapping)
+        }
+        candidate_claims = {
+            str(claim.get("claim_id", "")): claim
+            for claim in candidate.evidence_graph.get("claims", ())
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        grouped_text: dict[str, list[str]] = {}
+        retained_claim_ids: dict[str, list[str]] = {}
+        retained_evidence: dict[str, list[str]] = {}
+        for position, text in zip(positions, rewrites, strict=True):
+            if position.passage_id not in candidate_passages or any(
+                claim_id not in candidate_claims for claim_id in position.claim_ids
+            ):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_lineage_invalid",
+                    reviewable=True,
+                )
+            grouped_text.setdefault(position.passage_id, []).append(text.strip())
+            retained_claim_ids.setdefault(position.passage_id, []).extend(position.claim_ids)
+            retained_evidence.setdefault(position.passage_id, []).extend(position.evidence_panel_ids)
+        passages: list[dict[str, Any]] = []
+        for original in candidate.passages:
+            passage_id = str(original.get("passage_id", ""))
+            if passage_id not in grouped_text:
+                continue
+            passage = dict(original)
+            passage["text"] = " ".join(grouped_text[passage_id])
+            passage["claim_ids"] = [
+                claim_id
+                for claim_id in original.get("claim_ids", ())
+                if claim_id in set(retained_claim_ids[passage_id])
+            ]
+            passage["evidence_panel_ids"] = [
+                panel_id
+                for panel_id in original.get("evidence_panel_ids", ())
+                if panel_id in set(retained_evidence[passage_id])
+            ]
+            if not passage["claim_ids"] or not passage["evidence_panel_ids"]:
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_lineage_invalid",
+                    reviewable=True,
+                )
+            passages.append(passage)
+        claims = [
+            dict(claim)
+            for claim in candidate.evidence_graph.get("claims", ())
+            if isinstance(claim, Mapping)
+            and str(claim.get("claim_id", "")) in {
+                claim_id for values in retained_claim_ids.values() for claim_id in values
+            }
+        ]
+        if len(passages) < 4 or not claims:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+        return {
+            "narrative_outline": {
+                "story_spine": dict(candidate.story_spine),
+                "ending_kind": candidate.ending_kind,
+            },
+            "script_passages": passages,
+            "evidence_graph": {"claims": claims},
+        }
+
     @staticmethod
     def _reconcile_narration_repair_slots(
         raw: Mapping[str, Any],
@@ -2985,8 +3419,10 @@ class CloudStageRunner:
                 "prompt_sha256": prompt[1],
                 "repair_attempt": int(targeted_repair.get("repair_attempt", 1)),
                 "candidate_hash": str(targeted_repair.get("candidate_hash", "")),
-                "slot_registry_version": str(targeted_repair.get("slot_registry_version", "")),
-                "slot_registry_hash": str(targeted_repair.get("slot_registry_hash", "")),
+                "position_registry_version": str(
+                    targeted_repair.get("position_registry_version", "")
+                ),
+                "slot_order_hash": str(targeted_repair.get("slot_order_hash", "")),
             },
         )
 
@@ -3025,10 +3461,10 @@ class CloudStageRunner:
             or record.get("prompt_version") != prompt[0]
             or record.get("prompt_sha256") != prompt[1]
             or record.get("candidate_hash") != str(targeted_repair.get("candidate_hash", ""))
-            or record.get("slot_registry_version")
-            != str(targeted_repair.get("slot_registry_version", ""))
-            or record.get("slot_registry_hash")
-            != str(targeted_repair.get("slot_registry_hash", ""))
+            or record.get("position_registry_version")
+            != str(targeted_repair.get("position_registry_version", ""))
+            or record.get("slot_order_hash")
+            != str(targeted_repair.get("slot_order_hash", ""))
             or not _narration_result_is_usable(
                 result,
                 visual,
@@ -3047,10 +3483,12 @@ class CloudStageRunner:
         report = dict(result.qc_report)
         report["narration_repair"] = {
             "contract_version": NARRATION_REPAIR_VERSION,
-            "scope": "passage_text_or_low_priority_compaction",
+            "scope": "position_locked_rewrite_vector",
             "candidate_hash": str(targeted_repair.get("candidate_hash", "")),
-            "slot_registry_version": str(targeted_repair.get("slot_registry_version", "")),
-            "slot_registry_hash": str(targeted_repair.get("slot_registry_hash", "")),
+            "position_registry_version": str(
+                targeted_repair.get("position_registry_version", "")
+            ),
+            "slot_order_hash": str(targeted_repair.get("slot_order_hash", "")),
             "failure_codes": list(targeted_repair.get("failure_codes", ())),
             "attempts": int(record.get("repair_attempt", 1)),
             "provider_stage": "narration_repair",
@@ -3327,16 +3765,19 @@ class CloudStageRunner:
         """Repair prose or complete low-priority passages without changing evidence scope."""
 
         candidate_hash = _hash(candidate.as_dict())
-        repair_slots = self._build_narration_repair_slots(candidate, story_map)
-        slot_registry = self._narration_repair_slot_registry(repair_slots)
+        position_registry = self._build_narration_repair_position_registry(
+            candidate,
+            story_map,
+        )
         removable_passage_ids = self._removable_narration_passage_ids(candidate)
         repair_context = {
             "contract_version": NARRATION_REPAIR_VERSION,
             "failure_codes": list(dict.fromkeys(str(code) for code in failure_codes)),
             "candidate_hash": candidate_hash,
-            "slot_registry_version": slot_registry["version"],
-            "slot_registry_hash": slot_registry["registry_hash"],
-            "slot_registry": slot_registry,
+            "position_registry_version": position_registry["version"],
+            "slot_order_hash": position_registry["slot_order_hash"],
+            "position_registry": position_registry,
+            "position_context": position_registry["provider_positions"],
             "removable_passage_ids": list(removable_passage_ids),
             "immutable_scope": [
                 "passage_id",
@@ -3353,7 +3794,7 @@ class CloudStageRunner:
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-repair-v2"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v1"
         repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
         repair_prompt = (
             repair_prompt_version,
@@ -3375,7 +3816,12 @@ class CloudStageRunner:
             "cloud.narrative_duration_out_of_range",
             reviewable=True,
         )
-        for attempt in range(NARRATION_REPAIR_MAX_ATTEMPTS):
+        attempt_limit = (
+            NARRATION_REPAIR_POSITION_MAX_ATTEMPTS
+            if position_registry["version"] == NARRATION_REPAIR_POSITION_REGISTRY_VERSION
+            else NARRATION_REPAIR_MAX_ATTEMPTS
+        )
+        for attempt in range(attempt_limit):
             context = {
                 **repair_context,
                 "repair_attempt": attempt + 1,
@@ -3394,7 +3840,7 @@ class CloudStageRunner:
                     request_prompt_version=repair_prompt_version,
                     request_prompt_sha256=repair_prompt[1],
                     request_prompt_text=repair_prompt_text,
-                    repair_slots=repair_slots,
+                    repair_position_registry=position_registry,
                     repair_candidate=candidate,
                 )
                 reconciled = self._narration_repair_scope_reconciled(
@@ -3425,10 +3871,10 @@ class CloudStageRunner:
                 report = dict(repaired.qc_report)
                 report["narration_repair"] = {
                     "contract_version": NARRATION_REPAIR_VERSION,
-                    "scope": "passage_text_or_low_priority_compaction",
+                    "scope": "position_locked_rewrite_vector",
                     "candidate_hash": candidate_hash,
-                    "slot_registry_version": slot_registry["version"],
-                    "slot_registry_hash": slot_registry["registry_hash"],
+                    "position_registry_version": position_registry["version"],
+                    "slot_order_hash": position_registry["slot_order_hash"],
                     "failure_codes": list(repair_context["failure_codes"]),
                     "removable_passage_ids": list(removable_passage_ids),
                     "removed_passage_ids": [
@@ -3474,6 +3920,7 @@ class CloudStageRunner:
         request_prompt_sha256: str | None = None,
         request_prompt_text: str | None = None,
         repair_slots: Sequence[NarrationRepairSlot] | None = None,
+        repair_position_registry: Mapping[str, Any] | None = None,
         repair_candidate: NarrationResult | None = None,
     ) -> NarrationResult:
         retryable_codes = {
@@ -3571,7 +4018,19 @@ class CloudStageRunner:
                     )
                     if not isinstance(raw, Mapping):
                         raise CloudStageError("cloud.provider_response_invalid")
-                    provider_output = raw.get("analyzer_output", raw)
+                    if repair_position_registry is not None:
+                        if repair_candidate is None:
+                            raise CloudStageError(
+                                "cloud.narrative_repair_position_contract_invalid",
+                                reviewable=True,
+                            )
+                        provider_output = self._reconcile_narration_repair_vector(
+                            raw,
+                            repair_position_registry,
+                            repair_candidate,
+                        )
+                    else:
+                        provider_output = raw.get("analyzer_output", raw)
                     if not isinstance(provider_output, Mapping):
                         raise CloudStageError("cloud.provider_response_invalid")
                     if repair_slots is not None:

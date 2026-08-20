@@ -601,3 +601,20 @@ sanitized cloud.narrative_not_grounded chunk failures. No narration, MP4,
 voice, or QC result is proven by this checkpoint. Resume only through the
 normal batch entrypoint after confirming no active process; do not repeat
 cached visual calls.
+## Current Oracle checkpoint: position-locked narration repair (2026-08-21)
+The published base is `080744718f40cb3480a6a9d83896eabbe533c3c4`. The current
+source/test checkpoint changes only the targeted narration repair boundary:
+local code selects 8-12 grounded claim positions, assigns a 120-word budget,
+and hashes the ordered registry as `slot_order_hash`. The pinned provider may
+return only a positional `rewrites` array; it must not own slot, claim, beat,
+evidence, or hash identifiers. Reconciliation and cache admission remain
+local and fail closed on wrong wrappers/counts/types, budget or duration drift,
+lineage drift, or reordered positions. One real repair request is allowed
+after publication; no visual/story rerun or automatic retry.
+Verified before publication: RED 6 collection-clean intended failures; GREEN
+focused 138/138 (cloud 72, prepared manifest 7, adapter 23, synthesis 36),
+Ruff, compileall, diff-check, no-churn, and key-shaped secret scan. Runtime
+state is still STORY_MAPPED with 701 visual rows; no narration, MP4, voice, or
+final QC is proven. Resume only with the sanitized runtime environment and
+existing durable cache; never print `ms_env.sh`, commit data/media/DB/WAL,
+credentials, or provider payloads.
