@@ -542,6 +542,8 @@ class NarrationRepairPosition:
     priority: int
     removable: bool
     word_budget: int
+    word_budget_min: int = 0
+    word_budget_max: int = 0
 
     def __post_init__(self) -> None:
         if (
@@ -562,12 +564,23 @@ class NarrationRepairPosition:
             or isinstance(self.word_budget, bool)
             or not isinstance(self.word_budget, int)
             or self.word_budget <= 0
+            or (self.word_budget_min and self.word_budget_min <= 0)
+            or (self.word_budget_max and self.word_budget_max <= 0)
+            or (
+                self.word_budget_min
+                and self.word_budget_max
+                and self.word_budget_min > self.word_budget_max
+            )
             or any(not isinstance(value, str) or not value.strip() for value in self.claim_ids)
             or any(not isinstance(value, str) or not value.strip() for value in self.evidence_panel_ids)
             or len(set(self.claim_ids)) != len(self.claim_ids)
             or len(set(self.evidence_panel_ids)) != len(self.evidence_panel_ids)
         ):
             raise CloudStageError("cloud.narrative_repair_position_selection_invalid", reviewable=True)
+        if not self.word_budget_min:
+            object.__setattr__(self, "word_budget_min", max(1, self.word_budget - 4))
+        if not self.word_budget_max:
+            object.__setattr__(self, "word_budget_max", self.word_budget + 4)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -581,6 +594,8 @@ class NarrationRepairPosition:
             "priority": self.priority,
             "removable": self.removable,
             "word_budget": self.word_budget,
+            "word_budget_min": self.word_budget_min,
+            "word_budget_max": self.word_budget_max,
         }
 
 
@@ -2854,6 +2869,12 @@ class CloudStageRunner:
                     priority=int(value["priority"]),
                     removable=bool(value["removable"]),
                     word_budget=int(value["word_budget"]),
+                    word_budget_min=int(
+                        value.get("word_budget_min", int(value["word_budget"]) - 4)
+                    ),
+                    word_budget_max=int(
+                        value.get("word_budget_max", int(value["word_budget"]) + 4)
+                    ),
                 )
                 position = replace(position, position=position_index)
             except (KeyError, TypeError, ValueError):
@@ -3024,6 +3045,11 @@ class CloudStageRunner:
                 item,
                 position=index,
                 word_budget=base_budget + (1 if index < remainder else 0),
+                word_budget_min=max(
+                    8,
+                    base_budget + (1 if index < remainder else 0) - 4,
+                ),
+                word_budget_max=base_budget + (1 if index < remainder else 0) + 4,
             )
             for index, item in enumerate(selected)
         ]
@@ -3045,6 +3071,8 @@ class CloudStageRunner:
                 {
                     "position": item.position,
                     "word_budget": item.word_budget,
+                    "word_budget_min": item.word_budget_min,
+                    "word_budget_max": item.word_budget_max,
                     "passage_text": str(passage.get("text", "")),
                     "claim_context": [
                         {
@@ -3099,6 +3127,12 @@ class CloudStageRunner:
                     priority=int(value["priority"]),
                     removable=bool(value["removable"]),
                     word_budget=int(value["word_budget"]),
+                    word_budget_min=int(
+                        value.get("word_budget_min", int(value["word_budget"]) - 4)
+                    ),
+                    word_budget_max=int(
+                        value.get("word_budget_max", int(value["word_budget"]) + 4)
+                    ),
                 )
             except (KeyError, TypeError, ValueError):
                 raise CloudStageError(
@@ -3113,7 +3147,7 @@ class CloudStageRunner:
                     reviewable=True,
                 )
             word_count = len(re.findall(r"[A-Za-z0-9]+", text))
-            if word_count > position.word_budget:
+            if not position.word_budget_min <= word_count <= position.word_budget_max:
                 raise CloudStageError(
                     "cloud.narrative_repair_position_budget_invalid",
                     reviewable=True,

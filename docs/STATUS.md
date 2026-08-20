@@ -1783,3 +1783,23 @@ Publication commit `c663ccb72b4e7d29c86a14c793b83b957e5517e8` is on GitHub
 main with parent `080744718f40cb3480a6a9d83896eabbe533c3c4`. The exact
 source/test/docs checkpoint above is now published; no real provider request
 has been made yet.
+## Position-vector live attempt and budget-boundary correction - 2026-08-21
+
+The first real position-vector request was issued once after publication
+`4a82e09dd3d11f8664f11167c6d9b7b21213e82b`, using the durable candidate
+`c4662073d9aa1e51de1620c7d4b0edfe5a51ebf7fc3f7bdda6233789f93d7310` and
+`grok-4.3`. It failed closed after `request_count=1` with
+`cloud.narrative_repair_position_budget_invalid`. No provider prose or raw
+payload was retained; the sanitized metadata report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`1194ac83c3aa32ef933be9897f6207188c0f7bce1f04397b7b93c3c8f3096f61`.
+
+The exact boundary correction adds explicit deterministic min/max word ranges
+around each local target budget, while preserving the strict total 115-125
+word and 50-60-second gates. No automatic retry was made. RED was
+collection-clean with 1 intended body failure; GREEN is now 139/139 focused
+tests (cloud 73, prepared manifest 7, adapter 23, synthesis 36), plus Ruff,
+compileall, diff-check, no-churn, and key-shaped secret scan. The correction
+is not yet published; after its GREEN checkpoint, one separately bounded real
+retry is allowed. Visual/story stages remain cached and untouched.

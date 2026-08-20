@@ -625,3 +625,15 @@ narration or media artifact.
 Commit `c663ccb72b4e7d29c86a14c793b83b957e5517e8` is the published fast-forward
 from `080744718f40cb3480a6a9d83896eabbe533c3c4`. The position repair contract
 is GREEN and no real repair request has been made yet.
+## Position-vector live attempt and correction - 2026-08-21
+
+One real repair request ran after the published `4a82e09` checkpoint against
+the durable 160-word/64.35-second candidate and failed closed with
+`cloud.narrative_repair_position_budget_invalid`; request count was exactly 1
+and no retry occurred. Only sanitized metadata was persisted at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`.
+The correction now gives each position an explicit bounded word range while
+keeping total 115-125 words and 50-60 seconds strict. RED: 1 intended body
+failure. GREEN: 139/139 focused cloud/manifest/adapter/synthesis tests, Ruff,
+compileall, diff-check, no-churn, and secret scan. Publish this correction
+before one new bounded real retry; do not repeat visual/story calls.

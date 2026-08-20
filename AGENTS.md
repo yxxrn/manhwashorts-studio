@@ -623,3 +623,15 @@ credentials, or provider payloads.
 GitHub main and Oracle publish commit are `c663ccb72b4e7d29c86a14c793b83b957e5517e8`,
 parent `080744718f40cb3480a6a9d83896eabbe533c3c4`. The focused position-vector
 gates are green; the single real repair request is the next external action.
+## Position-vector live attempt correction (2026-08-21)
+
+The first post-publication position repair made exactly one real
+`grok-4.3` request and failed closed with
+`cloud.narrative_repair_position_budget_invalid`; no automatic retry or raw
+provider payload retention occurred. Runtime-only sanitized metadata is at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`.
+The current unpublished correction uses explicit bounded per-position word
+ranges around a 120-word target and retains strict total/duration gates. Its
+RED was one collection-clean body failure; GREEN is 139 focused tests plus
+Ruff/compile/diff/no-churn/secret checks. Publish this correction before any
+new real request; never repeat visual/story stages or expose provider text.

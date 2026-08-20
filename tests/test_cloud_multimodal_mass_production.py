@@ -2494,6 +2494,29 @@ def test_position_repair_reconciles_vector_by_index_and_copies_trusted_lineage()
     )
 
 
+def test_position_repair_accepts_uneven_bounded_slot_budgets():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [row["word_budget"] for row in registry["positions"]]
+    counts[0] += 2
+    counts[1] -= 2
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"uneven{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+
+    reconciled = runner._reconcile_narration_repair_vector(
+        raw,
+        registry,
+        candidate,
+    )
+
+    assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 120
+
+
 @pytest.mark.parametrize("mutation", ("old_id_wrapper", "wrong_count", "wrong_type"))
 def test_position_repair_rejects_non_positional_provider_shapes(mutation):
     module = _module()
