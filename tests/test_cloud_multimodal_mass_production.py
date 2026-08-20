@@ -218,7 +218,7 @@ class _FakeProvider:
                 "random_sampling": False,
                 "beats": [
                     {"beat_id": "beat-1", "panel_ids": panel_ids[:2], "summary": "pressure builds"},
-                    {"beat_id": "beat-2", "panel_ids": panel_ids[1:], "summary": "the next choice stays open"},
+                    {"beat_id": "beat-2", "panel_ids": panel_ids[1:] or panel_ids, "summary": "the next choice stays open"},
                 ],
                 "causal_chain": [
                     {"from_beat": "beat-1", "to_beat": "beat-2", "reason": "the visible choice changes the stakes"}
@@ -1229,3 +1229,259 @@ def test_openai_compatible_json_stage_uses_pinned_prompt_without_exposing_key(mo
     assert body["response_format"] == {"type": "json_object"}
     assert captured["headers"]["Authorization"] == "Bearer test-key-not-printed"
     assert provider.endpoint == "https://api.example.test/v1"
+
+
+def test_story_map_uses_bounded_ordered_chunks_and_resumes_from_durable_chunk_cache(tmp_path):
+    module = _module()
+    import threading
+    import time
+
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"long-panel-{index:04d}",
+            source_asset_id=f"long-asset-{index:04d}",
+            source_order=index + 1,
+            mime_type="image/png",
+            payload=f"long-payload-{index}".encode(),
+        )
+        for index in range(721)
+    )
+    visual = module.VisualStageResult(
+        panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
+        source_hash="long-visual-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+
+    class ChunkProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.story_sizes = []
+            self.active = 0
+            self.max_active = 0
+            self._lock = threading.Lock()
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage != "story_map":
+                return super().complete_json(
+                    stage=stage,
+                    prompt_version=prompt_version,
+                    prompt_sha256=prompt_sha256,
+                    prompt_text=prompt_text,
+                    payload=payload,
+                )
+            with self._lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                self.story_sizes.append((payload["batch_index"], len(payload["panel_ids"])))
+            try:
+                time.sleep(0.01)
+                return super().complete_json(
+                    stage=stage,
+                    prompt_version=prompt_version,
+                    prompt_sha256=prompt_sha256,
+                    prompt_text=prompt_text,
+                    payload=payload,
+                )
+            finally:
+                with self._lock:
+                    self.active -= 1
+
+    cache_root = tmp_path / "stage-cache"
+    first_provider = ChunkProvider()
+    first_runner = module.CloudStageRunner(
+        provider=first_provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(cache_root),
+        max_attempts=1,
+    )
+    first = first_runner.run_story_map(visual)
+
+    assert first.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert sorted(first_provider.story_sizes) == [
+        (0, 180), (1, 180), (2, 180), (3, 180), (4, 1)
+    ]
+    assert first_provider.max_active <= 4
+    assert len(first.beats) == 10
+
+    second_provider = ChunkProvider()
+    second_runner = module.CloudStageRunner(
+        provider=second_provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(cache_root),
+        max_attempts=1,
+    )
+    second = second_runner.run_story_map(visual)
+    assert second == first
+    assert second_provider.story_sizes == []
+
+
+def test_story_map_resume_reuses_completed_chunks_after_one_chunk_failure(tmp_path):
+    module = _module()
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"resume-panel-{index:04d}",
+            source_asset_id=f"resume-asset-{index:04d}",
+            source_order=index + 1,
+            mime_type="image/png",
+            payload=f"resume-payload-{index}".encode(),
+        )
+        for index in range(721)
+    )
+    visual = module.VisualStageResult(
+        panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
+        source_hash="resume-visual-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+
+    class PartialProvider(_FakeProvider):
+        def __init__(self, failing_batch=None):
+            super().__init__()
+            self.failing_batch = failing_batch
+            self.story_batches = []
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "story_map":
+                batch = int(payload["batch_index"])
+                self.story_batches.append(batch)
+                if self.failing_batch == batch:
+                    self.failing_batch = None
+                    raise RuntimeError("bounded provider failure")
+            return super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+
+    cache_root = tmp_path / "partial-cache"
+    with pytest.raises(module.CloudStageError) as caught:
+        module.CloudStageRunner(
+            provider=PartialProvider(failing_batch=1),
+            model_identity=_identity(module),
+            cache=module.FileStageCache(cache_root),
+            max_attempts=1,
+        ).run_story_map(visual)
+    assert caught.value.code == "cloud.provider_request_failed"
+
+    recovering = PartialProvider()
+    result = module.CloudStageRunner(
+        provider=recovering,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(cache_root),
+        max_attempts=1,
+    ).run_story_map(visual)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert recovering.story_batches == [1]
+
+
+def test_narration_uses_the_same_bounded_ordered_chunk_contract(tmp_path):
+    module = _module()
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"narr-panel-{index:04d}",
+            source_asset_id=f"narr-asset-{index:04d}",
+            source_order=index + 1,
+            mime_type="image/png",
+            payload=f"narr-payload-{index}".encode(),
+            panel_bounds=(0, 0, 100, 100),
+            source_dimensions=(100, 100),
+            strip_region_id=f"narr-region-{index}",
+            coverage_map_version="coverage-v1",
+            coverage_map_hash="b" * 64,
+        )
+        for index in range(361)
+    )
+    visual_rows = []
+    for panel in panels:
+        observation = _visual_row(panel.descriptor())
+        visual_rows.append(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+                "observation": observation,
+                "visual_evidence": observation["visual_evidence"],
+                "evidence_hash": "",
+            }
+        )
+    visual = module.VisualStageResult(
+        panels=tuple(visual_rows),
+        source_hash="narr-visual-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    class NarrationProvider(_FakeProvider):
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "narration":
+                self.calls.append((stage, prompt_version, prompt_sha256))
+            if stage != "narration":
+                return super().complete_json(
+                    stage=stage,
+                    prompt_version=prompt_version,
+                    prompt_sha256=prompt_sha256,
+                    prompt_text=prompt_text,
+                    payload=payload,
+                )
+            panel_ids = list(payload["panel_ids"])
+            seed_panel_ids = (
+                panel_ids[:3]
+                if len(panel_ids) >= 3
+                else ["seed-panel-0", "seed-panel-1", "seed-panel-2"]
+            )
+            output = _narrative_output("cloud", seed_panel_ids)
+            base_observation = dict(output["observations"][0])
+            output["observations"] = [
+                {
+                    **base_observation,
+                    "panel_id": panel_id,
+                    "evidence_refs": [panel_id],
+                }
+                for panel_id in panel_ids
+            ]
+            output["coverage_manifest"]["panel_ids"] = panel_ids
+            output["coverage_manifest"]["total_panels"] = len(panel_ids)
+            output["coverage_manifest"]["processed_panels"] = len(panel_ids)
+            for chunk in output["continuity_ledger"]["chunks"]:
+                chunk["panel_ids"] = panel_ids
+            for entity in output["continuity_ledger"]["entities"]:
+                entity["panel_ids"] = panel_ids
+            for passage in output["script_passages"]:
+                passage["evidence_panel_ids"] = panel_ids
+            for claim in output["evidence_graph"]["claims"]:
+                claim["evidence_panel_ids"] = panel_ids
+            return output
+
+    provider = NarrationProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "narr-cache"),
+        max_attempts=1,
+    )
+    story_map = runner.run_story_map(visual)
+    result = runner.run_narration(visual, story_map, panels=panels)
+
+    assert result.observations[0]["panel_id"] == panels[0].panel_id
+    assert result.observations[-1]["panel_id"] == panels[-1].panel_id
+    assert len([call for call in provider.calls if call[0] == "narration"]) == 3
+    assert len(result.observations) == len(panels)
+
+    resumed_provider = NarrationProvider()
+    resumed_runner = module.CloudStageRunner(
+        provider=resumed_provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "narr-cache"),
+        max_attempts=1,
+    )
+    resumed_story = resumed_runner.run_story_map(visual)
+    resumed_result = resumed_runner.run_narration(visual, resumed_story, panels=panels)
+    assert resumed_result == result
+    assert resumed_provider.calls == []

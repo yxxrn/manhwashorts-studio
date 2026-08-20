@@ -1,50 +1,52 @@
-# CURRENT ORACLE EXECUTION CHECKPOINT  2026-08-20
+# CURRENT ORACLE EXECUTION CHECKPOINT - 2026-08-20
 
 This block is authoritative for the current run and supersedes older local/VPS
-history below. The repository is being executed on Oracle, not the historical
-Windows/VPS workspaces.
+history below. Execution is on Oracle at /home/ubuntu/manhwashorts, not the
+historical Windows/VPS workspaces.
 
 - Repository: /home/ubuntu/manhwashorts; branch main.
-- HEAD: 00b82b069a8ac3bf6910c1b2903e0847f66129e1.
-- GitHub origin/main is verified at the same 00b82b069a8ac3bf6910c1b2903e0847f66129e1 through the isolated Windows exact-history transport. The Oracle origin/main tracking ref is stale at b6f72cd because VPS HTTPS push/fetch authentication is unavailable; use the transport boundary for the next publication.
-- The worktree is intentionally dirty. Existing tracked edits are preserved;
-  do not reset, checkout, normalize unrelated files, or force-push.
-- Runtime-only paths remain outside Git: /data/data/p0-aws-acceptance,
-/tmp/ms-stage-cache, /tmp/visual_checkpoints.jsonl, the data symlink,
-database/WAL/media/output files, and ms_env.sh. ms_env.sh contains
-credentials: source it only in-process when needed, never print, copy, log,
-test-fixture, or commit its contents.
-- Phase 0 checkpoint is green for the focused matrix:
-  169 passed, 35 warnings across the cloud/analyzer/vision/story/strip
-  tests, plus the two new checkpoint/cache tests and two narration/persistence
-  regressions (2 passed). The expanded relevant framing/planner matrix is
-  236 passed, 1 existing fixture skip, 38 warnings. git diff --check is clean.
-- The complete non-slow run reaches the end with only two environment-invalid
-  failures: tests/test_operator_launcher.py invokes Windows cmd.exe on this
-  Linux Oracle host. Those tests must be rerun on Windows; they are not a
-  production launcher failure and are not bypassed here.
-- The restartable cache is copied byte-for-byte from /tmp to
-  /data/data/p0-aws-acceptance/cloud-stage-cache: 8 JSON stage entries and
-  one checkpoint ledger, 9 files / 7,855,981 bytes. The source visual stage
-  entry contains 701 reconciled panels; the checkpoint ledger has 736 lines.
-  This proves durable artifact transfer, not completion of later stages or a
-  new provider run.
-- Proven complete in this checkpoint: local cache/checkpoint boundary, focused reconciliation/persistence regressions, and exact-history GitHub publication. Not yet proven: story map,
-  narration, timeline/render, silent MP4, voice/TTS, final QC, or publication.
-  The next implementation slice is bounded story-map and narration chunking
-  with four workers, approximately 180 panels per chunk, deterministic ordered
-  merge, per-chunk cache/checkpoint, and resume tests. Do not start voice before
-  a verified silent preview.
-- Safe resume:
-  cd /home/ubuntu/manhwashorts
-  source /tmp/ms_env.sh without output when cloud access is explicitly
-  required, then run the focused matrix before stage work. Use the normal
-  checked-in service boundary and the durable cache; never replay the 701-panel
-  visual stage without proving cache invalidation.
-- Keep all evidence fail-closed: no unknown balloon geometry, invalid lineage,
-  unsupported claims, invented timing, rights bypass, or publication claim.
-  publish_allowed remains false.
+- Published base: 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9. The tracked
+  origin/main ref on Oracle is stale at b6f72cd because Oracle HTTPS
+  authentication is unavailable; the next publication must use the retained
+  Windows exact-object transport clone.
+- Current uncommitted Phase 1 source/test paths are only
+  app/services/cloud_multimodal.py and
+  tests/test_cloud_multimodal_mass_production.py. Protected runtime paths
+  remain untracked: data, ms_env.sh, DB/WAL, caches, media, and provider
+  state. ms_env.sh contains credentials; source it only in-process and never
+  print, copy, log, fixture, or commit its contents.
+- Phase 1 RED was collection-clean with three intended body failures:
+  old story-map sizes were (600, 121), completed-chunk resume retried batch 0,
+  and narration made no bounded chunk calls. GREEN is the full cloud
+  regression file: 38 passed. The expanded compatibility matrix is
+  239 passed, 1 existing Task9C1 fixture skip, and 38 warnings.
+- The complete non-slow run collected 1068 tests: 1062 passed, 4 skipped, and
+  2 failures. Both failures are the known environment-invalid
+  tests/test_operator_launcher.py cmd.exe dispatch cases; Linux Oracle has
+  no Windows cmd.exe and these are not treated as a production launcher
+  failure. Ruff, compileall, and git diff --check are clean.
+- Story-map and narration now use versioned 180-panel chunks, at most four
+  workers, deterministic chunk-index merge, bounded retries, and independent
+  cache keys. A completed chunk is reusable after a later chunk failure; the
+  narration resume test proves the second identical run makes zero provider
+  calls.
+- Phase 0 visual durability remains proven: the 701-panel cache/checkpoint
+  copy is byte-identical under
+  /data/data/p0-aws-acceptance/cloud-stage-cache (9 files / 7,855,981 bytes).
+  This is not a claim that story mapping, narration, timeline, rendering,
+  voice, or QC has completed.
+- Next: commit and publish this Phase 1 source/test/docs checkpoint, then run
+  story mapping and narration through the normal service boundary using the
+  durable cache. Only after reconciled narration is persisted may the normal
+  silent render be attempted; voice/TTS remains after a verified silent MP4.
+  publish_allowed remains false and no timing may be invented.
 
+Safe resume:
+  cd /home/ubuntu/manhwashorts
+  source /tmp/ms_env.sh without output only when cloud access is explicitly
+  required
+  .venv/bin/python -m pytest tests/test_cloud_multimodal_mass_production.py -ra
+  Never replay the 701-panel visual stage without proving cache invalidation.
 
 # ManhwaShorts interruption-safe handoff
 

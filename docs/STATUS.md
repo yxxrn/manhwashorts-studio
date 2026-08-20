@@ -1,87 +1,62 @@
-# CURRENT ORACLE P0 CHECKPOINT  2026-08-20
+# CURRENT ORACLE PHASE 1 CHECKPOINT - 2026-08-20
 
-## Phase 0 cache/reconciliation checkpoint
+Authoritative worktree: /home/ubuntu/manhwashorts on Oracle, branch main.
+Published base is 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9; Oracle's tracking
+ref remains stale because HTTPS authentication is unavailable. The only
+uncommitted source/test paths for this slice are
+app/services/cloud_multimodal.py and
+tests/test_cloud_multimodal_mass_production.py. data, ms_env.sh, DB/WAL,
+caches, media, provider state, and generated logs remain runtime-only.
 
-Authoritative execution is Oracle at
-/home/ubuntu/manhwashorts, branch main, HEAD
-00b82b069a8ac3bf6910c1b2903e0847f66129e1. GitHub origin/main is verified at
-the same SHA through the isolated Windows exact-history transport. Oracle's
-origin/main tracking ref remains stale at b6f72cd because VPS HTTPS
-authentication is unavailable. The tracked worktree is clean; only the
-protected data symlink and ms_env.sh are untracked.
+## Phase 1 bounded stage implementation
 
-The focused Phase 0 matrix is green: 169 passed, 35 warnings:
+- Story map and narration now use STORY_MAP_CHUNK_STEP=180,
+  NARRATION_CHUNK_STEP=180, and STAGE_PARALLEL_WORKERS=4.
+- Each chunk has a deterministic cache key containing stage, ordered panel
+  IDs, source hash, model identity, prompt version/hash, batch index, and
+  batch count. Successful chunks are cached before merge. The whole-stage
+  cache remains the fast path. Results are merged strictly by chunk index;
+  beat IDs and claims retain deterministic chunk prefixes.
+- Story-map worker failures leave completed chunk files available for resume.
+  Narration uses the same boundary and an identical rerun returns from cache
+  without provider calls. No provider supplies canonical hashes; local
+  reconciliation remains authoritative.
 
-.venv/bin/python -m pytest tests/test_cloud_multimodal_mass_production.py
-tests/test_analyzer_contract.py tests/test_vision_adapter.py
-tests/test_vision_pipeline.py tests/test_story_evidence.py
-tests/test_strip_segmentation.py tests/test_strips.py -ra
+## Verification
 
-The two checkpoint/cache regressions are green, and the two targeted
-narration/persistence regressions are green (2 passed). Collection was
-clean throughout. Warnings are existing Pillow deprecations; they are not
-failures. The expanded relevant matrix including strict framing and exact
-panel fallback is 236 passed, 1 existing fixture skip, 38 warnings. The
-complete non-slow run reaches the end with only two environment-invalid
-failures because tests/test_operator_launcher.py invokes Windows cmd.exe on
-this Linux Oracle host; launcher behavior is not weakened or skipped as a
-production claim.
+- TDD RED: collection-clean focused run had 3 intended body failures:
+  (0,600),(1,121) instead of five 180-panel story chunks, completed-chunk
+  resume retried batch 0, and narration had zero bounded calls.
+- GREEN focused chunk contract: 3 passed. Full cloud-stage regression:
+  38 passed with existing Pillow warnings.
+- Expanded relevant matrix:
+  239 passed, 1 existing skip
+  (tests/test_reference_framing.py:496, missing Task9C1 fixture), 38
+  warnings.
+- Full non-slow: 1068 collected, 1062 passed, 4 skipped, 2 failures.
+  The failures are only
+  tests/test_operator_launcher.py::test_actual_cmd_dispatch_handles_repository_path_without_malformed_python_join
+  and
+  tests/test_operator_launcher.py::test_actual_cmd_dispatch_handles_path_with_spaces;
+  both require Windows cmd.exe, unavailable on Oracle Linux. They are
+  environment-invalid and are not bypassed or reclassified as green.
+- Ruff on app/services/cloud_multimodal.py and
+  tests/test_cloud_multimodal_mass_production.py, compileall, and
+  git diff --check: clean.
 
-The visual-stage cache is now restart-safe on the approved data volume:
-/data/data/p0-aws-acceptance/cloud-stage-cache. The existing
-/tmp/ms-stage-cache contents were copied without deletion and verified
-byte-for-byte: 8 JSON stage entries plus visual_checkpoints.jsonl, 9 files /
-7,855,981 bytes. The source visual entry contains 701 panels;
-/tmp/visual_checkpoints.jsonl contains 736 lines. This is a durable
-cache-transfer proof, not a claim that story map, narration, rendering, voice,
-or QC has completed.
+## Runtime boundary
 
-## Exact current boundary
+Phase 0 visual cache durability remains proven at
+/data/data/p0-aws-acceptance/cloud-stage-cache, with 9 byte-verified files
+and 7,855,981 bytes; the visual cache entry has 701 reconciled panels and the
+checkpoint ledger has 736 lines. Story map, narration, timeline, silent MP4,
+voice/TTS, and final QC remain unproven. The next action after publication is
+the normal cloud service run for story map then narration using the durable
+visual cache, followed by a fail-closed silent-render attempt. No voice call
+is allowed before a verified silent MP4.
 
-Tracked files currently modified by the preserved worktree include:
-
-app/prompts/cloud_causal_map_v1.txt
-app/prompts/visual_narrative_repair_v1.txt
-app/services/analyzer_contract.py
-app/services/cloud_multimodal.py
-app/services/editorial_visual_planner.py
-app/services/framing_analysis.py
-app/services/ingest.py
-app/services/pipeline.py
-app/services/reference_visual_review.py
-app/services/render.py
-app/services/review_preview.py
-app/services/review_source_upscale.py
-app/services/strip_segmentation.py
-app/services/strips.py
-app/services/subtitle_karaoke.py
-app/services/tts.py
-app/services/vision_adapter.py
-app/services/visual_narrative_repair.py
-tests/test_cloud_multimodal_mass_production.py
-tests/test_reference_visual_review.py
-tests/test_review_source_upscale.py
-tests/test_strip_segmentation.py
-
-Runtime/untracked paths include the data symlink, ms_env.sh, database/WAL,
-provider state, caches, media/output, and the handoff document. No secret,
-database, media, or runtime artifact is part of the intended source commit.
-
-## Next executable slice
-
-Implement and test the bounded story-map/narration stage through the existing
-cloud service boundary: four workers, approximately 180 panels per chunk,
-deterministic ordered merge, per-chunk durable cache/checkpoint, complete
-coverage, bounded retries, and resume without repeating cached work. Then
-persist the reconciled narration and only afterward attempt the normal silent
-render path. Voice/TTS remains deferred until a real silent MP4 passes all
-technical and visual gates. No provider call, media render, or publication is
-claimed by this checkpoint.
-
-Published rollback/checkpoint commit is
-00b82b069a8ac3bf6910c1b2903e0847f66129e1; use the isolated Windows
-transport for the next push because Oracle HTTPS authentication is unavailable. Keep the secret-bearing ms_env.sh untracked and never quote
-its value in output.
+Rollback point: 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9.
+publish_allowed=false.
 
 # Current status
 
