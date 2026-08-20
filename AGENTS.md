@@ -1,3 +1,47 @@
+# CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
+
+Authoritative repository: Oracle `/home/ubuntu/manhwashorts`, `main`, based on
+published `383d8336b12dcca8bfec7b729a5320c795034a4a`. The current source/test
+checkpoint is intentionally uncommitted while static gates run; only
+`app/services/cloud_multimodal.py` and
+`tests/test_cloud_multimodal_mass_production.py` are authored changes. The
+untracked `data` symlink and `ms_env.sh` are protected runtime/credential
+paths and must never be staged, printed, copied, or committed.
+
+The 701-row visual cache and `prepared-panel-manifest-v1` are reusable and
+must not trigger a visual rerun. The durable typed candidate is
+`/data/data/p0-aws-acceptance/cloud-stage-cache/2fc948cc2946867c605ea14b6210a234.json`:
+160 words, 64.35 seconds, candidate hash
+`c4662073d9aa1e51de1620c7d4b0edfe5a51ebf7fc3f7bdda6233789f93d7310`, with
+`cloud.narrative_duration_out_of_range` and
+`cloud.narrative_word_count_out_of_range`. It is never a final cache entry.
+
+This checkpoint adds a compact repair harness: it filters the durable
+candidate to its exact selected panel/evidence/story identities, validates
+lineage before calling the provider, and routes an invalid durable candidate
+directly to bounded repair without a repeat normal-narration call. Provider
+prose cannot alter passage/claim IDs, evidence panel IDs, claim type, ending,
+observations, story spine, or causal scope. Safe failures now expose only a
+stable field and count, never provider text or credentials.
+
+Collection-clean RED was one body failure at the compact identity boundary;
+GREEN is 69 focused tests (`62` cloud plus `7` prepared-manifest) with five
+existing Pillow warnings. The final bounded real repair attempt issued one
+request and reached `cloud.narrative_not_grounded` because returned claim IDs
+were not locally resolvable; the provider response count was not persisted by
+that pre-diagnostic call, so it is not fabricated. No repair result,
+narration artifact, silent MP4, voice, or QC is proven. The next safe command
+after publication is the same isolated repair boundary, at most one request,
+then normal persistence/render only after a 115-125-word, 50-60-second,
+fully grounded result is admitted. Do not weaken grounding or invent claims.
+
+Keep the named current diff recoverable until the source/test/docs commit is
+published. Required verification before staging is scoped Ruff, compileall,
+diff-check, no-churn/secret/allowlist review, followed by exact-object
+fast-forward publication. The related legacy matrix remains a named baseline
+exception at 142 passed/13 prerequisite failures and is not a green
+production gate.
+
 # TARGETED REPAIR SCOPE HARDENING - 2026-08-21
 
 The preceding prepared-manifest checkpoint is published as

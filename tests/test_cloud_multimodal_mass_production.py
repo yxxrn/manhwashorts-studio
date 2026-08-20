@@ -2146,6 +2146,144 @@ def test_narration_duration_failure_retains_candidate_for_visual_repair(monkeypa
     assert caught.value.code == "cloud.narrative_duration_out_of_range"
     assert runner._last_narration_result is invalid
 
+def test_repair_harness_uses_compact_candidate_context_without_normal_call():
+    module = _module()
+    base_panels = _panels(module, "compact-repair")
+    extra_panel = replace(
+        base_panels[-1],
+        panel_id="compact-repair-panel-4",
+        source_asset_id="compact-repair-asset-4",
+        source_order=4,
+        payload=b"compact-repair-panel-payload-4",
+        source_checksum="",
+        payload_checksum="",
+        strip_region_id="compact-repair-region-4",
+    )
+    panels = base_panels + (extra_panel,)
+
+    class RepairOnlyProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.repair_panel_ids: list[tuple[str, ...]] = []
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "narration":
+                raise AssertionError("normal narration must not run for a durable candidate")
+            if stage == "narration_repair":
+                self.calls.append((stage, prompt_version, prompt_sha256))
+                self.repair_panel_ids.append(tuple(str(item) for item in payload["panel_ids"]))
+                return _narrative_output("compact-repair-candidate", list(payload["panel_ids"]))
+            return super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+
+    provider = RepairOnlyProvider()
+    cache = module.MemoryStageCache()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=cache,
+        max_attempts=1,
+    )
+    visual = runner.run_visual_evidence(panels)
+    visual = replace(
+        visual,
+        panels=tuple(
+            {
+                **dict(row),
+                "panel_bounds": list(panel.panel_bounds or ()),
+                "source_dimensions": list(panel.source_dimensions or ()),
+                "coverage_map_version": panel.coverage_map_version,
+                "coverage_map_hash": panel.coverage_map_hash,
+            }
+            for row, panel in zip(visual.panels, panels, strict=True)
+        ),
+    )
+    story_map = runner.run_story_map(visual)
+    selected_visual = replace(visual, panels=visual.panels[:3])
+    selected_ids = tuple(str(item["panel_id"]) for item in selected_visual.panels)
+    candidate_output = _narrative_output("compact-repair-candidate", list(selected_ids))
+    observations, structural = runner._narration_observations(selected_visual, None)
+    spoken = "\n\n".join(str(item["text"]).strip() for item in candidate_output["script_passages"])
+    candidate = module.NarrationResult(
+        spoken_text=spoken,
+        display_words=module.derive_display_words(spoken),
+        passages=tuple(dict(item) for item in candidate_output["script_passages"]),
+        ending_kind=str(candidate_output["narrative_outline"]["ending_kind"]),
+        word_count=160,
+        estimated_duration_s=64.35,
+        observations=tuple(observations),
+        continuity_ledger=dict(structural["continuity_ledger"]),
+        evidence_graph=dict(candidate_output["evidence_graph"]),
+        story_spine=dict(candidate_output["narrative_outline"]["story_spine"]),
+        qc_report={},
+        model_identity_hash=runner.model_identity.identity_hash,
+        prompt_version=runner.prompts["narration"][0],
+        prompt_sha256=runner.prompts["narration"][1],
+        visual_evidence_hash=selected_visual.visual_evidence_hash,
+    )
+
+    repaired = runner.run_narration_repair_candidate(
+        candidate,
+        visual,
+        story_map,
+        panels=None,
+    )
+
+    assert provider.repair_panel_ids == [selected_ids]
+    assert [call[0] for call in provider.calls] == ["visual", "story_map", "narration_repair"]
+    assert 115 <= repaired.word_count <= 125
+    assert 50.0 <= repaired.estimated_duration_s <= 60.0
+    assert all(
+        value.get("cache_type") != "narration-final-v1"
+        for value in cache._values.values()
+    )
+
+
+def test_narration_contract_diagnostic_keeps_only_field_and_count():
+    module = _module()
+    diagnostic = module._safe_narration_contract_diagnostic(
+        "script passage text leaked a private value",
+        {"script_passages": [{}, {}], "observations": [{}, {}], "evidence_graph": {"claims": [{}]}},
+    )
+    assert diagnostic == "field=script_passages;count=2"
+    assert "private" not in diagnostic
+
+
+def test_unmapped_repair_claims_report_only_safe_field_and_count():
+    module = _module()
+    story_map = module.StoryMapResult(
+        panel_ids=("panel-1",),
+        beats=(),
+        causal_chain=(),
+        claims=(
+            {
+                "claim_id": "claim-1",
+                "claim_type": "fact",
+                "text": "A grounded fact.",
+                "qualification": "The panel supports it.",
+                "panel_ids": ["panel-1"],
+            },
+        ),
+        story_map_hash="s" * 64,
+        model_identity_hash="m" * 64,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="p" * 64,
+        visual_evidence_hash="v" * 64,
+    )
+    with pytest.raises(module.CloudStageError) as caught:
+        module.CloudStageRunner._claims_from_causal_map(
+            [{"claim_ids": ["foreign-claim"]}],
+            story_map,
+        )
+    assert caught.value.code == "cloud.narrative_not_grounded"
+    assert str(caught.value) == "field=claim_ids;count=1"
+
+
 def test_visual_cache_identity_ignores_transient_preparation_fields():
     module = _module()
     panels = _panels(module, "identity")

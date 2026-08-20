@@ -1,3 +1,13 @@
+- Added the isolated compact narration-repair checkpoint. The durable
+  160-word/64.35-second candidate remains typed repair-only; final cache
+  admission still requires 115-125 words, 50-60 seconds, complete grounding,
+  identity matching, and independently derived display text. The new boundary
+  reuses exact selected panel/story identities and avoids a repeated normal
+  narration call. Focused GREEN is 69 passed (62 cloud, 7 manifest) with five
+  existing Pillow warnings. One bounded real repair request reached the safe
+  `cloud.narrative_not_grounded` claim-ID boundary; no narration, MP4, voice,
+  or QC artifact is claimed.
+
 # Changelog
 
 - Hardened the targeted narration-repair scope after a bounded real resume

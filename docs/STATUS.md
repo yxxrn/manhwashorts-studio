@@ -1,3 +1,57 @@
+# CURRENT CHECKPOINT - COMPACT NARRATION REPAIR - 2026-08-21
+
+Published source/test baseline and rollback point: Oracle `/home/ubuntu/manhwashorts`
+`main` at `383d8336b12dcca8bfec7b729a5320c795034a4a`, with GitHub `main`
+matching before this checkpoint. The intended current diff is limited to
+`app/services/cloud_multimodal.py` and
+`tests/test_cloud_multimodal_mass_production.py`; protected untracked `data`
+and `ms_env.sh` remain outside Git.
+
+The prepared-panel cold-start fix remains the durable `prepared-panel-manifest-v1`:
+it validates ordered panel/source hashes, bounds, segmentation identity, and
+optional feasible-ledger/crop metadata without deserializing provider payloads
+for a valid warm resume. The 701-row visual cache is reused; visual calls are
+not repeated by this repair slice. A warm benchmark is not claimed until a
+measured resume records elapsed time, cache hits, and peak RSS.
+
+TDD for this slice was collection-clean and body-failing at the intended
+compact identity boundary (`cloud.narrative_repair_identity_mismatch`), then
+GREEN with `69 passed` (`62` cloud-multimodal and `7` prepared-manifest), plus
+five existing Pillow deprecation warnings. The compact public repair boundary
+now accepts the durable candidate plus compact selected evidence/story
+identities, preserves exact panel/claim lineage, and routes invalid durable
+candidates to repair without a repeat normal-narration request. Final cache
+admission still independently requires 115-125 words, 50-60 seconds,
+grounding/citations, model/prompt/visual/story identity, and display
+derivation.
+
+Failure taxonomy for the current candidate and bounded repair:
+
+- `cloud.narrative_duration_out_of_range`: candidate `estimated_duration_s=64.35`.
+- `cloud.narrative_word_count_out_of_range`: candidate `word_count=160`.
+- `cloud.narrative_not_grounded`: the bounded provider repair response did not
+  reconcile claim IDs to the compact local story claim set. The safe
+  diagnostic boundary now records `field=claim_ids;count=15` for this compact
+  candidate, but the completed real call predates that diagnostic patch, so no
+  provider-return count is claimed.
+- `cloud.request_budget_exceeded` is a bounded retry guard, not a content
+  result and not a justification for weakening grounding.
+
+The final bounded real repair attempt used the configured pinned model and
+one provider request; it produced no admitted repair result or final cache.
+The normal job remains at `STORY_MAPPED` with its prior durable error state;
+direct harness usage is not falsely folded into job usage accounting. No
+narration file, silent MP4, voice, or QC artifact exists. Do not rerun valid
+visual/story stages. Next execution is one isolated contract-green repair
+attempt, then atomic result persistence and only then normal narration/render.
+
+The related pipeline matrix remains `142 passed, 13 failed`, reproduced on the
+parent with the same unchanged prerequisite at `pipeline.py:4362` (`run vision
+analysis before generating a draft`). It is explicitly a non-regression
+exception, not a full-green claim. Scoped static gates and source/test/docs
+publication still must be recorded before commit. Rollback is
+`383d8336b12dcca8bfec7b729a5320c795034a4a`.
+
 # TARGETED REPAIR SCOPE HARDENING - 2026-08-21
 
 The prepared-manifest checkpoint is published as

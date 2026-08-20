@@ -1,3 +1,47 @@
+# LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
+
+Oracle `/home/ubuntu/manhwashorts` is the authority. The published rollback
+point is `383d8336b12dcca8bfec7b729a5320c795034a4a`; current source/test
+changes are a compact narration-repair checkpoint based on that commit.
+Only `app/services/cloud_multimodal.py` and
+`tests/test_cloud_multimodal_mass_production.py` are in-scope authored files;
+the `data` symlink and `ms_env.sh` must remain untracked and secret-safe.
+
+Durable preparation is now metadata-first through
+`prepared-panel-manifest-v1`; the verified 701-panel visual cache is reusable
+without provider calls. The invalid typed candidate is at
+`/data/data/p0-aws-acceptance/cloud-stage-cache/2fc948cc2946867c605ea14b6210a234.json`
+with hash
+`c4662073d9aa1e51de1620c7d4b0edfe5a51ebf7fc3f7bdda6233789f93d7310`, 160
+words, and 64.35 seconds. It remains a repair candidate only. Its exact
+contract failures are duration and word-count out of range.
+
+The repair harness now takes the candidate and compact selected visual/story
+identities directly, checks exact panel and claim lineage, and makes no normal
+narration call when the durable candidate is invalid. The collection-clean
+RED had one intended body failure at `cloud.narrative_repair_identity_mismatch`;
+focused GREEN is 69 passed (62 cloud, 7 manifest) with five existing Pillow
+warnings. Safe provider errors are reduced to a stable code plus field/count.
+
+The single bounded real repair request after this contract was present reached
+`cloud.narrative_not_grounded`: returned claim IDs were not locally resolvable
+against the compact story claim set. The request predated the safe diagnostic
+patch, so the provider's returned count is intentionally unknown; current
+local diagnostics would report `field=claim_ids;count=15`. No result cache,
+narration artifact, MP4, voice, or QC exists. Do not repeat visual/story calls
+or bypass the claim/evidence gate. The next resume command is the normal
+project runtime with the correct database
+`/data/data/p0-aws-acceptance/sample.db`, reusing the 701-row cache, and at
+most one bounded repair request after the isolated fake-provider contract is
+green.
+
+Before publication, run scoped Ruff/compileall/diff-check, no-churn and
+secret/allowlist scans. Keep the current related matrix exception explicit:
+142 passed and 13 unchanged prerequisite failures at `pipeline.py:4362` on
+both the parent and current comparison. No production readiness or preview
+claim is valid until a grounded 115-125-word result is durably admitted and a
+real silent render passes QC.
+
 # TARGETED REPAIR SCOPE HARDENING - 2026-08-21
 
 The prepared-manifest checkpoint is published as

@@ -807,6 +807,52 @@ def _narration_retry_feedback(message_or_code: str) -> str:
     )
 
 
+def _safe_narration_contract_diagnostic(
+    message: str,
+    output: Mapping[str, Any] | None,
+) -> str:
+    """Classify a local narration contract failure without echoing content."""
+
+    lowered = str(message).casefold()
+    envelope = output if isinstance(output, Mapping) else {}
+    passages = envelope.get("script_passages")
+    passage_count = len(passages) if isinstance(passages, list) else 0
+    observations = envelope.get("observations")
+    observation_count = len(observations) if isinstance(observations, list) else 0
+    graph = envelope.get("evidence_graph")
+    claims = graph.get("claims") if isinstance(graph, Mapping) else None
+    claim_count = len(claims) if isinstance(claims, list) else 0
+    if "coverage_map_version" in lowered:
+        field, count = "coverage_map_version", observation_count
+    elif "coverage_map_hash" in lowered:
+        field, count = "coverage_map_hash", observation_count
+    elif "dialogue_or_ocr" in lowered:
+        field, count = "dialogue_or_ocr", observation_count
+    elif "script passage evidence" in lowered or "passage evidence" in lowered:
+        field, count = "passage_evidence", passage_count
+    elif "claim" in lowered and "evidence" in lowered:
+        field, count = "claim_evidence", claim_count
+    elif "script_passages" in lowered or "script passage" in lowered or "four to six passages" in lowered:
+        field, count = "script_passages", passage_count
+    elif "ending_kind" in lowered:
+        field, count = "ending_kind", 1
+    elif "story_spine" in lowered:
+        field, count = "story_spine", 6
+    elif "narrative_outline" in lowered:
+        field, count = "narrative_outline", 1
+    else:
+        field, count = "narrative_contract", 1
+    return f"field={field};count={count}"
+
+
+def _narrative_grounding_error(field: str, count: int) -> CloudStageError:
+    return CloudStageError(
+        "cloud.narrative_not_grounded",
+        f"field={field};count={int(count)}",
+        reviewable=True,
+    )
+
+
 def _visual_narrative_repair_retry_feedback(code: str) -> str:
     """Return bounded, non-content guidance for one rejected repair attempt."""
 
@@ -1336,7 +1382,7 @@ class CloudStageRunner:
         """
 
         if not isinstance(script_passages, list) or not script_passages:
-            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            raise _narrative_grounding_error("script_passages", 0)
         claims_by_id = {
             str(claim.get("claim_id")): dict(claim)
             for claim in story_map.claims
@@ -1345,13 +1391,13 @@ class CloudStageRunner:
         referenced_ids: list[str] = []
         for passage in script_passages:
             if not isinstance(passage, Mapping):
-                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+                raise _narrative_grounding_error("script_passages", len(script_passages))
             claim_ids = passage.get("claim_ids")
             if not isinstance(claim_ids, list) or not claim_ids:
-                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+                raise _narrative_grounding_error("passage.claim_ids", len(script_passages))
             for claim_id in claim_ids:
                 if not isinstance(claim_id, str):
-                    raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+                    raise _narrative_grounding_error("passage.claim_ids", len(claim_ids))
                 resolved_id = claim_id
                 if resolved_id not in claims_by_id:
                     suffix_matches = [
@@ -1360,7 +1406,7 @@ class CloudStageRunner:
                         if candidate_id.rsplit("__", 1)[-1] == claim_id
                     ]
                     if len(suffix_matches) != 1:
-                        raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+                        raise _narrative_grounding_error("claim_ids", len(claims_by_id))
                     resolved_id = suffix_matches[0]
                 referenced_ids.append(resolved_id)
         return [claims_by_id[claim_id] for claim_id in dict.fromkeys(referenced_ids)]
@@ -2047,6 +2093,14 @@ class CloudStageRunner:
             )
             if loaded_candidate is not None:
                 result, failure_codes = loaded_candidate
+                if failure_codes:
+                    result = self.run_narration_repair_candidate(
+                        result,
+                        selected_visual,
+                        selected_story,
+                        panels=selected_panels,
+                    )
+                    failure_codes = ()
 
         if result is None:
             result = self._run_narration_batched(
@@ -2451,6 +2505,96 @@ class CloudStageRunner:
             prompt,
         )
 
+    @staticmethod
+    def _compact_narration_repair_context(
+        candidate: NarrationResult,
+        visual: VisualStageResult,
+        story_map: StoryMapResult,
+    ) -> tuple[VisualStageResult, StoryMapResult]:
+        """Derive the exact selected context for a durable repair candidate."""
+
+        candidate_panel_ids = tuple(
+            str(item.get("panel_id", ""))
+            for item in candidate.observations
+            if isinstance(item, Mapping)
+        )
+        if (
+            not candidate_panel_ids
+            or len(candidate_panel_ids) != len(set(candidate_panel_ids))
+            or any(panel_id not in visual.panel_ids for panel_id in candidate_panel_ids)
+        ):
+            raise CloudStageError("cloud.narrative_repair_identity_mismatch", reviewable=True)
+        if story_map.visual_evidence_hash not in {
+            "",
+            visual.visual_evidence_hash,
+        }:
+            raise CloudStageError("cloud.narrative_repair_identity_mismatch", reviewable=True)
+        if candidate_panel_ids == visual.panel_ids:
+            compact_visual = visual
+        else:
+            visual_by_id = {
+                str(item.get("panel_id", "")): item
+                for item in visual.panels
+            }
+            compact_visual = replace(
+                visual,
+                panels=tuple(visual_by_id[panel_id] for panel_id in candidate_panel_ids),
+            )
+        selected_panel_ids = set(candidate_panel_ids)
+        compact_beats: list[dict[str, Any]] = []
+        for beat in story_map.beats:
+            panel_ids = [
+                str(panel_id)
+                for panel_id in beat.get("panel_ids", ())
+                if str(panel_id) in selected_panel_ids
+            ]
+            if panel_ids:
+                row = dict(beat)
+                row["panel_ids"] = panel_ids
+                compact_beats.append(row)
+        compact_beat_ids = {
+            str(beat.get("beat_id", "")) for beat in compact_beats
+        }
+        compact_chain = tuple(
+            dict(link)
+            for link in story_map.causal_chain
+            if str(link.get("from_beat", "")) in compact_beat_ids
+            and str(link.get("to_beat", "")) in compact_beat_ids
+        )
+        compact_claims: list[dict[str, Any]] = []
+        for claim in story_map.claims:
+            key = "evidence_panel_ids" if "evidence_panel_ids" in claim else "panel_ids"
+            refs = [
+                str(panel_id)
+                for panel_id in claim.get(key, ())
+                if str(panel_id) in selected_panel_ids
+            ]
+            if refs:
+                row = dict(claim)
+                row[key] = refs
+                compact_claims.append(row)
+        compact_story = StoryMapResult(
+            panel_ids=candidate_panel_ids,
+            beats=tuple(compact_beats),
+            causal_chain=compact_chain,
+            claims=tuple(compact_claims),
+            story_map_hash=_hash(
+                {
+                    "panel_ids": list(candidate_panel_ids),
+                    "beats": compact_beats,
+                    "claims": compact_claims,
+                    "chain": list(compact_chain),
+                }
+            ),
+            model_identity_hash=story_map.model_identity_hash,
+            prompt_version=story_map.prompt_version,
+            prompt_sha256=story_map.prompt_sha256,
+            visual_evidence_hash=compact_visual.visual_evidence_hash,
+        )
+        if candidate.visual_evidence_hash != compact_visual.visual_evidence_hash:
+            raise CloudStageError("cloud.narrative_repair_identity_mismatch", reviewable=True)
+        return compact_visual, compact_story
+
     def _store_narration_repair_candidate(
         self,
         *,
@@ -2779,10 +2923,13 @@ class CloudStageRunner:
         """
 
         prompt = self.prompts["narration"]
+        compact_visual, compact_story_map = self._compact_narration_repair_context(
+            candidate,
+            visual,
+            story_map,
+        )
         if (
-            candidate.visual_evidence_hash != visual.visual_evidence_hash
-            or story_map.visual_evidence_hash != visual.visual_evidence_hash
-            or candidate.model_identity_hash != self.model_identity.identity_hash
+            candidate.model_identity_hash != self.model_identity.identity_hash
             or candidate.prompt_version != prompt[0]
             or candidate.prompt_sha256 != prompt[1]
         ):
@@ -2790,14 +2937,67 @@ class CloudStageRunner:
         failure_codes = self._narration_contract_failures(candidate)
         if not failure_codes:
             raise CloudStageError("cloud.narrative_repair_not_needed")
-        observations, structural = self._narration_observations(visual, panels)
+        compact_panels = None
+        if panels is not None:
+            panels_by_id = {str(panel.panel_id): panel for panel in panels}
+            try:
+                compact_panels = tuple(
+                    panels_by_id[panel_id]
+                    for panel_id in compact_visual.panel_ids
+                )
+            except KeyError:
+                raise CloudStageError(
+                    "cloud.narrative_repair_identity_mismatch",
+                    reviewable=True,
+                ) from None
+        if compact_panels is None:
+            observations = [dict(item) for item in candidate.observations]
+            visual_rows = {
+                str(item.get("panel_id", "")): item
+                for item in compact_visual.panels
+            }
+            for observation in observations:
+                panel_id = str(observation.get("panel_id", ""))
+                visual_item = visual_rows.get(panel_id)
+                if (
+                    visual_item is None
+                    or str(observation.get("source_asset_id", ""))
+                    != str(visual_item.get("source_asset_id", ""))
+                    or panel_id not in {
+                        str(value) for value in observation.get("evidence_refs", ())
+                    }
+                ):
+                    raise CloudStageError(
+                        "cloud.narrative_repair_identity_mismatch",
+                        reviewable=True,
+                    )
+            structural = {
+                "continuity_ledger": dict(candidate.continuity_ledger),
+                "coverage_manifest": {
+                    "total_panels": len(observations),
+                    "processed_panels": len(observations),
+                    "total_canonical_panels": len(observations),
+                    "persisted_canonical_panels": len(observations),
+                    "processed_canonical_panel_count": len(observations),
+                    "panel_ids": list(compact_visual.panel_ids),
+                    "source_content_coverage_ratio": 1.0,
+                    "unresolved_material_area": 0,
+                    "material_unresolved_regions": [],
+                    "reconciliation_complete": True,
+                },
+            }
+        else:
+            observations, structural = self._narration_observations(
+                compact_visual,
+                compact_panels,
+            )
         source = {
             "editorial_selection_version": EDITORIAL_SELECTION_VERSION,
-            "panel_ids": list(visual.panel_ids),
-            "visual_source_hash": visual.source_hash,
-            "visual_evidence_hash": visual.visual_evidence_hash,
+            "panel_ids": list(compact_visual.panel_ids),
+            "visual_source_hash": compact_visual.source_hash,
+            "visual_evidence_hash": compact_visual.visual_evidence_hash,
             "visual_observations": observations,
-            "story_map": story_map.as_dict(),
+            "story_map": compact_story_map.as_dict(),
             "duration_contract": {
                 "minimum_s": 50.0,
                 "maximum_s": 60.0,
@@ -2816,8 +3016,8 @@ class CloudStageRunner:
             source,
             observations,
             structural,
-            story_map,
-            visual,
+            compact_story_map,
+            compact_visual,
             candidate,
             failure_codes,
         )
@@ -2949,6 +3149,10 @@ class CloudStageRunner:
                 )
                 return repaired
             except CloudStageError as exc:
+                if exc.code == "cloud.request_budget_exceeded":
+                    if attempt == 0:
+                        last_error = exc
+                    break
                 last_error = exc
                 if attempt + 1 >= NARRATION_REPAIR_MAX_ATTEMPTS:
                     break
@@ -3192,11 +3396,16 @@ class CloudStageRunner:
                     chunk_beats_ids.update(chunk_beat_ids)
                     break
                 except analyzer_contract.AnalyzerContractError as exc:
+                    diagnostic = _safe_narration_contract_diagnostic(
+                        str(exc),
+                        output if isinstance(output, Mapping) else None,
+                    )
                     if attempt + 1 < self.max_attempts:
                         retry_feedback = _narration_retry_feedback(str(exc))
                         continue
                     raise CloudStageError(
                         "cloud.narrative_not_grounded",
+                        diagnostic,
                         reviewable=True,
                     ) from None
                 except CloudStageError as exc:
