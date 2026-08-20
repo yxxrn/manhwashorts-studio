@@ -637,3 +637,20 @@ keeping total 115-125 words and 50-60 seconds strict. RED: 1 intended body
 failure. GREEN: 139/139 focused cloud/manifest/adapter/synthesis tests, Ruff,
 compileall, diff-check, no-churn, and secret scan. Publish this correction
 before one new bounded real retry; do not repeat visual/story calls.
+## Position-vector second live attempt and v2 correction - 2026-08-21
+
+The published `6e8df193d80ba42cbc3b6c5aa838c9154b1fd600` correction was used
+for exactly one newly authorized real repair request. It failed closed with
+`cloud.narrative_repair_position_budget_invalid`; request count was 1 and no
+retry or provider prose was retained. The sanitized report is still
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`1194ac83c3aa32ef933be9897f6207188c0f7bce1f04397b7b93c3c8f3096f61`.
+
+The next correction is registry v2: each trusted position has the explicit
+bounded range `max(7, target-8)` through `target+8`; aggregate 115-125 words
+and 50-60 seconds remain fail-closed. Historical RED is one collection-clean
+body failure against the old boundary; GREEN is 140/140 focused tests plus
+Ruff/compileall/diff/no-churn/secret checks. Publish this correction before
+one new real request. The project remains STORY_MAPPED with 701 visual rows;
+no narration, MP4, voice, or final QC is proven.

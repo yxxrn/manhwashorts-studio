@@ -2441,7 +2441,7 @@ def test_position_repair_preselection_is_deterministic_and_budgeted():
     second = runner._build_narration_repair_position_registry(candidate, story_map)
 
     positions = first["positions"]
-    assert first["version"] == "narration-repair-position-registry-v1"
+    assert first["version"] == "narration-repair-position-registry-v2"
     assert 8 <= len(positions) <= 12
     assert 8 <= len({claim_id for row in positions for claim_id in row["claim_ids"]}) <= 12
     assert 4 <= len({row["passage_id"] for row in positions}) <= 6
@@ -2504,6 +2504,28 @@ def test_position_repair_accepts_uneven_bounded_slot_budgets():
     raw = {
         "rewrites": [
             _position_rewrite_text(count, f"uneven{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+
+    reconciled = runner._reconcile_narration_repair_vector(
+        raw,
+        registry,
+        candidate,
+    )
+
+    assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 120
+
+
+def test_position_repair_accepts_wide_deterministic_distribution_within_ranges():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [7 if index % 2 == 0 else 17 for index in range(len(registry["positions"]))]
+    assert sum(counts) == 120
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"wide{index}_")
             for index, count in enumerate(counts)
         ]
     }
@@ -3076,7 +3098,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     )
     assert result.qc_report["narration_repair"]["candidate_hash"]
     assert result.qc_report["narration_repair"]["position_registry_version"] == (
-        "narration-repair-position-registry-v1"
+        "narration-repair-position-registry-v2"
     )
     assert result.qc_report["narration_repair"]["slot_order_hash"]
     assert [call[0] for call in provider.calls] == ["narration_repair"]

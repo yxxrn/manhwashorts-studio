@@ -1803,3 +1803,24 @@ tests (cloud 73, prepared manifest 7, adapter 23, synthesis 36), plus Ruff,
 compileall, diff-check, no-churn, and key-shaped secret scan. The correction
 is not yet published; after its GREEN checkpoint, one separately bounded real
 retry is allowed. Visual/story stages remain cached and untouched.
+## Position-vector second live attempt and v2 budget correction - 2026-08-21
+
+After `6e8df193d80ba42cbc3b6c5aa838c9154b1fd600` was published, the one newly
+authorized real position-vector request again failed closed with
+`cloud.narrative_repair_position_budget_invalid`; `request_count=1` and
+`retry_count=0`. No provider prose or raw payload was retained. The sanitized
+report remains
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`1194ac83c3aa32ef933be9897f6207188c0f7bce1f04397b7b93c3c8f3096f61`.
+
+The v2 boundary correction widens explicit local per-position ranges to
+`max(7, target-8)` through `target+8`, bumps
+`narration-repair-position-registry-v2`, and retains strict aggregate
+115-125-word/50-60-second admission. RED is one collection-clean intended
+body failure against the published ±4 boundary; GREEN is 140/140 focused
+cloud/manifest/adapter/synthesis tests with Ruff, compileall, diff-check,
+no-churn, and key-shaped secret scan clean. This correction is not yet
+published; after publication, exactly one new bounded real request is allowed.
+Visual/story stages remain cached and untouched; no silent MP4, voice, or QC is
+proven.

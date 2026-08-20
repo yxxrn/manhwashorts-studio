@@ -635,3 +635,19 @@ ranges around a 120-word target and retains strict total/duration gates. Its
 RED was one collection-clean body failure; GREEN is 139 focused tests plus
 Ruff/compile/diff/no-churn/secret checks. Publish this correction before any
 new real request; never repeat visual/story stages or expose provider text.
+## Position-vector second live attempt and v2 budget correction (2026-08-21)
+
+After the published `6e8df193d80ba42cbc3b6c5aa838c9154b1fd600` correction,
+one newly authorized real `grok-4.3` request again failed closed with
+`cloud.narrative_repair_position_budget_invalid`; request count was exactly one
+and no automatic retry or provider prose was retained. The same sanitized
+metadata report remains at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`1194ac83c3aa32ef933be9897f6207188c0f7bce1f04397b7b93c3c8f3096f61`.
+The unpublished v2 correction widens each deterministic local position range
+to a bounded minimum of 7 and target-plus-8 maximum, bumps the registry
+identity, and keeps strict total/duration gates. Historical RED is one
+collection-clean body failure on 6e8df19; GREEN is 140 focused tests plus
+Ruff/compile/diff/no-churn/secret checks. Publish before any further real
+request; never repeat visual/story calls.

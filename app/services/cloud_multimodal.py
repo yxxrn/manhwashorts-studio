@@ -60,7 +60,16 @@ NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
 NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v3"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
-NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v1"
+NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v2"
+NARRATION_REPAIR_POSITION_MIN_WORDS = 7
+NARRATION_REPAIR_POSITION_WORD_SLACK = 8
+
+
+def _position_word_budget_bounds(word_budget: int) -> tuple[int, int]:
+    return (
+        max(NARRATION_REPAIR_POSITION_MIN_WORDS, word_budget - NARRATION_REPAIR_POSITION_WORD_SLACK),
+        word_budget + NARRATION_REPAIR_POSITION_WORD_SLACK,
+    )
 NARRATION_REPAIR_INSTRUCTION = (
     "TARGETED NARRATION POSITION REPAIR: return exactly one JSON object with "
     "the single top-level key {\"rewrites\": [\"text for position 0\", \"...\"]}. "
@@ -69,7 +78,8 @@ NARRATION_REPAIR_INSTRUCTION = (
     "never return, create, or rewrite claim IDs, evidence panel IDs, slot IDs, "
     "passage IDs, observations, beat IDs, or hashes. Preserve the supplied causal "
     "order and evidence-grounded meaning. Write natural English within each "
-    "position's word budget so the total is 115-125 words and 50-60 seconds. "
+    "position's inclusive word_budget_min/word_budget_max range so the total "
+    "is 115-125 words and 50-60 seconds. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
     "metadata, or alternate key."
 )
@@ -577,10 +587,11 @@ class NarrationRepairPosition:
             or len(set(self.evidence_panel_ids)) != len(self.evidence_panel_ids)
         ):
             raise CloudStageError("cloud.narrative_repair_position_selection_invalid", reviewable=True)
+        default_min, default_max = _position_word_budget_bounds(self.word_budget)
         if not self.word_budget_min:
-            object.__setattr__(self, "word_budget_min", max(1, self.word_budget - 4))
+            object.__setattr__(self, "word_budget_min", default_min)
         if not self.word_budget_max:
-            object.__setattr__(self, "word_budget_max", self.word_budget + 4)
+            object.__setattr__(self, "word_budget_max", default_max)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -2870,10 +2881,16 @@ class CloudStageRunner:
                     removable=bool(value["removable"]),
                     word_budget=int(value["word_budget"]),
                     word_budget_min=int(
-                        value.get("word_budget_min", int(value["word_budget"]) - 4)
+                        value.get(
+                            "word_budget_min",
+                            _position_word_budget_bounds(int(value["word_budget"]))[0],
+                        )
                     ),
                     word_budget_max=int(
-                        value.get("word_budget_max", int(value["word_budget"]) + 4)
+                        value.get(
+                            "word_budget_max",
+                            _position_word_budget_bounds(int(value["word_budget"]))[1],
+                        )
                     ),
                 )
                 position = replace(position, position=position_index)
@@ -3045,11 +3062,12 @@ class CloudStageRunner:
                 item,
                 position=index,
                 word_budget=base_budget + (1 if index < remainder else 0),
-                word_budget_min=max(
-                    8,
-                    base_budget + (1 if index < remainder else 0) - 4,
-                ),
-                word_budget_max=base_budget + (1 if index < remainder else 0) + 4,
+                word_budget_min=_position_word_budget_bounds(
+                    base_budget + (1 if index < remainder else 0)
+                )[0],
+                word_budget_max=_position_word_budget_bounds(
+                    base_budget + (1 if index < remainder else 0)
+                )[1],
             )
             for index, item in enumerate(selected)
         ]
@@ -3128,10 +3146,16 @@ class CloudStageRunner:
                     removable=bool(value["removable"]),
                     word_budget=int(value["word_budget"]),
                     word_budget_min=int(
-                        value.get("word_budget_min", int(value["word_budget"]) - 4)
+                        value.get(
+                            "word_budget_min",
+                            _position_word_budget_bounds(int(value["word_budget"]))[0],
+                        )
                     ),
                     word_budget_max=int(
-                        value.get("word_budget_max", int(value["word_budget"]) + 4)
+                        value.get(
+                            "word_budget_max",
+                            _position_word_budget_bounds(int(value["word_budget"]))[1],
+                        )
                     ),
                 )
             except (KeyError, TypeError, ValueError):
