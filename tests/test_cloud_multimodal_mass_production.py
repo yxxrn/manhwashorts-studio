@@ -1485,3 +1485,96 @@ def test_narration_uses_the_same_bounded_ordered_chunk_contract(tmp_path):
     resumed_result = resumed_runner.run_narration(visual, resumed_story, panels=panels)
     assert resumed_result == result
     assert resumed_provider.calls == []
+
+def test_story_map_accepts_provider_ordered_beats_alias(tmp_path):
+    module = _module()
+    panels = _panels(module)
+    visual = module.VisualStageResult(
+        panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
+        source_hash="ordered-beats-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+
+    class OrderedBeatsProvider(_FakeProvider):
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            result = super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+            if stage == "story_map":
+                result["ordered_beats"] = result.pop("beats")
+            return result
+
+    provider = OrderedBeatsProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "ordered-beats-cache"),
+        max_attempts=1,
+    )
+
+    result = runner.run_story_map(visual)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert len(result.beats) == 2
+
+def test_story_map_splits_incomplete_large_chunk_without_dropping_coverage(tmp_path):
+    module = _module()
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"fallback-panel-{index:03d}",
+            source_asset_id=f"fallback-asset-{index:03d}",
+            source_order=index + 1,
+            mime_type="image/png",
+            payload=f"fallback-payload-{index}".encode(),
+        )
+        for index in range(61)
+    )
+    visual = module.VisualStageResult(
+        panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
+        source_hash="fallback-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+
+    class IncompleteLargeProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.story_sizes = []
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "story_map":
+                self.story_sizes.append(len(payload["panel_ids"]))
+            result = super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+            if stage == "story_map" and len(payload["panel_ids"]) > 60:
+                result["ordered_beats"] = result.pop("beats")
+                for beat in result["ordered_beats"]:
+                    beat["panel_ids"] = [payload["panel_ids"][0]]
+                for claim in result["claims"]:
+                    claim["panel_ids"] = [payload["panel_ids"][0]]
+            return result
+
+    provider = IncompleteLargeProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "fallback-cache"),
+        max_attempts=1,
+    )
+
+    result = runner.run_story_map(visual)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert sorted(provider.story_sizes) == [1, 60, 61]

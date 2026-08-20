@@ -46,6 +46,7 @@ VISUAL_REQUEST_MAX_PANELS = 8  # preview-only: 4-5 worker saturation sweet spot
 VISUAL_REQUEST_MAX_ESTIMATED_BYTES = 3_500_000  # preview-only: larger visual batches
 VISUAL_REQUEST_OVERLAP = 0
 STORY_MAP_CHUNK_STEP = 180
+STORY_MAP_COVERAGE_FALLBACK_STEP = 60
 NARRATION_CHUNK_STEP = 180
 STAGE_PARALLEL_WORKERS = 4
 _REVIEW_ERROR_CODE_PATTERN = re.compile(
@@ -861,6 +862,8 @@ class CloudStageRunner:
         if raw.get("panel_ids") != list(expected_panel_ids) or raw.get("random_sampling") is not False:
             raise CloudStageError("cloud.panel_coverage_incomplete")
         beats = raw.get("beats")
+        if beats is None and isinstance(raw.get("ordered_beats"), list):
+            beats = raw["ordered_beats"]
         chain = raw.get("causal_chain")
         claims = raw.get("claims")
         if not isinstance(beats, list) or not beats or not isinstance(chain, list) or not chain or not isinstance(claims, list) or not claims:
@@ -959,6 +962,8 @@ class CloudStageRunner:
         if raw.get("panel_ids") != list(expected_panel_ids) or raw.get("random_sampling") is not False:
             raise CloudStageError("cloud.panel_coverage_incomplete")
         beats = raw.get("beats")
+        if beats is None and isinstance(raw.get("ordered_beats"), list):
+            beats = raw["ordered_beats"]
         chain = raw.get("causal_chain")
         claims = raw.get("claims")
         if not isinstance(beats, list) or not beats or not isinstance(chain, list) or not chain or not isinstance(claims, list) or not claims:
@@ -1210,6 +1215,75 @@ class CloudStageRunner:
         }
         return observations, {"continuity_ledger": continuity, "coverage_manifest": coverage}
 
+    def _run_story_map_coverage_fallback(
+        self,
+        prompt: tuple[str, str, str],
+        visual: VisualStageResult,
+        chunk_index: int,
+        chunk: Sequence[Mapping[str, Any]],
+        batch_count: int,
+    ) -> StoryMapResult:
+        """Reconcile a large response through smaller complete-coverage requests.
+
+        The configured model can enumerate the supplied IDs in a 180-panel
+        envelope while citing only a partial subset in its beats.  Coverage
+        remains fail-closed; this bounded fallback asks deterministic 60-panel
+        subchunks instead of inventing references or accepting a partial map.
+        """
+
+        subchunks = [
+            chunk[index:index + STORY_MAP_COVERAGE_FALLBACK_STEP]
+            for index in range(0, len(chunk), STORY_MAP_COVERAGE_FALLBACK_STEP)
+        ]
+        results = [
+            self._run_story_map_chunk(
+                prompt,
+                visual,
+                chunk_index * 10_000 + sub_index,
+                subchunk,
+                batch_count * 10_000,
+            )
+            for sub_index, subchunk in enumerate(subchunks)
+        ]
+        beats: list[dict[str, Any]] = []
+        causal_chain: list[dict[str, Any]] = []
+        claims: list[dict[str, Any]] = []
+        for sub_index, result in enumerate(results):
+            prefix = f"sub{sub_index}__"
+            beats.extend(
+                dict(item, beat_id=prefix + str(item["beat_id"]))
+                for item in result.beats
+            )
+            claims.extend(
+                dict(item, claim_id=prefix + str(item["claim_id"]))
+                for item in result.claims
+            )
+            causal_chain.extend(
+                {
+                    **dict(link),
+                    "from_beat": prefix + str(link["from_beat"]),
+                    "to_beat": prefix + str(link["to_beat"]),
+                }
+                for link in result.causal_chain
+            )
+        panel_ids = tuple(str(panel["panel_id"]) for panel in chunk)
+        canonical = {
+            "panel_ids": list(panel_ids),
+            "beats": beats,
+            "causal_chain": causal_chain,
+            "claims": claims,
+        }
+        return StoryMapResult(
+            panel_ids=panel_ids,
+            beats=tuple(beats),
+            causal_chain=tuple(causal_chain),
+            claims=tuple(claims),
+            story_map_hash=_hash(canonical),
+            model_identity_hash=self.model_identity.identity_hash,
+            prompt_version=prompt[0],
+            prompt_sha256=prompt[1],
+        )
+
     def _run_story_map_chunk(
         self,
         prompt: tuple[str, str, str],
@@ -1269,6 +1343,18 @@ class CloudStageRunner:
                 )
                 result = self._reconcile_story_map(raw, chunk_ids, prompt)
             except CloudStageError as exc:
+                if (
+                    exc.code == "cloud.panel_coverage_incomplete"
+                    and len(chunk) > STORY_MAP_COVERAGE_FALLBACK_STEP
+                ):
+                    result = self._run_story_map_coverage_fallback(
+                        prompt,
+                        visual,
+                        chunk_index,
+                        chunk,
+                        batch_count,
+                    )
+                    break
                 if exc.code in retryable_story_codes and attempt + 1 < self.max_attempts:
                     continue
                 raise
