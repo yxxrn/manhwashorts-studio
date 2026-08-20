@@ -357,3 +357,36 @@ Expected checkpoint: 69 passed.
 
 Stop if strict render is blocked or unreviewed. Never relax gates just to emit MP4.
 Rollback: `46d5b9c` subtitle-only; `0c5d1e7` strict gates; `f00d822` strict handoff.
+
+## CURRENT NARRATION-REPAIR CHECKPOINT - 2026-08-20
+
+Published source/test checkpoint: 826856cc08550895ba8944e4b9b3fce6b0f62823.
+The duplicate visual-call identity fix is green and GitHub main matches this
+commit. The normal Oracle run reused the canonical 701-panel visual cache and
+persisted VISUAL_ANALYZED plus the ordered story-map result without any
+VISUAL_CHUNK_OK provider call.
+
+A bounded narration-targeted-repair-v1 boundary is now implemented in
+app/services/cloud_multimodal.py. When the selected final script misses
+the strict 50-60 second / 115-125 word contract, the same pinned model receives
+the validated candidate and repairs prose/timing only. Local reconciliation
+requires the same passage IDs, claim IDs/text/qualification, evidence panel IDs,
+observations, ending kind, and story spine; lineage changes fail closed as
+cloud.narrative_repair_scope_invalid. Maximum repair attempts: 3. Visual and
+story-map stages are not regenerated.
+
+Verification on Oracle: the new RED was collection-clean with 2 intended body
+failures; GREEN is 2 targeted tests, the complete
+tests/test_cloud_multimodal_mass_production.py file (57 passed), Ruff,
+compileall, and git diff --check. The resumed runtime then reached
+STORY_MAPPED with canonical visual hash
+fb61e64ef66bce8e9fa9d79bc5e00ec5fd6ab8c3d0d7057a84d70dc04a7fa5c5, but its
+narration candidate ended NEEDS_REVIEW with
+cloud.narrative_duration_out_of_range; no MP4 or voice/QC result is proven.
+
+The failed job returned before saving the aggregate usage counter, so its
+durable request_count remains 0 and the exact provider-call count for that
+attempt is intentionally not claimed. Do not infer it from sockets/log size.
+Resume only after checking for no active process, using the normal checked-in
+entrypoint with PYTHONPATH=/home/ubuntu/manhwashorts and the existing
+/data/data/p0-aws-acceptance state/cache. Do not repeat the 701 visual stage.

@@ -1522,3 +1522,31 @@ correction is green with 55 cloud tests, Ruff, compileall, diff-check, and
 no-churn checks. The next normal invocation must include
 PYTHONPATH=/home/ubuntu/manhwashorts; no provider call was made by this
 diagnostic. No MP4, narration, voice, or final QC is proven.
+
+## Targeted narration repair checkpoint - 2026-08-20
+
+Parent/current published source is 826856cc08550895ba8944e4b9b3fce6b0f62823.
+The cache-identity correction is verified: the 703-to-701 preparation migrated
+the existing visual result to canonical source hash
+fb61e64ef66bce8e9fa9d79bc5e00ec5fd6ab8c3d0d7057a84d70dc04a7fa5c5 with exact
+lineage/payload proof and no visual re-call.
+
+This checkpoint adds narration-targeted-repair-v1. A final narration candidate
+that misses 50-60 seconds or 115-125 words is sent to a bounded
+narration_repair request using the same pinned model and already-reconciled
+story/evidence. Only passage text/timing may change. The local scope signature
+locks passage IDs, claim IDs/text/qualification, evidence panel IDs,
+observations, ending kind, and story spine. Maximum three attempts; mismatched
+scope returns cloud.narrative_repair_scope_invalid. This does not weaken
+grounding, whole-panel story-map coverage, visual gates, or the final voiced
+render gate.
+
+TDD evidence: RED was collection-clean with 2 intended body failures. GREEN:
+2 targeted repair tests, 57/57 cloud mass-production tests, Ruff, compileall,
+and diff-check. The resumed production job reused visual and story-map stages,
+reached STORY_MAPPED, then returned NEEDS_REVIEW with
+cloud.narrative_duration_out_of_range; its aggregate usage counter was not
+saved on that failure, so exact provider request count is unknown and is not
+claimed. No MP4, voice, or final QC is proven. Next command is the normal
+resume entrypoint with PYTHONPATH=/home/ubuntu/manhwashorts; visual cache reuse
+must be rechecked before proceeding.

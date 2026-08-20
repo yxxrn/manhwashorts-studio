@@ -390,3 +390,43 @@ Use PYTHONPATH=/home/ubuntu/manhwashorts when invoking the normal checked-in
 batch script. The live diagnostic made zero provider calls. Continue only after
 checking no active process, then record the next runner request count and durable
 state. The silent preview, voice, and final QC remain unproven.
+
+## Targeted narration repair checkpoint - 2026-08-20
+
+Published parent/checkpoint: 826856cc08550895ba8944e4b9b3fce6b0f62823.
+
+The canonical visual identity migration is now followed by a local
+narration-targeted-repair-v1 boundary. The normal story-map reduce completed
+from the migrated 701-panel visual result. If the selected final narration is
+outside 50-60 seconds or 115-125 words, the repair stage sends the existing
+validated candidate and target contract to the same pinned model. It cannot
+change passage/claim/evidence lineage, observations, ending kind, or story spine;
+a scope change is cloud.narrative_repair_scope_invalid; three attempts are
+the hard bound. No visual or story-map call is repeated.
+
+RED: 2 collection-clean intended failures. GREEN: 2 new repair tests,
+57 cloud mass-production tests, Ruff, compileall, diff-check. Runtime:
+visual cache migration proof remained canonical, story map reached
+STORY_MAPPED, narration ended NEEDS_REVIEW with
+cloud.narrative_duration_out_of_range. The failure happened before the job
+usage aggregate was saved; durable request_count=0 is therefore not the real
+provider count and must not be reported as one. No MP4/voice/QC exists.
+
+Resume command (do not print the environment file):
+~~~bash
+cd /home/ubuntu/manhwashorts
+set -a; source /tmp/ms_env.sh >/dev/null 2>&1; set +a
+export PYTHONPATH=/home/ubuntu/manhwashorts
+export MS_DATABASE_URL=sqlite:////data/data/p0-aws-acceptance/sample.db
+export MS_STORAGE_DIR=/data/data/p0-aws-acceptance/storage
+export MS_DATA_DIR=/data/data/p0-aws-acceptance
+export MS_TMP_DIR=/data/data/p0-aws-acceptance/tmp
+export MS_TTS_PROVIDER=null
+export MS_ENVIRONMENT=local
+export MS_REQUIRE_RIGHTS_DECLARATION=false
+PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal_batch.py \
+  --project-id 22876a6014a842f48bfca58c10a592b5 \
+  --state-dir /data/data/p0-aws-acceptance/cloud-jobs \
+  --segmentation-review-dir /data/data/p0-aws-acceptance/segmentation-review \
+  --model grok-4.3 --max-attempts 3 --min-request-interval-s 0.3
+~~~

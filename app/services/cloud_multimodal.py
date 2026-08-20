@@ -51,6 +51,8 @@ STORY_MAP_COVERAGE_MIN_STEP = 30
 NARRATION_CHUNK_STEP = 180
 NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
+NARRATION_REPAIR_VERSION = "narration-targeted-repair-v1"
+NARRATION_REPAIR_MAX_ATTEMPTS = 3
 EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
 EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT = 4
@@ -1890,9 +1892,29 @@ class CloudStageRunner:
             selected_visual,
             enforce_duration=True,
         )
-        if not 50.0 <= result.estimated_duration_s <= 60.0 or not 115 <= result.word_count <= 125:
-            self._last_narration_result = result
-            raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
+        failure_codes = self._narration_contract_failures(result)
+        if failure_codes:
+            try:
+                result = self._run_targeted_narration_repair(
+                    prompt,
+                    source,
+                    selected_observations,
+                    selected_structural,
+                    selected_story,
+                    selected_visual,
+                    result,
+                    failure_codes,
+                )
+            except CloudStageError:
+                self._last_narration_result = result
+                raise
+            remaining_failures = self._narration_contract_failures(result)
+            if remaining_failures:
+                self._last_narration_result = result
+                raise CloudStageError(
+                    "cloud.narrative_duration_out_of_range",
+                    reviewable=True,
+                )
         qc_report = dict(result.qc_report)
         qc_report["editorial_selection"] = selection.as_dict()
         qc_report["narration_topology"] = "chapter_evidence_reduce_v1"
@@ -2145,6 +2167,151 @@ class CloudStageRunner:
             self.cache.put(full_key, result.as_dict())
         return result
 
+    @staticmethod
+    def _narration_contract_failures(result: NarrationResult) -> tuple[str, ...]:
+        failures: list[str] = []
+        if not 50.0 <= float(result.estimated_duration_s) <= 60.0:
+            failures.append("cloud.narrative_duration_out_of_range")
+        if not 115 <= int(result.word_count) <= 125:
+            failures.append("cloud.narrative_word_count_out_of_range")
+        return tuple(dict.fromkeys(failures))
+
+    @staticmethod
+    def _narration_scope_signature(result: NarrationResult) -> str:
+        passages = [
+            {
+                "passage_id": str(passage.get("passage_id", "")),
+                "claim_ids": [str(value) for value in passage.get("claim_ids", ())],
+                "evidence_panel_ids": [
+                    str(value) for value in passage.get("evidence_panel_ids", ())
+                ],
+                "editorial_role": str(passage.get("editorial_role", "")),
+            }
+            for passage in result.passages
+        ]
+        claims = []
+        for claim in result.evidence_graph.get("claims", ()):
+            if not isinstance(claim, Mapping):
+                continue
+            claims.append(
+                {
+                    "claim_id": str(claim.get("claim_id", "")),
+                    "claim_type": str(claim.get("claim_type", "")),
+                    "text": str(claim.get("text", "")),
+                    "evidence_panel_ids": [
+                        str(value)
+                        for value in claim.get(
+                            "evidence_panel_ids",
+                            claim.get("panel_ids", ()),
+                        )
+                    ],
+                    "qualification": str(claim.get("qualification", "")),
+                }
+            )
+        observations = [
+            {
+                "panel_id": str(observation.get("panel_id", "")),
+                "source_asset_id": str(observation.get("source_asset_id", "")),
+                "source_index": int(observation.get("source_index", -1)),
+                "evidence_refs": [
+                    str(value) for value in observation.get("evidence_refs", ())
+                ],
+            }
+            for observation in result.observations
+        ]
+        return _hash(
+            {
+                "passages": passages,
+                "claims": claims,
+                "observations": observations,
+                "ending_kind": result.ending_kind,
+                "story_spine": result.story_spine,
+            }
+        )
+
+    def _run_targeted_narration_repair(
+        self,
+        prompt: tuple[str, str, str],
+        source: Mapping[str, Any],
+        observations: Sequence[Mapping[str, Any]],
+        structural: Mapping[str, Any],
+        story_map: StoryMapResult,
+        visual: VisualStageResult,
+        candidate: NarrationResult,
+        failure_codes: Sequence[str],
+    ) -> NarrationResult:
+        """Repair only prose/timing while preserving validated evidence scope."""
+
+        candidate_hash = _hash(candidate.as_dict())
+        repair_context = {
+            "contract_version": NARRATION_REPAIR_VERSION,
+            "failure_codes": list(dict.fromkeys(str(code) for code in failure_codes)),
+            "candidate_hash": candidate_hash,
+            "immutable_scope": [
+                "passage_id",
+                "claim_ids",
+                "evidence_panel_ids",
+                "evidence_graph",
+                "observations",
+                "ending_kind",
+                "story_spine",
+            ],
+            "target_word_min": 115,
+            "target_word_max": 125,
+            "target_duration_min_s": 50.0,
+            "target_duration_max_s": 60.0,
+            "prior_narration": candidate.as_dict(),
+        }
+        expected_scope = self._narration_scope_signature(candidate)
+        last_error = CloudStageError(
+            "cloud.narrative_duration_out_of_range",
+            reviewable=True,
+        )
+        for attempt in range(NARRATION_REPAIR_MAX_ATTEMPTS):
+            context = {
+                **repair_context,
+                "repair_attempt": attempt + 1,
+            }
+            try:
+                repaired = self._run_narration_batched(
+                    prompt,
+                    source,
+                    observations,
+                    structural,
+                    story_map,
+                    visual,
+                    enforce_duration=False,
+                    stage="narration_repair",
+                    targeted_repair=context,
+                )
+                if self._narration_scope_signature(repaired) != expected_scope:
+                    raise CloudStageError(
+                        "cloud.narrative_repair_scope_invalid",
+                        reviewable=True,
+                    )
+                remaining = self._narration_contract_failures(repaired)
+                if remaining:
+                    last_error = CloudStageError(
+                        "cloud.narrative_duration_out_of_range",
+                        reviewable=True,
+                    )
+                    continue
+                report = dict(repaired.qc_report)
+                report["narration_repair"] = {
+                    "contract_version": NARRATION_REPAIR_VERSION,
+                    "scope": "passage_text_only",
+                    "candidate_hash": candidate_hash,
+                    "failure_codes": list(repair_context["failure_codes"]),
+                    "attempts": attempt + 1,
+                    "provider_stage": "narration_repair",
+                }
+                return replace(repaired, qc_report=report)
+            except CloudStageError as exc:
+                last_error = exc
+                if attempt + 1 >= NARRATION_REPAIR_MAX_ATTEMPTS:
+                    break
+        raise last_error
+
     def _run_narration_batched(
         self,
         prompt,
@@ -2155,6 +2322,8 @@ class CloudStageRunner:
         visual,
         *,
         enforce_duration: bool = True,
+        stage: str = "narration",
+        targeted_repair: Mapping[str, Any] | None = None,
     ) -> NarrationResult:
         retryable_codes = {
             "cloud.provider_request_failed",
@@ -2231,6 +2400,8 @@ class CloudStageRunner:
                 "batch_index": chunk_index,
                 "batch_count": len(chunks),
             }
+            if targeted_repair is not None:
+                chunk_source["targeted_repair"] = dict(targeted_repair)
             chunk_end = None
             retry_feedback = ""
             for attempt in range(self.max_attempts):
@@ -2240,7 +2411,7 @@ class CloudStageRunner:
                         request_payload["contract_retry_feedback"] = retry_feedback
                     raw = self._call(
                         lambda request_payload=request_payload: self.provider.complete_json(
-                            stage="narration",
+                            stage=stage,
                             prompt_version=prompt[0],
                             prompt_sha256=prompt[1],
                             prompt_text=prompt[2],
@@ -2403,8 +2574,9 @@ class CloudStageRunner:
         # Preview relaxation: the 50-60s contract targets a single short clip,
         # but a full 703-panel chapter batch narrates ~2.5x that length.  The
         # production contract stays 50-60s; preview accepts long-form output.
-        if enforce_duration and not 40.0 <= duration <= 180.0:
-            raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
+        # The final 50-60s/115-125 contract is enforced by run_narration
+        # after the bounded targeted repair; this helper must return the
+        # validated candidate even when it needs repair.
         total_words = len(re.findall(r"[A-Za-z0-9]+", spoken_text))
         qc_report = {
             "profile_id": "sharp_friend_v1",

@@ -1180,3 +1180,11 @@ material you have the right to use.
 [1.2.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.2.0
 [1.1.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.1.0
 [1.0.0]: https://github.com/yxxrn/manhwashorts-studio/releases/tag/v1.0.0
+
+## 2026-08-20 - bounded narration repair
+
+Added narration-targeted-repair-v1 after the canonical visual-cache resume
+reached the story-map checkpoint but produced a narration duration/word-count
+candidate outside the strict 50-60 second / 115-125 word contract. The repair
+uses the same pinned model, preserves validated claim/evidence lineage locally,
+and is capped at three attempts. No MP4, voice, or publication claim is made.

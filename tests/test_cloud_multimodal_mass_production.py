@@ -2371,3 +2371,264 @@ def test_batch_resume_migrates_legacy_visual_without_visual_provider_call(tmp_pa
         persisted.stage_results["visual"]["cache_identity_version"]
         == module.VISUAL_CACHE_IDENTITY_VERSION
     )
+
+def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(monkeypatch, tmp_path):
+    module = _module()
+    panels = _panels(module)
+    panel_ids = [panel.panel_id for panel in panels]
+    visual_rows = []
+    for panel in panels:
+        observation = _visual_row(panel.descriptor())
+        visual_rows.append(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+                "observation": observation,
+                "visual_evidence": observation["visual_evidence"],
+                "evidence_hash": "",
+            }
+        )
+    visual = module.VisualStageResult(
+        panels=tuple(visual_rows),
+        source_hash="targeted-repair-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel_ids),
+        beats=(
+            {
+                "beat_id": "beat-all",
+                "panel_ids": panel_ids,
+                "summary": "the visible sequence develops",
+            },
+        ),
+        causal_chain=(
+            {
+                "from_beat": "beat-all",
+                "to_beat": "beat-all",
+                "reason": "the visible sequence continues",
+            },
+        ),
+        claims=(
+            {
+                "claim_id": "claim-all",
+                "text": "The visible sequence develops.",
+                "panel_ids": panel_ids,
+                "qualification": "The ordered panels support this reading.",
+            },
+        ),
+        story_map_hash="s" * 64,
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="c" * 64,
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+
+    def as_candidate():
+        output = _narrative_output("repair", panel_ids)
+        for passage in output["script_passages"]:
+            passage["evidence_panel_ids"] = list(panel_ids)
+        for claim in output["evidence_graph"]["claims"]:
+            claim["evidence_panel_ids"] = list(panel_ids)
+        spoken = "\n\n".join(
+            str(passage["text"]).strip() for passage in output["script_passages"]
+        )
+        return module.NarrationResult(
+            spoken_text=spoken,
+            display_words=module.derive_display_words(spoken),
+            passages=tuple(dict(item) for item in output["script_passages"]),
+            ending_kind=str(output["narrative_outline"]["ending_kind"]),
+            word_count=100,
+            estimated_duration_s=42.0,
+            qc_report={"signals": {}, "warnings": []},
+            model_identity_hash=_identity(module).identity_hash,
+            prompt_version="vision-first-story-analyzer-v3",
+            prompt_sha256="n" * 64,
+            observations=tuple(dict(item) for item in output["observations"]),
+            continuity_ledger=dict(output["continuity_ledger"]),
+            evidence_graph=dict(output["evidence_graph"]),
+            story_spine=dict(output["narrative_outline"]["story_spine"]),
+            visual_evidence_hash=visual.visual_evidence_hash,
+        )
+
+    class TargetedRepairProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.repair_payloads = []
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "narration_repair":
+                self.repair_payloads.append(dict(payload))
+                output = _narrative_output("repair", list(payload["panel_ids"]))
+                for passage in output["script_passages"]:
+                    passage["evidence_panel_ids"] = list(payload["panel_ids"])
+                for claim in output["evidence_graph"]["claims"]:
+                    claim["evidence_panel_ids"] = list(payload["panel_ids"])
+                return output
+            return super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+
+    provider = TargetedRepairProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "targeted-repair-cache"),
+        max_attempts=1,
+    )
+    candidate = as_candidate()
+    local_observations, local_structural = runner._narration_observations(
+        visual,
+        panels,
+    )
+    candidate = replace(
+        candidate,
+        observations=tuple(local_observations),
+        continuity_ledger=dict(local_structural["continuity_ledger"]),
+    )
+    original_batched = runner._run_narration_batched
+
+    def first_candidate(*args, **kwargs):
+        if kwargs.get("stage") == "narration_repair":
+            return original_batched(*args, **kwargs)
+        return candidate
+
+    monkeypatch.setattr(runner, "_run_narration_batched", first_candidate)
+
+    result = runner.run_narration(visual, story_map, panels=panels)
+
+    assert len(provider.repair_payloads) == 1
+    assert provider.repair_payloads[0]["targeted_repair"]["failure_codes"] == [
+        "cloud.narrative_duration_out_of_range",
+        "cloud.narrative_word_count_out_of_range",
+    ]
+    assert result.estimated_duration_s >= 50.0
+    assert 115 <= result.word_count <= 125
+    assert result.qc_report["narration_repair"]["scope"] == "passage_text_only"
+    assert result.qc_report["narration_repair"]["candidate_hash"]
+
+
+def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp_path):
+    module = _module()
+    panels = _panels(module)
+    panel_ids = [panel.panel_id for panel in panels]
+    visual_rows = []
+    for panel in panels:
+        observation = _visual_row(panel.descriptor())
+        visual_rows.append(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+                "observation": observation,
+                "visual_evidence": observation["visual_evidence"],
+                "evidence_hash": "",
+            }
+        )
+    visual = module.VisualStageResult(
+        panels=tuple(visual_rows),
+        source_hash="targeted-scope-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel_ids),
+        beats=(
+            {
+                "beat_id": "beat-all",
+                "panel_ids": panel_ids,
+                "summary": "the visible sequence develops",
+            },
+        ),
+        causal_chain=(
+            {
+                "from_beat": "beat-all",
+                "to_beat": "beat-all",
+                "reason": "the visible sequence continues",
+            },
+        ),
+        claims=(
+            {
+                "claim_id": "claim-all",
+                "text": "The visible sequence develops.",
+                "panel_ids": panel_ids,
+                "qualification": "The ordered panels support this reading.",
+            },
+        ),
+        story_map_hash="s" * 64,
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="c" * 64,
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    output = _narrative_output("repair-scope", panel_ids)
+    for passage in output["script_passages"]:
+        passage["evidence_panel_ids"] = list(panel_ids)
+    for claim in output["evidence_graph"]["claims"]:
+        claim["evidence_panel_ids"] = list(panel_ids)
+    spoken = "\n\n".join(str(item["text"]).strip() for item in output["script_passages"])
+    candidate = module.NarrationResult(
+        spoken_text=spoken,
+        display_words=module.derive_display_words(spoken),
+        passages=tuple(dict(item) for item in output["script_passages"]),
+        ending_kind=str(output["narrative_outline"]["ending_kind"]),
+        word_count=100,
+        estimated_duration_s=42.0,
+        qc_report={"signals": {}, "warnings": []},
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="vision-first-story-analyzer-v3",
+        prompt_sha256="n" * 64,
+        observations=tuple(dict(item) for item in output["observations"]),
+        continuity_ledger=dict(output["continuity_ledger"]),
+        evidence_graph=dict(output["evidence_graph"]),
+        story_spine=dict(output["narrative_outline"]["story_spine"]),
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+
+    class ScopeChangingProvider(_FakeProvider):
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "narration_repair":
+                changed = _narrative_output("repair-scope", list(payload["panel_ids"]))
+                for passage in changed["script_passages"]:
+                    passage["evidence_panel_ids"] = [payload["panel_ids"][0]]
+                for claim in changed["evidence_graph"]["claims"]:
+                    claim["evidence_panel_ids"] = [payload["panel_ids"][0]]
+                return changed
+            return super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+
+    provider = ScopeChangingProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "targeted-scope-cache"),
+        max_attempts=1,
+    )
+    original_batched = runner._run_narration_batched
+
+    def first_candidate(*args, **kwargs):
+        if kwargs.get("stage") == "narration_repair":
+            return original_batched(*args, **kwargs)
+        return candidate
+
+    monkeypatch.setattr(runner, "_run_narration_batched", first_candidate)
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner.run_narration(visual, story_map, panels=panels)
+
+    assert caught.value.code == "cloud.narrative_repair_scope_invalid"
