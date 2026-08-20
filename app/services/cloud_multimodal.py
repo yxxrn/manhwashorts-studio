@@ -1846,6 +1846,7 @@ class CloudStageRunner:
             enforce_duration=True,
         )
         if not 50.0 <= result.estimated_duration_s <= 60.0 or not 115 <= result.word_count <= 125:
+            self._last_narration_result = result
             raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
         qc_report = dict(result.qc_report)
         qc_report["editorial_selection"] = selection.as_dict()

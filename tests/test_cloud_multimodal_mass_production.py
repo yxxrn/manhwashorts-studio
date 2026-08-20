@@ -2017,3 +2017,27 @@ def test_editorial_selection_is_bounded_ordered_and_panel_keyed():
     assert tuple(sorted(selection.panel_ids, key=visual_order.get)) == selection.panel_ids
     assert set(selection.claim_ids) <= {claim["claim_id"] for claim in claims}
     assert selection.selection_hash
+
+def test_narration_duration_failure_retains_candidate_for_visual_repair(monkeypatch):
+    module = _module()
+    panels = _panels(module, "duration-retain")
+    provider = _FakeProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+    )
+    visual = runner.run_visual_evidence(panels)
+    story_map = runner.run_story_map(visual)
+    baseline = runner.run_narration(visual, story_map, panels=panels)
+    invalid = replace(baseline, estimated_duration_s=70.0)
+    monkeypatch.setattr(
+        runner,
+        "_run_narration_batched",
+        lambda *args, **kwargs: invalid,
+    )
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner.run_narration(visual, story_map, panels=panels)
+
+    assert caught.value.code == "cloud.narrative_duration_out_of_range"
+    assert runner._last_narration_result is invalid
