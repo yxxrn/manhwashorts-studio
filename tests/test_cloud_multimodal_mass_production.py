@@ -2395,6 +2395,13 @@ def _immutable_slot_fixture(module):
     return runner, candidate, visual, story_map
 
 
+def test_targeted_repair_prompt_declares_exact_slot_wire_shape():
+    module = _module()
+    instruction = module.NARRATION_REPAIR_INSTRUCTION
+    assert '{"slot_id": "...", "text": "..."}' in instruction
+    assert "never return, create, or rewrite claim IDs" in instruction
+
+
 def test_immutable_repair_slots_copy_trusted_lineage_and_reject_provider_ids():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
