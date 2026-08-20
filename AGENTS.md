@@ -1,3 +1,29 @@
+# FOLLOW-UP CACHE MIGRATION PROOF - 2026-08-20
+
+The first post-publication normal resume was stopped after exactly two
+VISUAL_CHUNK_OK provider requests when the old descriptor hash did not match.
+The durable job remained unchanged with 701 visual rows; no new stage result was
+accepted. The mismatch is now explained and handled safely: current prepared
+inputs have the same ordered 701 panel IDs, source-asset IDs/checksums, panel
+bounds, and coverage hash as the persisted narration lineage, while the old
+descriptor hash cannot be reconstructed from visual rows alone.
+
+The migration now accepts this case only with persisted narration observations
+whose ordered panel IDs, source assets, source indexes, and integer region bounds
+match every current panel. The current deterministic rendered payload hashes are
+then computed and persisted as the v2 per-panel identity proof. A tampered
+lineage/crop remains rejected. A no-provider live diagnostic over the exact
+project confirmed prepared=703, filtered=701, migrated=True,
+proof=persisted_lineage_and_payload_derivation, identity_rows=701, and new
+source hash fb61e64ef66bce8e9fa9d79bc5e00ec5fd6ab8c3d0d7057a84d70dc04a7fa5c5.
+
+The normal script must include the repository import path:
+PYTHONPATH=/home/ubuntu/manhwashorts PATH=/home/ubuntu/.local/bin:$PATH
+.venv/bin/python scripts/run_cloud_multimodal_batch.py ...
+This correction made no provider call; no narration, MP4, voice, or QC is
+proven. The stopped-run log is /tmp/cache-identity-resume-20260820.log and
+remains runtime-only.
+
 # CURRENT CACHE-IDENTITY CHECKPOINT - 2026-08-20
 
 Authority remains Oracle /home/ubuntu/manhwashorts, branch main, parent

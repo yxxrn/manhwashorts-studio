@@ -1501,3 +1501,24 @@ reuse before later story-map, narration, silent-render, or voice claims. No MP4,
 voice, or final QC is proven. The configured grok-voice-latest voice remains
 authorized only after a verified silent preview/QC gate. publish_allowed remains
 false and all runtime data/credentials stay ignored.
+
+## Follow-up live cache migration proof - 2026-08-20
+
+The first post-fix normal resume was stopped after exactly two new visual
+chunk requests; its durable job remained unchanged at 701 cached rows and no
+new stage result was accepted. The old visual hash mismatch is now safe to
+reconcile: the exact 703-to-701 preparation has identical ordered panel IDs,
+source assets/checksums, panel bounds, and coverage hash to persisted narration
+lineage. The migration requires those ordered observations and computes 701
+current deterministic rendered-payload identity hashes before accepting the
+cache. Tampered crop/lineage data remains fail-closed.
+
+No-provider live proof for project 22876a6014a842f48bfca58c10a592b5:
+prepared=703, filtered=701, migrated=True,
+proof=persisted_lineage_and_payload_derivation,
+identity_rows=701, canonical source hash
+fb61e64ef66bce8e9fa9d79bc5e00ec5fd6ab8c3d0d7057a84d70dc04a7fa5c5. The source
+correction is green with 55 cloud tests, Ruff, compileall, diff-check, and
+no-churn checks. The next normal invocation must include
+PYTHONPATH=/home/ubuntu/manhwashorts; no provider call was made by this
+diagnostic. No MP4, narration, voice, or final QC is proven.

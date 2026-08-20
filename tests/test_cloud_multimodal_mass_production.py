@@ -2263,6 +2263,55 @@ def test_equivalent_preparation_migrates_legacy_visual_cache_without_provider_ca
     assert migrated["cache_identity_version"] == module.VISUAL_CACHE_IDENTITY_VERSION
     assert len(migrated["panel_identity_hashes"]) == len(panels)
 
+    lineage = {
+        "observations": [
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_index": index,
+                "region_bounds": {
+                    "x": panel.panel_bounds[0],
+                    "y": panel.panel_bounds[1],
+                    "width": panel.panel_bounds[2] - panel.panel_bounds[0],
+                    "height": panel.panel_bounds[3] - panel.panel_bounds[1],
+                },
+            }
+            for index, panel in enumerate(panels)
+        ]
+    }
+    legacy_with_lineage = dict(legacy)
+    legacy_with_lineage["source_hash"] = "f" * 64
+    migrated_with_lineage = module._migrate_visual_cache_identity(
+        legacy_with_lineage,
+        panels,
+        model_identity=identity,
+        prompt=prompt,
+        persisted_lineage=lineage,
+    )
+    assert migrated_with_lineage is not None
+    assert (
+        migrated_with_lineage["cache_identity_migration_proof"]
+        == "persisted_lineage_and_payload_derivation"
+    )
+    bad_lineage = {
+        "observations": [dict(item) for item in lineage["observations"]]
+    }
+    bad_lineage["observations"][0] = dict(bad_lineage["observations"][0])
+    bad_lineage["observations"][0]["region_bounds"] = {
+        **bad_lineage["observations"][0]["region_bounds"],
+        "width": 99,
+    }
+    assert (
+        module._migrate_visual_cache_identity(
+            legacy_with_lineage,
+            panels,
+            model_identity=identity,
+            prompt=prompt,
+            persisted_lineage=bad_lineage,
+        )
+        is None
+    )
+
     changed = list(panels)
     changed[-1] = replace(changed[-1], payload=b"tampered-payload", payload_checksum="")
     assert (

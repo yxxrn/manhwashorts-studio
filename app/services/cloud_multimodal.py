@@ -3407,6 +3407,7 @@ class CloudBatchService:
                 ordered,
                 model_identity=self.runner.model_identity,
                 prompt=self.runner.prompts["visual"],
+                persisted_lineage=record.stage_results.get("narration"),
             )
             if migrated_visual is None:
                 raise KeyError("stale_visual_cache")
@@ -4152,12 +4153,50 @@ def _visual_chunk_cache_key(
     return _cache_key("visual_chunk", source, model_identity, prompt)
 
 
+def _persisted_visual_lineage_matches(
+    lineage: Mapping[str, Any] | None,
+    ordered: Sequence[CloudPanelInput],
+) -> bool:
+    if not isinstance(lineage, Mapping):
+        return False
+    raw_observations = lineage.get("observations")
+    if not isinstance(raw_observations, list) or len(raw_observations) != len(ordered):
+        return False
+    for index, (panel, observation) in enumerate(
+        zip(ordered, raw_observations, strict=True)
+    ):
+        if not isinstance(observation, Mapping):
+            return False
+        if (
+            str(observation.get("panel_id", "")) != panel.panel_id
+            or str(observation.get("source_asset_id", "")) != panel.source_asset_id
+            or observation.get("source_index") != index
+        ):
+            return False
+        bounds = observation.get("region_bounds")
+        if not isinstance(bounds, Mapping) or panel.panel_bounds is None:
+            return False
+        try:
+            persisted_bounds = (
+                int(bounds["x"]),
+                int(bounds["y"]),
+                int(bounds["x"]) + int(bounds["width"]),
+                int(bounds["y"]) + int(bounds["height"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        if persisted_bounds != panel.panel_bounds:
+            return False
+    return True
+
+
 def _migrate_visual_cache_identity(
     cached: Mapping[str, Any] | None,
     panels: Sequence[CloudPanelInput],
     *,
     model_identity: CloudModelIdentity,
     prompt: tuple[str, str, str],
+    persisted_lineage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Validate or migrate a legacy visual cache without provider calls."""
 
@@ -4225,12 +4264,16 @@ def _migrate_visual_cache_identity(
         descriptor["source_order"] = int(row["source_order"])
         legacy_descriptors.append(descriptor)
     legacy_source_hash = _hash(legacy_descriptors)
+    migration_proof = "legacy_descriptor_hash"
     if str(cached.get("source_hash", "")) != legacy_source_hash:
-        return None
+        if not _persisted_visual_lineage_matches(persisted_lineage, ordered):
+            return None
+        migration_proof = "persisted_lineage_and_payload_derivation"
 
     migrated = dict(cached)
     migrated["source_hash"] = expected_source_hash
     migrated["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
     migrated["panel_identity_hashes"] = list(identity_hashes)
     migrated["legacy_source_hash"] = legacy_source_hash
+    migrated["cache_identity_migration_proof"] = migration_proof
     return migrated

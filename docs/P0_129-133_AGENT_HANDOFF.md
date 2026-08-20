@@ -374,3 +374,19 @@ PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal
 Do not print ms_env.sh; keep data, DB/WAL, caches, logs, media, and secrets
 untracked. The normal command must report the runner request count and durable
 state before any subsequent story-map/narration/render/voice claim.
+
+## Follow-up live cache migration proof - 2026-08-20
+
+The first post-fix normal resume was safely terminated after exactly two new
+visual chunk requests. The job JSON remained unchanged at 701 cached visual
+rows; no new visual stage was accepted. Exact no-provider diagnostic:
+prepared=703, filtered=701, ordered IDs/assets/checksums/bounds/coverage matched
+persisted narration lineage, migrated=True,
+proof=persisted_lineage_and_payload_derivation, identity_rows=701, canonical
+source hash fb61e64ef66bce8e9fa9d79bc5e00ec5fd6ab8c3d0d7057a84d70dc04a7fa5c5.
+The log /tmp/cache-identity-resume-20260820.log is runtime-only.
+
+Use PYTHONPATH=/home/ubuntu/manhwashorts when invoking the normal checked-in
+batch script. The live diagnostic made zero provider calls. Continue only after
+checking no active process, then record the next runner request count and durable
+state. The silent preview, voice, and final QC remain unproven.
