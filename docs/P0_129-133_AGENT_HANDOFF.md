@@ -2,8 +2,9 @@
 
 ## Next atomic checkpoint: immutable repair slots
 
-Rollback parent is `161e26807050bda6f3e764811e0a1f92e93ec6b2`. The focused
-source/test work is ready to publish after collection-clean RED and GREEN
+Published checkpoint is `170ae52f9e9a821d37a8ba025d44f09b0ad44187`, with
+rollback parent `161e26807050bda6f3e764811e0a1f92e93ec6b2`. The focused
+source/test work passed collection-clean RED and GREEN
 verification. The repair registry is locally derived from the durable 160
 word / 64.35 second candidate and compact trusted story identities; provider
 responses cannot supply or rewrite claim/evidence IDs. A valid response must
@@ -19,8 +20,8 @@ same pinned model and matching 701-panel visual/story identities, at most one
 repair request, and sanitized code/count diagnostics.
 
 Oracle `/home/ubuntu/manhwashorts` is the authority. The published compact
-narration-repair checkpoint is `cb196da8e230cab1353e85eac1a335d33535564e`,
-parent `383d8336b12dcca8bfec7b729a5320c795034a4a`.
+narration-repair checkpoint is `170ae52f9e9a821d37a8ba025d44f09b0ad44187`,
+parent `161e26807050bda6f3e764811e0a1f92e93ec6b2`.
 Only `app/services/cloud_multimodal.py` and
 `tests/test_cloud_multimodal_mass_production.py` are in-scope authored files;
 the `data` symlink and `ms_env.sh` must remain untracked and secret-safe.

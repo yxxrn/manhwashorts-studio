@@ -1,8 +1,9 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
-## IMMUTABLE SLOT CHECKPOINT (pending publication)
+## IMMUTABLE SLOT CHECKPOINT (published)
 
-The current source/test work is based on rollback parent
+Published commit is
+`170ae52f9e9a821d37a8ba025d44f09b0ad44187` with rollback parent
 `161e26807050bda6f3e764811e0a1f92e93ec6b2`. It changes only the targeted
 narration repair boundary and its focused regression. Local code now derives
 `narration_slot_v1_*` identities from the already grounded candidate/story
@@ -24,8 +25,8 @@ narration/MP4/voice/QC artifact until the repaired result passes 115-125 words,
 50-60 seconds, grounding, and display derivation.
 
 Authoritative repository: Oracle `/home/ubuntu/manhwashorts`, `main`, published
-at `cb196da8e230cab1353e85eac1a335d33535564e` with parent
-`383d8336b12dcca8bfec7b729a5320c795034a4a`. The source/test/docs checkpoint
+at `170ae52f9e9a821d37a8ba025d44f09b0ad44187` with parent
+`161e26807050bda6f3e764811e0a1f92e93ec6b2`. The source/test/docs checkpoint
 contains only
 `app/services/cloud_multimodal.py` and
 `tests/test_cloud_multimodal_mass_production.py` are authored changes. The

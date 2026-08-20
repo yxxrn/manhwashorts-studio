@@ -1,8 +1,8 @@
 # IMMUTABLE NARRATION REPAIR SLOTS - 2026-08-21
 
-Rollback parent: `161e26807050bda6f3e764811e0a1f92e93ec6b2` on Oracle
-`/home/ubuntu/manhwashorts`; this source/test/docs checkpoint is ready for
-the next exact-object publication. The implementation creates local frozen
+Published checkpoint: `170ae52f9e9a821d37a8ba025d44f09b0ad44187` on Oracle and
+GitHub `main`, with rollback parent
+`161e26807050bda6f3e764811e0a1f92e93ec6b2`. The implementation creates local frozen
 repair slots from the grounded candidate and story map. Slot IDs, trusted
 claim IDs, evidence panel IDs, beat/causal positions, priority, and removability
 are local data. Provider output is limited to exact slot IDs, revised prose,
