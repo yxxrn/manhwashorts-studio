@@ -1,5 +1,13 @@
 # Changelog
 
+- Hardened the targeted narration-repair scope after a bounded real resume
+  returned `cloud.narrative_repair_scope_invalid`. The local reconciler now
+  restores candidate passage/claim/evidence lineage while allowing only safe
+  provider prose drift; new lineage or claims still fail closed. RED was one
+  body regression and GREEN is `66` focused passes. The durable candidate is
+  currently 160 words/64.35 seconds; the earlier 172-word report is not
+  present in the active cache, so no final narration or MP4 claim is made.
+
 - Added a prepared-panel warm-resume manifest and strict typed narration-repair
   checkpoint on Oracle. Metadata-only manifests preserve ordered panel/source
   identities, checksums, bounds, segmentation state, and preparation metrics

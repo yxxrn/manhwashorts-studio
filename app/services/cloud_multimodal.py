@@ -2602,12 +2602,14 @@ class CloudStageRunner:
                 require_duration=True,
                 require_grounding=True,
             )
-            or not self._narration_repair_scope_compatible(
-                candidate,
-                result,
-                removable_passage_ids,
-            )
         ):
+            return None
+        result = self._narration_repair_scope_reconciled(
+            candidate,
+            result,
+            removable_passage_ids,
+        )
+        if result is None:
             return None
         report = dict(result.qc_report)
         report["narration_repair"] = {
@@ -2657,34 +2659,48 @@ class CloudStageRunner:
         repaired: NarrationResult,
         removable_passage_ids: Sequence[str],
     ) -> bool:
-        if CloudStageRunner._narration_scope_signature(candidate) == CloudStageRunner._narration_scope_signature(repaired):
-            return True
+        return CloudStageRunner._narration_repair_scope_reconciled(
+            candidate,
+            repaired,
+            removable_passage_ids,
+        ) is not None
+
+    @staticmethod
+    def _narration_repair_scope_reconciled(
+        candidate: NarrationResult,
+        repaired: NarrationResult,
+        removable_passage_ids: Sequence[str],
+    ) -> NarrationResult | None:
         if (
             candidate.ending_kind != repaired.ending_kind
             or candidate.story_spine != repaired.story_spine
             or tuple(candidate.observations) != tuple(repaired.observations)
             or len(repaired.passages) < 4
         ):
-            return False
+            return None
         candidate_passages = {
             str(item.get("passage_id", "")): item for item in candidate.passages
         }
         repaired_passages = {
             str(item.get("passage_id", "")): item for item in repaired.passages
         }
+        if (
+            len(candidate_passages) != len(candidate.passages)
+            or len(repaired_passages) != len(repaired.passages)
+        ):
+            return None
         removed_passage_ids = set(candidate_passages) - set(repaired_passages)
         if (
-            not removed_passage_ids
-            or not removed_passage_ids.issubset(set(removable_passage_ids))
+            not removed_passage_ids.issubset(set(removable_passage_ids))
             or set(repaired_passages) - set(candidate_passages)
         ):
-            return False
+            return None
         for passage_id in set(repaired_passages) & set(candidate_passages):
             before = candidate_passages[passage_id]
             after = repaired_passages[passage_id]
-            for key in ("claim_ids", "evidence_panel_ids", "editorial_role"):
+            for key in ("claim_ids", "evidence_panel_ids"):
                 if before.get(key) != after.get(key):
-                    return False
+                    return None
         candidate_claims = {
             str(item.get("claim_id", "")): item
             for item in candidate.evidence_graph.get("claims", ())
@@ -2695,20 +2711,56 @@ class CloudStageRunner:
             for item in repaired.evidence_graph.get("claims", ())
             if isinstance(item, Mapping)
         }
-        if set(repaired_claims) - set(candidate_claims):
-            return False
-        if any(
-            candidate_claims[claim_id] != repaired_claims[claim_id]
-            for claim_id in repaired_claims
-        ):
-            return False
-        removed_claim_ids = set(candidate_claims) - set(repaired_claims)
         retained_claim_ids = {
             str(claim_id)
             for passage in repaired.passages
             for claim_id in passage.get("claim_ids", ())
         }
-        return not removed_claim_ids & retained_claim_ids
+        if (
+            not retained_claim_ids
+            or set(repaired_claims) != retained_claim_ids
+            or set(repaired_claims) - set(candidate_claims)
+        ):
+            return None
+        for claim_id in retained_claim_ids:
+            before = candidate_claims[claim_id]
+            after = repaired_claims[claim_id]
+            before_refs = tuple(
+                str(value)
+                for value in before.get("evidence_panel_ids", before.get("panel_ids", ()))
+            )
+            after_refs = tuple(
+                str(value)
+                for value in after.get("evidence_panel_ids", after.get("panel_ids", ()))
+            )
+            if (
+                before.get("claim_type") != after.get("claim_type")
+                or before_refs != after_refs
+            ):
+                return None
+        canonical_passages = []
+        for passage in repaired.passages:
+            passage_id = str(passage.get("passage_id", ""))
+            canonical = dict(passage)
+            original = candidate_passages[passage_id]
+            canonical["editorial_role"] = original.get("editorial_role", "")
+            canonical["claim_ids"] = list(original.get("claim_ids", ()))
+            canonical["evidence_panel_ids"] = list(original.get("evidence_panel_ids", ()))
+            canonical_passages.append(canonical)
+        canonical_claims = [
+            dict(claim)
+            for claim_id, claim in candidate_claims.items()
+            if claim_id in retained_claim_ids
+        ]
+        return replace(
+            repaired,
+            passages=tuple(canonical_passages),
+            ending_kind=candidate.ending_kind,
+            observations=tuple(dict(item) for item in candidate.observations),
+            continuity_ledger=dict(candidate.continuity_ledger),
+            evidence_graph={"claims": canonical_claims},
+            story_spine=dict(candidate.story_spine),
+        )
 
     def run_narration_repair_candidate(
         self,
@@ -2847,15 +2899,17 @@ class CloudStageRunner:
                     request_prompt_sha256=repair_prompt[1],
                     request_prompt_text=repair_prompt_text,
                 )
-                if not self._narration_repair_scope_compatible(
+                reconciled = self._narration_repair_scope_reconciled(
                     candidate,
                     repaired,
                     removable_passage_ids,
-                ):
+                )
+                if reconciled is None:
                     raise CloudStageError(
                         "cloud.narrative_repair_scope_invalid",
                         reviewable=True,
                     )
+                repaired = reconciled
                 if not _narration_result_is_usable(
                     repaired,
                     visual,

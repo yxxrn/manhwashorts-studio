@@ -1,7 +1,29 @@
+# TARGETED REPAIR SCOPE HARDENING - 2026-08-21
+
+The prepared-manifest checkpoint is published as
+`2df9ab4e756e501f9f30e5670239e77c1225c011` (parent `3330700dc7e4c310b19441d5c50099abbbae2b1d`); GitHub `main` matches. Current uncommitted scope is only the repair-scope reconciliation, its focused test, and this handoff.
+
+RED was collection-clean with one intended body failure: the published runner
+had no `_narration_repair_scope_reconciled` helper. GREEN is `66` focused
+passes (`59` cloud and `7` manifest), with five existing Pillow warnings;
+Ruff, compileall, and diff-check are clean. Provider prose may vary only when
+the local candidate's passage IDs, claim IDs, exact panel evidence, claim type,
+ending, observations, story spine, and causal scope are preserved. Local code
+then restores the candidate evidence graph/roles. Any lineage drift remains a
+fail-closed `cloud.narrative_repair_scope_invalid`.
+
+The one normal resume was capped at one request and ended with that scope code;
+no repair result was admitted. The durable candidate is `160` words / `64.35s`
+with hash `c4662073d9aa1e51de1620c7d4b0edfe5a51ebf7fc3f7bdda6233789f93d7310`;
+the earlier 172-word/69.57-second artifact is not present in the current
+durable cache, and no relabeling is allowed. The failed job/log did not retain
+an exact request count. Retry only after publishing this correction, using the
+matching 701-panel cache and final 115-125 word / 50-60 second grounding gate.
+
 # PREPARED MANIFEST + TARGETED REPAIR CHECKPOINT - 2026-08-21
 
 Oracle authority remains `/home/ubuntu/manhwashorts` on `main`; rollback parent
-is `3330700dc7e4c310b19441d5c50099abbbae2b1d`. This checkpoint contains the
+is `3330700dc7e4c310b19441d5c50099abbbae2b1d`. The preceding checkpoint contained the
 prepared-panel warm-resume manifest, strict typed narration repair boundary,
 focused tests, and handoff docs only. Never stage `data`, `ms_env.sh`, DB/WAL,
 provider caches, logs, media, or credentials.

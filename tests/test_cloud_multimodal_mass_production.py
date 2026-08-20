@@ -2743,3 +2743,79 @@ def test_narration_targeted_repair_rejects_lineage_scope_change(monkeypatch, tmp
         runner.run_narration(visual, story_map, panels=panels)
 
     assert caught.value.code == "cloud.narrative_repair_scope_invalid"
+
+
+def test_narration_targeted_repair_canonicalizes_non_lineage_provider_drift():
+    module = _module()
+    identity = _identity(module)
+    passages = tuple(
+        {
+            "passage_id": f"passage-{index}",
+            "editorial_role": f"role-{index}",
+            "text": f"Grounded passage {index}.",
+            "claim_ids": ["claim-1"],
+            "evidence_panel_ids": ["panel-1"],
+        }
+        for index in range(4)
+    )
+    claim = {
+        "claim_id": "claim-1",
+        "claim_type": "fact",
+        "text": "The candidate claim is grounded.",
+        "qualification": "The ordered evidence supports this claim.",
+        "evidence_panel_ids": ["panel-1"],
+    }
+    candidate = module.NarrationResult(
+        spoken_text="Old candidate prose.",
+        display_words=("OLD", "CANDIDATE", "PROSE"),
+        passages=passages,
+        ending_kind="consequence",
+        word_count=160,
+        estimated_duration_s=64.35,
+        qc_report={},
+        model_identity_hash=identity.identity_hash,
+        prompt_version="vision-first-story-analyzer-v3",
+        prompt_sha256="p" * 64,
+        observations=({"panel_id": "panel-1"},),
+        continuity_ledger={"ordered": True},
+        evidence_graph={"claims": [claim]},
+        story_spine={"decision": "the decision changes the stakes"},
+        visual_evidence_hash="v" * 64,
+    )
+    repaired = replace(
+        candidate,
+        spoken_text="New repaired prose.",
+        display_words=("NEW", "REPAIRED", "PROSE"),
+        passages=tuple(
+            {
+                **passage,
+                "editorial_role": "provider-rephrased-role",
+                "text": f"New repaired passage {index}.",
+            }
+            for index, passage in enumerate(passages)
+        ),
+        word_count=120,
+        estimated_duration_s=54.0,
+        evidence_graph={
+            "claims": [
+                {
+                    **claim,
+                    "text": "Provider changed claim prose but kept its evidence.",
+                    "qualification": "Provider qualification drift is not trusted.",
+                }
+            ]
+        },
+    )
+
+    reconciled = module.CloudStageRunner._narration_repair_scope_reconciled(
+        candidate,
+        repaired,
+        (),
+    )
+
+    assert reconciled is not None
+    assert reconciled.passages[0]["text"] == "New repaired passage 0."
+    assert reconciled.passages[0]["editorial_role"] == "role-0"
+    assert reconciled.evidence_graph == candidate.evidence_graph
+    assert reconciled.observations == candidate.observations
+    assert reconciled.story_spine == candidate.story_spine

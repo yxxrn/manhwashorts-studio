@@ -1,8 +1,32 @@
+# TARGETED REPAIR SCOPE HARDENING - 2026-08-21
+
+The prepared-manifest checkpoint is published as
+`2df9ab4e756e501f9f30e5670239e77c1225c011` (parent `3330700dc7e4c310b19441d5c50099abbbae2b1d`); GitHub `main` matches. Current uncommitted scope is only the repair-scope reconciliation, its focused test, and this documentation.
+
+TDD evidence: the collection-clean RED was one body failure because the
+published runner lacked `_narration_repair_scope_reconciled`. GREEN is `66`
+focused passes (`59` cloud-multimodal plus `7` prepared-manifest), five
+existing Pillow deprecation warnings, and clean Ruff/compileall/diff-check.
+The implementation accepts only prose/editorial-role changes that retain
+passage IDs, claim IDs, exact panel citations, claim type, ending, observations,
+story spine, and causal scope; local canonicalization restores candidate
+evidence/claims/roles. New or changed lineage remains
+`cloud.narrative_repair_scope_invalid`.
+
+The one bounded normal resume was capped at one provider request and ended
+with `cloud.narrative_repair_scope_invalid`; no repair result cache was
+admitted. The durable candidate is `160` words / `64.35s`, hash
+`c4662073d9aa1e51de1620c7d4b0edfe5a51ebf7fc3f7bdda6233789f93d7310`, not the
+earlier 172-word/69.57-second report. The failed job/log did not persist an
+exact request counter, so that count is not claimed. The next bounded retry
+must reuse only the matching 701-panel visual/story identities and may admit
+only a final 115-125 word / 50-60 second grounded result.
+
 # PREPARED MANIFEST + TARGETED REPAIR CHECKPOINT - 2026-08-21
 
 Rollback parent: `3330700dc7e4c310b19441d5c50099abbbae2b1d` on Oracle `/home/ubuntu/manhwashorts`.
-The prepared-panel warm-resume and strict targeted-repair implementation is
-currently the only uncommitted source/test scope; runtime `data`, `ms_env.sh`,
+The prepared-panel warm-resume and strict targeted-repair implementation was
+the preceding published source/test scope; runtime `data`, `ms_env.sh`,
 DB/WAL, caches, logs, and media remain untracked.
 
 Preparation now has a payload-free `prepared-panel-manifest-v1` with canonical

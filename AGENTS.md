@@ -1,8 +1,40 @@
+# TARGETED REPAIR SCOPE HARDENING - 2026-08-21
+
+The preceding prepared-manifest checkpoint is published as
+`2df9ab4e756e501f9f30e5670239e77c1225c011` (parent `3330700dc7e4c310b19441d5c50099abbbae2b1d`); GitHub `main` matches it.
+The current uncommitted scope is only the repair-scope reconciliation in
+`app/services/cloud_multimodal.py`, its focused regression, and these docs.
+
+The required RED was collection-clean and body-failing: one new test reported
+that the published runner had no `_narration_repair_scope_reconciled` helper.
+GREEN is 66 focused passes (`59` cloud-multimodal and `7` prepared-manifest),
+with five existing Pillow deprecation warnings; Ruff, compileall, and
+`git diff --check` pass. The fix permits provider prose/editorial-role drift
+only when passage IDs, claim IDs, exact panel citations, claim type, ending,
+observations, story spine, and causal scope remain unchanged. It then locally
+restores candidate evidence/claims/roles before final validation. Any lineage
+or new-claim drift still fails closed as `cloud.narrative_repair_scope_invalid`.
+
+The one bounded normal-entrypoint attempt against the durable candidate was
+cap-limited to one request and ended with that stable scope code; no repair
+result cache was admitted. The durable candidate currently on disk is
+`160` words / `64.35s` with hash
+`c4662073d9aa1e51de1620c7d4b0edfe5a51ebf7fc3f7bdda6233789f93d7310`, not the
+earlier 172-word/69.57-second report. The request counter was not persisted by
+that failed job/log, so no exact provider-call count is claimed. Do not relabel
+this candidate as final narration or reuse it across visual/story identities.
+
+After this correction is published, rerun the same normal service boundary
+with the 701-row visual cache and one bounded repair request. Accept only a
+contract-valid 115-125 word / 50-60 second result with complete grounding and
+display derivation; then continue narration artifact/QC and silent render.
+No MP4, voice, or publication is proven.
+
 # PREPARED MANIFEST + TARGETED REPAIR CHECKPOINT - 2026-08-21
 
 Authoritative worktree: Oracle `/home/ubuntu/manhwashorts`, branch `main`.
 Rollback parent for this checkpoint is `3330700dc7e4c310b19441d5c50099abbbae2b1d`.
-The current uncommitted scope is limited to `app/services/cloud_multimodal.py`,
+The preceding checkpoint scope was limited to `app/services/cloud_multimodal.py`,
 new `app/services/prepared_panel_manifest.py`, the two corresponding focused
 test files, and this handoff documentation. `data`, `ms_env.sh`, databases,
 WAL files, caches, logs, media, and provider credentials remain untracked and
