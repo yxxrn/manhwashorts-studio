@@ -10,6 +10,13 @@
 
 # Changelog
 
+- Clarified the immutable narration-repair wire schema with an exact
+  `slot_id`/`text` row contract after one bounded real request failed closed
+  at the sanitized slot contract boundary. Added the body-level regression;
+  the focused matrix is 74 passed (67 cloud, 7 manifest). The provider payload
+  was not retained, no retry was made under the one-request budget, and no
+  narration/MP4/voice/QC result is claimed.
+
 - Added immutable local narration-repair slots. Repair identities are derived
   from the grounded candidate/story map; providers can return only exact slot
   IDs, revised prose, and retained/dropped order. Local code restores trusted

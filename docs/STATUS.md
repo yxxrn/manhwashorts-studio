@@ -1,3 +1,21 @@
+# SLOT SCHEMA FOLLOW-UP - 2026-08-21
+
+Published correction: `25f1d6598643b0217504520d3e28f58994b41688`, parent
+`945770e75fc2483fc854fc0f7bf411993ee90f9a`, with Oracle/GitHub `main` parity.
+The repair prompt now declares the exact provider row schema
+`{\"slot_id\": \"...\", \"text\": \"...\"}` instead of relying on the
+phrase “revised spoken text”. A body-level regression caught that ambiguity;
+the focused matrix is GREEN at 74 tests (67 cloud-multimodal and 7
+prepared-manifest) with five existing Pillow warnings, and Ruff/compileall/
+diff/no-churn/secret gates pass.
+
+The single post-correction real repair request issued exactly one request and
+failed closed as `cloud.narrative_repair_slot_contract_invalid`. This is a
+sanitized envelope/row-schema taxonomy only; the raw provider response was not
+stored or printed, so no finer field-level cause is claimed. No retry was made
+under the one-request budget. The 160-word/64.35-second candidate remains
+repair-only; no final narration, silent MP4, voice, or QC artifact exists.
+
 # IMMUTABLE NARRATION REPAIR SLOTS - 2026-08-21
 
 Published checkpoint: `170ae52f9e9a821d37a8ba025d44f09b0ad44187` on Oracle and

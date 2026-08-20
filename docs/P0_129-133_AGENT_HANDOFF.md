@@ -1,5 +1,19 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Latest slot-schema repair checkpoint
+
+Published code correction is
+`25f1d6598643b0217504520d3e28f58994b41688` (parent
+`945770e75fc2483fc854fc0f7bf411993ee90f9a`). The provider prompt now gives
+the exact slot row shape and local code still owns all claim/evidence lineage.
+The one bounded real repair request issued one request and ended with the
+sanitized code `cloud.narrative_repair_slot_contract_invalid`; raw response
+content was not retained, and no second request was made. The new regression
+plus focused matrix is 74 passed (67 cloud, 7 manifest) with five existing
+Pillow warnings; static and secret gates are clean. No narration, MP4, voice,
+or QC artifact exists. A future retry requires an explicitly bounded budget
+after this published schema correction.
+
 ## Next atomic checkpoint: immutable repair slots
 
 Published checkpoint is `170ae52f9e9a821d37a8ba025d44f09b0ad44187`, with

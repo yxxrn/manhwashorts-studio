@@ -1,5 +1,22 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## SLOT SCHEMA FOLLOW-UP (published)
+
+Published correction `25f1d6598643b0217504520d3e28f58994b41688` has parent
+`945770e75fc2483fc854fc0f7bf411993ee90f9a` and is now on Oracle/GitHub
+`main`. The targeted repair prompt names the exact provider row shape
+`{\"slot_id\": \"...\", \"text\": \"...\"}`; local lineage ownership and
+fail-closed reconciliation are unchanged.
+
+The one post-publication real repair request used the existing pinned
+`grok-4.3` configuration, issued exactly one request, and failed closed with
+`cloud.narrative_repair_slot_contract_invalid`. No provider payload was
+stored or printed, no repair result was admitted, and no second request was
+made under the one-request budget. The body-level schema regression and the
+full focused matrix are GREEN at 74 tests (67 cloud-multimodal and 7
+prepared-manifest), with five existing Pillow warnings; static/no-churn/
+secret gates pass. No narration, MP4, voice, or QC artifact is proven.
+
 ## IMMUTABLE SLOT CHECKPOINT (published)
 
 Published commit is
