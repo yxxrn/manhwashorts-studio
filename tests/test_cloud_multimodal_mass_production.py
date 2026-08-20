@@ -578,11 +578,22 @@ def test_review_preview_failure_code_keeps_nested_stable_code():
     assert module._review_failure_code("unstructured local failure") == "review.preview_failed"
 
 
-def test_review_project_repairs_after_initial_narration_grounding_failure(monkeypatch):
+@pytest.mark.parametrize(
+    "failure_code",
+    ("cloud.narrative_not_grounded", "cloud.narrative_duration_out_of_range"),
+)
+def test_review_project_repairs_after_initial_narration_failure(monkeypatch, failure_code):
     module = _module()
     from types import SimpleNamespace
 
     panels = _panels(module)
+    dropped_panel = replace(
+        panels[0],
+        panel_id="dropped-panel",
+        source_asset_id="dropped-asset",
+        source_order=999,
+    )
+    all_panels = panels + (dropped_panel,)
     visual = module.VisualStageResult(
         panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
         source_hash="v" * 64,
@@ -603,9 +614,10 @@ def test_review_project_repairs_after_initial_narration_grounding_failure(monkey
     failed = module.ChapterJobRecord(
         job_id="project-a",
         state=module.ChapterState.NEEDS_REVIEW,
-        error_code="cloud.narrative_not_grounded",
+        error_code=failure_code,
         stage_results={"visual": visual.as_dict(), "story_map": story_map.as_dict()},
     )
+    partial_narration = SimpleNamespace(visual_evidence_hash=visual.visual_evidence_hash)
 
     class Store:
         def __init__(self):
@@ -622,19 +634,26 @@ def test_review_project_repairs_after_initial_narration_grounding_failure(monkey
         model_identity=SimpleNamespace(identity_hash="m" * 64),
         assess_strip_boundaries=lambda _request: {},
         prompts={"visual_narrative_repair": ("repair-v1", "r" * 64, "")},
+        _last_narration_result=(
+            partial_narration
+            if failure_code == "cloud.narrative_duration_out_of_range"
+            else None
+        ),
     )
     service.store = Store()
     service.review_root = None
     monkeypatch.setattr(
         module,
         "prepare_project_panels",
-        lambda *_args, **_kwargs: (panels, {"status": "RECONCILED"}),
+        lambda *_args, **_kwargs: (all_panels, {"status": "RECONCILED"}),
     )
     monkeypatch.setattr(service, "run_job", lambda *_args, **_kwargs: failed)
     observed = {}
 
     def fake_repair(_db, _project_id, script_row, _panels, _result, **_kwargs):
         observed["script_row"] = script_row
+        observed["result"] = _result
+        observed["panel_ids"] = tuple(panel.panel_id for panel in _panels)
         return SimpleNamespace(
             narration=SimpleNamespace(
                 as_dict=lambda: {"spoken_text": "repaired", "passages": []},
@@ -663,6 +682,11 @@ def test_review_project_repairs_after_initial_narration_grounding_failure(monkey
     result = service.run_project(object(), "project-a", review_only_preview=True)
 
     assert observed["script_row"] is None
+    if failure_code == "cloud.narrative_duration_out_of_range":
+        assert observed["result"].narration is partial_narration
+    else:
+        assert observed["result"] is None
+    assert observed["panel_ids"] == tuple(panel.panel_id for panel in panels)
     assert result.state == module.ChapterState.REVIEW_PREVIEW_READY, (result.error_code, result.error_message)
 
 
@@ -1471,7 +1495,9 @@ def test_narration_uses_the_same_bounded_ordered_chunk_contract(tmp_path):
 
     assert result.observations[0]["panel_id"] == panels[0].panel_id
     assert result.observations[-1]["panel_id"] == panels[-1].panel_id
-    assert len([call for call in provider.calls if call[0] == "narration"]) == 3
+    assert len([call for call in provider.calls if call[0] == "narration"]) == 1
+    assert result.qc_report["narration_topology"] == "chapter_evidence_reduce_v1"
+    assert result.qc_report["editorial_selection"]["selection_hash"]
     assert len(result.observations) == len(panels)
 
     resumed_provider = NarrationProvider()
@@ -1578,3 +1604,416 @@ def test_story_map_splits_incomplete_large_chunk_without_dropping_coverage(tmp_p
 
     assert result.panel_ids == tuple(panel.panel_id for panel in panels)
     assert sorted(provider.story_sizes) == [1, 60, 61]
+
+
+def test_story_map_reduces_incomplete_60_panel_chunk_to_30_without_dropping_coverage(tmp_path):
+    module = _module()
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"nested-fallback-panel-{index:03d}",
+            source_asset_id=f"nested-fallback-asset-{index:03d}",
+            source_order=index + 1,
+            mime_type="image/png",
+            payload=f"nested-fallback-payload-{index}".encode(),
+        )
+        for index in range(61)
+    )
+    visual = module.VisualStageResult(
+        panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
+        source_hash="nested-fallback-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+
+    class IncompleteMediumProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.story_sizes = []
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "story_map":
+                self.story_sizes.append(len(payload["panel_ids"]))
+            result = super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+            if stage == "story_map" and len(payload["panel_ids"]) > 30:
+                result["ordered_beats"] = result.pop("beats")
+                for beat in result["ordered_beats"]:
+                    beat["panel_ids"] = [payload["panel_ids"][0]]
+                for claim in result["claims"]:
+                    claim["panel_ids"] = [payload["panel_ids"][0]]
+            return result
+
+    provider = IncompleteMediumProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "nested-fallback-cache"),
+        max_attempts=1,
+    )
+
+    result = runner.run_story_map(visual)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert sorted(provider.story_sizes) == [1, 30, 30, 60, 61]
+
+
+def test_narration_uses_one_final_reduce_call_after_editorial_selection(tmp_path):
+    module = _module()
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"narration-fallback-panel-{index:03d}",
+            source_asset_id=f"narration-fallback-asset-{index:03d}",
+            source_order=index + 1,
+            mime_type="image/png",
+            payload=f"narration-fallback-payload-{index}".encode(),
+            panel_bounds=(0, 0, 100, 100),
+            source_dimensions=(100, 100),
+            strip_region_id=f"narration-fallback-region-{index}",
+            coverage_map_version="coverage-v1",
+            coverage_map_hash="b" * 64,
+        )
+        for index in range(181)
+    )
+    visual_rows = []
+    for panel in panels:
+        observation = _visual_row(panel.descriptor())
+        visual_rows.append(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+                "observation": observation,
+                "visual_evidence": observation["visual_evidence"],
+                "evidence_hash": "",
+            }
+        )
+    visual = module.VisualStageResult(
+        panels=tuple(visual_rows),
+        source_hash="narration-fallback-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    panel_ids = [panel.panel_id for panel in panels]
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel_ids),
+        beats=({"beat_id": "beat-all", "panel_ids": panel_ids, "summary": "the visible sequence develops"},),
+        causal_chain=({"from_beat": "beat-all", "to_beat": "beat-all", "reason": "the visible sequence continues"},),
+        claims=({
+            "claim_id": "claim-all",
+            "text": "The visible sequence develops.",
+            "panel_ids": panel_ids,
+            "qualification": "The ordered panels support this reading.",
+        },),
+        story_map_hash="s" * 64,
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="c" * 64,
+    )
+
+    class EditorialReduceProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.narration_sizes = []
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "narration":
+                panel_ids = list(payload["panel_ids"])
+                self.narration_sizes.append(len(panel_ids))
+                output = _narrative_output("cloud", panel_ids[:3])
+                for passage in output["script_passages"]:
+                    passage["evidence_panel_ids"] = panel_ids
+                for claim in output["evidence_graph"]["claims"]:
+                    claim["evidence_panel_ids"] = panel_ids
+                return output
+            return super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+
+    provider = EditorialReduceProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "narration-fallback-cache"),
+        max_attempts=1,
+    )
+
+    result = runner.run_narration(visual, story_map, panels=panels)
+
+    assert len(result.observations) == len(panels)
+    assert provider.narration_sizes == [4]
+    assert result.qc_report["narration_topology"] == "chapter_evidence_reduce_v1"
+    assert result.qc_report["editorial_selection"]["selection_hash"]
+
+
+
+def test_narration_retry_sends_sanitized_contract_feedback(tmp_path):
+    module = _module()
+    panels = _panels(module)
+    visual_rows = []
+    for panel in panels:
+        observation = _visual_row(panel.descriptor())
+        visual_rows.append(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+                "observation": observation,
+                "visual_evidence": observation["visual_evidence"],
+                "evidence_hash": "",
+            }
+        )
+    visual = module.VisualStageResult(
+        panels=tuple(visual_rows),
+        source_hash="narration-feedback-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    panel_ids = [panel.panel_id for panel in panels]
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel_ids),
+        beats=({"beat_id": "beat-all", "panel_ids": panel_ids, "summary": "the visible sequence develops"},),
+        causal_chain=({"from_beat": "beat-all", "to_beat": "beat-all", "reason": "the visible sequence continues"},),
+        claims=({
+            "claim_id": "claim-all",
+            "text": "The visible sequence develops.",
+            "panel_ids": panel_ids,
+            "qualification": "The ordered panels support this reading.",
+        },),
+        story_map_hash="s" * 64,
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="c" * 64,
+    )
+
+    class FeedbackProvider(_FakeProvider):
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage != "narration":
+                return super().complete_json(
+                    stage=stage,
+                    prompt_version=prompt_version,
+                    prompt_sha256=prompt_sha256,
+                    prompt_text=prompt_text,
+                    payload=payload,
+                )
+            self.narration_payloads.append(dict(payload))
+            output = _narrative_output("feedback", list(payload["panel_ids"]))
+            if int(payload.get("retry_attempt", 0)) == 0:
+                output["evidence_graph"]["claims"][0]["evidence_panel_ids"] = ["foreign-panel"]
+            return output
+
+    provider = FeedbackProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "narration-feedback-cache"),
+        max_attempts=2,
+    )
+
+    result = runner.run_narration(visual, story_map, panels=panels)
+
+    assert len(result.observations) == len(panels)
+    assert len(provider.narration_payloads) == 2
+    assert provider.narration_payloads[1]["contract_retry_feedback"] == (
+        "repeat only exact current panel IDs and include every claim's evidence IDs "
+        "in the referencing passage"
+    )
+
+
+def test_repaired_visual_evidence_hash_invalidates_downstream_stage_identity():
+    module = _module()
+    panels = _panels(module)
+    rows = []
+    for panel in panels:
+        observation = _visual_row(panel.descriptor())
+        rows.append({
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "source_checksum": panel.source_checksum,
+            "observation": observation,
+            "visual_evidence": observation["visual_evidence"],
+            "evidence_hash": "",
+        })
+    visual = module.VisualStageResult(
+        panels=tuple(rows),
+        source_hash="same-source-bytes",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    changed_row = dict(rows[0])
+    changed_observation = dict(changed_row["observation"])
+    changed_observation["visible_facts"] = ["repaired visible fact"]
+    changed_row["observation"] = changed_observation
+    changed = module.VisualStageResult(
+        panels=(changed_row, *rows[1:]),
+        source_hash=visual.source_hash,
+        model_identity_hash=visual.model_identity_hash,
+        prompt_version=visual.prompt_version,
+        prompt_sha256=visual.prompt_sha256,
+    )
+
+    assert visual.visual_evidence_hash != changed.visual_evidence_hash
+    story = module.StoryMapResult(
+        panel_ids=visual.panel_ids,
+        beats=(),
+        causal_chain=(),
+        claims=(),
+        story_map_hash="s" * 64,
+        model_identity_hash=visual.model_identity_hash,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="c" * 64,
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    assert story.visual_evidence_hash != changed.visual_evidence_hash
+def test_visual_repair_retry_feedback_is_static_and_specific():
+    module = _module()
+
+    feedback = module._visual_narrative_repair_retry_feedback(
+        "visual.narrative_repair_ungrounded"
+    )
+
+    assert "existing claim IDs" in feedback
+    assert "feasible panel IDs" in feedback
+    assert "118-124 lexical words" in feedback
+    assert module._visual_narrative_repair_retry_feedback(
+        "cloud.provider_response_invalid"
+    ).startswith("return strict JSON")
+
+def test_narration_cache_requires_complete_grounded_result_even_with_matching_visual_hash():
+    module = _module()
+    panels = _panels(module)
+    rows = tuple(_visual_row(panel.descriptor()) for panel in panels)
+    visual = module.VisualStageResult(
+        panels=rows,
+        source_hash="cache-validity-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    valid = module.NarrationResult(
+        spoken_text="One grounded turn changes what follows.",
+        display_words=("ONE", "GROUNDED", "TURN"),
+        passages=tuple(
+            {
+                "passage_id": f"p{index}",
+                "editorial_role": "role",
+                "text": "A grounded turn changes what follows.",
+                "claim_ids": ["claim"],
+                "evidence_panel_ids": [panel.panel_id],
+            }
+            for index in range(4)
+            for panel in (panels[index % len(panels)],)
+        ),
+        ending_kind="consequence",
+        word_count=120,
+        estimated_duration_s=53.0,
+        observations=tuple(rows),
+        continuity_ledger={},
+        evidence_graph={"claims": []},
+        story_spine={},
+        qc_report={},
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="vision-first-story-analyzer-v3",
+        prompt_sha256="n" * 64,
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    stale = replace(valid, word_count=0, spoken_text="", display_words=())
+
+    assert module._narration_result_is_usable(
+        valid,
+        visual,
+        require_duration=True,
+    ) is True
+    assert module._narration_result_is_usable(
+        stale,
+        visual,
+        require_duration=True,
+    ) is False
+
+def test_editorial_selection_is_bounded_ordered_and_panel_keyed():
+    module = _module()
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"selection-panel-{index:03d}",
+            source_asset_id=f"selection-asset-{index:03d}",
+            source_order=index + 1,
+            mime_type="image/png",
+            payload=f"selection-payload-{index}".encode(),
+        )
+        for index in range(240)
+    )
+    visual = module.VisualStageResult(
+        panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
+        source_hash="selection-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    beats = []
+    claims = []
+    for beat_index in range(24):
+        panel_ids = [
+            panel.panel_id
+            for panel in panels[beat_index * 10:(beat_index + 1) * 10]
+        ]
+        beat_id = f"selection-beat-{beat_index:02d}"
+        claim_id = f"selection-claim-{beat_index:02d}"
+        beats.append({
+            "beat_id": beat_id,
+            "panel_ids": panel_ids,
+            "summary": f"beat {beat_index}",
+            "state_changes": [f"change {beat_index}"],
+        })
+        claims.append({
+            "claim_id": claim_id,
+            "claim_type": "fact",
+            "text": f"fact {beat_index}",
+            "qualification": "visible evidence supports this",
+            "evidence_panel_ids": panel_ids[:2],
+        })
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel.panel_id for panel in panels),
+        beats=tuple(beats),
+        causal_chain=tuple(
+            {
+                "from_beat": beats[index]["beat_id"],
+                "to_beat": beats[index + 1]["beat_id"],
+                "reason": "ordered consequence",
+            }
+            for index in range(len(beats) - 1)
+        ),
+        claims=tuple(claims),
+        story_map_hash="story-selection",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="c" * 64,
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+
+    selection = module.select_editorial_beats(visual, story_map, target_count=10)
+
+    assert 8 <= len(selection.beat_ids) <= 12
+    assert len(selection.panel_ids) == len(set(selection.panel_ids))
+    assert selection.beat_ids == tuple(
+        beat_id
+        for beat_id in selection.beat_ids
+    )
+    visual_order = {panel.panel_id: index for index, panel in enumerate(panels)}
+    assert tuple(sorted(selection.panel_ids, key=visual_order.get)) == selection.panel_ids
+    assert set(selection.claim_ids) <= {claim["claim_id"] for claim in claims}
+    assert selection.selection_hash

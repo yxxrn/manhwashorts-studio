@@ -47,7 +47,13 @@ VISUAL_REQUEST_MAX_ESTIMATED_BYTES = 3_500_000  # preview-only: larger visual ba
 VISUAL_REQUEST_OVERLAP = 0
 STORY_MAP_CHUNK_STEP = 180
 STORY_MAP_COVERAGE_FALLBACK_STEP = 60
+STORY_MAP_COVERAGE_MIN_STEP = 30
 NARRATION_CHUNK_STEP = 180
+NARRATION_COVERAGE_FALLBACK_STEP = 60
+NARRATION_COVERAGE_MIN_STEP = 30
+EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
+EDITORIAL_SELECTION_TARGET_BEATS = 10
+EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT = 4
 STAGE_PARALLEL_WORKERS = 4
 _REVIEW_ERROR_CODE_PATTERN = re.compile(
     r"\b(?:cloud|visual|reference|review)\.[a-z0-9_.-]+\b"
@@ -279,6 +285,17 @@ class VisualStageResult:
     def panel_ids(self) -> tuple[str, ...]:
         return tuple(item["panel_id"] for item in self.panels)
 
+    @property
+    def visual_evidence_hash(self) -> str:
+        return _hash({
+            "contract_version": "visual-evidence-stage-v1",
+            "source_hash": self.source_hash,
+            "model_identity_hash": self.model_identity_hash,
+            "prompt_version": self.prompt_version,
+            "prompt_sha256": self.prompt_sha256,
+            "panels": [dict(item) for item in self.panels],
+        })
+
     def as_dict(self) -> dict[str, Any]:
         return asdict(self) | {"panels": [dict(item) for item in self.panels]}
 
@@ -304,6 +321,7 @@ class StoryMapResult:
     model_identity_hash: str
     prompt_version: str
     prompt_sha256: str
+    visual_evidence_hash: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -315,6 +333,7 @@ class StoryMapResult:
             "model_identity_hash": self.model_identity_hash,
             "prompt_version": self.prompt_version,
             "prompt_sha256": self.prompt_sha256,
+            "visual_evidence_hash": self.visual_evidence_hash,
         }
 
     @classmethod
@@ -328,6 +347,7 @@ class StoryMapResult:
             model_identity_hash=str(value["model_identity_hash"]),
             prompt_version=str(value["prompt_version"]),
             prompt_sha256=str(value["prompt_sha256"]),
+            visual_evidence_hash=str(value.get("visual_evidence_hash", "")),
         )
 
 
@@ -348,6 +368,7 @@ class NarrationResult:
     continuity_ledger: dict[str, Any] = field(default_factory=dict)
     evidence_graph: dict[str, Any] = field(default_factory=dict)
     story_spine: dict[str, Any] = field(default_factory=dict)
+    visual_evidence_hash: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self) | {"display_words": list(self.display_words), "passages": [dict(item) for item in self.passages]}
@@ -377,6 +398,7 @@ class NarrationResult:
             continuity_ledger=dict(value.get("continuity_ledger", {})),
             evidence_graph=dict(value.get("evidence_graph", {})),
             story_spine=dict(value.get("story_spine", {})),
+            visual_evidence_hash=str(value.get("visual_evidence_hash", "")),
         )
 
 
@@ -423,6 +445,192 @@ def _hash(value: object) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
+def _narration_result_is_usable(
+    result: NarrationResult,
+    visual: VisualStageResult,
+    *,
+    require_duration: bool,
+) -> bool:
+    """Reject stale partial narration caches before they can enter repair/render."""
+
+    try:
+        if result.visual_evidence_hash != visual.visual_evidence_hash:
+            return False
+        if len(result.observations) != len(visual.panels):
+            return False
+        if not result.spoken_text.strip() or not result.display_words:
+            return False
+        if not 4 <= len(result.passages) <= 6:
+            return False
+        if int(result.word_count) <= 0 and not re.findall(r"[A-Za-z0-9]+", result.spoken_text):
+            return False
+        if require_duration and not 40.0 <= float(result.estimated_duration_s) <= 180.0:
+            return False
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class EditorialSelection:
+    """Deterministic, panel-keyed beats selected after full chapter analysis."""
+
+    beat_ids: tuple[str, ...]
+    panel_ids: tuple[str, ...]
+    claim_ids: tuple[str, ...]
+    beat_scores: tuple[dict[str, Any], ...]
+    selection_hash: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "version": EDITORIAL_SELECTION_VERSION,
+            "target_beats": EDITORIAL_SELECTION_TARGET_BEATS,
+            "beat_ids": list(self.beat_ids),
+            "panel_ids": list(self.panel_ids),
+            "claim_ids": list(self.claim_ids),
+            "beat_scores": [dict(item) for item in self.beat_scores],
+            "selection_hash": self.selection_hash,
+        }
+
+
+def select_editorial_beats(
+    visual: VisualStageResult,
+    story_map: StoryMapResult,
+    *,
+    target_count: int = EDITORIAL_SELECTION_TARGET_BEATS,
+) -> EditorialSelection:
+    """Select 8-12 chronologically distributed strong beats without sampling."""
+
+    if isinstance(target_count, bool) or not isinstance(target_count, int):
+        raise CloudStageError("cloud.editorial_selection_invalid")
+    target = max(8, min(12, target_count))
+    panel_order = {
+        str(panel.get("panel_id")): index
+        for index, panel in enumerate(visual.panels)
+        if isinstance(panel, Mapping) and str(panel.get("panel_id", "")).strip()
+    }
+    if not panel_order:
+        raise CloudStageError("cloud.editorial_selection_invalid")
+    claims = tuple(
+        claim
+        for claim in story_map.claims
+        if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+    )
+    beat_rows: list[dict[str, Any]] = []
+    for raw_beat in story_map.beats:
+        if not isinstance(raw_beat, Mapping):
+            continue
+        beat_id = str(raw_beat.get("beat_id", "")).strip()
+        raw_panel_ids = raw_beat.get("panel_ids", ())
+        if not beat_id or not isinstance(raw_panel_ids, (list, tuple)):
+            continue
+        panel_ids = tuple(
+            str(panel_id)
+            for panel_id in raw_panel_ids
+            if str(panel_id) in panel_order
+        )
+        if not panel_ids:
+            continue
+        panel_set = set(panel_ids)
+        beat_claims = []
+        for claim in claims:
+            refs = claim.get("evidence_panel_ids", claim.get("panel_ids", ()))
+            if isinstance(refs, (list, tuple)) and panel_set.intersection(
+                str(ref) for ref in refs
+            ):
+                beat_claims.append(claim)
+        first_order = min(panel_order[panel_id] for panel_id in panel_ids)
+        state_changes = raw_beat.get("state_changes", ())
+        causal_turns = raw_beat.get("causal_links", raw_beat.get("causal_turns", ()))
+        score = (
+            len(beat_claims) * 100
+            + (len(state_changes) if isinstance(state_changes, (list, tuple)) else 0) * 5
+            + (len(causal_turns) if isinstance(causal_turns, (list, tuple)) else 0) * 3
+            + min(len(panel_ids), 16)
+        )
+        beat_rows.append(
+            {
+                "beat_id": beat_id,
+                "panel_ids": panel_ids,
+                "first_order": first_order,
+                "score": score,
+                "claims": tuple(beat_claims),
+            }
+        )
+    if not beat_rows:
+        raise CloudStageError("cloud.editorial_selection_invalid")
+    beat_rows.sort(key=lambda row: (int(row["first_order"]), str(row["beat_id"])))
+    count = min(target, len(beat_rows))
+    selected_indexes: set[int] = set()
+    for bucket in range(count):
+        start = (bucket * len(beat_rows)) // count
+        stop = ((bucket + 1) * len(beat_rows)) // count
+        candidates = range(start, max(start + 1, stop))
+        selected_indexes.add(
+            max(
+                candidates,
+                key=lambda index: (
+                    int(beat_rows[index]["score"]),
+                    -int(beat_rows[index]["first_order"]),
+                    str(beat_rows[index]["beat_id"]),
+                ),
+            )
+        )
+    selected = [
+        beat_rows[index]
+        for index in sorted(selected_indexes, key=lambda index: beat_rows[index]["first_order"])
+    ]
+    selected_panel_set: set[str] = set()
+    selected_claim_ids: list[str] = []
+    score_rows: list[dict[str, Any]] = []
+    for row in selected:
+        local_panel_ids: list[str] = []
+        for claim in row["claims"]:
+            claim_id = str(claim["claim_id"])
+            if claim_id not in selected_claim_ids:
+                selected_claim_ids.append(claim_id)
+            refs = claim.get("evidence_panel_ids", claim.get("panel_ids", ()))
+            if isinstance(refs, (list, tuple)):
+                for panel_id in refs:
+                    panel_id = str(panel_id)
+                    if panel_id in row["panel_ids"] and panel_id not in local_panel_ids:
+                        local_panel_ids.append(panel_id)
+        for panel_id in (row["panel_ids"][0], row["panel_ids"][-1]):
+            if panel_id not in local_panel_ids:
+                local_panel_ids.append(panel_id)
+        local_panel_ids.sort(key=panel_order.__getitem__)
+        selected_panel_set.update(local_panel_ids[:EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT])
+        score_rows.append(
+            {
+                "beat_id": row["beat_id"],
+                "source_order": int(row["first_order"]),
+                "score": int(row["score"]),
+                "selected_panel_ids": local_panel_ids[:EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT],
+                "claim_count": len(row["claims"]),
+            }
+        )
+    panel_ids = tuple(
+        panel_id for panel_id in panel_order if panel_id in selected_panel_set
+    )
+    beat_ids = tuple(str(row["beat_id"]) for row in selected)
+    identity = {
+        "version": EDITORIAL_SELECTION_VERSION,
+        "beat_ids": list(beat_ids),
+        "panel_ids": list(panel_ids),
+        "claim_ids": list(selected_claim_ids),
+        "beat_scores": score_rows,
+        "visual_evidence_hash": visual.visual_evidence_hash,
+        "story_map_hash": story_map.story_map_hash,
+    }
+    return EditorialSelection(
+        beat_ids=beat_ids,
+        panel_ids=panel_ids,
+        claim_ids=tuple(selected_claim_ids),
+        beat_scores=tuple(score_rows),
+        selection_hash=_hash(identity),
+    )
+
+
 def _load_causal_prompt() -> tuple[str, str, str]:
     try:
         text = CAUSAL_MAP_PROMPT_PATH.read_text(encoding="utf-8")
@@ -453,6 +661,58 @@ def _prompt_specs() -> dict[str, tuple[str, str, str]]:
         "segmentation": _load_strip_boundary_prompt(),
         "visual_narrative_repair": visual_narrative_repair.load_repair_prompt(),
     }
+
+
+def _narration_retry_feedback(message_or_code: str) -> str:
+    """Return bounded, sanitized guidance for one rejected narration attempt."""
+
+    value = str(message_or_code)
+    if (
+        "script passage evidence does not cover its claims" in value
+        or "claim evidence contains an unknown panel" in value
+    ):
+        return (
+            "repeat only exact current panel IDs and include every claim's evidence IDs "
+            "in the referencing passage"
+        )
+    if "open_question ending must be evidence-grounded and end with ?" in value:
+        return (
+            "use open_question only when the final passage is an evidence-grounded question; "
+            "otherwise choose consequence or cliffhanger without a question mark"
+        )
+    if "cloud.narrative_qc_blocked" in value:
+        return (
+            "use natural evidence-grounded prose and avoid generic hype, CTA language, "
+            "copied dialogue, and unsupported claims"
+        )
+    return (
+        "return strict JSON grounded only in the supplied ordered panels and claims; "
+        "do not add foreign panel IDs or unsupported evidence"
+    )
+
+
+def _visual_narrative_repair_retry_feedback(code: str) -> str:
+    """Return bounded, non-content guidance for one rejected repair attempt."""
+
+    value = str(code)
+    if value in {
+        "visual.narrative_repair_ungrounded",
+        "cloud.narrative_not_grounded",
+    }:
+        return (
+            "return 4-6 chronological passages using only existing claim IDs and feasible "
+            "panel IDs; every claim's declared feasible evidence must be covered by its "
+            "referencing passages, with 118-124 lexical words and no unsupported facts"
+        )
+    if value == "cloud.narrative_duration_out_of_range":
+        return (
+            "return 4-6 concise chronological passages using only existing claim IDs and "
+            "feasible panel IDs; keep the grounded spoken script at 118-124 lexical words"
+        )
+    return (
+        "return strict JSON with existing claim IDs, feasible panel IDs, grounded "
+        "chronological passages, and no provider hashes or unsupported facts"
+    )
 
 
 def _cache_key(stage: str, source: object, identity: CloudModelIdentity, prompt: tuple[str, str, str]) -> str:
@@ -1222,6 +1482,8 @@ class CloudStageRunner:
         chunk_index: int,
         chunk: Sequence[Mapping[str, Any]],
         batch_count: int,
+        *,
+        step: int = STORY_MAP_COVERAGE_FALLBACK_STEP,
     ) -> StoryMapResult:
         """Reconcile a large response through smaller complete-coverage requests.
 
@@ -1231,9 +1493,10 @@ class CloudStageRunner:
         subchunks instead of inventing references or accepting a partial map.
         """
 
+        step = max(STORY_MAP_COVERAGE_MIN_STEP, int(step))
         subchunks = [
-            chunk[index:index + STORY_MAP_COVERAGE_FALLBACK_STEP]
-            for index in range(0, len(chunk), STORY_MAP_COVERAGE_FALLBACK_STEP)
+            chunk[index:index + step]
+            for index in range(0, len(chunk), step)
         ]
         results = [
             self._run_story_map_chunk(
@@ -1242,6 +1505,7 @@ class CloudStageRunner:
                 chunk_index * 10_000 + sub_index,
                 subchunk,
                 batch_count * 10_000,
+                coverage_step=step,
             )
             for sub_index, subchunk in enumerate(subchunks)
         ]
@@ -1291,6 +1555,8 @@ class CloudStageRunner:
         chunk_index: int,
         chunk: Sequence[Mapping[str, Any]],
         batch_count: int,
+        *,
+        coverage_step: int = STORY_MAP_COVERAGE_FALLBACK_STEP,
     ) -> StoryMapResult:
         chunk_ids = tuple(str(panel["panel_id"]) for panel in chunk)
         chunk_source = {
@@ -1317,6 +1583,7 @@ class CloudStageRunner:
                 and cached_result.model_identity_hash == self.model_identity.identity_hash
                 and cached_result.prompt_version == prompt[0]
                 and cached_result.prompt_sha256 == prompt[1]
+                and cached_result.visual_evidence_hash == visual.visual_evidence_hash
             ):
                 return cached_result
 
@@ -1343,24 +1610,34 @@ class CloudStageRunner:
                 )
                 result = self._reconcile_story_map(raw, chunk_ids, prompt)
             except CloudStageError as exc:
-                if (
-                    exc.code == "cloud.panel_coverage_incomplete"
-                    and len(chunk) > STORY_MAP_COVERAGE_FALLBACK_STEP
-                ):
-                    result = self._run_story_map_coverage_fallback(
-                        prompt,
-                        visual,
-                        chunk_index,
-                        chunk,
-                        batch_count,
-                    )
-                    break
+                if exc.code == "cloud.panel_coverage_incomplete":
+                    if len(chunk) > coverage_step:
+                        result = self._run_story_map_coverage_fallback(
+                            prompt,
+                            visual,
+                            chunk_index,
+                            chunk,
+                            batch_count,
+                            step=coverage_step,
+                        )
+                        break
+                    if coverage_step > STORY_MAP_COVERAGE_MIN_STEP and len(chunk) > STORY_MAP_COVERAGE_MIN_STEP:
+                        result = self._run_story_map_coverage_fallback(
+                            prompt,
+                            visual,
+                            chunk_index,
+                            chunk,
+                            batch_count,
+                            step=STORY_MAP_COVERAGE_MIN_STEP,
+                        )
+                        break
                 if exc.code in retryable_story_codes and attempt + 1 < self.max_attempts:
                     continue
                 raise
             break
         if result is None:
             raise CloudStageError("cloud.story_map_invalid")
+        result = replace(result, visual_evidence_hash=visual.visual_evidence_hash)
         if self.cache is not None:
             self.cache.put(chunk_key, result.as_dict())
         return result
@@ -1381,7 +1658,9 @@ class CloudStageRunner:
         }
         key = _cache_key("story_map", source, self.model_identity, prompt)
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
-            return StoryMapResult.from_dict(cached)
+            cached_result = StoryMapResult.from_dict(cached)
+            if cached_result.visual_evidence_hash == visual.visual_evidence_hash:
+                return cached_result
 
         chunk_step = STORY_MAP_CHUNK_STEP
         chunks = [
@@ -1433,6 +1712,7 @@ class CloudStageRunner:
             model_identity_hash=self.model_identity.identity_hash,
             prompt_version=prompt[0],
             prompt_sha256=prompt[1],
+            visual_evidence_hash=visual.visual_evidence_hash,
         )
         if self.cache is not None:
             self.cache.put(key, combined.as_dict())
@@ -1445,20 +1725,91 @@ class CloudStageRunner:
         *,
         panels: Sequence[CloudPanelInput] | None = None,
     ) -> NarrationResult:
-        """Batch narration so every panel observation is analyzed.
+        """Reduce full-panel evidence to selected beats, then write one script."""
 
-        The full observation envelope (703 panels) exceeds the provider's
-        context window, so it is chunked by estimated bytes; each chunk is
-        narrated independently with its own story-map subset and the passages,
-        claims and outline are merged afterwards.
-        """
         prompt = self.prompts["narration"]
-        observations, structural = self._narration_observations(visual, panels)
+        observations, _structural = self._narration_observations(visual, panels)
+        selection = select_editorial_beats(visual, story_map)
+        selected_ids = set(selection.panel_ids)
+        selected_visual = replace(
+            visual,
+            panels=tuple(
+                dict(panel)
+                for panel in visual.panels
+                if str(panel.get("panel_id", "")) in selected_ids
+            ),
+        )
+        selected_beats: list[dict[str, Any]] = []
+        for beat in story_map.beats:
+            if not isinstance(beat, Mapping) or str(beat.get("beat_id", "")) not in set(selection.beat_ids):
+                continue
+            row = dict(beat)
+            row["panel_ids"] = [
+                str(panel_id)
+                for panel_id in beat.get("panel_ids", ())
+                if str(panel_id) in selected_ids
+            ]
+            if row["panel_ids"]:
+                selected_beats.append(row)
+        selected_beat_ids = {str(beat["beat_id"]) for beat in selected_beats}
+        selected_claims: list[dict[str, Any]] = []
+        for claim in story_map.claims:
+            if not isinstance(claim, Mapping) or str(claim.get("claim_id", "")) not in set(selection.claim_ids):
+                continue
+            row = dict(claim)
+            key = "evidence_panel_ids" if "evidence_panel_ids" in row else "panel_ids"
+            row[key] = [
+                str(panel_id)
+                for panel_id in row.get(key, ())
+                if str(panel_id) in selected_ids
+            ]
+            if row[key]:
+                selected_claims.append(row)
+        selected_chain = tuple(
+            dict(link)
+            for link in story_map.causal_chain
+            if str(link.get("from_beat", "")) in selected_beat_ids
+            and str(link.get("to_beat", "")) in selected_beat_ids
+        )
+        selected_story = StoryMapResult(
+            panel_ids=tuple(selection.panel_ids),
+            beats=tuple(selected_beats),
+            causal_chain=selected_chain,
+            claims=tuple(selected_claims),
+            story_map_hash=_hash(
+                {
+                    "selection_hash": selection.selection_hash,
+                    "beats": selected_beats,
+                    "claims": selected_claims,
+                    "chain": list(selected_chain),
+                }
+            ),
+            model_identity_hash=story_map.model_identity_hash,
+            prompt_version=story_map.prompt_version,
+            prompt_sha256=story_map.prompt_sha256,
+            visual_evidence_hash=visual.visual_evidence_hash,
+        )
+        selected_panels = (
+            tuple(
+                panel
+                for panel in panels
+                if panel.panel_id in selected_ids
+            )
+            if panels is not None
+            else None
+        )
+        selected_observations, selected_structural = self._narration_observations(
+            selected_visual,
+            selected_panels,
+        )
         source = {
-            "panel_ids": list(visual.panel_ids),
+            "editorial_selection_version": EDITORIAL_SELECTION_VERSION,
+            "editorial_selection": selection.as_dict(),
+            "panel_ids": list(selection.panel_ids),
             "visual_source_hash": visual.source_hash,
-            "visual_observations": observations,
-            "story_map": story_map.as_dict(),
+            "visual_evidence_hash": visual.visual_evidence_hash,
+            "visual_observations": selected_observations,
+            "story_map": selected_story.as_dict(),
             "duration_contract": {
                 "minimum_s": 50.0,
                 "maximum_s": 60.0,
@@ -1468,14 +1819,46 @@ class CloudStageRunner:
         }
         key = _cache_key("narration", source, self.model_identity, prompt)
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
-            return NarrationResult.from_dict(cached)
-        if len(visual.panels) <= NARRATION_CHUNK_STEP:
-            return self._run_narration_batched(
-                prompt, source, observations, structural, story_map, visual
-            )
-        return self._run_narration_in_chunks(
-            prompt, source, observations, structural, story_map, visual
+            try:
+                cached_result = NarrationResult.from_dict(cached)
+            except (KeyError, TypeError, ValueError):
+                cached_result = None
+            if (
+                cached_result is not None
+                and cached_result.visual_evidence_hash == visual.visual_evidence_hash
+                and _narration_result_is_usable(
+                    cached_result,
+                    visual,
+                    require_duration=True,
+                )
+                and cached_result.qc_report.get("editorial_selection", {}).get("selection_hash")
+                == selection.selection_hash
+            ):
+                return cached_result
+
+        result = self._run_narration_batched(
+            prompt,
+            source,
+            selected_observations,
+            selected_structural,
+            selected_story,
+            selected_visual,
+            enforce_duration=True,
         )
+        if not 50.0 <= result.estimated_duration_s <= 60.0 or not 115 <= result.word_count <= 125:
+            raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
+        qc_report = dict(result.qc_report)
+        qc_report["editorial_selection"] = selection.as_dict()
+        qc_report["narration_topology"] = "chapter_evidence_reduce_v1"
+        result = replace(
+            result,
+            observations=tuple(observations),
+            visual_evidence_hash=visual.visual_evidence_hash,
+            qc_report=qc_report,
+        )
+        if self.cache is not None:
+            self.cache.put(key, result.as_dict())
+        return result
 
     def _run_narration_chunk(
         self,
@@ -1527,6 +1910,7 @@ class CloudStageRunner:
             model_identity_hash=story_map.model_identity_hash,
             prompt_version=story_map.prompt_version,
             prompt_sha256=story_map.prompt_sha256,
+            visual_evidence_hash=visual.visual_evidence_hash,
         )
         chunk_observations = [
             dict(item)
@@ -1544,6 +1928,7 @@ class CloudStageRunner:
             "batch_count": batch_count,
         }
         chunk_key = _cache_key("narration", chunk_source, self.model_identity, prompt)
+        chunk_visual = replace(visual, panels=tuple(dict(panel) for panel in chunk))
         if self.cache is not None and (cached := self.cache.get(chunk_key)) is not None:
             try:
                 cached_result = NarrationResult.from_dict(cached)
@@ -1556,9 +1941,14 @@ class CloudStageRunner:
                 and cached_result.model_identity_hash == self.model_identity.identity_hash
                 and cached_result.prompt_version == prompt[0]
                 and cached_result.prompt_sha256 == prompt[1]
+                and cached_result.visual_evidence_hash == chunk_visual.visual_evidence_hash
+                and _narration_result_is_usable(
+                    cached_result,
+                    chunk_visual,
+                    require_duration=False,
+                )
             ):
                 return cached_result
-        chunk_visual = replace(visual, panels=tuple(dict(panel) for panel in chunk))
         return self._run_narration_batched(
             prompt,
             chunk_source,
@@ -1566,6 +1956,7 @@ class CloudStageRunner:
             structural,
             chunk_story,
             chunk_visual,
+            enforce_duration=False,
         )
 
     def _run_narration_in_chunks(
@@ -1581,26 +1972,71 @@ class CloudStageRunner:
             visual.panels[i:i + NARRATION_CHUNK_STEP]
             for i in range(0, len(visual.panels), NARRATION_CHUNK_STEP)
         ]
-        with ThreadPoolExecutor(
-            max_workers=min(STAGE_PARALLEL_WORKERS, max(1, len(chunks)))
-        ) as executor:
-            results = tuple(
-                executor.map(
-                    lambda args: self._run_narration_chunk(
+        fallback_codes = {
+            "cloud.provider_request_failed",
+            "cloud.provider_response_invalid",
+            "cloud.narrative_not_grounded",
+            "cloud.narrative_claim_unmapped",
+            "cloud.narrative_qc_blocked",
+            "cloud.narrative_duration_out_of_range",
+        }
+
+        def resolve_chunk(
+            chunk_index: int,
+            chunk: Sequence[Mapping[str, Any]],
+            batch_count: int,
+        ) -> tuple[NarrationResult, ...]:
+            try:
+                return (
+                    self._run_narration_chunk(
                         prompt,
                         source,
                         observations,
                         structural,
                         story_map,
                         visual,
-                        *args,
+                        chunk_index,
+                        chunk,
+                        batch_count,
                     ),
+                )
+            except CloudStageError as exc:
+                if exc.code not in fallback_codes:
+                    raise
+                if len(chunk) > NARRATION_COVERAGE_FALLBACK_STEP:
+                    step = NARRATION_COVERAGE_FALLBACK_STEP
+                elif len(chunk) > NARRATION_COVERAGE_MIN_STEP:
+                    step = NARRATION_COVERAGE_MIN_STEP
+                else:
+                    raise
+                resolved: list[NarrationResult] = []
+                for sub_index in range(0, len(chunk), step):
+                    resolved.extend(
+                        resolve_chunk(
+                            chunk_index * 100 + sub_index // step,
+                            chunk[sub_index:sub_index + step],
+                            batch_count,
+                        )
+                    )
+                return tuple(resolved)
+
+        with ThreadPoolExecutor(
+            max_workers=min(STAGE_PARALLEL_WORKERS, max(1, len(chunks)))
+        ) as executor:
+            nested_results = tuple(
+                executor.map(
+                    lambda args: resolve_chunk(*args),
                     (
                         (chunk_index, chunk, len(chunks))
                         for chunk_index, chunk in enumerate(chunks)
                     ),
                 )
             )
+        results = tuple(
+            result
+            for nested in nested_results
+            for result in nested
+        )
         all_passages = [
             dict(passage)
             for result in results
@@ -1623,9 +2059,7 @@ class CloudStageRunner:
         if not display_words or any(not word.isalnum() for word in display_words):
             raise CloudStageError("cloud.display_derivation_invalid")
         duration = script.estimate_duration(spoken_text, "dramatic")
-        if not 40.0 <= duration <= 180.0:
-            raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
-        total_words = sum(int(item.get("word_count", 0) or 0) for item in all_passages)
+        total_words = len(re.findall(r"[A-Za-z0-9]+", spoken_text))
         qc_report = {
             "profile_id": "sharp_friend_v1",
             "profile_sha256": narrative_identity.SHARP_FRIEND_V1.contract_sha256,
@@ -1655,7 +2089,11 @@ class CloudStageRunner:
             model_identity_hash=self.model_identity.identity_hash,
             prompt_version=prompt[0],
             prompt_sha256=prompt[1],
+            visual_evidence_hash=visual.visual_evidence_hash,
         )
+        if not 40.0 <= duration <= 180.0:
+            self._last_narration_result = result
+            raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
         full_key = _cache_key("narration", source, self.model_identity, prompt)
         if self.cache is not None:
             self.cache.put(full_key, result.as_dict())
@@ -1669,6 +2107,8 @@ class CloudStageRunner:
         structural,
         story_map,
         visual,
+        *,
+        enforce_duration: bool = True,
     ) -> NarrationResult:
         retryable_codes = {
             "cloud.provider_request_failed",
@@ -1746,15 +2186,19 @@ class CloudStageRunner:
                 "batch_count": len(chunks),
             }
             chunk_end = None
+            retry_feedback = ""
             for attempt in range(self.max_attempts):
                 try:
+                    request_payload = {**chunk_source, "retry_attempt": attempt}
+                    if retry_feedback:
+                        request_payload["contract_retry_feedback"] = retry_feedback
                     raw = self._call(
-                        lambda attempt=attempt, chunk_source=chunk_source: self.provider.complete_json(
+                        lambda request_payload=request_payload: self.provider.complete_json(
                             stage="narration",
                             prompt_version=prompt[0],
                             prompt_sha256=prompt[1],
                             prompt_text=prompt[2],
-                            payload={**chunk_source, "retry_attempt": attempt},
+                            payload=request_payload,
                         )
                     )
                     if not isinstance(raw, Mapping):
@@ -1885,12 +2329,21 @@ class CloudStageRunner:
                     all_claims.extend(dict(claim) for claim in claims_list)
                     chunk_beats_ids.update(chunk_beat_ids)
                     break
+                except analyzer_contract.AnalyzerContractError as exc:
+                    if attempt + 1 < self.max_attempts:
+                        retry_feedback = _narration_retry_feedback(str(exc))
+                        continue
+                    raise CloudStageError(
+                        "cloud.narrative_not_grounded",
+                        reviewable=True,
+                    ) from None
                 except CloudStageError as exc:
                     print(f"NARR_CHUNK_FAIL chunk={chunk_index} attempt={attempt} code={exc.code}", file=sys.stderr, flush=True)
                     if (
                         exc.code in retryable_codes
                         and attempt + 1 < self.max_attempts
                     ):
+                        retry_feedback = _narration_retry_feedback(exc.code)
                         continue
                     raise
             if chunk_end is None:
@@ -1904,9 +2357,9 @@ class CloudStageRunner:
         # Preview relaxation: the 50-60s contract targets a single short clip,
         # but a full 703-panel chapter batch narrates ~2.5x that length.  The
         # production contract stays 50-60s; preview accepts long-form output.
-        if not 40.0 <= duration <= 180.0:
+        if enforce_duration and not 40.0 <= duration <= 180.0:
             raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
-        total_words = sum(int(item.get("word_count", 0) or 0) for item in all_passages)
+        total_words = len(re.findall(r"[A-Za-z0-9]+", spoken_text))
         qc_report = {
             "profile_id": "sharp_friend_v1",
             "profile_sha256": narrative_identity.SHARP_FRIEND_V1.contract_sha256,
@@ -1933,6 +2386,7 @@ class CloudStageRunner:
             model_identity_hash=self.model_identity.identity_hash,
             prompt_version=prompt[0],
             prompt_sha256=prompt[1],
+            visual_evidence_hash=visual.visual_evidence_hash,
         )
         if self.cache is not None:
             self.cache.put(_cache_key("narration", source, self.model_identity, prompt), result.as_dict())
@@ -2018,8 +2472,12 @@ class CloudStageRunner:
             )
             return claims, passages, remaps
 
-        if self.cache is not None and (cached := self.cache.get(key)) is not None:
-            cached_result = NarrationResult.from_dict(cached)
+        if (
+            self.cache is not None
+            and (cached := self.cache.get(key)) is not None
+            and (cached_result := NarrationResult.from_dict(cached)).visual_evidence_hash
+            == visual.visual_evidence_hash
+        ):
             claims, passages, remaps = reconcile_repaired_references(
                 cached_result.evidence_graph.get("claims"),
                 list(cached_result.passages),
@@ -2053,19 +2511,23 @@ class CloudStageRunner:
             "cloud.narrative_qc_blocked",
             "visual.narrative_repair_ungrounded",
         }
+        retry_feedback = ""
         for attempt in range(visual_narrative_repair.MAX_REPAIR_ATTEMPTS):
             try:
+                request_payload = {
+                    **payload,
+                    "repair_attempt": attempt + 1,
+                    "request_identity": source,
+                }
+                if retry_feedback:
+                    request_payload["contract_retry_feedback"] = retry_feedback
                 raw = self._call(
-                    lambda attempt=attempt: self.provider.complete_json(
+                    lambda request_payload=request_payload: self.provider.complete_json(
                         stage="visual_narrative_repair",
                         prompt_version=prompt[0],
                         prompt_sha256=prompt[1],
                         prompt_text=prompt[2],
-                        payload={
-                            **payload,
-                            "repair_attempt": attempt + 1,
-                            "request_identity": source,
-                        },
+                        payload=request_payload,
                     )
                 )
                 if not isinstance(raw, Mapping):
@@ -2153,6 +2615,7 @@ class CloudStageRunner:
                     continuity_ledger=dict(output["continuity_ledger"]),
                     evidence_graph=dict(output["evidence_graph"]),
                     story_spine=dict(output["narrative_outline"]["story_spine"]),
+                    visual_evidence_hash=visual.visual_evidence_hash,
                 )
                 if self.cache is not None:
                     self.cache.put(key, result.as_dict())
@@ -2166,6 +2629,7 @@ class CloudStageRunner:
                 error = exc
             if error.code not in retryable_codes or attempt + 1 >= visual_narrative_repair.MAX_REPAIR_ATTEMPTS:
                 raise error
+            retry_feedback = _visual_narrative_repair_retry_feedback(error.code)
         raise CloudStageError("visual.narrative_repair_bounded", reviewable=True)
 
     def run_chapter(self, panels: Sequence[CloudPanelInput]) -> ChapterResult:
@@ -2897,6 +3361,7 @@ class CloudBatchService:
                 story_map.model_identity_hash != self.runner.model_identity.identity_hash
                 or story_map.prompt_version != current_story_prompt[0]
                 or story_map.prompt_sha256 != current_story_prompt[1]
+                or story_map.visual_evidence_hash != visual.visual_evidence_hash
             ):
                 raise KeyError("stale_story_cache")
         except (KeyError, TypeError, ValueError):
@@ -2916,6 +3381,12 @@ class CloudBatchService:
                 narration.model_identity_hash != self.runner.model_identity.identity_hash
                 or narration.prompt_version != current_narration_prompt[0]
                 or narration.prompt_sha256 != current_narration_prompt[1]
+                or narration.visual_evidence_hash != visual.visual_evidence_hash
+                or not _narration_result_is_usable(
+                    narration,
+                    visual,
+                    require_duration=True,
+                )
             ):
                 raise KeyError("stale_narration_cache")
         except (KeyError, TypeError, ValueError):
@@ -3144,6 +3615,17 @@ class CloudBatchService:
             record.stage_results["segmentation"] = segmentation_state
             self.store.save(record)
             record = self.run_job(project_id, panels)
+            visual_stage = record.stage_results.get("visual")
+            if isinstance(visual_stage, Mapping):
+                visual_panel_ids = {
+                    str(item.get("panel_id"))
+                    for item in visual_stage.get("panels", ())
+                    if isinstance(item, Mapping) and str(item.get("panel_id", "")).strip()
+                }
+                if visual_panel_ids:
+                    panels = tuple(
+                        panel for panel in panels if panel.panel_id in visual_panel_ids
+                    )
             record.stage_results["segmentation"] = segmentation_state
             self.store.save(record)
             repaired_result: ChapterResult | None = None
@@ -3152,12 +3634,30 @@ class CloudBatchService:
             if record.state != ChapterState.READY_TO_RENDER:
                 can_repair_initial_narration = (
                     review_only_preview
-                    and record.error_code == "cloud.narrative_not_grounded"
+                    and record.error_code in {
+                        "cloud.narrative_not_grounded",
+                        "cloud.narrative_duration_out_of_range",
+                    }
                     and isinstance(record.stage_results.get("visual"), Mapping)
                     and isinstance(record.stage_results.get("story_map"), Mapping)
                 )
                 if not can_repair_initial_narration:
                     return record
+                initial_repair_result = None
+                partial_narration = getattr(self.runner, "_last_narration_result", None)
+                initial_visual = VisualStageResult.from_dict(record.stage_results["visual"])
+                initial_story_map = StoryMapResult.from_dict(record.stage_results["story_map"])
+                if (
+                    partial_narration is not None
+                    and getattr(partial_narration, "visual_evidence_hash", "")
+                    == initial_visual.visual_evidence_hash
+                ):
+                    initial_repair_result = ChapterResult(
+                        state=ChapterState.READY_TO_RENDER,
+                        visual=initial_visual,
+                        story_map=initial_story_map,
+                        narration=partial_narration,
+                    )
                 try:
                     repaired_result, repair_ledger, repair_missing_sections = (
                         self._repair_review_narrative(
@@ -3165,9 +3665,9 @@ class CloudBatchService:
                             project_id,
                             None,
                             panels,
-                            None,
-                            visual=VisualStageResult.from_dict(record.stage_results["visual"]),
-                            story_map=StoryMapResult.from_dict(record.stage_results["story_map"]),
+                            initial_repair_result,
+                            visual=initial_visual,
+                            story_map=initial_story_map,
                             review_source_upscale_policy=review_source_upscale_policy,
                             review_source_root=Path(
                                 review_source_root or self.review_root or Path("final_test")
