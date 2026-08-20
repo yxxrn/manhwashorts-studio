@@ -618,3 +618,8 @@ state is still STORY_MAPPED with 701 visual rows; no narration, MP4, voice, or
 final QC is proven. Resume only with the sanitized runtime environment and
 existing durable cache; never print `ms_env.sh`, commit data/media/DB/WAL,
 credentials, or provider payloads.
+## Published position-vector checkpoint
+
+GitHub main and Oracle publish commit are `c663ccb72b4e7d29c86a14c793b83b957e5517e8`,
+parent `080744718f40cb3480a6a9d83896eabbe533c3c4`. The focused position-vector
+gates are green; the single real repair request is the next external action.

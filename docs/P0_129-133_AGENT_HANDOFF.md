@@ -620,3 +620,8 @@ repeat visual/story stages or issue an automatic retry. Continue to silent
 MP4, voice, and warm-resume only if the strict repaired result is admitted.
 Until then the durable job is STORY_MAPPED with 701 visual rows and no proven
 narration or media artifact.
+## Published position-vector checkpoint
+
+Commit `c663ccb72b4e7d29c86a14c793b83b957e5517e8` is the published fast-forward
+from `080744718f40cb3480a6a9d83896eabbe533c3c4`. The position repair contract
+is GREEN and no real repair request has been made yet.

@@ -1777,3 +1777,9 @@ array-count/type metadata and the stable contract code. The project remains
 STORY_MAPPED with 701 visual rows; no narration, MP4, voice, or final QC is
 proven. `publish_allowed` remains false and runtime data, caches, media,
 `ms_env.sh`, and credentials remain ignored.
+## Published position-vector checkpoint
+
+Publication commit `c663ccb72b4e7d29c86a14c793b83b957e5517e8` is on GitHub
+main with parent `080744718f40cb3480a6a9d83896eabbe533c3c4`. The exact
+source/test/docs checkpoint above is now published; no real provider request
+has been made yet.
