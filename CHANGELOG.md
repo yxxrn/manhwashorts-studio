@@ -1,14 +1,14 @@
 # Changelog
 
-- Oracle Phase 1 bounded cloud stages: story-map and narration now process
-  ordered panels in deterministic 180-panel chunks with at most four workers,
-  independent cache keys, bounded retries, and ordered merge/resume. TDD is
-  green (38 cloud-stage tests; 239 passed plus 1 existing fixture skip in the
-  expanded matrix). The full non-slow run collected 1068 tests:
-  1062 passed, 4 skipped, and 2 environment-invalid Linux failures for
-  Windows cmd.exe launcher dispatch. Story-map/narration runtime execution,
-  silent MP4, voice, and final QC remain unproven; no provider payload,
-  credential, DB, media, or publication claim is included.
+- Published the bounded story-map compatibility checkpoint
+  7f7ffe697b5b9aa6c9a8a95fa4c046597a0622d8: accepted the provider's
+  ordered_beats envelope without trusting provider hashes, and added a
+  fail-closed 180-to-60 coverage fallback. TDD is green (2 focused
+  regressions, 40 cloud-stage tests). Runtime story mapping now covers
+  701/701 cached panel IDs, but narration remains blocked because 175 current
+  visual observations have empty visible_facts; no MP4, voice, or
+  publication claim is made. A same-identity visual evidence repair is
+  required; no old model cache or synthetic fact is permitted.
 
 Notable changes per release. Dates are ISO 8601.
 

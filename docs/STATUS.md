@@ -1,58 +1,47 @@
-# CURRENT ORACLE PHASE 1 CHECKPOINT - 2026-08-20
+# CURRENT ORACLE RUNTIME CHECKPOINT - 2026-08-20
 
 Authoritative worktree: /home/ubuntu/manhwashorts on Oracle, branch main.
-Current published HEAD is 91b005b150f75923c86f8b301d0d1f4fb5328dd1 (parent 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9); Oracle's tracking
-ref remains stale because HTTPS authentication is unavailable. The Phase 1 source/test paths are committed in the published checkpoint. data, ms_env.sh, DB/WAL,
-caches, media, provider state, and generated logs remain runtime-only.
+Published HEAD is 7f7ffe697b5b9aa6c9a8a95fa4c046597a0622d8 (parent
+d14ea5916976b29797dd9d23947aa3c3dac53994); GitHub main is identical.
+The Oracle tracking ref remains stale because HTTPS authentication is
+unavailable, so future publication uses the retained Windows transport clone.
 
-## Phase 1 bounded stage implementation
+## Published bounded-stage fix
 
-- Story map and narration now use STORY_MAP_CHUNK_STEP=180,
-  NARRATION_CHUNK_STEP=180, and STAGE_PARALLEL_WORKERS=4.
-- Each chunk has a deterministic cache key containing stage, ordered panel
-  IDs, source hash, model identity, prompt version/hash, batch index, and
-  batch count. Successful chunks are cached before merge. The whole-stage
-  cache remains the fast path. Results are merged strictly by chunk index;
-  beat IDs and claims retain deterministic chunk prefixes.
-- Story-map worker failures leave completed chunk files available for resume.
-  Narration uses the same boundary and an identical rerun returns from cache
-  without provider calls. No provider supplies canonical hashes; local
-  reconciliation remains authoritative.
+- app/services/cloud_multimodal.py accepts the provider's normative
+  ordered_beats field as a local alias for beats, and preserves strict
+  ordered-ID and complete-coverage validation.
+- When a large 180-panel response enumerates all IDs but cites only a partial
+  subset, the runner fail-closes that response and deterministically retries
+  60-panel subchunks. Results are prefixed and merged by subchunk order; no
+  reference is synthesized.
+- New tests were collection-clean RED (ordered_beats rejected as
+  cloud.story_map_invalid; incomplete large chunk rejected as
+  cloud.panel_coverage_incomplete) and GREEN: focused 2 passed, cloud file
+  40 passed. Ruff, compileall, and git diff --check passed.
 
-## Verification
+## Project 22876a6014a842f48bfca58c10a592b5
 
-- TDD RED: collection-clean focused run had 3 intended body failures:
-  (0,600),(1,121) instead of five 180-panel story chunks, completed-chunk
-  resume retried batch 0, and narration had zero bounded calls.
-- GREEN focused chunk contract: 3 passed. Full cloud-stage regression:
-  38 passed with existing Pillow warnings.
-- Expanded relevant matrix:
-  239 passed, 1 existing skip
-  (tests/test_reference_framing.py:496, missing Task9C1 fixture), 38
-  warnings.
-- Full non-slow: 1068 collected, 1062 passed, 4 skipped, 2 failures.
-  The failures are only
-  tests/test_operator_launcher.py::test_actual_cmd_dispatch_handles_repository_path_without_malformed_python_join
-  and
-  tests/test_operator_launcher.py::test_actual_cmd_dispatch_handles_path_with_spaces;
-  both require Windows cmd.exe, unavailable on Oracle Linux. They are
-  environment-invalid and are not bypassed or reclassified as green.
-- Ruff on app/services/cloud_multimodal.py and
-  tests/test_cloud_multimodal_mass_production.py, compileall, and
-  git diff --check: clean.
+- Visual cache hit: 701 panels at
+  /data/data/p0-aws-acceptance/cloud-stage-cache/5a60693742b5b2d390f60a686b3283bd.json.
+  No cached visual calls were repeated; two source rows remain the prior
+  recorded skip.
+- Story map is durably STORY_MAPPED, with 701/701 panel coverage, 60 beats,
+  and 53 claims.
+- Narration is blocked before acceptance because 175 current visual rows have
+  empty visible_facts. No facts are fabricated, no old model-identity cache
+  is mixed, and the analyzer gate is not weakened.
+- No narration artifact, timeline, silent MP4, voice, or final QC exists.
+  The durable job JSON is
+  /data/data/p0-aws-acceptance/cloud-jobs/22876a6014a842f48bfca58c10a592b5.json;
+  it remains STORY_MAPPED with a stale prior retry error field.
 
-## Runtime boundary
+Next atomic action: obtain complete same-identity visual evidence for the 175
+incomplete rows through an explicitly authorized repair or matching cache,
+then rerun the normal bounded narration service. Only after narration is
+reconciled may the regular silent render be attempted. Voice/TTS, publication,
+and publish_allowed remain blocked.
 
-Phase 0 visual cache durability remains proven at
-/data/data/p0-aws-acceptance/cloud-stage-cache, with 9 byte-verified files
-and 7,855,981 bytes; the visual cache entry has 701 reconciled panels and the
-checkpoint ledger has 736 lines. Story map, narration, timeline, silent MP4,
-voice/TTS, and final QC remain unproven. The next action is the normal cloud service run for story map then narration using the durable
-visual cache, followed by a fail-closed silent-render attempt. No voice call
-is allowed before a verified silent MP4.
-
-Rollback point: 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9.
-publish_allowed=false.
 
 # Current status
 

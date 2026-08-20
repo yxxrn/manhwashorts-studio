@@ -1,48 +1,56 @@
 # CURRENT ORACLE EXECUTION CHECKPOINT - 2026-08-20
 
-This block is authoritative for the current run and supersedes older local/VPS
-history below. Execution is on Oracle at /home/ubuntu/manhwashorts, not the
-historical Windows/VPS workspaces.
+This block is authoritative for the current run and supersedes older workspace
+history below. Execution is on Oracle at /home/ubuntu/manhwashorts.
 
 - Repository: /home/ubuntu/manhwashorts; branch main.
-- Current published HEAD: 91b005b150f75923c86f8b301d0d1f4fb5328dd1; parent 27f0d95fd894aba8c6ee8fe34add32ef5f6ec7b9. The tracked
-  origin/main ref on Oracle is stale at b6f72cd because Oracle HTTPS
-  authentication is unavailable; the next publication must use the retained
-  Windows exact-object transport clone.
-- Phase 1 source/test paths are committed in the current published checkpoint. Protected runtime paths
-  remain untracked: data, ms_env.sh, DB/WAL, caches, media, and provider
-  state. ms_env.sh contains credentials; source it only in-process and never
-  print, copy, log, fixture, or commit its contents.
-- Phase 1 RED was collection-clean with three intended body failures:
-  old story-map sizes were (600, 121), completed-chunk resume retried batch 0,
-  and narration made no bounded chunk calls. GREEN is the full cloud
-  regression file: 38 passed. The expanded compatibility matrix is
-  239 passed, 1 existing Task9C1 fixture skip, and 38 warnings.
-- The complete non-slow run collected 1068 tests: 1062 passed, 4 skipped, and
-  2 failures. Both failures are the known environment-invalid
-  tests/test_operator_launcher.py cmd.exe dispatch cases; Linux Oracle has
-  no Windows cmd.exe and these are not treated as a production launcher
-  failure. Ruff, compileall, and git diff --check are clean.
-- Story-map and narration now use versioned 180-panel chunks, at most four
-  workers, deterministic chunk-index merge, bounded retries, and independent
-  cache keys. A completed chunk is reusable after a later chunk failure; the
-  narration resume test proves the second identical run makes zero provider
-  calls.
-- Phase 0 visual durability remains proven: the 701-panel cache/checkpoint
-  copy is byte-identical under
-  /data/data/p0-aws-acceptance/cloud-stage-cache (9 files / 7,855,981 bytes).
-  This is not a claim that story mapping, narration, timeline, rendering,
-  voice, or QC has completed.
-- The Phase 1 source/test/docs checkpoint is published. Next, run story mapping and narration through the normal service boundary using the durable cache. Only after reconciled narration is persisted may the normal
-  silent render be attempted; voice/TTS remains after a verified silent MP4.
-  publish_allowed remains false and no timing may be invented.
+- Current published HEAD: 7f7ffe697b5b9aa6c9a8a95fa4c046597a0622d8; parent
+  d14ea5916976b29797dd9d23947aa3c3dac53994. GitHub main matches through the
+  retained Windows exact-object transport clone; Oracle's tracking ref is
+  still stale because Oracle HTTPS authentication is unavailable.
+- The published source/test checkpoint adds the ordered_beats provider alias
+  and a bounded 180-to-60 story-map coverage fallback. It never accepts a
+  partial panel map and never invents panel references. Collection-clean RED
+  covered the alias and incomplete-large-chunk cases; focused GREEN was
+  2 passed and the full cloud regression file was 40 passed. Ruff,
+  compileall, and git diff --check are clean.
+- Protected runtime paths remain untracked: data, ms_env.sh, DB/WAL, caches,
+  media, provider state, and temporary logs. ms_env.sh contains credentials;
+  source it only in-process and never print, copy, log, fixture, or commit it.
+
+Runtime checkpoint for project 22876a6014a842f48bfca58c10a592b5:
+- The exact current visual cache
+  /data/data/p0-aws-acceptance/cloud-stage-cache/5a60693742b5b2d390f60a686b3283bd.json
+  has 701 panels and the visual cache key was a local hit; no visual provider
+  calls were repeated. Two of 703 source panels remain the previously
+  recorded skipped rows.
+- Normal service story mapping reached STORY_MAPPED. Its persisted story
+  map covers 701 of 701 panel IDs (60 beats, 53 claims); the bounded fallback
+  preserved complete coverage.
+- Narration is not complete and no MP4 exists. The narration boundary found
+  175 of the 701 current visual observations with empty visible_facts.
+  This is a real evidence-quality blocker, not a reason to weaken the analyzer
+  contract or synthesize facts. The older complete cache has a different
+  model identity and must not be mixed into the current grok-4.3 run.
+- The job JSON
+  /data/data/p0-aws-acceptance/cloud-jobs/22876a6014a842f48bfca58c10a592b5.json
+  is currently STORY_MAPPED; its error field still contains the prior
+  cloud.panel_coverage_incomplete retry code and must not be read as a
+  successful narration/render claim. No timeline, silent render, voice, or QC
+  result is proven.
 
 Safe resume:
   cd /home/ubuntu/manhwashorts
-  source /tmp/ms_env.sh without output only when cloud access is explicitly
-  required
-  .venv/bin/python -m pytest tests/test_cloud_multimodal_mass_production.py -ra
-  Never replay the 701-panel visual stage without proving cache invalidation.
+  set -a; source /tmp/ms_env.sh >/dev/null 2>&1; set +a
+  PYTHONPATH=/home/ubuntu/manhwashorts .venv/bin/python /tmp/run_phase1_resume.py
+
+Before resuming narration, obtain a complete same-identity visual evidence
+record for the 175 incomplete rows through an explicitly authorized repair or
+a matching cache. Do not copy rows from another model identity, invent
+visible facts, or bypass whole-panel grounding. After that, rerun the normal
+bounded service; only a real persisted narration may proceed to silent
+render. publish_allowed remains false; voice/TTS remains deferred.
+
 
 # ManhwaShorts interruption-safe handoff
 

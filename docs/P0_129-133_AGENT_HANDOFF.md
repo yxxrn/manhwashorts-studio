@@ -1,3 +1,30 @@
+# CURRENT ORACLE HANDOFF - 2026-08-20
+
+- Authority: /home/ubuntu/manhwashorts on Oracle, branch main.
+- Published checkpoint: 7f7ffe697b5b9aa6c9a8a95fa4c046597a0622d8,
+  parent d14ea5916976b29797dd9d23947aa3c3dac53994; GitHub main matches.
+- Source/test fix is published: provider ordered_beats is accepted only
+  through local normalization, and a 180-panel story response with partial
+  citations is split into deterministic 60-panel requests. Complete coverage
+  remains mandatory. Focused fix tests: 2 passed; cloud regression: 40 passed.
+- Runtime project/job: 22876a6014a842f48bfca58c10a592b5.
+  Visual cache hit is 701 panels at
+  /data/data/p0-aws-acceptance/cloud-stage-cache/5a60693742b5b2d390f60a686b3283bd.json;
+  no cached visual calls were repeated. Story map is STORY_MAPPED with
+  701/701 panel coverage, 60 beats, and 53 claims.
+- Narration is not proven: 175 current visual observations have empty
+  visible_facts, so the strict analyzer rejects the narration envelope.
+  Do not use the older cache with model identity 1da735...; it is not the
+  current configured identity. Do not synthesize facts or bypass coverage.
+- No narration file, silent MP4, voice, or QC is available. The next safe
+  action is a separately authorized same-identity visual repair for those
+  incomplete rows, followed by the normal bounded narration resume.
+
+Protected paths: data, ms_env.sh, DB/WAL, caches, logs, media, and
+provider state remain runtime-only and must never enter Git. publish_allowed
+is false and voice/TTS remains deferred.
+
+
 # CURRENT ORACLE PHASE 1 CHECKPOINT - 2026-08-20
 
 - Authority: /home/ubuntu/manhwashorts, branch main, published base
