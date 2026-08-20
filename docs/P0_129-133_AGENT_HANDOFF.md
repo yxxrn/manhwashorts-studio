@@ -1,3 +1,34 @@
+# FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
+
+Source/test fix checkpoint:
+b66210204e2616903844cbf3dc414558a53035d4
+(parent dfb8c26e6148bb8b3e098d25b1bf691e14f94cbd).
+
+The duration-to-visual-repair boundary now retains a structurally valid
+narration candidate when the strict 50-60 second/115-125 word contract fails.
+That candidate remains unpersisted and is supplied only to the bounded
+review-only repair stage. TDD was collection-clean with one intended body
+failure (missing retention attribute), then focused GREEN was 1 passed and
+the full cloud regression file is 49 passed with five existing Pillow
+deprecation warnings. Ruff, compileall, and git diff --check are clean.
+
+The latest real run before this correction completed in 16:14 with 3 provider
+requests and peak RSS 8,381,328 KB, then ended NEEDS_REVIEW with
+visual.narrative_repair_ungrounded. It produced no MP4 or review artifact.
+The next run must reuse the 701-panel visual/story cache and exercise this
+retained-candidate repair path; no visual stage restart or gate relaxation is
+allowed. Voice/TTS is authorized only after the silent preview/QC gate; the configured
+grok-voice-latest English voice must then be exercised through the normal service
+with exact timing and audio QC. No voice run is proven yet. Publication,
+credentials, runtime data, DB/WAL, caches, logs, and media remain blocked or
+untracked.
+
+The repair boundary accepts only the existing provider panel_ids transport
+alias and canonicalizes it to local evidence_panel_ids; feasibility, claim,
+chronology, and duration gates remain unchanged. RED was one intended body
+failure; GREEN is 1 focused regression plus 50 cloud-stage tests.
+
+
 # CURRENT ORACLE EXECUTION CHECKPOINT - 2026-08-20
 
 This block is authoritative for the current Oracle run and supersedes older

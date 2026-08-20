@@ -1880,6 +1880,75 @@ def test_repaired_visual_evidence_hash_invalidates_downstream_stage_identity():
         visual_evidence_hash=visual.visual_evidence_hash,
     )
     assert story.visual_evidence_hash != changed.visual_evidence_hash
+
+def test_visual_repair_normalizes_panel_ids_alias_before_grounding_validation():
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    record = repair.FeasibleVisualRecord(
+        panel_region_id="region-1",
+        panel_id="panel-1",
+        source_asset_id="asset-1",
+        source_order=1,
+        eligible_sections=("hook",),
+        eligible_beats=("beat-1",),
+        resolution_state="NATIVE",
+        feasible_rois=(
+            {
+                "kind": "primary",
+                "roi_label": "primary",
+                "crop_box": [0, 0, 100, 100],
+                "telemetry": {},
+            },
+        ),
+        visual_strengths={
+            "edge_connected_blank_fraction": 0.0,
+            "protected_retained_fraction": 1.0,
+        },
+        evidence_hash="e" * 64,
+        detector_version="detector-v1",
+        mask_sha256="m" * 64,
+        panel_size=(100, 100),
+    )
+    ledger = repair.FeasibleVisualLedger(
+        entries=(record,),
+        model_identity_hash="model" * 16,
+    )
+    value = {
+        "claims": [
+            {
+                "claim_id": "claim-1",
+                "claim_type": "fact",
+                "text": "A visible turn changes the next beat.",
+                "qualification": "the panel supports this reading",
+                "panel_ids": ["panel-1"],
+            },
+        ],
+        "passages": [
+            {
+                "passage_id": "passage-1",
+                "editorial_role": "hook",
+                "text": "A visible turn changes the next beat.",
+                "claim_ids": ["claim-1"],
+                "panel_ids": ["panel-1"],
+            },
+        ],
+    }
+
+    repaired, remaps = repair.remap_same_beat_panel_citations(
+        value,
+        ledger=ledger,
+        section_to_beats={"hook": ("beat-1",)},
+    )
+
+    assert remaps == ()
+    assert repaired["claims"][0]["evidence_panel_ids"] == ["panel-1"]
+    assert repaired["passages"][0]["evidence_panel_ids"] == ["panel-1"]
+    repair.validate_repaired_panel_references(
+        repaired,
+        ledger=ledger,
+        allowed_claim_ids={"claim-1"},
+    )
+
+
 def test_visual_repair_retry_feedback_is_static_and_specific():
     module = _module()
 

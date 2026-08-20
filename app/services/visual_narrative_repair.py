@@ -244,6 +244,49 @@ def missing_visual_sections(
     return tuple(missing)
 
 
+
+def _normalize_repair_reference_aliases(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize the provider's legacy panel_ids alias before local validation.
+
+    The alias is accepted only as a transport spelling.  The returned payload
+    always uses evidence_panel_ids, and all existing feasibility, lineage,
+    chronology, and claim-union checks remain authoritative.
+    """
+
+    if not isinstance(value, Mapping):
+        raise VisualNarrativeRepairError(
+            "repair evidence graph is incomplete",
+            "visual.narrative_repair_ungrounded",
+        )
+    normalized = dict(value)
+    for field_name in ("claims", "passages"):
+        raw_rows = value.get(field_name)
+        if not isinstance(raw_rows, list):
+            raise VisualNarrativeRepairError(
+                "repair evidence graph is incomplete",
+                "visual.narrative_repair_ungrounded",
+            )
+        rows: list[dict[str, Any]] = []
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, Mapping):
+                raise VisualNarrativeRepairError(
+                    "repair evidence row is malformed",
+                    "visual.narrative_repair_ungrounded",
+                )
+            row = dict(raw_row)
+            if "evidence_panel_ids" not in row and "panel_ids" in row:
+                refs = row["panel_ids"]
+                if not isinstance(refs, list):
+                    raise VisualNarrativeRepairError(
+                        "repair panel references are malformed",
+                        "visual.narrative_repair_ungrounded",
+                    )
+                row["evidence_panel_ids"] = [str(ref) for ref in refs]
+            rows.append(row)
+        normalized[field_name] = rows
+    return normalized
+
+
 def remap_same_beat_panel_citations(
     value: Mapping[str, Any],
     *,
@@ -259,13 +302,9 @@ def remap_same_beat_panel_citations(
     provenance is persisted with the narrative QC report.
     """
 
-    raw_claims = value.get("claims")
-    raw_passages = value.get("passages")
-    if not isinstance(raw_claims, list) or not isinstance(raw_passages, list):
-        raise VisualNarrativeRepairError(
-            "repair evidence graph is incomplete",
-            "visual.narrative_repair_ungrounded",
-        )
+    normalized = _normalize_repair_reference_aliases(value)
+    raw_claims = normalized["claims"]
+    raw_passages = normalized["passages"]
     entries_by_panel = {entry.panel_id: entry for entry in ledger.entries}
     ordered_sections = tuple(str(section) for section in section_to_beats)
     remaps: list[dict[str, Any]] = []
@@ -526,10 +565,9 @@ def validate_repaired_panel_references(
     """Reject any repair that cites a panel outside the feasible ledger."""
 
     feasible = set(ledger.feasible_panel_ids)
-    raw_claims = value.get("claims")
-    raw_passages = value.get("passages")
-    if not isinstance(raw_claims, list) or not isinstance(raw_passages, list):
-        raise VisualNarrativeRepairError("repair evidence graph is incomplete", "visual.narrative_repair_ungrounded")
+    normalized = _normalize_repair_reference_aliases(value)
+    raw_claims = normalized["claims"]
+    raw_passages = normalized["passages"]
     claim_refs: dict[str, set[str]] = {}
     for raw_claim in raw_claims:
         if not isinstance(raw_claim, Mapping):
