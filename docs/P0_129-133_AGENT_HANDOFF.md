@@ -921,3 +921,56 @@ and key-shaped secret scan are clean.
 No further provider call is authorized in this checkpoint. Preserve the
 durable report, DB, caches, and `/tmp/ms_env.sh`; do not print or copy secrets.
 There is still no valid narration, silent MP4, voice output, or QC artifact.
+
+## Canonical narration duration resume checkpoint - 2026-08-21
+
+Resume parent: `36bfa661e6aaffd59759c23cbf7d1ff719baa678`. The final v3
+duration contract is `narration-duration-v1`: ASCII alphanumeric tokenization,
+dramatic pacing at 2.3 words/second, and
+`max(0.6, round(word_count / 2.3, 2))` for non-empty text. The hard final
+gate is 115-125 canonical words and 50-60 canonical seconds. Per-position
+budgets are guidance only. Legacy v1/v2 timing helpers remain unchanged.
+
+The persisted real-request report at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+contained only the pre-reconciliation 51.3-second estimate for the 122-word
+vector. The exact RED fixture showed why the later gate diverged: a literal
+`\\n\\n` passage separator added four `n` tokens, producing a local 126-word
+result. The GREEN code uses real newlines and one canonical calculator across
+repair reconciliation, result QC, cache identity/admission, v3 persistence,
+and render planning. The observed 122-word vector is 53.04 seconds under the
+authoritative rule.
+
+Verification is 278 focused passed with five existing Pillow warnings. The
+seven legacy pipeline fixture failures reproduce identically on clean parent
+`36bfa661e6aaffd59759c23cbf7d1ff719baa678`. Full Oracle non-slow is
+environment-limited: current is 1104 passed, 26 failed, 10 skipped; clean
+parent is 1119 passed, 16 failed, 4 skipped. FFmpeg/encoder/probe, render
+fixture, API/TTS, and Windows-launcher failures must be resolved on the actual
+production host before claiming a final artifact. No provider call is made
+until this checkpoint is published.
+
+After publication, source `/tmp/ms_env.sh` silently and run exactly one
+bounded repair request with the cached visual/story stages:
+
+~~~bash
+cd /home/ubuntu/manhwashorts
+set -a; source /tmp/ms_env.sh >/dev/null 2>&1; set +a
+export PYTHONPATH=/home/ubuntu/manhwashorts
+export MS_DATABASE_URL=sqlite:////data/data/p0-aws-acceptance/sample.db
+export MS_STORAGE_DIR=/data/data/p0-aws-acceptance/storage
+export MS_DATA_DIR=/data/data/p0-aws-acceptance
+export MS_TMP_DIR=/data/data/p0-aws-acceptance/tmp
+export MS_TTS_PROVIDER=null
+export MS_ENVIRONMENT=local
+export MS_REQUIRE_RIGHTS_DECLARATION=false
+PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal_batch.py \
+  --project-id 22876a6014a842f48bfca58c10a592b5 \
+  --state-dir /data/data/p0-aws-acceptance/cloud-jobs \
+  --segmentation-review-dir /data/data/p0-aws-acceptance/segmentation-review \
+  --model grok-4.3 --max-attempts 1 --min-request-interval-s 0.3
+~~~
+
+Do not rerun visual/story, print credentials, retain provider prose, or retry
+automatically. On repair success continue to silent render/QC, configured TTS,
+final voiced QC, and warm resume; on failure retain sanitized metrics only.

@@ -85,6 +85,7 @@ def _script_count(db, project_id: str) -> int:
 
 def test_sharp_friend_materializes_flexible_script_and_persists_identity(db):
     from app.services import pipeline as pipeline_service
+    from app.services import script as script_service
 
     project, analysis = _seed_sharp_friend(db)
 
@@ -113,6 +114,9 @@ def test_sharp_friend_materializes_flexible_script_and_persists_identity(db):
         "version": "1.0.0",
         "sha256": "134b544c9e2f74ca0b8c64ff55a27c831e76f77a08f26fc2a463112cb0678b3e",
     }
+    assert script.editorial_metadata["duration_contract"] == (
+        script_service.narration_duration_contract(project.narration_style)
+    )
     assert script.editorial_metadata["human_review_required"] is True
     assert script.editorial_metadata["editorial_review_confirmed"] is False
     assert analysis.reconciliation_json["narrative_identity"]["profile_id"] == (

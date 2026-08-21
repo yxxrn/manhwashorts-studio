@@ -892,3 +892,61 @@ The follow-up diagnostic boundary now records reconstructed word/duration,
 passage/observation/display counts, scope status, and the exact local failed
 predicate without retaining provider prose. No second provider request is
 permitted from this checkpoint; narration, MP4, voice, and QC remain unproven.
+
+## Canonical narration duration checkpoint (2026-08-21)
+
+Parent: `36bfa661e6aaffd59759c23cbf7d1ff719baa678`. The final Sharp Friend
+duration contract is `narration-duration-v1`: tokenize the reconstructed
+spoken text with ASCII alphanumeric runs (`[A-Za-z0-9]+`), use the dramatic
+profile's 2.3 words/second, and calculate
+`max(0.6, round(word_count / 2.3, 2))` (zero words produce zero seconds).
+Final v3 admission remains hard at 115-125 canonical words and 50-60 seconds.
+Per-position repair allocations are prompt guidance/diagnostics, not final
+predicates. Legacy v1/v2 `word_count` and `estimate_duration` behavior is
+unchanged.
+
+The prior sanitized repair report showed 122 provider words and a 51.3-second
+pre-reconciliation estimate because it used the earlier whitespace metric; it
+did not contain reconstructed result metrics. The exact RED vector reproduced
+the later rejection: a literal `\\n\\n` separator in the batched repair path
+added four `n` tokens, turning 122 into 126. The GREEN boundary now joins real
+newlines and computes the same canonical metric for positional reconciliation,
+`NarrationResult.qc_report`, cache admission/source identity, persisted v3
+`ScriptVersion` metadata, and render planning. The corrected 122-word vector
+is 53.04 seconds under this contract.
+
+Focused contract/integration verification is 278 passed with five existing
+Pillow warnings. Clean-parent comparison reproduced all seven legacy
+`tests/test_pipeline.py` fixture failures (vision-analysis prerequisite), so
+they are not attributed to this slice. Full Oracle non-slow remains an
+environment report, not a release claim: current working tree 1104 passed,
+26 failed, 10 skipped; clean parent 1119 passed, 16 failed, 4 skipped. The
+delta is runtime-state/FFmpeg/API/Windows-launcher dependent; production
+acceptance still requires an FFmpeg host with the required encoder/probe
+support and a real silent render.
+
+After this source/test/docs checkpoint is published, resume once with the
+existing cached visual/story state and exactly one bounded repair request:
+
+~~~bash
+cd /home/ubuntu/manhwashorts
+set -a; source /tmp/ms_env.sh >/dev/null 2>&1; set +a
+export PYTHONPATH=/home/ubuntu/manhwashorts
+export MS_DATABASE_URL=sqlite:////data/data/p0-aws-acceptance/sample.db
+export MS_STORAGE_DIR=/data/data/p0-aws-acceptance/storage
+export MS_DATA_DIR=/data/data/p0-aws-acceptance
+export MS_TMP_DIR=/data/data/p0-aws-acceptance/tmp
+export MS_TTS_PROVIDER=null
+export MS_ENVIRONMENT=local
+export MS_REQUIRE_RIGHTS_DECLARATION=false
+PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal_batch.py \
+  --project-id 22876a6014a842f48bfca58c10a592b5 \
+  --state-dir /data/data/p0-aws-acceptance/cloud-jobs \
+  --segmentation-review-dir /data/data/p0-aws-acceptance/segmentation-review \
+  --model grok-4.3 --max-attempts 1 --min-request-interval-s 0.3
+~~~
+
+Do not rerun visual/story stages, print `/tmp/ms_env.sh`, store provider
+prose, or issue an automatic retry. If repair succeeds, continue to silent
+render/QC, then the configured voice stage and warm-resume proof; otherwise
+persist only sanitized metrics and stop provider calls.

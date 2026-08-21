@@ -190,3 +190,52 @@ code. No provider prose is stored, and this follow-up does not relax the
 final vector, grounding, causal, identity, or duration gates. Focused tests:
 153 passed with five existing Pillow warnings; no narration, MP4, voice, or
 QC artifact is proven and no second provider request is authorized here.
+
+## Canonical narration-duration contract and resume boundary
+
+The v3 narration DAG now has one local timing identity, `narration-duration-v1`:
+the final reconstructed spoken text is tokenized as ASCII alphanumeric runs,
+dramatic pacing is 2.3 words/second, and non-empty duration is
+`max(0.6, round(words / 2.3, 2))`. The 115-125 word and 50-60 second bounds
+are final admission gates. Position budgets remain provider guidance and
+diagnostics. The contract identity is included in narration source/cache
+inputs; the computed metrics are persisted in `NarrationResult.qc_report`, in
+v3 `ScriptVersion.editorial_metadata`, and consumed by render planning.
+
+The prior report's 51.3 seconds was a pre-reconciliation whitespace estimate
+for the observed 122-word vector. The RED end-to-end fixture exposed the
+actual boundary defect: the batched reducer used literal `\\n\\n`, adding four
+`n` tokens between passages and causing a 126-word later-gate result. The
+reducer now joins actual newlines and every downstream gate recomputes the
+same canonical metric; 122 words therefore produce 53.04 seconds.
+
+The current working tree's focused matrix is 278 passed with five existing
+Pillow warnings. The seven legacy pipeline fixture failures reproduce on clean
+parent. Full Oracle non-slow is not a host-readiness claim: current is 1104
+passed/26 failed/10 skipped versus clean parent 1119/16/4. Failures are
+runtime-state/FFmpeg/encoder/probe/API/TTS/Windows-launcher dependent and the
+production host must satisfy those capabilities before silent or voiced QC.
+
+Published-resume command (one repair request, no visual/story repeat):
+
+~~~bash
+cd /home/ubuntu/manhwashorts
+set -a; source /tmp/ms_env.sh >/dev/null 2>&1; set +a
+export PYTHONPATH=/home/ubuntu/manhwashorts
+export MS_DATABASE_URL=sqlite:////data/data/p0-aws-acceptance/sample.db
+export MS_STORAGE_DIR=/data/data/p0-aws-acceptance/storage
+export MS_DATA_DIR=/data/data/p0-aws-acceptance
+export MS_TMP_DIR=/data/data/p0-aws-acceptance/tmp
+export MS_TTS_PROVIDER=null
+export MS_ENVIRONMENT=local
+export MS_REQUIRE_RIGHTS_DECLARATION=false
+PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal_batch.py \
+  --project-id 22876a6014a842f48bfca58c10a592b5 \
+  --state-dir /data/data/p0-aws-acceptance/cloud-jobs \
+  --segmentation-review-dir /data/data/p0-aws-acceptance/segmentation-review \
+  --model grok-4.3 --max-attempts 1 --min-request-interval-s 0.3
+~~~
+
+If the repair fails, keep only sanitized shape/predicate metrics and stop
+provider calls. If it succeeds, advance through narration persistence, silent
+render/QC, TTS/alignment, voiced QC, and warm-resume accounting.

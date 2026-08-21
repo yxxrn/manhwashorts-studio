@@ -700,10 +700,35 @@ def _narration_result_is_usable(
             return False
         if int(result.word_count) <= 0 and not re.findall(r"[A-Za-z0-9]+", result.spoken_text):
             return False
-        if require_duration and not 50.0 <= float(result.estimated_duration_s) <= 60.0:
-            return False
-        if require_duration and not 115 <= int(result.word_count) <= 125:
-            return False
+        if require_duration:
+            duration_metrics = script.narration_duration_metrics(
+                result.spoken_text,
+                "dramatic",
+            )
+            canonical_duration = float(duration_metrics["estimated_duration_s"])
+            canonical_word_count = int(duration_metrics["word_count"])
+            if (
+                not 50.0 <= canonical_duration <= 60.0
+                or not math.isclose(
+                    float(result.estimated_duration_s),
+                    canonical_duration,
+                    rel_tol=0.0,
+                    abs_tol=0.001,
+                )
+            ):
+                return False
+            if (
+                not 115 <= canonical_word_count <= 125
+                or int(result.word_count) != canonical_word_count
+            ):
+                return False
+            expected_contract = script.narration_duration_contract("dramatic")
+            stored_contract = result.qc_report.get("duration_contract", {})
+            if (
+                not isinstance(stored_contract, Mapping)
+                or any(stored_contract.get(key) != value for key, value in expected_contract.items())
+            ):
+                return False
         if require_grounding:
             expected_display = tuple(re.findall(r"[A-Z0-9]+", result.spoken_text.upper()))
             if tuple(str(word) for word in result.display_words) != expected_display:
@@ -1132,7 +1157,12 @@ class CloudStageRunner:
     ) -> dict[str, Any]:
         """Describe reconstructed repair gates without retaining provider prose."""
 
-        spoken_word_count = len(re.findall(r"[A-Za-z0-9]+", result.spoken_text))
+        duration_metrics = script.narration_duration_metrics(
+            result.spoken_text,
+            "dramatic",
+        )
+        canonical_duration = float(duration_metrics["estimated_duration_s"])
+        spoken_word_count = int(duration_metrics["word_count"])
         expected_display = tuple(re.findall(r"[A-Z0-9]+", result.spoken_text.upper()))
         observation_ids = tuple(
             str(item.get("panel_id", ""))
@@ -1155,6 +1185,13 @@ class CloudStageRunner:
             reported_word_count = None
         if duration is None or not 50.0 <= duration <= 60.0:
             failed.append("duration_bounds")
+        elif not math.isclose(
+            duration,
+            canonical_duration,
+            rel_tol=0.0,
+            abs_tol=0.001,
+        ):
+            failed.append("duration_reconciliation")
         if reported_word_count is None or not 115 <= reported_word_count <= 125:
             failed.append("word_bounds")
         if reported_word_count != spoken_word_count:
@@ -1173,6 +1210,8 @@ class CloudStageRunner:
             "reconciled_word_count": reported_word_count,
             "reconciled_spoken_word_count": spoken_word_count,
             "reconciled_duration_s": duration,
+            "reconciled_canonical_duration_s": canonical_duration,
+            "reconciled_duration_contract": duration_metrics,
             "reconciled_passage_count": len(result.passages),
             "reconciled_observation_count": len(result.observations),
             "reconciled_visual_panel_count": len(visual.panels),
@@ -2250,6 +2289,7 @@ class CloudStageRunner:
             "visual_observations": selected_observations,
             "story_map": selected_story.as_dict(),
             "duration_contract": {
+                **script.narration_duration_contract("dramatic"),
                 "minimum_s": 50.0,
                 "maximum_s": 60.0,
                 "target_word_min": 115,
@@ -2624,13 +2664,18 @@ class CloudStageRunner:
         display_words = tuple(re.findall(r"[A-Z0-9]+", spoken_text.upper()))
         if not display_words or any(not word.isalnum() for word in display_words):
             raise CloudStageError("cloud.display_derivation_invalid")
-        duration = script.estimate_duration(spoken_text, "dramatic")
-        total_words = len(re.findall(r"[A-Za-z0-9]+", spoken_text))
+        duration_metrics = script.narration_duration_metrics(
+            spoken_text,
+            "dramatic",
+        )
+        duration = float(duration_metrics["estimated_duration_s"])
+        total_words = int(duration_metrics["word_count"])
         qc_report = {
             "profile_id": "sharp_friend_v1",
             "profile_sha256": narrative_identity.SHARP_FRIEND_V1.contract_sha256,
             "total_words": total_words,
             "estimated_duration_s": duration,
+            "duration_contract": duration_metrics,
             "ending_kind": results[-1].ending_kind,
             "display_word_count": len(display_words),
             "timing_source": "voice_required",
@@ -2673,9 +2718,26 @@ class CloudStageRunner:
     @staticmethod
     def _narration_contract_failures(result: NarrationResult) -> tuple[str, ...]:
         failures: list[str] = []
-        if not 50.0 <= float(result.estimated_duration_s) <= 60.0:
+        duration_metrics = script.narration_duration_metrics(
+            result.spoken_text,
+            "dramatic",
+        )
+        canonical_duration = float(duration_metrics["estimated_duration_s"])
+        canonical_word_count = int(duration_metrics["word_count"])
+        if (
+            not 50.0 <= canonical_duration <= 60.0
+            or not math.isclose(
+                float(result.estimated_duration_s),
+                canonical_duration,
+                rel_tol=0.0,
+                abs_tol=0.001,
+            )
+        ):
             failures.append("cloud.narrative_duration_out_of_range")
-        if not 115 <= int(result.word_count) <= 125:
+        if (
+            not 115 <= canonical_word_count <= 125
+            or int(result.word_count) != canonical_word_count
+        ):
             failures.append("cloud.narrative_word_count_out_of_range")
         return tuple(dict.fromkeys(failures))
 
@@ -3068,7 +3130,7 @@ class CloudStageRunner:
             **identity,
             "positions": rows,
             "target_word_count": target_word_count,
-            "target_duration_s": script.estimate_duration(
+            "target_duration_s": script.estimate_narration_duration(
                 " ".join(["word"] * target_word_count),
                 "dramatic",
             ),
@@ -3296,7 +3358,7 @@ class CloudStageRunner:
         total_words = sum(count for count in word_counts if count is not None)
         all_strings = all(count is not None for count in word_counts)
         duration = (
-            script.estimate_duration(" ".join(rewrites), "dramatic")
+            script.estimate_narration_duration(" ".join(rewrites), "dramatic")
             if all_strings
             else None
         )
@@ -3998,6 +4060,7 @@ class CloudStageRunner:
             "visual_observations": observations,
             "story_map": compact_story_map.as_dict(),
             "duration_contract": {
+                **script.narration_duration_contract("dramatic"),
                 "minimum_s": 50.0,
                 "maximum_s": 60.0,
                 "target_word_min": 115,
@@ -4497,23 +4560,28 @@ class CloudStageRunner:
             if chunk_end is None:
                 print(f"NARR_CHUNK_FAIL chunk={chunk_index} exhausted retries", file=sys.stderr, flush=True)
                 raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
-        spoken_text = "\\n\\n".join(str(item["text"]).strip() for item in all_passages)
+        spoken_text = "\n\n".join(str(item["text"]).strip() for item in all_passages)
         display_words = tuple(re.findall(r"[A-Z0-9]+", spoken_text.upper()))
         if not display_words or any(not word.isalnum() for word in display_words):
             raise CloudStageError("cloud.display_derivation_invalid")
-        duration = script.estimate_duration(spoken_text, "dramatic")
+        duration_metrics = script.narration_duration_metrics(
+            spoken_text,
+            "dramatic",
+        )
+        duration = float(duration_metrics["estimated_duration_s"])
         # Preview relaxation: the 50-60s contract targets a single short clip,
         # but a full 703-panel chapter batch narrates ~2.5x that length.  The
         # production contract stays 50-60s; preview accepts long-form output.
         # The final 50-60s/115-125 contract is enforced by run_narration
         # after the bounded targeted repair; this helper must return the
         # validated candidate even when it needs repair.
-        total_words = len(re.findall(r"[A-Za-z0-9]+", spoken_text))
+        total_words = int(duration_metrics["word_count"])
         qc_report = {
             "profile_id": "sharp_friend_v1",
             "profile_sha256": narrative_identity.SHARP_FRIEND_V1.contract_sha256,
             "total_words": total_words,
             "estimated_duration_s": duration,
+            "duration_contract": duration_metrics,
             "ending_kind": chunk_end,
             "display_word_count": len(display_words),
             "timing_source": "voice_required",
@@ -4763,7 +4831,11 @@ class CloudStageRunner:
                     raise CloudStageError("cloud.narrative_qc_blocked", reviewable=True)
                 spoken_text = "\n\n".join(str(item["text"]).strip() for item in passage_rows)
                 display_words = derive_display_words(spoken_text)
-                duration = script.estimate_duration(spoken_text, "dramatic")
+                duration_metrics = script.narration_duration_metrics(
+                    spoken_text,
+                    "dramatic",
+                )
+                duration = float(duration_metrics["estimated_duration_s"])
                 if not 50.0 <= duration <= 60.0 or not 115 <= report.total_words <= 125:
                     raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
                 result = NarrationResult(
@@ -4778,6 +4850,7 @@ class CloudStageRunner:
                         "profile_sha256": narrative_identity.SHARP_FRIEND_V1.contract_sha256,
                         "total_words": report.total_words,
                         "estimated_duration_s": duration,
+                        "duration_contract": duration_metrics,
                         "ending_kind": output["narrative_outline"]["ending_kind"],
                         "display_word_count": len(display_words),
                         "timing_source": "voice_required",

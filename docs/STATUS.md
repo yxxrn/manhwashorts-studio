@@ -2124,3 +2124,60 @@ unchanged. Focused verification is 153 passed with five existing Pillow
 warnings; Ruff, compileall, diff-check, no-churn, and key-shaped secret scan
 are clean. No further provider call is made in this checkpoint, and no valid
 narration, MP4, voice, or final QC is proven.
+
+## Canonical narration duration correction (2026-08-21)
+
+Parent: `36bfa661e6aaffd59759c23cbf7d1ff719baa678`. This checkpoint makes one
+duration rule authoritative for Sharp Friend v3: `narration-duration-v1`
+tokenizes the final reconstructed spoken text as ASCII alphanumeric runs,
+uses dramatic pacing at 2.3 words/second, and calculates
+`max(0.6, round(words / 2.3, 2))` (zero words are zero seconds). Final cache
+admission, persistence, and render planning require 115-125 canonical words
+and 50-60 canonical seconds. Per-position repair budgets remain guidance and
+sanitized diagnostics. Legacy v1/v2 helpers remain unchanged.
+
+The earlier report's 122-word vector carried a 51.3-second pre-reconciliation
+whitespace estimate and no reconstructed metrics. RED isolated the actual
+second defect: the batched repair path joined passages with literal `\\n\\n`,
+which contributed four `n` tokens and made the local final count 126. GREEN
+uses actual newlines and carries the same contract through vector
+reconciliation, `NarrationResult.qc_report`, cache identity/admission,
+`ScriptVersion.editorial_metadata`, and render planning. The exact 122-word
+vector therefore evaluates to 53.04 seconds and passes the aggregate bounds.
+
+Proof: the focused cloud/manifest/vision/analyzer/script/narrative matrix is
+278 passed with five existing Pillow warnings; the exact seven failing
+`tests/test_pipeline.py` fixtures fail identically on clean parent
+`36bfa661e6aaffd59759c23cbf7d1ff719baa678` at the pre-vision-analysis guard.
+Full Oracle non-slow is not a green production gate in this host: current
+working tree is 1104 passed, 26 failed, 10 skipped, while clean parent is
+1119 passed, 16 failed, 4 skipped. The environment failures include missing
+or unavailable FFmpeg/CPU encoder/probe capabilities, render/media fixtures,
+API/TTS dependencies, and Windows launcher assumptions. A production host
+must prove FFmpeg/FFprobe and the required H.264/AAC capabilities with a real
+render; no silent readiness is claimed here.
+
+After publication, resume the cached job with exactly one repair request and
+no visual/story repeat or automatic retry:
+
+~~~bash
+cd /home/ubuntu/manhwashorts
+set -a; source /tmp/ms_env.sh >/dev/null 2>&1; set +a
+export PYTHONPATH=/home/ubuntu/manhwashorts
+export MS_DATABASE_URL=sqlite:////data/data/p0-aws-acceptance/sample.db
+export MS_STORAGE_DIR=/data/data/p0-aws-acceptance/storage
+export MS_DATA_DIR=/data/data/p0-aws-acceptance
+export MS_TMP_DIR=/data/data/p0-aws-acceptance/tmp
+export MS_TTS_PROVIDER=null
+export MS_ENVIRONMENT=local
+export MS_REQUIRE_RIGHTS_DECLARATION=false
+PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal_batch.py \
+  --project-id 22876a6014a842f48bfca58c10a592b5 \
+  --state-dir /data/data/p0-aws-acceptance/cloud-jobs \
+  --segmentation-review-dir /data/data/p0-aws-acceptance/segmentation-review \
+  --model grok-4.3 --max-attempts 1 --min-request-interval-s 0.3
+~~~
+
+No narration, MP4, voice, or final QC is proven until that run and the
+production-host render gates succeed. Keep `/tmp/ms_env.sh`, DB/WAL, caches,
+media, and provider state outside Git.

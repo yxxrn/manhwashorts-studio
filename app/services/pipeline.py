@@ -1748,6 +1748,11 @@ def generate_script(
     panel_orders = {panel.panel_id: panel.source_order for panel in panels}
     sections: list[dict[str, Any]] = []
     passage_count = len(output["script_passages"])
+    duration_estimator = (
+        script_svc.estimate_narration_duration
+        if profile is not None
+        else script_svc.estimate_duration
+    )
     for index, passage in enumerate(output["script_passages"]):
         role = passage["editorial_role"]
         claim_ids = list(passage["claim_ids"])
@@ -1781,7 +1786,7 @@ def generate_script(
                 "claim_ids": claim_ids,
                 "evidence_panel_ids": evidence_panel_ids,
                 "evidence": evidence,
-                "estimated_duration": script_svc.estimate_duration(
+                "estimated_duration": duration_estimator(
                     passage["text"], project.narration_style
                 ),
                 "citations": sorted({panel_orders[panel_id] for panel_id in evidence_panel_ids}),
@@ -1814,6 +1819,20 @@ def generate_script(
         ]
         row.reconciliation_json = reconciliation
 
+    script_text = "\n".join(section["text"] for section in sections)
+    if profile is not None:
+        estimated_duration = script_svc.estimate_narration_duration(
+            script_text,
+            project.narration_style,
+        )
+        script_word_count = script_svc.narration_word_count(script_text)
+    else:
+        estimated_duration = round(
+            sum(section["estimated_duration"] for section in sections),
+            2,
+        )
+        script_word_count = script_svc.word_count(script_text)
+
     version = (previous.version + 1) if previous else 1
     script_row = ScriptVersion(
         project_id=project_id,
@@ -1821,8 +1840,8 @@ def generate_script(
         sections=sections,
         hook_options=[output["script_passages"][0]["text"]],
         selected_hook=0,
-        estimated_duration=round(sum(section["estimated_duration"] for section in sections), 2),
-        word_count=script_svc.word_count("\n".join(section["text"] for section in sections)),
+        estimated_duration=estimated_duration,
+        word_count=script_word_count,
         warnings=warnings,
         generator="vision_evidence_v3" if profile is not None else "vision_evidence_v2",
         editorial_metadata={
@@ -1841,6 +1860,9 @@ def generate_script(
             "version": profile.profile_version,
             "sha256": profile.contract_sha256,
         }
+        script_row.editorial_metadata["duration_contract"] = (
+            script_svc.narration_duration_contract(project.narration_style)
+        )
     db.add(script_row)
     row.state = "SCRIPT_DRAFT"
     project.status = ProjectStatus.REVIEW
@@ -1862,6 +1884,12 @@ def update_script(
     if script is None:
         raise PipelineError("script version not found")
     project = get_project(db, script.project_id)
+    use_narration_duration_contract = script.generator == "vision_evidence_v3"
+    duration_estimator = (
+        script_svc.estimate_narration_duration
+        if use_narration_duration_contract
+        else script_svc.estimate_duration
+    )
 
     valid_sections = {s.value for s in ScriptSection}
     cleaned: list[dict] = []
@@ -1879,7 +1907,7 @@ def update_script(
                 "claim_ids": list(section.get("claim_ids", []) or []),
                 "evidence_panel_ids": list(section.get("evidence_panel_ids", []) or []),
                 "evidence": list(section.get("evidence", []) or []),
-                "estimated_duration": script_svc.estimate_duration(
+                "estimated_duration": duration_estimator(
                     text, project.narration_style
                 ),
                 "citations": list(section.get("citations", []) or []),
@@ -1889,14 +1917,25 @@ def update_script(
     script.sections = cleaned
     if selected_hook is not None:
         script.selected_hook = max(0, min(selected_hook, max(0, len(script.hook_options) - 1)))
-    script.estimated_duration = round(
-        sum(s["estimated_duration"] for s in cleaned), 2
-    )
-    script.word_count = script_svc.word_count(script.plain_text)
+    if use_narration_duration_contract:
+        script.estimated_duration = script_svc.estimate_narration_duration(
+            script.plain_text,
+            project.narration_style,
+        )
+        script.word_count = script_svc.narration_word_count(script.plain_text)
+    else:
+        script.estimated_duration = round(
+            sum(s["estimated_duration"] for s in cleaned), 2
+        )
+        script.word_count = script_svc.word_count(script.plain_text)
     metadata = dict(script.editorial_metadata or {})
     metadata["human_review_required"] = True
     metadata["editorial_review_confirmed"] = False
     metadata["editorial_review_actor"] = ""
+    if use_narration_duration_contract:
+        metadata["duration_contract"] = script_svc.narration_duration_contract(
+            project.narration_style
+        )
     script.editorial_metadata = metadata
 
     # Any edit invalidates a previous approval.

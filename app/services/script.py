@@ -91,6 +91,61 @@ def estimate_duration(text: str, style: str = NarrationStyle.DRAMATIC) -> float:
     return max(0.6, round(words / wps, 2))
 
 
+NARRATION_DURATION_CONTRACT_VERSION = "narration-duration-v1"
+_NARRATION_WORD_PATTERN = re.compile(r"[A-Za-z0-9]+")
+
+
+def narration_word_count(text: str) -> int:
+    """Count spoken narration words using the persisted v1 contract."""
+    return len(_NARRATION_WORD_PATTERN.findall(text))
+
+
+def narration_duration_contract(
+    style: str = NarrationStyle.DRAMATIC,
+) -> dict[str, float | str]:
+    """Return the identity portion of the canonical narrated-duration contract."""
+    narration_style = NarrationStyle(style)
+    return {
+        "version": NARRATION_DURATION_CONTRACT_VERSION,
+        "tokenizer": "ascii_alphanumeric_v1",
+        "style": narration_style.value,
+        "words_per_second": WORDS_PER_SECOND.get(narration_style, 2.4),
+    }
+
+
+def narration_duration_metrics(
+    text: str,
+    style: str = NarrationStyle.DRAMATIC,
+) -> dict[str, float | int | str]:
+    """Return the one canonical duration/word metric for narrated output.
+
+    Legacy ``word_count``/``estimate_duration`` remain unchanged for v1/v2
+    script callers.  Cloud Sharp Friend narration uses this explicit contract
+    so provider-vector reconciliation, persisted ``NarrationResult`` values,
+    cache admission, and render planning share the same tokenization.
+    """
+    contract = narration_duration_contract(style)
+    words = narration_word_count(text)
+    duration = (
+        0.0
+        if words == 0
+        else max(0.6, round(words / float(contract["words_per_second"]), 2))
+    )
+    return {
+        **contract,
+        "word_count": words,
+        "estimated_duration_s": duration,
+    }
+
+
+def estimate_narration_duration(
+    text: str,
+    style: str = NarrationStyle.DRAMATIC,
+) -> float:
+    """Return the canonical narrated duration without changing legacy timing."""
+    return float(narration_duration_metrics(text, style)["estimated_duration_s"])
+
+
 def budget_for(section: str, target_seconds: float) -> float:
     return round(target_seconds * SECTION_WEIGHTS[ScriptSection(section)], 2)
 

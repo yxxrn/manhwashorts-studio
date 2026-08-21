@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from dataclasses import dataclass, replace
 
 import pytest
@@ -357,6 +358,7 @@ def test_narration_reconciles_compact_provider_envelope_from_visual_lineage():
     assert result.evidence_graph["claims"]
     assert all(claim["claim_type"] == "interpretation" for claim in result.evidence_graph["claims"])
     assert provider.narration_payloads[0]["duration_contract"] == {
+        **module.script.narration_duration_contract("dramatic"),
         "minimum_s": 50.0,
         "maximum_s": 60.0,
         "target_word_min": 115,
@@ -1994,9 +1996,13 @@ def test_narration_cache_requires_complete_grounded_result_even_with_matching_vi
         prompt_version="balloon-free-visual-evidence-v1",
         prompt_sha256="v" * 64,
     )
+    spoken_text = " ".join(
+        ["One grounded turn changes what follows."] * 20
+    )
+    display_words = tuple(re.findall(r"[A-Z0-9]+", spoken_text.upper()))
     valid = module.NarrationResult(
-        spoken_text="One grounded turn changes what follows.",
-        display_words=("ONE", "GROUNDED", "TURN"),
+        spoken_text=spoken_text,
+        display_words=display_words,
         passages=tuple(
             {
                 "passage_id": f"p{index}",
@@ -2010,12 +2016,17 @@ def test_narration_cache_requires_complete_grounded_result_even_with_matching_vi
         ),
         ending_kind="consequence",
         word_count=120,
-        estimated_duration_s=53.0,
+        estimated_duration_s=52.17,
         observations=tuple(rows),
         continuity_ledger={},
         evidence_graph={"claims": []},
         story_spine={},
-        qc_report={},
+        qc_report={
+            "duration_contract": module.script.narration_duration_metrics(
+                spoken_text,
+                "dramatic",
+            ),
+        },
         model_identity_hash=_identity(module).identity_hash,
         prompt_version="vision-first-story-analyzer-v3",
         prompt_sha256="n" * 64,
@@ -2030,6 +2041,12 @@ def test_narration_cache_requires_complete_grounded_result_even_with_matching_vi
     ) is True
     assert module._narration_result_is_usable(
         stale,
+        visual,
+        require_duration=True,
+    ) is False
+    missing_contract = replace(valid, qc_report={})
+    assert module._narration_result_is_usable(
+        missing_contract,
         visual,
         require_duration=True,
     ) is False
@@ -3671,3 +3688,124 @@ def test_later_gate_metrics_include_reconciled_result_shape():
     )
     assert failure_metrics["failed_code"] == "cloud.narrative_not_grounded"
     assert failure_metrics["failed_predicate"] == "duration_bounds"
+
+
+def test_observed_vector_uses_one_canonical_duration_across_repair_result_path():
+    module = _module()
+    script_module = importlib.import_module("app.services.script")
+    template, candidate, visual, story_map = _immutable_slot_fixture(module)
+    base_panels = _panels(module, "immutable-slot")
+    panels = base_panels + tuple(
+        replace(
+            base_panels[-1],
+            panel_id=f"immutable-slot-panel-{index}",
+            source_asset_id=f"immutable-slot-asset-{index}",
+            source_order=index,
+            payload=f"immutable-slot-payload-{index}".encode(),
+            payload_checksum="",
+            source_checksum="",
+            strip_region_id=f"immutable-slot-region-{index}",
+        )
+        for index in (4, 5)
+    )
+    local_observations, local_structural = template._narration_observations(
+        visual,
+        panels,
+    )
+    candidate = replace(
+        candidate,
+        observations=tuple(local_observations),
+        continuity_ledger=dict(local_structural["continuity_ledger"]),
+        story_spine={
+            **{
+                key: value
+                for key, value in candidate.story_spine.items()
+                if key not in {"wants", "unresolved_direction"}
+            },
+            "who_wants_what": candidate.story_spine["wants"],
+            "unresolved_question": "What changes next?",
+        },
+    )
+    observed_counts = (18, 17, 16, 16, 16, 13, 13, 13)
+
+    class ObservedVectorProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.repair_count = 0
+
+        def complete_json(
+            self,
+            *,
+            stage,
+            prompt_version,
+            prompt_sha256,
+            prompt_text="",
+            payload,
+        ):
+            if stage == "narration_repair":
+                self.repair_count += 1
+                rows = payload["targeted_repair"]["position_context"]
+                assert len(rows) == len(observed_counts)
+                vocabulary = [
+                    "Now",
+                    "the",
+                    "visible",
+                    "turn",
+                    "changes",
+                    "what",
+                    "comes",
+                    "next",
+                    "because",
+                    "the",
+                    "stakes",
+                    "shift",
+                    "while",
+                    "the",
+                    "next",
+                    "choice",
+                    "keeps",
+                    "pressure",
+                    "moving",
+                    "forward",
+                ]
+                return {
+                    "rewrites": [
+                        " ".join(
+                            (vocabulary * ((count // len(vocabulary)) + 1))[:count]
+                        )
+                        for count in observed_counts
+                    ]
+                }
+            return super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+
+    provider = ObservedVectorProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+
+    repaired = runner.run_narration_repair_candidate(
+        candidate,
+        visual,
+        story_map,
+        panels=panels,
+    )
+
+    canonical = script_module.narration_duration_metrics(
+        repaired.spoken_text,
+        "dramatic",
+    )
+    assert provider.repair_count == 1
+    assert runner.request_count == 1
+    assert repaired.word_count == sum(observed_counts) == canonical["word_count"]
+    assert repaired.estimated_duration_s == canonical["estimated_duration_s"]
+    assert 50.0 <= canonical["estimated_duration_s"] <= 60.0
+    assert repaired.qc_report["duration_contract"] == canonical
