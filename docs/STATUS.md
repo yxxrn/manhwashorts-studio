@@ -1957,3 +1957,24 @@ trusted evidence lineage. The focused matrix is 145/145; Ruff, compileall,
 diff-check, no-churn, and key-shaped secret scan are clean. Publish this
 correction before another one-request repair. No valid narration, MP4, voice,
 or final QC is proven yet.
+
+## Position-vector aggregate admission correction (2026-08-21)
+
+After the published max-8 checkpoint `ad4b62a7e7e6a4a4d9e70aefcc41aa54dac2a1c2`,
+one bounded real request returned array length 8 and string counts
+`[17,16,16,15,16,13,13,13]`: total 119 words and estimated duration 50.0
+seconds. It failed closed only on `position_word_budget` because the first
+position exceeded its derived upper guidance; request/retry counts were 1/0.
+The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`f8700f9e2f2486b8a85984a635a3333d102f9a97898624e92a5a6fefd3a9d16f`.
+
+RED proves that an otherwise admissible final response could be rejected by
+the upper per-position guidance. GREEN preserves the minimum position floor
+and strict aggregate 115-125-word/50-60-second gates, and admits an upper
+position deviation when the complete response is already in range. Exact 120
+is guidance only. The focused matrix is 146/146 with Ruff, compileall,
+diff-check, no-churn, and key-shaped secret scan clean. Publish this correction
+before another one-request repair. No narration, MP4, voice, or final QC is
+proven yet.

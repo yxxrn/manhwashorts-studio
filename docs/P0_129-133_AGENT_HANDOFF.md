@@ -771,3 +771,23 @@ with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan clean.
 Publish this checkpoint before one new bounded repair request; do not repeat
 the 701-panel visual or story stages. No narration, MP4, voice, or final QC is
 proven at this checkpoint.
+
+## Position-vector aggregate admission correction - 2026-08-21
+
+After the published max-8 checkpoint `ad4b62a7e7e6a4a4d9e70aefcc41aa54dac2a1c2`,
+one bounded real repair request returned 8 strings with per-position counts
+`[17,16,16,15,16,13,13,13]`, total 119 words, and estimated duration 50.0
+seconds. It failed closed as `cloud.narrative_repair_position_budget_invalid`
+only on the derived upper position guidance, after request count 1 and retry
+count 0. The sanitized report remains at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`f8700f9e2f2486b8a85984a635a3333d102f9a97898624e92a5a6fefd3a9d16f`.
+
+The RED regression proves that an in-range final response could be rejected by
+the upper position predicate. GREEN retains the minimum position floor and
+strict aggregate 115-125-word/50-60-second admission, while treating upper
+per-position values as guidance once the complete response is in range. Exact
+120 is guidance only. Focused verification is 146/146 with Ruff, compileall,
+diff-check, no-churn, and key-shaped secret scan clean. Publish this fix before
+another one-request repair; no narration, MP4, voice, or final QC is proven.

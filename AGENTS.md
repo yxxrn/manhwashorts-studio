@@ -754,3 +754,22 @@ required 8-12 range, preserving at least four causal passages and trusted
 lineage. The focused matrix is 145/145 with Ruff, compileall, diff-check,
 no-churn, and key-shaped secret scan clean. Publish before the next request;
 no narration, MP4, voice, or final QC is proven.
+
+## Position-vector aggregate admission correction (2026-08-21)
+
+After the published max-8 checkpoint `ad4b62a7e7e6a4a4d9e70aefcc41aa54dac2a1c2`,
+one bounded real request returned the valid positional shape of 8 strings with
+counts `[17,16,16,15,16,13,13,13]`, total 119 words, and estimated duration
+50.0 seconds. It failed closed only because one derived upper position budget
+was exceeded; the sanitized report SHA is
+`f8700f9e2f2486b8a85984a635a3333d102f9a97898624e92a5a6fefd3a9d16f` and
+request/retry counts were 1/0.
+
+The collection-clean RED regression proved that an in-range final response
+could be rejected by the upper position guidance. GREEN keeps the minimum
+position floor and strict aggregate 115-125-word/50-60-second gates, while
+treating the derived upper position values as guidance once the whole response
+is in range. Exact 120 remains guidance only. Focused verification is 146/146
+with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan clean.
+Publish before another real request; no narration, MP4, voice, or final QC is
+proven.

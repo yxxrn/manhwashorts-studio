@@ -3243,7 +3243,16 @@ class CloudStageRunner:
                     reviewable=True,
                 )
             word_count = len(re.findall(r"[A-Za-z0-9]+", text))
-            if not position.word_budget_min <= word_count <= position.word_budget_max:
+            final_bounds_ok = (
+                all_strings
+                and total_words is not None
+                and duration is not None
+                and 115 <= total_words <= 125
+                and 50.0 <= duration <= 60.0
+            )
+            if word_count < position.word_budget_min or (
+                word_count > position.word_budget_max and not final_bounds_ok
+            ):
                 raise CloudStageError(
                     "cloud.narrative_repair_position_budget_invalid",
                     reviewable=True,

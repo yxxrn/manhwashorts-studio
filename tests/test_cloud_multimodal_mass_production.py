@@ -2677,6 +2677,27 @@ def test_position_repair_accepts_total_below_guidance_inside_final_bounds():
     assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 118
 
 
+def test_position_repair_admits_in_range_total_above_position_guidance():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [row["word_budget"] for row in registry["positions"]]
+    counts[0] = registry["positions"][0]["word_budget_max"] + 1
+    counts[1] -= 3
+    assert counts[0] > registry["positions"][0]["word_budget_max"]
+    assert sum(counts) == 119
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"inrange{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+
+    reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 119
+
+
 @pytest.mark.parametrize("mutation", ("old_id_wrapper", "wrong_count", "wrong_type"))
 def test_position_repair_rejects_non_positional_provider_shapes(mutation):
     module = _module()
