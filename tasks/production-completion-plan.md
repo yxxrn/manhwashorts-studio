@@ -80,3 +80,16 @@ related 275/275, Ruff and compileall are GREEN, and provider requests consumed
 by this slice are zero. The next command after publication is the single
 bounded cached narration-repair command documented in `AGENTS.md` and the P0
 handoff.
+
+## Latest closure addendum — 2026-08-22
+
+The v1 single-claim passage-context predicate was proven too narrow for the
+persisted p3 passage, whose claims span two canonical sections. The completed
+offline correction is closure v2: union only the exact passage's trusted
+claim ancestry, retain per-position claim evidence, and preserve all
+fail-closed foreign/duplicate/stale/identity checks. GREEN evidence is closure
+5/5, cloud 123/123, related analyzer/story/narrative 211/211,
+segmentation/vision 134/134, Ruff/compileall/diff-check/no-churn clean, and
+zero provider requests. The source/test diff is still unpublished at parent
+`24971e742653aeae48a2b15757adccf44a5dedb9`; commit and exact-object push are
+the immediate next action before one bounded cached repair request.

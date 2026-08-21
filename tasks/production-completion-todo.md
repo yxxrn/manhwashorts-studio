@@ -26,3 +26,13 @@ item requires durable command output and artifact/hash evidence.
 Blocked states must name the stable error, last durable artifact, request
 count, exact resume command, and rollback SHA. Never mark this checklist
 complete from unit tests alone.
+
+## Closure v2 checkpoint — 2026-08-22
+
+- [x] Reproduce and fix the p3 multi-section evidence-closure discrepancy
+      offline without a provider request.
+- [x] Verify 5/5 closure, 123/123 cloud, 211/211 related narrative, and
+      134/134 segmentation/vision tests plus Ruff/compile/diff/no-churn gates.
+- [ ] Commit/push the source/test/docs checkpoint and verify exact parity.
+- [ ] Run the one authorized cached repair request only after publication;
+      continue only on strict admission.

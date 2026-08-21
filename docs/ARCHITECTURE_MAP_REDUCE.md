@@ -21,6 +21,25 @@ makes no provider call. The next bounded stage is one cached narration repair
 request, followed only by local persistence and silent render if strict
 admission succeeds.
 
+### Evidence-closure v2 for multi-section passages — 2026-08-22
+
+The repair reducer has two distinct closure scopes. A position resolves its
+own claim IDs to exact trusted panel evidence. A persisted passage resolves
+the ordered union of all of its claim IDs to the canonical story beat/section
+ancestry. The validator compares passage context with that union, never with
+an arbitrary same-chapter set, and still requires each position's evidence to
+equal its trusted claim refs. This fixes the real p3 cross-section failure
+without weakening lineage.
+
+Closure identity is now
+`narration-repair-evidence-closure-v2`; registry v5, model/prompt/visual/
+story identity, ordered panel IDs, and closure hash remain required. Offline
+replay proves eight rows `ROW_OK` and `CLOSURE_OK` (hash prefix `e4636ae3`).
+The focused closure set is 5/5, cloud is 123/123, related analyzer/story/
+narrative is 211/211, segmentation/vision is 134/134, and static/no-churn
+gates pass. No provider request or runtime artifact was touched. Publish this
+checkpoint before the single authorized repair call.
+
 ## Trusted passage-evidence reconstruction
 
 The repair path previously required every trusted story-claim reference to

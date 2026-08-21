@@ -1362,3 +1362,28 @@ no provider request or runtime-state edit occurred. After publication, make
 only the one authorized same-model repair request, zero retries, no visual/story
 repeat, and continue only if the complete grounding/lineage/causal/
 word-duration/display/cache contract admits the result.
+
+### Multi-section passage closure correction — 2026-08-22
+
+The Oracle worktree is based on
+`24971e742653aeae48a2b15757adccf44a5dedb9`. The cached repair replay exposed
+a strict local defect: p3 contains claims whose canonical ancestry spans two
+story sections. v1 checked passage context against each one-claim closure,
+so positions 4 and 5 failed closed before any provider request. The v2 fix
+uses `_story_passage_evidence_closure` to union only the exact passage's
+trusted claim ancestry; position rows retain exact claim-level evidence and
+all foreign or unrelated panels remain rejected.
+
+The new regression plus existing closure cases are GREEN (5/5); the cloud
+file is 123/123; the related analyzer/story/narrative matrix is 211/211; the
+segmentation/vision matrix is 134/134; Ruff, compileall, diff-check, and
+no-churn checks pass. The persisted offline tracer reports all eight rows
+`ROW_OK`, `CLOSURE_OK`, registry v5, closure hash prefix `e4636ae3`, and zero
+provider requests. This source/test/docs checkpoint is still unpublished;
+protected `data`, `ms_env.sh`, DB/WAL, caches, logs, and media remain outside
+Git.
+
+Resume only after publication with the one authorized same-model repair
+request, zero retries and no visual/story repeat. Do not rerun cached visual
+or story stages and do not continue to narration/render unless the complete
+strict admission contract passes.

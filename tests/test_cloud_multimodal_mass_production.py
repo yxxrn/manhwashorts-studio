@@ -4407,6 +4407,48 @@ def test_repair_evidence_closure_admits_exact_p2_story_ancestry():
         )
 
 
+def test_repair_evidence_closure_uses_all_claim_ancestry_for_one_passage():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    first = dict(candidate.passages[0])
+    first["claim_ids"] = [
+        str(candidate.passages[0]["claim_ids"][0]),
+        str(candidate.passages[1]["claim_ids"][0]),
+    ]
+    first["evidence_panel_ids"] = [
+        str(candidate.passages[0]["evidence_panel_ids"][0]),
+        str(candidate.passages[1]["evidence_panel_ids"][0]),
+    ]
+    second = dict(candidate.passages[1])
+    second["claim_ids"] = [str(candidate.passages[1]["claim_ids"][1])]
+    second["evidence_panel_ids"] = [
+        str(candidate.passages[1]["evidence_panel_ids"][0])
+    ]
+    mixed = replace(candidate, passages=(first, second, *candidate.passages[2:]))
+    registry = runner._build_narration_repair_position_registry(mixed, story_map)
+
+    closure = runner._validate_narration_repair_evidence_closure(
+        registry,
+        mixed,
+        story_map,
+    )
+    rows = [
+        row
+        for row in closure["positions"]
+        if row["passage_id"] == first["passage_id"]
+    ]
+
+    assert len(rows) == 2
+    assert {tuple(row["evidence_panel_ids"]) for row in rows} == {
+        (first["evidence_panel_ids"][0],),
+        (first["evidence_panel_ids"][1],),
+    }
+    assert all(
+        set(first["evidence_panel_ids"]).issubset(set(row["permitted_panel_ids"]))
+        for row in rows
+    )
+
+
 def test_repair_evidence_closure_rejects_unrelated_same_chapter_panel():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)

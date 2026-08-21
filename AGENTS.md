@@ -1360,3 +1360,38 @@ stale-identity cases remain rejected. Focused closure is 5/5, the cloud file is
 state was used. After this checkpoint is published, only the single previously
 authorized same-model repair request may run, with zero retries and no
 visual/story repeat.
+
+## Strict multi-section repair closure v2 — 2026-08-22
+
+Oracle is reachable through the real OpenSSH binary
+`C:\Windows\System32\OpenSSH\ssh.exe`; the bare sandbox `ssh` wrapper is not a
+network diagnostic. The current published base is
+`24971e742653aeae48a2b15757adccf44a5dedb9`. The Oracle worktree currently has
+an uncommitted source/test diff only in
+`app/services/cloud_multimodal.py` and
+`tests/test_cloud_multimodal_mass_production.py`; `data` and `ms_env.sh` are
+protected untracked runtime paths.
+
+The v1 closure defect was local and strict: passage p3 contains claims from
+two canonical story sections, but each position was validating the full
+passage context against one claim's ancestry. Positions 4 and 5 therefore
+failed before network use. Closure v2 adds
+`_story_passage_evidence_closure`, which unions the trusted ancestry of every
+claim in that exact persisted passage. Each position still carries only its
+own claim evidence; this is not a same-chapter fallback or a lineage
+relaxation. The cache/schema identity is bumped to
+`narration-repair-evidence-closure-v2`.
+
+Offline proof after the fix: all eight persisted positions are `ROW_OK`, the
+closure is `CLOSURE_OK` with hash prefix `e4636ae3`, and registry v5 remains
+valid. The prior replay was `cloud.narrative_repair_evidence_closure_invalid`
+with zero requests. Focused closure is 5/5, the cloud file is 123/123, the
+related analyzer/story/narrative matrix is 211/211, the segmentation/vision
+matrix is 134/134, Ruff/compileall/diff-check/no-churn pass, and no provider
+or TTS request was made in this checkpoint.
+
+Do not run the authorized repair request until this source/test/docs diff is
+committed and published. Then use the existing cached repair harness exactly
+once with the same configured model, zero retries, and no visual/story
+repeat. Persist only a fully admitted result; preserve all protected runtime
+paths and never print `/tmp/ms_env.sh`.

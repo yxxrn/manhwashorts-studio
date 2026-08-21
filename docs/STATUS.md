@@ -2639,3 +2639,37 @@ request, DB/runtime edit, media, or secret was used. After publication, run
 exactly one same-model bounded repair request with zero retries and no
 visual/story repeat; do not claim narration or render readiness until every
 existing admission gate passes.
+
+## Strict multi-section repair closure v2 — 2026-08-22
+
+This is the latest unpublished GREEN source/test checkpoint and supersedes
+the earlier v1/122-test wording above. Parent and rollback are
+`24971e742653aeae48a2b15757adccf44a5dedb9`. The tracked diff is limited to
+`app/services/cloud_multimodal.py` and
+`tests/test_cloud_multimodal_mass_production.py`; `data` and `ms_env.sh`
+remain protected untracked runtime state.
+
+The exact RED was the persisted cached candidate replay: p3 positions 4 and 5
+were rejected as `cloud.narrative_repair_evidence_closure_invalid` with
+`request_count=0`. The local v1 predicate compared passage-wide context with
+each single claim's section ancestry. The fix introduces
+`_story_passage_evidence_closure` and closure identity
+`narration-repair-evidence-closure-v2`: it unions the canonical ancestry of
+all claim IDs in the exact passage, while retaining exact per-position claim
+evidence and rejecting foreign, duplicate, missing, stale, or changed
+lineage.
+
+GREEN evidence: the new cross-section regression and four existing closure
+regressions pass (5/5); the full cloud file is 123/123; the related
+analyzer/story/narrative matrix is 211/211; the segmentation/vision matrix is
+134/134; Ruff and compileall pass; `git diff --check`, normal versus
+`--ignore-space-at-eol` numstats, and secret-shape scans pass. The offline
+persisted replay reports eight `ROW_OK` positions and `CLOSURE_OK` with hash
+prefix `e4636ae3`. No provider/TTS request, DB write, media output, or secret
+use occurred.
+
+The checkpoint is not committed or published yet. After commit and exact
+GitHub parity, the next and only external action is one bounded cached
+same-model repair request with zero retries and no visual/story repeat. A
+valid result must still pass anti-copy, grounding, causal, identity,
+115–125-word, 50–60-second, display, persistence, and render gates.
