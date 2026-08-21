@@ -2263,3 +2263,19 @@ secret scan passed. The previous failed repair made zero provider calls; after
 this checkpoint is published, run only the existing cached normal entrypoint
 with `--max-attempts 1 --max-requests 1`, then continue to render only if all
 strict narration gates pass. No MP4, TTS, or QC artifact is claimed here.
+
+## 2026-08-21 one-request repair outcome
+
+Manifest v2 was published as `bcfb97119492df9dcf4a57aa22f5458b5f07dbb8`. The
+cached normal entrypoint then ran exactly once with `--max-attempts 1
+--max-requests 1`; durable usage records `request_count=1` and zero retries.
+The 701-panel prepared manifest rebuilt successfully with immutable gapped
+`source_order` and contiguous `prepared_order` 0..700; visual/story caches were
+reused.
+
+The run ended `NEEDS_REVIEW` before narration admission with sanitized
+`cloud.narrative_not_grounded`, predicate `field=passage_evidence;count=5`.
+No provider prose was retained. No narration result, MP4, TTS, or QC artifact
+was admitted. No further provider request is made in this checkpoint; the next
+code slice must fix and test the local passage-evidence reconciliation boundary
+before a new authorized request.

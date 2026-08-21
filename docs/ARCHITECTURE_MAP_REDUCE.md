@@ -310,3 +310,12 @@ made by this fix. After publication, the normal cached batch runner may make
 exactly one bounded narration repair request; visual/story stages must remain
 cache hits and all downstream grounding, duration, render, and voice gates
 remain authoritative.
+
+## 2026-08-21 prepared-subset and repair outcome
+
+The published v2 manifest checkpoint is `bcfb971`. One cached normal run
+recorded `request_count=1`, zero retries, and no visual/story repeat. It failed
+closed at the local passage-evidence admission predicate:
+`cloud.narrative_not_grounded`, `field=passage_evidence`, `count=5`. No admitted
+narration result or downstream media stage exists. Treat this as a contract
+boundary defect, not permission to weaken grounding or issue an automatic retry.

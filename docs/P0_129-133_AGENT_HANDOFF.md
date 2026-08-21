@@ -1041,3 +1041,17 @@ The next resume command is the previously published normal runner with the
 same project/model/cache identity, `--max-attempts 1 --max-requests 1`, and no
 visual/story repeat. Runtime DB, caches, media, `data`, and `/tmp/ms_env.sh`
 remain outside Git.
+
+## 2026-08-21 repair result after manifest publication
+
+Published manifest fix: `bcfb97119492df9dcf4a57aa22f5458b5f07dbb8`. The cached
+runner executed once with one request and zero retries. The 701-panel prepared
+manifest rebuilt with immutable gapped `source_order` and contiguous
+`prepared_order` 0..700; visual/story caches were reused.
+
+The job ended `NEEDS_REVIEW` at the local narration boundary with sanitized
+`cloud.narrative_not_grounded`, `field=passage_evidence`, `count=5`. No provider
+prose was persisted or reported. No narration, silent MP4, TTS, voiced MP4, or
+QC exists. The single authorized repair request is consumed: do not retry it.
+Fix/test this exact boundary and publish a new GREEN checkpoint before asking
+for another bounded call.

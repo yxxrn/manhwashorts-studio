@@ -1012,3 +1012,10 @@ execution order from source lineage and rejects duplicate/reordered IDs,
 changed payload/crop identity, and invalid legacy hashes. The next normal
 resume is exactly one bounded `grok-4.3` repair request with cached visual/story
 stages and zero retries; do not rerun visual/story or print `/tmp/ms_env.sh`.
+
+The one-request resume completed with `request_count=1` and zero retries, but
+ended `NEEDS_REVIEW` at the local narration boundary with sanitized
+`cloud.narrative_not_grounded` (`field=passage_evidence;count=5`). No narration,
+MP4, TTS, or QC is proven. Do not issue another provider request until this
+passage-evidence reconciliation boundary has a focused GREEN fix and a new
+authorized checkpoint.
