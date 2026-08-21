@@ -1052,3 +1052,21 @@ silent render/QC, then voice/TTS and warm-resume proof. If it fails, retain only
 sanitized field/count/metrics and stop provider calls. Never repeat visual/story
 calls, print `/tmp/ms_env.sh`, or stage runtime data, media, DB/WAL, caches, or
 credentials.
+
+## Post-publication bounded repair attempt — 2026-08-21
+
+After `8097f0b8da60a32834d5e39d445df1393637457b` was published, the documented
+legacy runner command was exercised once with a one-request budget. It reused
+the 701-panel visual cache but missed the compatible story/candidate cache and
+ended before targeted repair as `cloud.request_budget_exceeded`, with sanitized
+job usage `request_count=1`. No repair-attempt record, provider prose,
+narration, MP4, voice, or QC artifact was admitted. No further provider call
+has been made.
+
+The durable 160-word repair candidate has visual identity hash
+`73c224732858ead17bdee4003cfc8824a7f1470e7e0a238f8baa5d80fd0b9579`, while the
+current persisted 701-panel story context resolves to a different visual
+identity. No matching visual/story cache was found. The strict repair boundary
+therefore blocks rather than mixing identities or rewriting hashes. Do not
+repeat visual/story calls, issue another provider request, or manually edit
+runtime state until an exact local cache-reconciliation fix is reviewed.

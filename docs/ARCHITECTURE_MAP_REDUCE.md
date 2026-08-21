@@ -351,3 +351,20 @@ repetition. A valid result must still pass canonical grounding, causal order,
 115-125 words, 50-60 seconds, display derivation, cache identity, and lineage
 gates before persistence and render. A failed request stores only sanitized
 shape/count/metrics and predicate data; no automatic retry is allowed.
+
+## Post-publication repair-resume outcome — 2026-08-21
+
+The documented legacy runner was invoked once after `8097f0b`. The 701-panel
+visual cache was reused, but the compatible story/candidate cache was absent;
+the normal stage consumed the one-request budget and ended before targeted repair
+as `cloud.request_budget_exceeded`. Durable usage is `request_count=1`; no
+repair-attempt record or downstream artifact exists, and no further provider call
+has been issued.
+
+The durable repair candidate carries visual identity
+`73c224732858ead17bdee4003cfc8824a7f1470e7e0a238f8baa5d80fd0b9579`, while the
+current persisted story context carries a different visual identity. The
+identity checks correctly prevent mixing them. The next bounded slice is local
+metadata-only reconciliation of an exact matching visual/story/candidate cache
+or a fail-closed stale-cache report; no hash rewrite, visual/story re-call, or
+provider retry is allowed before that fix is published.

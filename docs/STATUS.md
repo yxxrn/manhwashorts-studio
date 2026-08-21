@@ -2314,3 +2314,23 @@ one bounded repair request and zero retries/no visual-story repeat. A successful
 repair must pass the existing 115-125 word, 50-60 second, grounding, causal,
 display, cache, and lineage gates before silent render/QC; voice remains after
 that gate. A failed attempt records only sanitized metrics and its predicate.
+
+## Post-publication repair-resume outcome — 2026-08-21
+
+The published passage-lineage checkpoint was `8097f0b8da60a32834d5e39d445df1393637457b`.
+The legacy documented runner command was then executed once with
+`--max-attempts 1 --max-requests 1`. It reused the 701-panel visual stage but
+missed the exact compatible story/candidate cache and stopped before targeted
+repair with `cloud.request_budget_exceeded`; durable usage was
+`request_count=1`, and no repair-attempt JSON was created. No provider prose,
+narration, MP4, TTS, or QC artifact is proven. No further provider call has
+been made.
+
+The durable repair candidate identity is visual hash
+`73c224732858ead17bdee4003cfc8824a7f1470e7e0a238f8baa5d80fd0b9579`; the
+current persisted story context carries a different visual identity. Strict
+lineage correctly rejects mixing them. This is now the concrete next blocker:
+implement and test metadata-only cache reconciliation or restore an exact
+matching story/visual snapshot, without changing hashes or repeating provider
+stages. Until then, no narration admission, silent render, voice, or final QC
+claim is valid.

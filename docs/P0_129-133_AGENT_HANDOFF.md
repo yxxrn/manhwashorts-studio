@@ -1089,3 +1089,21 @@ model, with zero retries and no visual/story repeat. If it passes all strict
 grounding/lineage/duration/display gates, persist narration and proceed to
 silent render/QC, then configured voice/TTS and warm-resume proof. If it fails,
 persist only sanitized metrics/predicate and stop provider calls.
+
+## Post-publication repair-resume outcome — 2026-08-21
+
+Checkpoint `8097f0b8da60a32834d5e39d445df1393637457b` is published and clean
+apart from protected runtime paths. Its documented normal runner command was
+executed once with a one-request budget. The visual cache was reused, but the
+compatible story/candidate cache was not found; the job ended before targeted
+repair as `cloud.request_budget_exceeded` with sanitized `request_count=1`.
+No repair JSON, provider prose, narration, silent MP4, TTS, voiced MP4, or QC
+exists. No further request has been made.
+
+The durable candidate's visual identity is
+`73c224732858ead17bdee4003cfc8824a7f1470e7e0a238f8baa5d80fd0b9579`; the
+current 701-panel story context has a different identity. Do not force a hash,
+reuse a different story map, rerun visual/story, or send another provider
+request. The next implementation slice is a metadata-only exact-cache
+reconciliation with focused identity tests, then a newly authorized bounded
+repair attempt.
