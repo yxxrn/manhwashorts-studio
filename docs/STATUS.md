@@ -2642,7 +2642,8 @@ existing admission gate passes.
 
 ## Strict multi-section repair closure v2 — 2026-08-22
 
-This is the latest unpublished GREEN source/test checkpoint and supersedes
+This is the latest published GREEN source/test checkpoint at
+`bd6f7d791d033f36f62c725b724fdcad9fdc2b8b` and supersedes
 the earlier v1/122-test wording above. Parent and rollback are
 `24971e742653aeae48a2b15757adccf44a5dedb9`. The tracked diff is limited to
 `app/services/cloud_multimodal.py` and
@@ -2668,8 +2669,8 @@ persisted replay reports eight `ROW_OK` positions and `CLOSURE_OK` with hash
 prefix `e4636ae3`. No provider/TTS request, DB write, media output, or secret
 use occurred.
 
-The checkpoint is not committed or published yet. After commit and exact
-GitHub parity, the next and only external action is one bounded cached
+The checkpoint is committed and published with exact Oracle/GitHub/fresh
+transport parity. The next and only external action is one bounded cached
 same-model repair request with zero retries and no visual/story repeat. A
 valid result must still pass anti-copy, grounding, causal, identity,
 115–125-word, 50–60-second, display, persistence, and render gates.

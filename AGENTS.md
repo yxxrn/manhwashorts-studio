@@ -1366,11 +1366,10 @@ visual/story repeat.
 Oracle is reachable through the real OpenSSH binary
 `C:\Windows\System32\OpenSSH\ssh.exe`; the bare sandbox `ssh` wrapper is not a
 network diagnostic. The current published base is
-`24971e742653aeae48a2b15757adccf44a5dedb9`. The Oracle worktree currently has
-an uncommitted source/test diff only in
-`app/services/cloud_multimodal.py` and
-`tests/test_cloud_multimodal_mass_production.py`; `data` and `ms_env.sh` are
-protected untracked runtime paths.
+`24971e742653aeae48a2b15757adccf44a5dedb9`. The closure checkpoint is
+published as `bd6f7d791d033f36f62c725b724fdcad9fdc2b8b` with that parent; the
+tracked Oracle worktree is clean. `data` and `ms_env.sh` remain protected
+untracked runtime paths.
 
 The v1 closure defect was local and strict: passage p3 contains claims from
 two canonical story sections, but each position was validating the full
@@ -1390,8 +1389,8 @@ related analyzer/story/narrative matrix is 211/211, the segmentation/vision
 matrix is 134/134, Ruff/compileall/diff-check/no-churn pass, and no provider
 or TTS request was made in this checkpoint.
 
-Do not run the authorized repair request until this source/test/docs diff is
-committed and published. Then use the existing cached repair harness exactly
-once with the same configured model, zero retries, and no visual/story
+The source/test/docs checkpoint is now committed and published. Use the
+existing cached repair harness exactly once with the same configured model,
+zero retries, and no visual/story
 repeat. Persist only a fully admitted result; preserve all protected runtime
 paths and never print `/tmp/ms_env.sh`.

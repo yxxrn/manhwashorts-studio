@@ -37,8 +37,9 @@ story identity, ordered panel IDs, and closure hash remain required. Offline
 replay proves eight rows `ROW_OK` and `CLOSURE_OK` (hash prefix `e4636ae3`).
 The focused closure set is 5/5, cloud is 123/123, related analyzer/story/
 narrative is 211/211, segmentation/vision is 134/134, and static/no-churn
-gates pass. No provider request or runtime artifact was touched. Publish this
-checkpoint before the single authorized repair call.
+gates pass. No provider request or runtime artifact was touched. This
+checkpoint is published as `bd6f7d791d033f36f62c725b724fdcad9fdc2b8b`; the
+single authorized repair call is the next external action.
 
 ## Trusted passage-evidence reconstruction
 

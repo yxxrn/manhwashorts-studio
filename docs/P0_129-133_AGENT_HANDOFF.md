@@ -1379,9 +1379,9 @@ file is 123/123; the related analyzer/story/narrative matrix is 211/211; the
 segmentation/vision matrix is 134/134; Ruff, compileall, diff-check, and
 no-churn checks pass. The persisted offline tracer reports all eight rows
 `ROW_OK`, `CLOSURE_OK`, registry v5, closure hash prefix `e4636ae3`, and zero
-provider requests. This source/test/docs checkpoint is still unpublished;
-protected `data`, `ms_env.sh`, DB/WAL, caches, logs, and media remain outside
-Git.
+provider requests. This source/test/docs checkpoint is published as
+`bd6f7d791d033f36f62c725b724fdcad9fdc2b8b`; protected `data`, `ms_env.sh`,
+DB/WAL, caches, logs, and media remain outside Git.
 
 Resume only after publication with the one authorized same-model repair
 request, zero retries and no visual/story repeat. Do not rerun cached visual

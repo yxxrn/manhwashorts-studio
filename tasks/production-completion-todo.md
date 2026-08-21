@@ -33,6 +33,7 @@ complete from unit tests alone.
       offline without a provider request.
 - [x] Verify 5/5 closure, 123/123 cloud, 211/211 related narrative, and
       134/134 segmentation/vision tests plus Ruff/compile/diff/no-churn gates.
-- [ ] Commit/push the source/test/docs checkpoint and verify exact parity.
+- [x] Commit/push the source/test/docs checkpoint and verify exact parity at
+      `bd6f7d791d033f36f62c725b724fdcad9fdc2b8b`.
 - [ ] Run the one authorized cached repair request only after publication;
       continue only on strict admission.

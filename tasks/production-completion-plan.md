@@ -90,6 +90,7 @@ claim ancestry, retain per-position claim evidence, and preserve all
 fail-closed foreign/duplicate/stale/identity checks. GREEN evidence is closure
 5/5, cloud 123/123, related analyzer/story/narrative 211/211,
 segmentation/vision 134/134, Ruff/compileall/diff-check/no-churn clean, and
-zero provider requests. The source/test diff is still unpublished at parent
-`24971e742653aeae48a2b15757adccf44a5dedb9`; commit and exact-object push are
-the immediate next action before one bounded cached repair request.
+zero provider requests. The source/test/docs checkpoint is published as
+`bd6f7d791d033f36f62c725b724fdcad9fdc2b8b` with parent
+`24971e742653aeae48a2b15757adccf44a5dedb9`; the immediate next action is one
+bounded cached repair request.
