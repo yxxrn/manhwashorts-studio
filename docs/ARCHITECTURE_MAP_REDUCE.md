@@ -319,3 +319,35 @@ closed at the local passage-evidence admission predicate:
 `cloud.narrative_not_grounded`, `field=passage_evidence`, `count=5`. No admitted
 narration result or downstream media stage exists. Treat this as a contract
 boundary defect, not permission to weaken grounding or issue an automatic retry.
+
+## Passage-lineage reconciliation boundary — 2026-08-21
+
+The prior 701-panel cached run used one authorized narration-repair request and
+zero retries, then failed locally as
+`cloud.narrative_not_grounded` (`field=passage_evidence`, `count=5`). This was
+a reconciliation defect: the positional repair provider owns rewrite text, not
+passage evidence identifiers. No prose, narration result, MP4, voice, or QC
+artifact was retained.
+
+The corrected reducer derives `narration-repair-passage-lineage-v1` from the
+trusted local position registry. It reconstructs claim IDs and evidence panel
+IDs for every retained passage, preserves causal order, and unions only the
+trusted refs of positions merged into that passage. The canonical lineage hash
+is included in the registry/slot identity, repair cache key, persisted repair
+record, and sanitized QC metadata. Empty, foreign, duplicate, unknown,
+reordered, malformed, stale-version, and changed-hash inputs fail closed as
+`cloud.narrative_repair_position_lineage_invalid`.
+
+TDD/static proof before another provider call: 4 intended collection-clean RED
+failures became 5 focused passes; the full cloud file is 97/97 and the related
+analyzer/script/manifest matrix is 121/121. Ruff, compileall, diff-check, and
+no-churn stats pass. The separate pipeline integration file still has the same
+13 pre-vision fixture failures as its clean-parent comparison; it is a named
+environment/fixture exception and not a production readiness claim.
+
+The next authorized runtime operation, only after this checkpoint is published,
+is one bounded same-model repair request with zero retries and no visual/story
+repetition. A valid result must still pass canonical grounding, causal order,
+115-125 words, 50-60 seconds, display derivation, cache identity, and lineage
+gates before persistence and render. A failed request stores only sanitized
+shape/count/metrics and predicate data; no automatic retry is allowed.

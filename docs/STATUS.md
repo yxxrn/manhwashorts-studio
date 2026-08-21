@@ -2278,3 +2278,39 @@ No provider prose was retained. No narration result, MP4, TTS, or QC artifact
 was admitted. No further provider request is made in this checkpoint; the next
 code slice must fix and test the local passage-evidence reconciliation boundary
 before a new authorized request.
+
+## Passage-evidence reconciliation — 2026-08-21
+
+Implementation parent: `3cc0283923d4ebc1ce2904338f4ec96e5f2d0495`.
+
+The prior cached 701-panel run made exactly one authorized provider request,
+zero retries, and no visual/story repeat. It failed before narration admission
+with the sanitized local predicate
+`cloud.narrative_not_grounded`, `field=passage_evidence`, `count=5`. Provider
+prose was not retained. No narration, MP4, TTS, or QC artifact is proven.
+
+The repair boundary now treats the provider as a positional text rewriter only.
+`narration-repair-passage-lineage-v1` reconstructs every retained passage's
+trusted claim IDs and evidence panel IDs from the local position registry. It
+preserves stable causal/position order and deterministic evidence unions for
+merged passage slots; it never accepts provider-owned identifiers or invents
+evidence. Empty, foreign, duplicate, unknown, malformed, reordered, stale, or
+hash-mismatched lineage fails closed as
+`cloud.narrative_repair_position_lineage_invalid`. The lineage hash participates
+in the registry, repair cache, persisted result, and sanitized QC identity.
+
+TDD evidence: collection-clean RED was 4 intended body failures. GREEN was
+5/5 focused lineage tests, 97/97 `tests/test_cloud_multimodal_mass_production.py`,
+and 121/121 across the analyzer, v2 analyzer, script-evidence, and prepared
+manifest files. Ruff, compileall, `git diff --check`, and no-churn numstats
+passed. The current pipeline integration run collected the existing 13
+`tests/test_pipeline.py` fixture failures at the unchanged pre-vision
+prerequisite; clean-parent parity has already reproduced that same failure set,
+so the overall suite remains not green.
+
+No new provider call is made before publication. The next command is the normal
+cached project resume using the same configured `grok-4.3` model, with exactly
+one bounded repair request and zero retries/no visual-story repeat. A successful
+repair must pass the existing 115-125 word, 50-60 second, grounding, causal,
+display, cache, and lineage gates before silent render/QC; voice remains after
+that gate. A failed attempt records only sanitized metrics and its predicate.

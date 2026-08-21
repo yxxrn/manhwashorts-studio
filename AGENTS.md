@@ -1019,3 +1019,36 @@ ended `NEEDS_REVIEW` at the local narration boundary with sanitized
 MP4, TTS, or QC is proven. Do not issue another provider request until this
 passage-evidence reconciliation boundary has a focused GREEN fix and a new
 authorized checkpoint.
+
+## 2026-08-21 passage-evidence reconciliation checkpoint
+
+The next source/test checkpoint is based on published parent
+`3cc0283923d4ebc1ce2904338f4ec96e5f2d0495`. The prior cached run consumed one
+authorized `grok-4.3` request, made zero retries, reused the 701-panel
+visual/story state, and stopped locally as `cloud.narrative_not_grounded`
+with sanitized `field=passage_evidence;count=5`. No provider prose, narration,
+MP4, voice, or QC artifact is proven.
+
+Repair output owns rewrite text only. The local position registry now rebuilds
+each retained passage's claim IDs and evidence panel IDs, including ordered
+union lineage for merged positions. It rejects empty/unknown/duplicate claims,
+foreign evidence, causal reordering, changed lineage hashes, malformed
+containers, and stale passage-lineage versions with
+`cloud.narrative_repair_position_lineage_invalid`. The versioned identity is
+`narration-repair-passage-lineage-v1`; its hash is included in the position
+registry, repair cache identity, persisted repair result, and sanitized QC.
+
+TDD evidence before any new provider call: intended RED was 4 collection-clean
+body failures; focused GREEN was 5/5; the full cloud file was 97/97 and the
+related analyzer/script/manifest matrix was 121/121. Ruff, compileall, and
+`git diff --check` passed. `tests/test_pipeline.py` still has 13 known
+pre-vision fixture failures reproduced at this checkpoint and on the clean
+parent; this is not a full-suite or production-render GREEN claim.
+
+After this checkpoint is published, resume the normal project command once with
+the same model and cached visual/story identities, at most one repair request
+and zero automatic retries. If it passes, continue to narration persistence,
+silent render/QC, then voice/TTS and warm-resume proof. If it fails, retain only
+sanitized field/count/metrics and stop provider calls. Never repeat visual/story
+calls, print `/tmp/ms_env.sh`, or stage runtime data, media, DB/WAL, caches, or
+credentials.

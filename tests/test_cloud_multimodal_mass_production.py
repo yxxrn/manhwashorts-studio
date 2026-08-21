@@ -3460,6 +3460,10 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
         "narration-repair-position-registry-v3"
     )
     assert result.qc_report["narration_repair"]["slot_order_hash"]
+    assert result.qc_report["narration_repair"]["passage_lineage_version"] == (
+        "narration-repair-passage-lineage-v1"
+    )
+    assert len(result.qc_report["narration_repair"]["passage_lineage_hash"]) == 64
     assert [call[0] for call in provider.calls] == ["narration_repair"]
     assert runner.request_count == 1
 
@@ -3475,6 +3479,8 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     assert any(
         record.get("cache_type") == module.NARRATION_REPAIR_RESULT_VERSION
         and record.get("slot_order_hash")
+        and record.get("passage_lineage_hash")
+        == result.qc_report["narration_repair"]["passage_lineage_hash"]
         for record in records
     )
 
@@ -3492,6 +3498,9 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     ).run_narration_repair_candidate(candidate, visual, story_map, panels=panels)
     assert provider.calls == []
     assert resumed.qc_report["narration_repair"]["cache_reused"] is True
+    assert resumed.qc_report["narration_repair"]["passage_lineage_hash"] == (
+        result.qc_report["narration_repair"]["passage_lineage_hash"]
+    )
 
 
 def test_out_of_range_candidate_stays_out_of_final_narration_cache():
@@ -3925,3 +3934,115 @@ def test_observed_vector_uses_one_canonical_duration_across_repair_result_path()
     assert repaired.estimated_duration_s == canonical["estimated_duration_s"]
     assert 50.0 <= canonical["estimated_duration_s"] <= 60.0
     assert repaired.qc_report["duration_contract"] == canonical
+
+
+def test_position_repair_reconstructs_five_passage_evidence_from_trusted_registry():
+    """The provider supplies prose only; local slots own passage evidence."""
+
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    incomplete_passages = tuple(
+        {**dict(passage), "evidence_panel_ids": []}
+        for passage in candidate.passages
+    )
+    incomplete_candidate = replace(candidate, passages=incomplete_passages)
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(row["word_budget"], f"local{index}_")
+            for index, row in enumerate(registry["positions"])
+        ]
+    }
+
+    reconciled = runner._reconcile_narration_repair_vector(
+        raw,
+        registry,
+        incomplete_candidate,
+    )
+
+    passages = reconciled["script_passages"]
+    assert len(passages) == 5
+    claims = {
+        str(claim["claim_id"]): claim
+        for claim in candidate.evidence_graph["claims"]
+    }
+    for passage in passages:
+        evidence = set(passage["evidence_panel_ids"])
+        assert evidence
+        required = {
+            panel_id
+            for claim_id in passage["claim_ids"]
+            for panel_id in claims[claim_id]["evidence_panel_ids"]
+        }
+        assert required <= evidence
+    lineage = reconciled["_passage_lineage"]
+    assert lineage["version"] == "narration-repair-passage-lineage-v1"
+    assert len(lineage["passages"]) == 5
+    assert len(lineage["lineage_hash"]) == 64
+
+
+def test_position_repair_rejects_missing_trusted_slot_evidence():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    broken = json.loads(json.dumps(registry))
+    broken["positions"][0]["evidence_panel_ids"] = []
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(row["word_budget"], f"missing{index}_")
+            for index, row in enumerate(broken["positions"])
+        ]
+    }
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, broken, candidate)
+
+    assert caught.value.code == "cloud.narrative_repair_position_lineage_invalid"
+
+
+def test_position_repair_rejects_claim_evidence_mismatch_before_analyzer():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    first = dict(candidate.passages[0])
+    first_panel, foreign_panel = first["evidence_panel_ids"][0], candidate.passages[1]["evidence_panel_ids"][0]
+    first["evidence_panel_ids"] = [first_panel, foreign_panel]
+    expanded = replace(candidate, passages=(first, *candidate.passages[1:]))
+    registry = runner._build_narration_repair_position_registry(expanded, story_map)
+    broken = json.loads(json.dumps(registry))
+    broken["positions"][0]["evidence_panel_ids"] = [foreign_panel]
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(row["word_budget"], f"mismatch{index}_")
+            for index, row in enumerate(broken["positions"])
+        ]
+    }
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, broken, expanded)
+
+    assert caught.value.code == "cloud.narrative_repair_position_lineage_invalid"
+
+
+def test_position_repair_lineage_merge_is_ordered_and_cache_identity_changes_with_refs():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    first = runner._reconstruct_narration_repair_passage_lineage(candidate, registry)
+    second = runner._reconstruct_narration_repair_passage_lineage(candidate, registry)
+
+    assert first == second
+    assert any(len(row["position_ids"]) > 1 for row in first["passages"])
+    assert [row["passage_id"] for row in first["passages"]] == [
+        str(passage["passage_id"]) for passage in candidate.passages
+    ]
+
+    changed = json.loads(json.dumps(registry))
+    first_panel = changed["positions"][0]["evidence_panel_ids"][0]
+    second_panel = str(candidate.observations[1]["panel_id"])
+    changed["positions"][0]["evidence_panel_ids"] = [first_panel, second_panel]
+    changed.pop("passage_lineage_hash", None)
+    changed_lineage = runner._reconstruct_narration_repair_passage_lineage(
+        candidate,
+        changed,
+    )
+    assert changed_lineage["lineage_hash"] != first["lineage_hash"]

@@ -62,6 +62,7 @@ NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v5"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
 NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v3"
+NARRATION_REPAIR_PASSAGE_LINEAGE_VERSION = "narration-repair-passage-lineage-v1"
 NARRATION_MICRO_COMPACTION_VERSION = "narration-micro-compaction-v1"
 NARRATION_MICRO_COMPACTION_MIN_WORDS = 126
 NARRATION_MICRO_COMPACTION_MAX_WORDS = 130
@@ -3413,7 +3414,259 @@ class CloudStageRunner:
                 }
             )
         registry["provider_positions"] = provider_positions
+        passage_lineage = self._reconstruct_narration_repair_passage_lineage(
+            candidate,
+            registry,
+        )
+        registry["passage_lineage_version"] = passage_lineage["version"]
+        registry["passage_lineage_hash"] = passage_lineage["lineage_hash"]
+        registry["slot_order_hash"] = _hash(
+            {
+                "position_registry_hash": registry["slot_order_hash"],
+                "passage_lineage_version": passage_lineage["version"],
+                "passage_lineage_hash": passage_lineage["lineage_hash"],
+            }
+        )
         return registry
+
+    @staticmethod
+    def _reconstruct_narration_repair_passage_lineage(
+        candidate: NarrationResult,
+        registry: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Rebuild passage claim/evidence refs from trusted local positions.
+
+        The positional provider contract owns rewrite text only.  Candidate
+        passage references may be incomplete after an earlier repair, so the
+        persisted position registry is the authority for the retained claim
+        and evidence union.  This boundary never accepts provider-supplied
+        identifiers or infers new evidence.
+        """
+
+        raw_positions = registry.get("positions")
+        if not isinstance(raw_positions, list) or not raw_positions:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+        candidate_passages = tuple(candidate.passages)
+        if len(candidate_passages) < 4 or any(
+            not isinstance(passage, Mapping) for passage in candidate_passages
+        ):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+        candidate_by_id = {
+            str(passage.get("passage_id", "")): passage
+            for passage in candidate_passages
+        }
+        if (
+            len(candidate_by_id) != len(candidate_passages)
+            or any(not passage_id.strip() for passage_id in candidate_by_id)
+        ):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+        raw_candidate_claims = candidate.evidence_graph.get("claims", ())
+        if not isinstance(raw_candidate_claims, (list, tuple)):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+        candidate_claims = {
+            str(claim.get("claim_id", "")): claim
+            for claim in raw_candidate_claims
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        if (
+            len(candidate_claims) != len(raw_candidate_claims)
+            or any(not isinstance(claim, Mapping) for claim in raw_candidate_claims)
+            or any(not str(claim.get("claim_id", "")).strip() for claim in raw_candidate_claims)
+        ):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+        observation_ids = {
+            str(observation.get("panel_id", ""))
+            for observation in candidate.observations
+            if isinstance(observation, Mapping)
+            and str(observation.get("panel_id", "")).strip()
+        }
+        if not observation_ids or not candidate_claims:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+
+        groups: dict[str, dict[str, list[Any]]] = {}
+        seen_position_ids: set[str] = set()
+        previous_causal_position = -1
+        for index, value in enumerate(raw_positions):
+            if not isinstance(value, Mapping):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_lineage_invalid",
+                    reviewable=True,
+                )
+            position = value.get("position")
+            slot_id = str(value.get("slot_id", "")).strip()
+            passage_id = str(value.get("passage_id", "")).strip()
+            claim_values = value.get("claim_ids")
+            evidence_values = value.get("evidence_panel_ids")
+            causal_position = value.get("causal_position")
+            if (
+                isinstance(position, bool)
+                or not isinstance(position, int)
+                or position != index
+                or not slot_id
+                or slot_id in seen_position_ids
+                or passage_id not in candidate_by_id
+                or not isinstance(claim_values, (list, tuple))
+                or not isinstance(evidence_values, (list, tuple))
+                or not claim_values
+                or not evidence_values
+                or isinstance(causal_position, bool)
+                or not isinstance(causal_position, int)
+                or causal_position < previous_causal_position
+            ):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_lineage_invalid",
+                    reviewable=True,
+                )
+            claim_ids = tuple(str(value) for value in claim_values)
+            evidence_panel_ids = tuple(str(value) for value in evidence_values)
+            original_claim_values = candidate_by_id[passage_id].get("claim_ids")
+            if not isinstance(original_claim_values, (list, tuple)):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_lineage_invalid",
+                    reviewable=True,
+                )
+            original_claim_ids = tuple(str(value) for value in original_claim_values)
+            if (
+                any(not value.strip() for value in claim_ids)
+                or len(set(claim_ids)) != len(claim_ids)
+                or any(not value.strip() for value in original_claim_ids)
+                or len(set(original_claim_ids)) != len(original_claim_ids)
+                or any(claim_id not in candidate_claims for claim_id in claim_ids)
+                or any(claim_id not in original_claim_ids for claim_id in claim_ids)
+                or any(not value.strip() for value in evidence_panel_ids)
+                or len(set(evidence_panel_ids)) != len(evidence_panel_ids)
+                or any(panel_id not in observation_ids for panel_id in evidence_panel_ids)
+            ):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_lineage_invalid",
+                    reviewable=True,
+                )
+            for claim_id in claim_ids:
+                claim = candidate_claims[claim_id]
+                claim_refs = claim.get(
+                    "evidence_panel_ids",
+                    claim.get("panel_ids", ()),
+                )
+                if not isinstance(claim_refs, (list, tuple)) or not claim_refs:
+                    raise CloudStageError(
+                        "cloud.narrative_repair_position_lineage_invalid",
+                        reviewable=True,
+                    )
+                claim_refs = tuple(str(value) for value in claim_refs)
+                if (
+                    any(not value.strip() for value in claim_refs)
+                    or len(set(claim_refs)) != len(claim_refs)
+                    or not set(claim_refs).issubset(set(evidence_panel_ids))
+                ):
+                    raise CloudStageError(
+                        "cloud.narrative_repair_position_lineage_invalid",
+                        reviewable=True,
+                    )
+            seen_position_ids.add(slot_id)
+            previous_causal_position = causal_position
+            group = groups.setdefault(
+                passage_id,
+                {
+                    "position_ids": [],
+                    "claim_ids": [],
+                    "evidence_panel_ids": [],
+                    "causal_positions": [],
+                },
+            )
+            group["position_ids"].append(slot_id)
+            group["causal_positions"].append(causal_position)
+            for claim_id in claim_ids:
+                if claim_id not in group["claim_ids"]:
+                    group["claim_ids"].append(claim_id)
+            for panel_id in evidence_panel_ids:
+                if panel_id not in group["evidence_panel_ids"]:
+                    group["evidence_panel_ids"].append(panel_id)
+
+        passage_rows: list[dict[str, Any]] = []
+        for passage in candidate_passages:
+            passage_id = str(passage.get("passage_id", ""))
+            group = groups.get(passage_id)
+            if group is None:
+                continue
+            selected_claim_ids = [
+                claim_id
+                for claim_id in passage.get("claim_ids", ())
+                if str(claim_id) in group["claim_ids"]
+            ]
+            evidence_panel_ids = list(group["evidence_panel_ids"])
+            if not selected_claim_ids or not evidence_panel_ids:
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_lineage_invalid",
+                    reviewable=True,
+                )
+            for claim_id in selected_claim_ids:
+                claim = candidate_claims[claim_id]
+                claim_refs = claim.get(
+                    "evidence_panel_ids",
+                    claim.get("panel_ids", ()),
+                )
+                if not isinstance(claim_refs, (list, tuple)) or not {
+                    str(value) for value in claim_refs
+                }.issubset(set(evidence_panel_ids)):
+                    raise CloudStageError(
+                        "cloud.narrative_repair_position_lineage_invalid",
+                        reviewable=True,
+                    )
+            passage_rows.append(
+                {
+                    "passage_id": passage_id,
+                    "claim_ids": selected_claim_ids,
+                    "evidence_panel_ids": evidence_panel_ids,
+                    "position_ids": list(group["position_ids"]),
+                    "causal_positions": list(group["causal_positions"]),
+                }
+            )
+        if len(passage_rows) < 4:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+        expected_version = str(registry.get("passage_lineage_version", ""))
+        if expected_version and expected_version != NARRATION_REPAIR_PASSAGE_LINEAGE_VERSION:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+        identity = {
+            "version": NARRATION_REPAIR_PASSAGE_LINEAGE_VERSION,
+            "candidate_visual_evidence_hash": candidate.visual_evidence_hash,
+            "passages": passage_rows,
+        }
+        lineage_hash = _hash(identity)
+        expected_hash = str(registry.get("passage_lineage_hash", ""))
+        if expected_hash and expected_hash != lineage_hash:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid",
+                reviewable=True,
+            )
+        return {
+            "version": NARRATION_REPAIR_PASSAGE_LINEAGE_VERSION,
+            "passages": passage_rows,
+            "lineage_hash": lineage_hash,
+        }
 
     @staticmethod
     def _reconcile_narration_repair_vector(
@@ -3492,6 +3745,10 @@ class CloudStageRunner:
             script.estimate_narration_duration(" ".join(rewrites), "dramatic")
             if all_strings
             else None
+        )
+        passage_lineage = CloudStageRunner._reconstruct_narration_repair_passage_lineage(
+            candidate,
+            registry,
         )
         positions: list[NarrationRepairPosition] = []
         for index, value in enumerate(raw_positions):
@@ -3607,47 +3864,22 @@ class CloudStageRunner:
                     micro_compaction,
                 ),
             )
-        candidate_passages = {
-            str(passage.get("passage_id", "")): passage
-            for passage in candidate.passages
-            if isinstance(passage, Mapping)
-        }
-        candidate_claims = {
-            str(claim.get("claim_id", "")): claim
-            for claim in candidate.evidence_graph.get("claims", ())
-            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
-        }
         grouped_text: dict[str, list[str]] = {}
-        retained_claim_ids: dict[str, list[str]] = {}
-        retained_evidence: dict[str, list[str]] = {}
         for position, text in zip(positions, rewrites, strict=True):
-            if position.passage_id not in candidate_passages or any(
-                claim_id not in candidate_claims for claim_id in position.claim_ids
-            ):
-                raise CloudStageError(
-                    "cloud.narrative_repair_position_lineage_invalid",
-                    reviewable=True,
-                )
             grouped_text.setdefault(position.passage_id, []).append(text.strip())
-            retained_claim_ids.setdefault(position.passage_id, []).extend(position.claim_ids)
-            retained_evidence.setdefault(position.passage_id, []).extend(position.evidence_panel_ids)
+        lineage_by_passage = {
+            str(row["passage_id"]): row for row in passage_lineage["passages"]
+        }
         passages: list[dict[str, Any]] = []
         for original in candidate.passages:
             passage_id = str(original.get("passage_id", ""))
-            if passage_id not in grouped_text:
+            if passage_id not in grouped_text or passage_id not in lineage_by_passage:
                 continue
+            lineage = lineage_by_passage[passage_id]
             passage = dict(original)
             passage["text"] = " ".join(grouped_text[passage_id])
-            passage["claim_ids"] = [
-                claim_id
-                for claim_id in original.get("claim_ids", ())
-                if claim_id in set(retained_claim_ids[passage_id])
-            ]
-            passage["evidence_panel_ids"] = [
-                panel_id
-                for panel_id in original.get("evidence_panel_ids", ())
-                if panel_id in set(retained_evidence[passage_id])
-            ]
+            passage["claim_ids"] = list(lineage["claim_ids"])
+            passage["evidence_panel_ids"] = list(lineage["evidence_panel_ids"])
             if not passage["claim_ids"] or not passage["evidence_panel_ids"]:
                 raise CloudStageError(
                     "cloud.narrative_repair_position_lineage_invalid",
@@ -3659,7 +3891,9 @@ class CloudStageRunner:
             for claim in candidate.evidence_graph.get("claims", ())
             if isinstance(claim, Mapping)
             and str(claim.get("claim_id", "")) in {
-                claim_id for values in retained_claim_ids.values() for claim_id in values
+                claim_id
+                for row in passage_lineage["passages"]
+                for claim_id in row["claim_ids"]
             }
         ]
         if len(passages) < 4 or not claims:
@@ -3674,6 +3908,7 @@ class CloudStageRunner:
             },
             "script_passages": passages,
             "evidence_graph": {"claims": claims},
+            "_passage_lineage": passage_lineage,
             "_response_shape_metrics": response_shape_metrics(
                 None,
                 word_counts,
@@ -3900,6 +4135,12 @@ class CloudStageRunner:
                     targeted_repair.get("position_registry_version", "")
                 ),
                 "slot_order_hash": str(targeted_repair.get("slot_order_hash", "")),
+                "passage_lineage_version": str(
+                    targeted_repair.get("passage_lineage_version", "")
+                ),
+                "passage_lineage_hash": str(
+                    targeted_repair.get("passage_lineage_hash", "")
+                ),
                 "micro_compaction_version": str(
                     micro_compaction.get("version", "")
                 ),
@@ -3950,6 +4191,10 @@ class CloudStageRunner:
             != str(targeted_repair.get("position_registry_version", ""))
             or record.get("slot_order_hash")
             != str(targeted_repair.get("slot_order_hash", ""))
+            or record.get("passage_lineage_version")
+            != str(targeted_repair.get("passage_lineage_version", ""))
+            or record.get("passage_lineage_hash")
+            != str(targeted_repair.get("passage_lineage_hash", ""))
             or record.get("micro_compaction_version")
             != NARRATION_MICRO_COMPACTION_VERSION
             or micro_compaction.get("version")
@@ -3981,6 +4226,12 @@ class CloudStageRunner:
                 targeted_repair.get("position_registry_version", "")
             ),
             "slot_order_hash": str(targeted_repair.get("slot_order_hash", "")),
+            "passage_lineage_version": str(
+                targeted_repair.get("passage_lineage_version", "")
+            ),
+            "passage_lineage_hash": str(
+                targeted_repair.get("passage_lineage_hash", "")
+            ),
             "failure_codes": list(targeted_repair.get("failure_codes", ())),
             "attempts": int(record.get("repair_attempt", 1)),
             "provider_stage": "narration_repair",
@@ -4286,6 +4537,8 @@ class CloudStageRunner:
             "candidate_hash": candidate_hash,
             "position_registry_version": position_registry["version"],
             "slot_order_hash": position_registry["slot_order_hash"],
+            "passage_lineage_version": position_registry["passage_lineage_version"],
+            "passage_lineage_hash": position_registry["passage_lineage_hash"],
             "position_registry": position_registry,
             "position_context": position_registry["provider_positions"],
             "removable_passage_ids": list(removable_passage_ids),
@@ -4422,6 +4675,12 @@ class CloudStageRunner:
                     "candidate_hash": candidate_hash,
                     "position_registry_version": position_registry["version"],
                     "slot_order_hash": position_registry["slot_order_hash"],
+                    "passage_lineage_version": position_registry[
+                        "passage_lineage_version"
+                    ],
+                    "passage_lineage_hash": position_registry[
+                        "passage_lineage_hash"
+                    ],
                     "failure_codes": list(repair_context["failure_codes"]),
                     "removable_passage_ids": list(removable_passage_ids),
                     "removed_passage_ids": [
@@ -4578,11 +4837,29 @@ class CloudStageRunner:
                             repair_position_registry,
                             repair_candidate,
                         )
+                        passage_lineage = provider_output.pop(
+                            "_passage_lineage", None
+                        )
+                        if not isinstance(passage_lineage, Mapping):
+                            raise CloudStageError(
+                                "cloud.narrative_repair_position_lineage_invalid",
+                                reviewable=True,
+                            )
                         shape_metrics = provider_output.pop(
                             "_response_shape_metrics", None
                         )
                         if isinstance(shape_metrics, Mapping):
                             self.last_response_shape_metrics = dict(shape_metrics)
+                        self.last_response_shape_metrics.update(
+                            {
+                                "passage_lineage_version": str(
+                                    passage_lineage.get("version", "")
+                                ),
+                                "passage_lineage_hash": str(
+                                    passage_lineage.get("lineage_hash", "")
+                                ),
+                            }
+                        )
                     else:
                         provider_output = raw.get("analyzer_output", raw)
                     if not isinstance(provider_output, Mapping):

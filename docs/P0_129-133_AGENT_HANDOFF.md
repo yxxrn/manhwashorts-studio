@@ -1055,3 +1055,37 @@ prose was persisted or reported. No narration, silent MP4, TTS, voiced MP4, or
 QC exists. The single authorized repair request is consumed: do not retry it.
 Fix/test this exact boundary and publish a new GREEN checkpoint before asking
 for another bounded call.
+
+## Passage-evidence reconciliation checkpoint — 2026-08-21
+
+Rollback parent is published main `3cc0283923d4ebc1ce2904338f4ec96e5f2d0495`.
+The current dirty scope is the passage-lineage source/test change plus this
+handoff documentation; `data`, `ms_env.sh`, DB/WAL, caches, logs, media, and
+credentials remain protected runtime state.
+
+The previous normal resume used one request and zero retries, reused all valid
+701-panel visual/story caches, and ended before narration admission with
+`cloud.narrative_not_grounded`, sanitized `field=passage_evidence`, `count=5`.
+No provider prose was stored and no narration, silent MP4, TTS, voiced MP4, or
+QC exists.
+
+The local positional repair reducer now builds passage evidence solely from the
+trusted position registry. For each retained passage it copies valid local
+claim IDs and deterministically ordered evidence panel IDs; merged positions
+use only the union of their contributing trusted refs. It rejects missing or
+empty trusted refs, foreign/unknown/duplicate claims or panels, changed order,
+malformed containers, stale version, and lineage-hash drift as
+`cloud.narrative_repair_position_lineage_invalid`. Identity version:
+`narration-repair-passage-lineage-v1`.
+
+Proof before another external call: RED 4 intended collection-clean failures;
+GREEN focused 5/5, cloud file 97/97, related analyzer/script/manifest 121/121,
+Ruff/compileall/diff-check clean. The known 13 `tests/test_pipeline.py`
+pre-vision fixture failures remain reproduced against the clean parent and are
+explicitly not a full-suite green or production-render claim.
+
+After publication, issue at most one new repair request to the same configured
+model, with zero retries and no visual/story repeat. If it passes all strict
+grounding/lineage/duration/display gates, persist narration and proceed to
+silent render/QC, then configured voice/TTS and warm-resume proof. If it fails,
+persist only sanitized metrics/predicate and stop provider calls.
