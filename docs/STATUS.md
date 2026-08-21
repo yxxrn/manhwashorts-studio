@@ -1893,3 +1893,24 @@ fix makes the sum of position maxima at most 125 by distributing the five
 words above the exact-120 guidance target deterministically; final bounds are
 unchanged and an in-range non-120 response remains admissible. Publish before
 another real request. No narration, MP4, voice, or final QC is proven.
+
+## Position-vector selection-count correction - 2026-08-21
+
+After the published `bfb0ee137683f81caaf908cd47b8ea9216caa654` aggregate
+budget fix, one bounded real repair request used `request_count=1` and
+`retry_count=0`, then failed closed as `cloud.narrative_repair_position_budget_invalid`.
+The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256 `abdca214cfeb384eef2a38a0a20bca33d6716aa751d0794ea0b91645bd486d4f`.
+It recorded array length 12, all string items, counts
+`[12,12,11,14,13,10,12,13,10,11,11,11]`, total 140 words, estimated duration
+58.7 seconds, expected maxima `11` for positions 0-4 and `10` thereafter,
+and failed predicate `position_word_budget`.
+
+RED was collection-clean and body-failing for the deterministic preselection
+limit. GREEN is 145/145 focused cloud/manifest/adapter/synthesis tests, plus
+Ruff, compileall, diff-check, no-churn, and key-shaped secret scan. The fix
+caps the local trusted selection at 10 positions, drops only deterministic
+lowest-priority removable claims, preserves causal order and at least four
+passages, and keeps final 115-125-word/50-60-second gates strict. Publish
+before another real request. No narration, MP4, voice, or final QC is proven.

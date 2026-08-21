@@ -709,3 +709,23 @@ no-churn, and secret scan clean. The correction caps the sum of position
 maxima at 125 while retaining final 115-125-word/50-60-second gates and
 exact-120 as guidance only. Publish before the next one-request repair;
 visual/story caches remain reusable and no final media is proven.
+
+## Position-vector selection-count correction - 2026-08-21
+
+After `bfb0ee137683f81caaf908cd47b8ea9216caa654`, the one bounded real repair
+request failed closed with `cloud.narrative_repair_position_budget_invalid`
+after exactly one request and zero retries. The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`abdca214cfeb384eef2a38a0a20bca33d6716aa751d0794ea0b91645bd486d4f`.
+Its non-prose metrics were array length 12, counts
+`[12,12,11,14,13,10,12,13,10,11,11,11]`, total 140, duration 58.7 seconds,
+expected maxima 11/10, and predicate `position_word_budget`.
+
+RED proved the provider could receive too many trusted positions despite the
+aggregate cap. GREEN is 145/145 focused tests with Ruff, compileall,
+diff-check, no-churn, and secret scan clean. The correction selects at most 10
+positions from the required 8-12 range, dropping only deterministic
+lowest-priority removable claims while preserving causal order and at least
+four passages. Publish before the next one-request repair; do not repeat
+visual/story stages.

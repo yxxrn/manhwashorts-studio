@@ -2472,6 +2472,46 @@ def test_position_registry_maxima_cannot_exceed_final_word_bound():
     assert sum(row["word_budget_max"] for row in registry["positions"]) <= 125
 
 
+def test_position_preselection_drops_low_priority_claims_before_provider_call():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    first_passage = dict(candidate.passages[0])
+    panel_id = first_passage["evidence_panel_ids"][0]
+    extra_claims = tuple(
+        {
+            "claim_id": f"extra-claim-{index}",
+            "claim_type": "fact",
+            "text": f"The first panel supports extra claim {index}.",
+            "panel_ids": [panel_id],
+            "evidence_panel_ids": [panel_id],
+            "qualification": "The ordered panel supports this reading.",
+        }
+        for index in range(2)
+    )
+    first_passage["claim_ids"] = [
+        *first_passage["claim_ids"],
+        *(claim["claim_id"] for claim in extra_claims),
+    ]
+    enriched_candidate = replace(
+        candidate,
+        passages=(first_passage, *candidate.passages[1:]),
+        evidence_graph={
+            "claims": (*candidate.evidence_graph["claims"], *extra_claims)
+        },
+    )
+    enriched_story_map = replace(
+        story_map,
+        claims=(*story_map.claims, *extra_claims),
+    )
+
+    registry = runner._build_narration_repair_position_registry(
+        enriched_candidate,
+        enriched_story_map,
+    )
+
+    assert 8 <= len(registry["positions"]) <= 10
+
+
 def test_position_repair_reconciles_vector_by_index_and_copies_trusted_lineage():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)

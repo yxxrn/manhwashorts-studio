@@ -704,3 +704,20 @@ keeping strict 115-125-word and 50-60-second admission. The focused matrix is
 144/144 green with Ruff, compileall, diff-check, no-churn, and secret checks.
 Publish this correction before another real request; visual/story stages stay
 cached and no narration, MP4, voice, or final QC is proven.
+
+## Position-vector selection-count correction (2026-08-21)
+
+After `bfb0ee137683f81caaf908cd47b8ea9216caa654`, the one bounded real
+request returned 12 strings and failed closed after one request with total 140
+words; its sanitized report SHA is
+`abdca214cfeb384eef2a38a0a20bca33d6716aa751d0794ea0b91645bd486d4f`.
+Counts were `[12,12,11,14,13,10,12,13,10,11,11,11]`; the exact failed
+predicate was `position_word_budget` against the aggregate-feasible maxima.
+
+RED proved that a candidate with 12 trusted positions could reach the provider
+despite the observed over-verbosity. GREEN caps deterministic preselection at
+10 positions (still within the required 8-12 range), removing only lowest
+priority removable claims while retaining causal order and at least four
+passages. The focused matrix is 145/145 green with static/security gates.
+Publish before another real request; visual/story stages remain cached and no
+narration, MP4, voice, or final QC is proven.
