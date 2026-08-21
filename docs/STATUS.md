@@ -2690,7 +2690,11 @@ only, changes the policy identity to
 or relaxing the 115–125/50–60 admission gates. Compaction is recomputed into
 the result/display/cache identity.
 
-GREEN evidence is 4/4 compaction tests, 124/124 cloud tests, 211/211 related
-analyzer/story/narrative tests, Ruff/compileall/diff-check/no-churn clean, and
-zero second provider requests. This fix is not yet committed; publish it
-before the next single bounded same-model repair attempt.
+GREEN evidence was 4/4 compaction tests, 124/124 cloud tests, 211/211 related
+analyzer/story/narrative tests, Ruff/compileall/diff-check/no-churn clean. The
+fix is published as `a40e51b79808bc8520cf422bce0f0af838f8fe7e`. The one
+subsequent bounded request used exactly one request and zero retries, then
+failed closed with `cloud.narrative_repair_position_budget_invalid`; sanitized
+metrics were 8 strings, 112 words, 48.7 seconds, predicate
+`aggregate_word_count`. No provider prose was retained. Do not pad or relax
+hard bounds; no further provider call is authorized in this repair budget.

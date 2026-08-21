@@ -653,3 +653,12 @@ request or runtime artifact change. The next authorized action after publication
 is exactly one same-model zero-retry repair request; visual/story caches remain
 untouched and downstream persistence/render/voice gates stay closed until full
 admission succeeds.
+
+### Repair budget terminal outcome — 2026-08-22
+
+After compaction v2 was published at `a40e51b79808bc8520cf422bce0f0af838f8fe7e`,
+one bounded same-model request was consumed. Its sanitized response shape was
+8 strings, 112 words, and 48.7 seconds; local admission failed at the hard
+`aggregate_word_count` predicate. No provider prose was retained, no retry was
+issued, and no local expansion or threshold relaxation is safe. Downstream
+script persistence, silent/voiced render, TTS, and QC remain closed.

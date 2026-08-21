@@ -1403,5 +1403,10 @@ display, and persistence gates are unchanged. Compaction tests are 4/4, cloud
 is 124/124, related analyzer/story/narrative is 211/211, and static/no-churn
 gates pass. No second provider request has been made.
 
-Publish this source/test/docs correction before another single same-model
-repair request; visual/story caches remain reusable and must not be rerun.
+The source/test/docs correction is published as
+`a40e51b79808bc8520cf422bce0f0af838f8fe7e`. The one subsequent repair request
+used one request and zero retries but returned an out-of-range 112-word,
+48.7-second vector, failing `aggregate_word_count`. No prose was retained and
+no further request is permitted in this bounded repair attempt. Do not pad or
+weaken the 115–125/50–60 gates; visual/story caches remain reusable but
+narration/render/TTS/QC are not complete.

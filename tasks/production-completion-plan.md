@@ -103,5 +103,8 @@ and zero retries, then failed locally with sanitized metrics 128 words,
 fix is policy v2: standard auxiliary/negative contractions only, stop at 125,
 preserve meaning/lineage, and include policy/result identity in the cache.
 GREEN is compaction 4/4, cloud 124/124, related 211/211, and static/no-churn
-clean. The source/test/docs correction is the immediate unpublished
-checkpoint; publish it before one new same-model repair request.
+clean. The source/test/docs correction is published as
+`a40e51b79808bc8520cf422bce0f0af838f8fe7e`. The one subsequent bounded repair
+request used one request and zero retries, then failed at hard
+`aggregate_word_count` with 112 words/48.7 seconds. Do not pad or relax the
+contract; preserve the failure and stop provider calls for this attempt.

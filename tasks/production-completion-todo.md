@@ -43,6 +43,10 @@ complete from unit tests alone.
 - [x] Record the one-request sanitized 128-word/55.65-second local failure.
 - [x] Add and verify the versioned meaning-preserving compaction correction
       (4/4 focused; 124/124 cloud; 211/211 related).
-- [ ] Commit/push this correction and verify exact parity.
-- [ ] Run one new bounded same-model repair request after publication; no
-      retries or visual/story repetition.
+- [x] Commit/push this correction and verify exact parity at
+      `a40e51b79808bc8520cf422bce0f0af838f8fe7e`.
+- [x] Run one new bounded same-model repair request with no retries or
+      visual/story repetition; it failed closed at `aggregate_word_count`
+      (112 words, 48.7 seconds).
+- [ ] Obtain a separately authorized valid narration repair; never pad or
+      weaken the hard contract.

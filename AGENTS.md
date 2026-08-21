@@ -1411,7 +1411,10 @@ words. The focused compaction set is 4/4, the full cloud file is 124/124, the
 related analyzer/story/narrative matrix is 211/211, Ruff/compileall/
 diff-check/no-churn pass, and no second provider request has been made.
 
-Publish this source/test/docs fix before one new bounded same-model repair
-request. Zero retries and no visual/story repeat remain mandatory; all
-grounding, anti-copy, identity, duration, display, persistence, and render
-gates remain unchanged.
+The source/test/docs fix is published as
+`a40e51b79808bc8520cf422bce0f0af838f8fe7e`. One subsequent bounded same-model
+request used exactly one request and zero retries, then failed closed with
+`cloud.narrative_repair_position_budget_invalid`: 8 strings, 112 words,
+48.7 seconds, predicate `aggregate_word_count`. No provider prose was
+retained. Do not pad, relax hard bounds, or issue another request under this
+budget; narration, persistence, render, TTS, and QC remain unproven.
