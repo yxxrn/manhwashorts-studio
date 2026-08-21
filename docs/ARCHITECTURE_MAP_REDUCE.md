@@ -21,6 +21,16 @@ makes no provider call. The next bounded stage is one cached narration repair
 request, followed only by local persistence and silent render if strict
 admission succeeds.
 
+## Anti-copy repair-trigger correction
+
+The persisted 118-word candidate was valid for duration but not for strict
+dialogue-copy admission. Before this correction, the targeted repair boundary
+returned `cloud.narrative_repair_not_needed` without spending a request because
+its trigger enumerated only duration and word-count failures. The trigger now
+calls the shared analyzer dialogue detector and emits
+`cloud.narrative_source_dialogue_copy`; this is a repair selector, not a
+quality relaxation. The final analyzer/persistence gate remains the authority.
+
 ## Persistence round-trip invariant - 2026-08-21
 
 Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.

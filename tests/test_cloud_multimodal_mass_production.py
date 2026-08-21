@@ -4246,6 +4246,47 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
 
 
+def test_narration_contract_failures_trigger_repair_for_source_dialogue_copy():
+    module = _module()
+    spoken = (
+        "The bridge is already falling, and the scout hesitates before moving on."
+    )
+    result = module.NarrationResult(
+        spoken_text=spoken,
+        display_words=module.derive_display_words(spoken),
+        passages=(
+            {
+                "passage_id": "p1",
+                "editorial_role": "hook",
+                "text": spoken,
+                "claim_ids": ["claim-1"],
+                "evidence_panel_ids": ["panel-1"],
+            },
+        ),
+        ending_kind="consequence",
+        word_count=118,
+        estimated_duration_s=51.3,
+        qc_report={},
+        model_identity_hash="m" * 64,
+        prompt_version="vision-first-story-analyzer-v3",
+        prompt_sha256="p" * 64,
+        observations=(
+            {
+                "panel_id": "panel-1",
+                "dialogue_or_ocr": ["The bridge is already falling"],
+            },
+        ),
+        continuity_ledger={},
+        evidence_graph={"claims": []},
+        story_spine={},
+        visual_evidence_hash="v" * 64,
+    )
+
+    failures = module.CloudStageRunner._narration_contract_failures(result)
+
+    assert "cloud.narrative_source_dialogue_copy" in failures
+
+
 def test_out_of_range_candidate_stays_out_of_final_narration_cache():
     module = _module()
     identity = _identity(module)

@@ -27,6 +27,18 @@ repeat visual/story calls. A valid result must persist through the exact
 analysis boundary before local silent rendering is attempted. No narration,
 MP4, TTS, or QC completion is claimed here.
 
+## Anti-copy repair-trigger correction - 2026-08-21
+
+The first post-publication invocation made zero provider requests because
+`run_narration_repair_candidate` treated the 118-word candidate as
+`cloud.narrative_repair_not_needed` even though its strict four-word dialogue
+detector would reject it. A collection-clean RED regression reproduced that
+state. The follow-up uses the shared analyzer detector through
+`cloud.narrative_source_dialogue_copy` as a repair trigger; it does not relax
+the final validator or alter source/story caches. The next allowed runtime
+action remains exactly one cached narration-repair request with no
+visual/story repetition.
+
 ## DB persistence round-trip checkpoint - 2026-08-21
 
 Rollback parent for this source/test/docs slice is

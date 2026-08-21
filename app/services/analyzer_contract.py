@@ -437,6 +437,26 @@ def _source_dialogue_ngrams(observations: Any) -> set[tuple[str, ...]]:
     return result
 
 
+def contains_source_dialogue_copy(observations: Any, passages: Any) -> bool:
+    """Return whether narration text shares a strict four-word dialogue n-gram."""
+
+    try:
+        source_dialogue = _source_dialogue_ngrams(observations)
+        if not source_dialogue or not isinstance(passages, (list, tuple)):
+            return False
+        for passage in passages:
+            if not isinstance(passage, Mapping):
+                continue
+            text = passage.get("text")
+            if isinstance(text, str) and _ngrams(
+                _normalized_lexical_words(text), 4
+            ) & source_dialogue:
+                return True
+    except (KeyError, TypeError, ValueError):
+        return False
+    return False
+
+
 def _contains_channel_cta(text: str) -> bool:
     lowered = text.casefold()
     return any(pattern.search(lowered) for pattern in _CTA_PATTERNS)

@@ -29,6 +29,19 @@ artifact is claimed. The earlier full non-slow environment exceptions remain
 the Oracle-Linux `cmd.exe` launcher tests; the 13 pre-vision pipeline fixture
 failures remain unchanged from the clean parent.
 
+## Anti-copy repair-trigger correction - 2026-08-21
+
+The first post-publication invocation consumed zero requests and returned
+`cloud.narrative_repair_not_needed`: the existing trigger considered only
+word/duration failures, while the persisted 118-word candidate still failed
+the strict four-word source-dialogue detector. RED reproduced this exact
+contradiction. GREEN adds the shared analyzer detector as the stable repair
+failure `cloud.narrative_source_dialogue_copy`; final admission remains
+strict and unchanged. No new provider request has been made after this fix.
+
+The next resume is one bounded `narration_repair` request against the same
+cached visual/story context, with zero retries and no visual/story calls.
+
 ## DB persistence round-trip checkpoint - 2026-08-21
 
 Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.

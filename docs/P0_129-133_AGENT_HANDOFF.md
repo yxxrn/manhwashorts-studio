@@ -26,6 +26,18 @@ story requests. If admitted, persist the exact analysis, then proceed to the
 local silent render/QC boundary. Voice remains after silent QC; no provider or
 TTS call, narration persistence, MP4, or QC completion is proven yet.
 
+## Anti-copy repair-trigger correction
+
+The first post-publication attempt made zero requests and returned
+`cloud.narrative_repair_not_needed` because the repair trigger checked only
+word/duration predicates. The strict validator still rejects the persisted
+candidate's normalized four-word dialogue overlap. A RED regression now
+requires the shared detector to emit
+`cloud.narrative_source_dialogue_copy`; the GREEN correction keeps the final
+validator, grounding, lineage, and duration gates unchanged. No provider call
+has been made after this trigger correction. Resume with one bounded cached
+repair request only after this checkpoint is published.
+
 ## DB persistence round-trip checkpoint
 
 Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.

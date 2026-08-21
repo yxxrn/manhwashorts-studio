@@ -3228,6 +3228,11 @@ class CloudStageRunner:
             or int(result.word_count) != canonical_word_count
         ):
             failures.append("cloud.narrative_word_count_out_of_range")
+        if analyzer_contract.contains_source_dialogue_copy(
+            result.observations,
+            result.passages,
+        ):
+            failures.append("cloud.narrative_source_dialogue_copy")
         return tuple(dict.fromkeys(failures))
 
     @staticmethod
