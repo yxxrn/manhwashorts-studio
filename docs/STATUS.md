@@ -2078,3 +2078,24 @@ snapshot retained `failed_predicate=null` after the later error. The
 follow-up RED/GREEN fix now updates that in-process snapshot with the stable
 failure code/predicate; it does not alter admission behavior, and no second
 provider call was made. No valid narration, MP4, voice, or final QC is proven.
+
+## Positional-vector admission contract correction (2026-08-21)
+
+Parent: `7598bd58880f75ad0309eedf05e9d485703a1d9b`. The exact observed vector
+`[18,16,16,17,15,14,14,14]` (124 words, 52.17 seconds) is now a collection-clean
+regression and is admitted despite exceeding drafting allocations at positions
+0 and 3. The prompt and local reducer explicitly treat per-position
+`word_budget_min/word_budget_max` as guidance/diagnostics, not hard admission.
+
+Hard gates remain exact vector length/order, non-empty strings, trusted local
+lineage, causal order, aggregate 115-125 words, 50-60 seconds, grounding,
+identity, display derivation, and cache contracts. A broad dominance guard
+rejects only a pathological position over `max(24, ceil(total_words * 0.25))`.
+Prompt/cache identities are bumped to v4/v3. RED was collection-clean with
+the observed distribution failing the guidance wording; GREEN is 152 focused
+tests with five existing Pillow warnings. Ruff, compileall, diff-check,
+no-churn, and key-shaped secret scan are clean.
+
+The GREEN source/test/docs checkpoint must be published before exactly one new
+bounded real repair request. Visual/story caches remain valid and untouched;
+no narration, MP4, voice, or final QC is proven.

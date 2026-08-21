@@ -157,3 +157,16 @@ runner snapshot originally kept `failed_predicate=null`; the follow-up fix
 updates the same non-prose snapshot with the stable failure code/predicate so
 future durable reports retain the later-gate taxonomy. No second provider
 call is permitted by this checkpoint, and visual/story caches are untouched.
+
+## Positional repair admission v4
+
+The position registry still supplies deterministic per-position budgets for
+provider drafting and sanitized diagnostics, but those ranges are not final
+admission predicates. The reducer admits the observed 124-word/52.17-second
+distribution `[18,16,16,17,15,14,14,14]` and retains the aggregate word,
+duration, lineage, grounding, causal, identity, and display gates. It rejects
+only a broad pathological single-position share above
+`max(24, ceil(total_words * 0.25))` in addition to the hard vector/type checks.
+The repair prompt is `vision-first-story-analyzer-v3-targeted-position-repair-v3`;
+cache/result identities are versioned so old results cannot be reused under the
+changed contract.

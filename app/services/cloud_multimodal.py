@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -53,17 +54,19 @@ STORY_MAP_COVERAGE_MIN_STEP = 30
 NARRATION_CHUNK_STEP = 180
 NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
-NARRATION_REPAIR_VERSION = "narration-targeted-repair-v3"
+NARRATION_REPAIR_VERSION = "narration-targeted-repair-v4"
 NARRATION_REPAIR_MAX_ATTEMPTS = 3
 NARRATION_REPAIR_POSITION_MAX_ATTEMPTS = 1
 NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
-NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v3"
+NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v4"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
-NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v2"
+NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v3"
 NARRATION_REPAIR_POSITION_MIN_WORDS = 7
 NARRATION_REPAIR_POSITION_WORD_SLACK = 8
 NARRATION_REPAIR_POSITION_MAX_COUNT = 8
+NARRATION_REPAIR_POSITION_MAX_SHARE = 0.25
+NARRATION_REPAIR_POSITION_DOMINANCE_FLOOR = 24
 
 
 def _position_word_budget_bounds(
@@ -86,15 +89,16 @@ NARRATION_REPAIR_INSTRUCTION = (
     "never return, create, or rewrite claim IDs, evidence panel IDs, slot IDs, "
     "passage IDs, observations, beat IDs, or hashes. Preserve the supplied causal "
     "order and evidence-grounded meaning. Write natural English within each "
-    "position's inclusive word_budget_min/word_budget_max range. The sum "
-    "of all position maxima is capped at 125. Target "
-    "exactly 120 total words; the accepted total is 115-125 words and "
-    "50-60 seconds. Treat each word_budget_max as a hard drafting target. "
-    "Do not fill a position budget with extra words. Exactly 120 is guidance; "
-    "For the eight-position vector, aim for 14-15 words per position and "
-    "never exceed 15 words unless required to preserve a claim. Count every "
-    "rewrite before returning. Aim for 118 total words so natural variation "
-    "stays inside the accepted range; exactly 120 is guidance only. "
+    "position's word_budget_min/word_budget_max values as drafting guidance "
+    "and sanitized diagnostics, not hard admission bounds. The local validator "
+    "enforces the exact vector shape and order, non-empty strings, trusted "
+    "lineage, causal order, total 115-125 words, and 50-60 seconds; it rejects "
+    "only a pathological single-position share. Target approximately 120 total "
+    "words; exactly 120 is guidance. For the eight-position vector, aim for "
+    "about 14-15 words per position when natural, but never pad or truncate to "
+    "meet an allocation. Count every rewrite before returning. Aim for 118 "
+    "total words so natural variation stays inside the accepted range; exactly "
+    "120 is guidance only. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
     "metadata, or alternate key."
 )
@@ -3275,26 +3279,22 @@ class CloudStageRunner:
                     reviewable=True,
                 )
             word_count = len(re.findall(r"[A-Za-z0-9]+", text))
-            final_bounds_ok = (
-                all_strings
-                and total_words is not None
-                and duration is not None
-                and 115 <= total_words <= 125
-                and 50.0 <= duration <= 60.0
-            )
-            if word_count < position.word_budget_min or (
-                word_count > position.word_budget_max and not final_bounds_ok
-            ):
-                raise CloudStageError(
-                    "cloud.narrative_repair_position_budget_invalid",
-                    reviewable=True,
-                    safe_metadata=response_shape_metrics(
-                        "position_word_budget",
-                        word_counts,
-                        total_words if all_strings else None,
-                        duration,
-                    ),
+            if all_strings and total_words is not None and total_words > 0:
+                dominance_limit = max(
+                    NARRATION_REPAIR_POSITION_DOMINANCE_FLOOR,
+                    math.ceil(total_words * NARRATION_REPAIR_POSITION_MAX_SHARE),
                 )
+                if word_count > dominance_limit:
+                    raise CloudStageError(
+                        "cloud.narrative_repair_position_budget_invalid",
+                        reviewable=True,
+                        safe_metadata=response_shape_metrics(
+                            "position_word_dominance",
+                            word_counts,
+                            total_words,
+                            duration,
+                        ),
+                    )
             trusted_ids = (
                 position.slot_id,
                 position.passage_id,
@@ -4004,7 +4004,7 @@ class CloudStageRunner:
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v2"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v3"
         repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
         repair_prompt = (
             repair_prompt_version,

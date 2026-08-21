@@ -811,6 +811,19 @@ gates remain strict and exact 120 is guidance only. Focused verification is
 clean. Publish before another one-request repair; no narration, MP4, voice, or
 final QC is proven.
 
+## Resume checkpoint: position guidance correction
+
+Resume from published parent `7598bd58880f75ad0309eedf05e9d485703a1d9b` after
+the GREEN source/test/docs publication. Do not rerun visual or story stages.
+Run the focused cloud/manifest/adapter/synthesis matrix, then issue exactly one
+bounded positional repair request with the current prompt/cache identities.
+Per-position allocations are guidance only; retain hard vector, trusted-lineage,
+grounding, causal, aggregate 115-125-word/50-60-second, identity, and display
+gates. The only additional balance guard is the broad
+`max(24, ceil(total_words * 0.25))` dominance limit. If the request fails,
+persist sanitized shape/predicate metadata and stop provider calls; do not
+retry unchanged and do not claim narration, MP4, voice, or QC.
+
 ## Position-vector live repair result and snapshot correction - 2026-08-21
 
 After published checkpoint `e743ab219a17f426c07baca5745dab82fdd7648b`, the

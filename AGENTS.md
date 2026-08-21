@@ -864,3 +864,15 @@ The follow-up RED/GREEN fix now updates that in-process snapshot with the
 stable failure code/predicate; it does not change admission behavior and no
 second provider call was made. No valid narration, MP4, voice, or final QC is
 proven.
+
+## Current positional-repair checkpoint
+
+The published base is `7598bd58880f75ad0309eedf05e9d485703a1d9b`. The current
+repair contract is versioned `narration-targeted-repair-v4` with result cache
+`narration-repair-result-v4`, position registry `narration-repair-position-registry-v3`,
+and prompt `vision-first-story-analyzer-v3-targeted-position-repair-v3`.
+Per-position word allocations are guidance and diagnostics only. Hard admission
+still requires exact positional shape/order, non-empty text, trusted lineage,
+causal order, 115-125 words, 50-60 seconds, grounding, identity, and cache
+contracts. A broad dominance guard rejects one position over
+`max(24, ceil(total_words * 0.25))`; it admits the observed 124-word vector.

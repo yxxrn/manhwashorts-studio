@@ -2395,23 +2395,24 @@ def test_targeted_repair_prompt_declares_exact_slot_wire_shape():
     instruction = module.NARRATION_REPAIR_INSTRUCTION
     assert '{"rewrites": ["text for position 0", "..."]}' in instruction
     assert "never return, create, or rewrite claim IDs" in instruction
-    assert "exactly 120 total words" in instruction
+    assert "approximately 120 total words" in instruction
     assert "word_budget_min/word_budget_max" in instruction
 
 
 def test_targeted_repair_prompt_requires_concise_position_drafting():
     module = _module()
     instruction = module.NARRATION_REPAIR_INSTRUCTION
-    assert "Treat each word_budget_max as a hard drafting target" in instruction
-    assert "Do not fill a position budget with extra words" in instruction
-    assert "Exactly 120 is guidance" in instruction
+    assert "not hard admission bounds" in instruction
+    assert "word_budget_min/word_budget_max" in instruction
+    assert "pathological single-position share" in instruction
+    assert "exactly 120 is guidance" in instruction
 
 
 def test_targeted_repair_prompt_targets_compact_eight_position_vector():
     module = _module()
     instruction = module.NARRATION_REPAIR_INSTRUCTION
-    assert "For the eight-position vector, aim for 14-15 words per position" in instruction
-    assert "never exceed 15 words unless required to preserve a claim" in instruction
+    assert "about 14-15 words per position when natural" in instruction
+    assert "never pad or truncate to meet an allocation" in instruction
 
 
 def test_targeted_repair_prompt_targets_safe_in_range_total():
@@ -2465,7 +2466,7 @@ def test_position_repair_preselection_is_deterministic_and_budgeted():
     second = runner._build_narration_repair_position_registry(candidate, story_map)
 
     positions = first["positions"]
-    assert first["version"] == "narration-repair-position-registry-v2"
+    assert first["version"] == "narration-repair-position-registry-v3"
     assert len(positions) == 8
     assert 8 <= len({claim_id for row in positions for claim_id in row["claim_ids"]}) <= 12
     assert 4 <= len({row["passage_id"] for row in positions}) <= 6
@@ -2652,8 +2653,7 @@ def test_position_repair_budget_failure_exposes_sanitized_shape_metrics():
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
     registry = runner._build_narration_repair_position_registry(candidate, story_map)
     counts = [row["word_budget"] for row in registry["positions"]]
-    counts[0] = 6
-    counts[-1] += 9
+    counts = [1, 1, 1, 1, 1, 1, 1, 113]
     assert sum(counts) == 120
     raw = {
         "rewrites": [
@@ -2673,7 +2673,7 @@ def test_position_repair_budget_failure_exposes_sanitized_shape_metrics():
     assert metrics["per_position_word_counts"] == counts
     assert metrics["total_word_count"] == 120
     assert metrics["estimated_duration_s"] == pytest.approx(120 / 2.3, abs=0.01)
-    assert metrics["failed_predicate"] == "position_word_budget"
+    assert metrics["failed_predicate"] == "position_word_dominance"
     assert len(metrics["expected_ranges"]) == len(counts)
     assert all(set(item) == {"position", "target", "min", "max"} for item in metrics["expected_ranges"])
     assert "metrics0_word" not in json.dumps(metrics)
@@ -2742,6 +2742,27 @@ def test_position_repair_admits_in_range_total_above_position_guidance():
     reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
 
     assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 119
+
+
+def test_position_repair_accepts_observed_in_range_distribution_as_guidance():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [18, 16, 16, 17, 15, 14, 14, 14]
+    assert len(counts) == len(registry["positions"])
+    assert sum(counts) == 124
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"observed{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+
+    reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 124
+    instruction = module.NARRATION_REPAIR_INSTRUCTION
+    assert "not hard admission bounds" in instruction
 
 
 @pytest.mark.parametrize("mutation", ("old_id_wrapper", "wrong_count", "wrong_type"))
@@ -3287,7 +3308,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-position-repair-v2"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v3"
     )
     assert len(repair_prompt_sha256) == 64
     assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text
@@ -3303,7 +3324,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     )
     assert result.qc_report["narration_repair"]["candidate_hash"]
     assert result.qc_report["narration_repair"]["position_registry_version"] == (
-        "narration-repair-position-registry-v2"
+        "narration-repair-position-registry-v3"
     )
     assert result.qc_report["narration_repair"]["slot_order_hash"]
     assert [call[0] for call in provider.calls] == ["narration_repair"]
