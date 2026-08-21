@@ -330,11 +330,21 @@ class CloudPanelInput:
     identity_descriptor_hash: str = ""
     source_identity_hash: str = ""
     metadata_only: bool = False
+    prepared_order: int | None = None
 
     def __post_init__(self) -> None:
         if not self.panel_id.strip() or not self.source_asset_id.strip():
             raise CloudStageError("cloud.panel_lineage_invalid")
         if isinstance(self.source_order, bool) or not isinstance(self.source_order, int) or self.source_order < 0:
+            raise CloudStageError("cloud.panel_lineage_invalid")
+        if (
+            self.prepared_order is not None
+            and (
+                isinstance(self.prepared_order, bool)
+                or not isinstance(self.prepared_order, int)
+                or self.prepared_order < 0
+            )
+        ):
             raise CloudStageError("cloud.panel_lineage_invalid")
         if not self.mime_type.lower().startswith("image/") or not self.payload:
             raise CloudStageError("cloud.panel_payload_invalid")
@@ -413,6 +423,8 @@ class CloudPanelInput:
             descriptor["source_identity_hash"] = self.source_identity_hash
         if self.metadata_only:
             descriptor["metadata_only"] = True
+        if self.prepared_order is not None:
+            descriptor["prepared_order"] = self.prepared_order
         return descriptor
 
 
@@ -5323,18 +5335,47 @@ def _build_cached_prepared_manifest(
 
     identity_hashes = tuple(str(item) for item in visual.panel_identity_hashes)
     if len(identity_hashes) != len(visual.panels):
-        raise prepared_panel_manifest.PreparedPanelManifestError(
-            "cached visual identity count is incomplete"
+        row_identity_hashes = tuple(
+            str(item.get("cache_identity_hash", ""))
+            for item in visual.panels
+            if isinstance(item, Mapping)
         )
+        if len(row_identity_hashes) != len(visual.panels) or any(
+            len(item) != 64 for item in row_identity_hashes
+        ):
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual identity count is incomplete"
+            )
+        identity_hashes = row_identity_hashes
     descriptors: list[dict[str, Any]] = []
+    seen_panel_ids: set[str] = set()
+    previous_source_order = -1
     for visual_index, panel in enumerate(visual.panels):
+        if not isinstance(panel, Mapping):
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual panel is malformed"
+            )
+        panel_id = str(panel.get("panel_id", "")).strip()
         try:
-            source_order = int(panel["source_order"])
+            source_order = panel["source_order"]
         except (KeyError, TypeError, ValueError):
             raise prepared_panel_manifest.PreparedPanelManifestError(
                 "cached visual source order is malformed"
             ) from None
-        if source_order < 0 or source_order >= len(canonical_regions):
+        if (
+            not panel_id
+            or panel_id in seen_panel_ids
+            or isinstance(source_order, bool)
+            or not isinstance(source_order, int)
+            or source_order < 0
+            or source_order <= previous_source_order
+        ):
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual panel order or identity is invalid"
+            )
+        seen_panel_ids.add(panel_id)
+        previous_source_order = source_order
+        if source_order >= len(canonical_regions):
             raise prepared_panel_manifest.PreparedPanelManifestError(
                 "cached visual source order is outside segmentation coverage"
             )
@@ -5346,15 +5387,36 @@ def _build_cached_prepared_manifest(
             raise prepared_panel_manifest.PreparedPanelManifestError(
                 "cached visual panel does not match segmentation lineage"
             )
+        cached_bounds = panel.get("panel_bounds")
+        if cached_bounds is not None and list(cached_bounds) != list(bounds):
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual panel crop identity mismatch"
+            )
+        cached_dimensions = panel.get("source_dimensions")
+        if cached_dimensions is not None and list(cached_dimensions) != list(dimensions):
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual panel dimensions mismatch"
+            )
+        cached_coverage_hash = str(panel.get("coverage_map_hash", ""))
+        if cached_coverage_hash and cached_coverage_hash != coverage_hash:
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual coverage identity mismatch"
+            )
+        cached_identity_hash = str(panel.get("cache_identity_hash", ""))
+        if cached_identity_hash and cached_identity_hash != identity_hashes[visual_index]:
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "cached visual payload identity mismatch"
+            )
         descriptors.append(
             {
-                "panel_id": str(panel.get("panel_id", "")),
+                "panel_id": panel_id,
                 "source_asset_id": asset_id,
                 "source_order": source_order,
+                "prepared_order": visual_index,
                 "source_checksum": checksum,
                 "panel_bounds": list(bounds),
                 "source_dimensions": list(dimensions),
-                "strip_region_id": str(panel.get("panel_id", "")),
+                "strip_region_id": str(panel.get("strip_region_id", panel_id)),
                 "coverage_map_version": str(segmentation_state.get("version", "")),
                 "coverage_map_hash": coverage_hash,
                 "segmentation_version": str(segmentation_state.get("detector_version", "")),

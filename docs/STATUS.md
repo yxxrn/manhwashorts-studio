@@ -2236,3 +2236,30 @@ and `::test_actual_cmd_dispatch_handles_path_with_spaces`; both fail before
 launch because this Linux host has no `cmd.exe`. They are unrelated to the
 micro-compaction files and remain an environment-gated exception. The related
 cloud/narrative matrix was 117 passed, and no provider request was made.
+
+## Prepared-panel subset manifest repair — 2026-08-21
+
+Parent: `d5d26e2a7a2383834d33bd37904bb8af4053b8b8`. The failed normal resume
+was local, before provider dispatch: `PreparedPanelManifestError: prepared
+panel order is not contiguous`, recorded by the job as
+`cloud.narrative_repair_scope_invalid`. The old validator conflated immutable
+source lineage order with executable subset order, so filtering the two poison
+panels from 703 made a valid 701-panel cache unusable.
+
+Manifest v2 adds derived `prepared_order`/execution index `0..N-1` and keeps
+original `source_order`, asset/checksum, bounds, dimensions, payload identity,
+and visual cache identity unchanged. The cached rebuild validates strict
+source-order progression, unique panel IDs, exact source/crop/checksum identity,
+and contiguous derived order. Legacy v1 manifests are hash-checked and
+migrated metadata-only; no panel bytes are decoded and no provider call is
+made. Tampered duplicate/reordered execution indices, crop identity, payload
+identity, or legacy hashes fail closed.
+
+TDD evidence: collection-clean RED was 7 existing passes plus 3 intended
+failures at the old contiguous-source-order guard. GREEN is 11 manifest tests,
+93 cloud-multimodal tests, 14 narrative-pipeline tests, and 10 narrative-QC
+tests: 128 passed. Ruff, compileall, `git diff --check`, and the key-shaped
+secret scan passed. The previous failed repair made zero provider calls; after
+this checkpoint is published, run only the existing cached normal entrypoint
+with `--max-attempts 1 --max-requests 1`, then continue to render only if all
+strict narration gates pass. No MP4, TTS, or QC artifact is claimed here.

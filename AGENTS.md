@@ -991,3 +991,24 @@ Windows `cmd.exe` dispatch checks on this Linux host; they do not execute the
 changed narration path. Treat this as an environment exception, not a
 release-green claim, and rerun those launcher checks on Windows before
 production acceptance.
+
+## 2026-08-21 prepared subset manifest checkpoint
+
+The prepared-panel manifest is now `prepared-panel-manifest-v2`. It preserves
+trusted original `source_order`, source asset/checksum, crop bounds, dimensions,
+and payload identity for audit/cache lineage, while adding the derived
+contiguous `prepared_order` execution index. The 703-to-701 processed subset
+therefore remains ordered and cache-valid when two poison panels are absent;
+source lineage is never renumbered. Legacy v1 manifests migrate metadata-only
+after hash, order, asset, and crop validation. No image decode, visual provider
+call, or cache reanalysis is part of this migration.
+
+The focused manifest/cloud/narrative matrix is 128 passed (11 manifest, 93
+cloud, 14 narrative-pipeline, 10 narrative-QC). Ruff, compileall, diff-check,
+and key-shaped secret scan passed. The previous normal-run blocker was
+`PreparedPanelManifestError: prepared panel order is not contiguous`, with
+durable taxonomy `cloud.narrative_repair_scope_invalid`; the fix separates
+execution order from source lineage and rejects duplicate/reordered IDs,
+changed payload/crop identity, and invalid legacy hashes. The next normal
+resume is exactly one bounded `grok-4.3` repair request with cached visual/story
+stages and zero retries; do not rerun visual/story or print `/tmp/ms_env.sh`.

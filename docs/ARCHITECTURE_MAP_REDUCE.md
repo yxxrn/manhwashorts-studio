@@ -279,3 +279,34 @@ passed, 2 failed, and 4 skipped. The two failures are the existing Windows
 `cmd.exe` operator-launcher dispatch tests on Linux and occur before the
 changed code runs. The related 117-test cloud/narrative matrix passed. This
 checkpoint is source/test green but not a host-level production-render claim.
+
+## Prepared execution order versus source lineage
+
+The durable prepared-panel manifest now uses `prepared-panel-manifest-v2` for
+the warm metadata boundary. Every descriptor carries both coordinates:
+
+- `source_order`: immutable original segmentation order, retained for source
+  asset/crop/evidence lineage and audit. It may contain intentional gaps when
+  poison panels are excluded from a review subset.
+- `prepared_order`: derived contiguous execution index assigned after the
+  verified ordered subset is selected. It is always `0..len(subset)-1`.
+
+The rebuild path validates source asset checksum, source dimensions, canonical
+panel bounds, visual identity/payload hash, unique panel ID, strictly
+increasing original source order, and contiguous prepared order before writing
+the metadata manifest. It never decodes panel bytes or calls the provider.
+Legacy v1 manifests are validated against their original hash first, then
+rewritten in memory as v2 with derived indices; invalid legacy hashes fail
+closed. The marker payload and manifest hash are versioned, while the visual
+model/cache identity remains based on the trusted source/crop/rendered-payload
+identity rather than temporary paths or subset relabeling.
+
+The exact regression uses 703 synthetic source regions with two filtered rows
+and 701 visual rows. It proves preserved source orders, `prepared_order`
+0..700, metadata-only cached rebuild, stable restoration, legacy migration,
+and rejection of duplicate/reordered/crop/payload identity tampering. Focused
+manifest/cloud/narrative verification is 128 passed; no provider request was
+made by this fix. After publication, the normal cached batch runner may make
+exactly one bounded narration repair request; visual/story stages must remain
+cache hits and all downstream grounding, duration, render, and voice gates
+remain authoritative.

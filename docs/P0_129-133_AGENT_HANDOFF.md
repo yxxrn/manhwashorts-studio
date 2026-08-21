@@ -1016,3 +1016,28 @@ operator-launcher tests, which cannot execute on Oracle's Linux host; they are
 not failures in the changed narration path. The 117-test cloud/narrative
 matrix passed, and no provider request was made. Windows launcher verification
 remains required before a production-readiness claim.
+
+## 2026-08-21 resume-safe 703-to-701 manifest fix
+
+The published parent is `d5d26e2a7a2383834d33bd37904bb8af4053b8b8`. The one
+bounded resume attempt stopped before provider dispatch because the metadata
+manifest rejected gapped source orders as non-contiguous; its sanitized job
+code was `cloud.narrative_repair_scope_invalid`. This was the filtered-subset
+boundary, not a provider response or narration-quality result.
+
+The repair introduces prepared-panel manifest v2. `source_order` remains the
+immutable segmentation/visual lineage coordinate; `prepared_order` is a
+separate deterministic execution index for the exact processed subset. The
+metadata-only cached rebuild validates 703 source regions against 701 visual
+rows, retains the two source-order gaps, derives `prepared_order` 0..700, and
+does not decode or resend any panel. Legacy v1 manifests migrate only after
+their existing hash and lineage checks pass. Duplicate IDs, reordered source
+orders, duplicate execution indices, changed crop/dimensions/checksums, and
+payload identity mismatches remain fail-closed.
+
+Verification is 128 focused tests passed (11 manifest, 93 cloud, 14 narrative
+pipeline, 10 narrative QC), plus Ruff, compileall, diff-check, and secret scan.
+The next resume command is the previously published normal runner with the
+same project/model/cache identity, `--max-attempts 1 --max-requests 1`, and no
+visual/story repeat. Runtime DB, caches, media, `data`, and `/tmp/ms_env.sh`
+remain outside Git.

@@ -15,8 +15,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-MANIFEST_VERSION = "prepared-panel-manifest-v1"
-PAYLOAD_MARKER_PREFIX = b"prepared-panel-manifest-v1:"
+MANIFEST_VERSION = "prepared-panel-manifest-v2"
+LEGACY_MANIFEST_VERSION = "prepared-panel-manifest-v1"
+PAYLOAD_MARKER_PREFIX = b"prepared-panel-manifest-v2:"
 
 
 class PreparedPanelManifestError(ValueError):
@@ -78,9 +79,14 @@ def _normalize_assets(source_assets: Sequence[Mapping[str, Any]]) -> list[dict[s
     return sorted(normalized, key=lambda item: (item["strip_order"], item["region_order"], item["source_asset_id"]))
 
 
-def _normalize_panel_descriptors(panel_descriptors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _normalize_panel_descriptors(
+    panel_descriptors: Sequence[Mapping[str, Any]],
+    *,
+    require_prepared_order: bool = False,
+) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
+    previous_source_order = -1
     for index, raw in enumerate(panel_descriptors):
         if not isinstance(raw, Mapping):
             raise PreparedPanelManifestError("prepared panel descriptor is malformed")
@@ -89,8 +95,24 @@ def _normalize_panel_descriptors(panel_descriptors: Sequence[Mapping[str, Any]])
         if not panel_id or not asset_id or panel_id in seen:
             raise PreparedPanelManifestError("prepared panel identity is duplicated or empty")
         seen.add(panel_id)
-        if raw.get("source_order") != index:
-            raise PreparedPanelManifestError("prepared panel order is not contiguous")
+        source_order = raw.get("source_order")
+        if (
+            isinstance(source_order, bool)
+            or not isinstance(source_order, int)
+            or source_order < 0
+            or source_order <= previous_source_order
+        ):
+            raise PreparedPanelManifestError("prepared panel source order is not strictly increasing")
+        previous_source_order = source_order
+        prepared_order = raw.get("prepared_order")
+        if prepared_order is None and not require_prepared_order:
+            prepared_order = index
+        if (
+            isinstance(prepared_order, bool)
+            or not isinstance(prepared_order, int)
+            or prepared_order != index
+        ):
+            raise PreparedPanelManifestError("prepared panel execution order is not contiguous")
         source_checksum = str(raw.get("source_checksum", ""))
         identity_checksum = str(raw.get("identity_payload_checksum", ""))
         identity_descriptor_hash = str(raw.get("identity_descriptor_hash", ""))
@@ -126,7 +148,8 @@ def _normalize_panel_descriptors(panel_descriptors: Sequence[Mapping[str, Any]])
             {
                 "panel_id": panel_id,
                 "source_asset_id": asset_id,
-                "source_order": index,
+                "source_order": source_order,
+                "prepared_order": prepared_order,
                 "source_checksum": source_checksum,
                 "identity_payload_checksum": identity_checksum,
                 "identity_descriptor_hash": identity_descriptor_hash,
@@ -221,6 +244,11 @@ def build_manifest(
         descriptor["identity_descriptor_hash"] = str(
             getattr(panel, "identity_descriptor_hash", "") or normalized_hashes[index]
         )
+        descriptor["prepared_order"] = int(
+            getattr(panel, "prepared_order", None)
+            if getattr(panel, "prepared_order", None) is not None
+            else index
+        )
         descriptor["source_identity_hash"] = source_identity
         descriptor["source_family"] = str(getattr(panel, "source_family", "") or "")
         descriptors.append(descriptor)
@@ -268,10 +296,15 @@ def build_manifest_from_descriptors(
             descriptor.get("identity_payload_checksum", "")
             or descriptor["identity_descriptor_hash"]
         )
+        if descriptor.get("prepared_order") is None:
+            descriptor["prepared_order"] = index
         descriptor["source_identity_hash"] = source_identity
         descriptor["metadata_only"] = True
         descriptors.append(descriptor)
-    normalized_panels = _normalize_panel_descriptors(descriptors)
+    normalized_panels = _normalize_panel_descriptors(
+        descriptors,
+        require_prepared_order=True,
+    )
     normalized_assets = _normalize_assets(source_assets)
     if len(normalized_hashes) != len(normalized_panels):
         raise PreparedPanelManifestError("panel identity count does not match descriptors")
@@ -285,40 +318,111 @@ def build_manifest_from_descriptors(
         if matching_asset is None or matching_asset["source_checksum"] != panel["source_checksum"]:
             raise PreparedPanelManifestError("panel source asset identity mismatch")
     ledger_summary = _ledger_summary(feasible_visual_ledger)
-    source_fingerprint = _hash(normalized_assets)
-    core = {
-        "manifest_version": MANIFEST_VERSION,
-        "source_asset_fingerprint": source_fingerprint,
-        "source_assets": normalized_assets,
-        "panel_descriptors": normalized_panels,
-        "panel_identity_hashes": list(normalized_hashes),
-        "source_identity_hash": source_identity,
-        "segmentation_state_hash": _hash(dict(segmentation_state)),
-        "feasible_visual_ledger": ledger_summary,
-    }
-    manifest = PreparedPanelManifest(
+    return _make_manifest(
         manifest_version=MANIFEST_VERSION,
-        source_asset_fingerprint=source_fingerprint,
-        source_assets=tuple(normalized_assets),
-        panel_descriptors=tuple(normalized_panels),
+        source_assets=normalized_assets,
+        panels=normalized_panels,
         panel_identity_hashes=normalized_hashes,
         source_identity_hash=source_identity,
-        segmentation_state=dict(segmentation_state),
+        segmentation_state=segmentation_state,
         feasible_visual_ledger=ledger_summary,
-        manifest_hash=_hash(core),
     )
-    return manifest.as_dict()
 
 
-def validate_manifest(value: Mapping[str, Any]) -> PreparedPanelManifest:
-    if not isinstance(value, Mapping) or value.get("manifest_version") != MANIFEST_VERSION:
-        raise PreparedPanelManifestError("prepared manifest version is unsupported")
+def _manifest_core(
+    *,
+    manifest_version: str,
+    source_asset_fingerprint: str,
+    source_assets: Sequence[Mapping[str, Any]],
+    panels: Sequence[Mapping[str, Any]],
+    panel_identity_hashes: Sequence[str],
+    source_identity_hash: str,
+    segmentation_state: Mapping[str, Any],
+    feasible_visual_ledger: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "manifest_version": manifest_version,
+        "source_asset_fingerprint": source_asset_fingerprint,
+        "source_assets": [dict(item) for item in source_assets],
+        "panel_descriptors": [dict(item) for item in panels],
+        "panel_identity_hashes": list(panel_identity_hashes),
+        "source_identity_hash": source_identity_hash,
+        "segmentation_state_hash": _hash(dict(segmentation_state)),
+        "feasible_visual_ledger": (
+            dict(feasible_visual_ledger)
+            if feasible_visual_ledger is not None
+            else None
+        ),
+    }
+
+
+def _make_manifest(
+    *,
+    manifest_version: str,
+    source_assets: Sequence[Mapping[str, Any]],
+    panels: Sequence[Mapping[str, Any]],
+    panel_identity_hashes: Sequence[str],
+    source_identity_hash: str,
+    segmentation_state: Mapping[str, Any],
+    feasible_visual_ledger: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    source_fingerprint = _hash(list(source_assets))
+    core = _manifest_core(
+        manifest_version=manifest_version,
+        source_asset_fingerprint=source_fingerprint,
+        source_assets=source_assets,
+        panels=panels,
+        panel_identity_hashes=panel_identity_hashes,
+        source_identity_hash=source_identity_hash,
+        segmentation_state=segmentation_state,
+        feasible_visual_ledger=feasible_visual_ledger,
+    )
+    return PreparedPanelManifest(
+        manifest_version=manifest_version,
+        source_asset_fingerprint=source_fingerprint,
+        source_assets=tuple(dict(item) for item in source_assets),
+        panel_descriptors=tuple(dict(item) for item in panels),
+        panel_identity_hashes=tuple(panel_identity_hashes),
+        source_identity_hash=source_identity_hash,
+        segmentation_state=dict(segmentation_state),
+        feasible_visual_ledger=(
+            dict(feasible_visual_ledger)
+            if feasible_visual_ledger is not None
+            else None
+        ),
+        manifest_hash=_hash(core),
+    ).as_dict()
+
+
+def _validated_parts(
+    value: Mapping[str, Any],
+    *,
+    require_prepared_order: bool,
+) -> tuple[
+    tuple[dict[str, Any], ...],
+    tuple[dict[str, Any], ...],
+    tuple[str, ...],
+    str,
+    Mapping[str, Any],
+    dict[str, Any] | None,
+]:
     source_assets = tuple(_normalize_assets(value.get("source_assets", ())))
-    panels = tuple(_normalize_panel_descriptors(value.get("panel_descriptors", ())))
-    hashes = tuple(_require_hash(item, "panel identity hash") for item in value.get("panel_identity_hashes", ()))
+    panels = tuple(
+        _normalize_panel_descriptors(
+            value.get("panel_descriptors", ()),
+            require_prepared_order=require_prepared_order,
+        )
+    )
+    hashes = tuple(
+        _require_hash(item, "panel identity hash")
+        for item in value.get("panel_identity_hashes", ())
+    )
     if len(hashes) != len(panels):
         raise PreparedPanelManifestError("panel identity count does not match descriptors")
-    source_identity_hash = _require_hash(value.get("source_identity_hash"), "source identity hash")
+    source_identity_hash = _require_hash(
+        value.get("source_identity_hash"),
+        "source identity hash",
+    )
     if any(
         panel.get("source_identity_hash") != source_identity_hash
         or panel.get("identity_descriptor_hash") != hashes[index]
@@ -330,7 +434,11 @@ def validate_manifest(value: Mapping[str, Any]) -> PreparedPanelManifest:
         raise PreparedPanelManifestError("source asset fingerprint mismatch")
     for panel in panels:
         matching_asset = next(
-            (asset for asset in source_assets if asset["source_asset_id"] == panel["source_asset_id"]),
+            (
+                asset
+                for asset in source_assets
+                if asset["source_asset_id"] == panel["source_asset_id"]
+            ),
             None,
         )
         if matching_asset is None or matching_asset["source_checksum"] != panel["source_checksum"]:
@@ -341,28 +449,94 @@ def validate_manifest(value: Mapping[str, Any]) -> PreparedPanelManifest:
     ledger_summary = value.get("feasible_visual_ledger")
     if ledger_summary is not None and not isinstance(ledger_summary, Mapping):
         raise PreparedPanelManifestError("feasible ledger summary is malformed")
-    core = {
-        "manifest_version": MANIFEST_VERSION,
-        "source_asset_fingerprint": source_fingerprint,
-        "source_assets": list(source_assets),
-        "panel_descriptors": list(panels),
-        "panel_identity_hashes": list(hashes),
-        "source_identity_hash": source_identity_hash,
-        "segmentation_state_hash": _hash(dict(segmentation_state)),
-        "feasible_visual_ledger": dict(ledger_summary) if ledger_summary is not None else None,
-    }
+    return (
+        source_assets,
+        panels,
+        hashes,
+        source_identity_hash,
+        segmentation_state,
+        dict(ledger_summary) if ledger_summary is not None else None,
+    )
+
+
+def migrate_legacy_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Migrate a v1 manifest using metadata only and preserve source lineage."""
+
+    if not isinstance(value, Mapping) or value.get("manifest_version") != LEGACY_MANIFEST_VERSION:
+        raise PreparedPanelManifestError("prepared manifest version is unsupported")
+    (
+        source_assets,
+        panels,
+        hashes,
+        source_identity_hash,
+        segmentation_state,
+        ledger_summary,
+    ) = _validated_parts(value, require_prepared_order=False)
+    legacy_panels = [
+        {key: item for key, item in panel.items() if key != "prepared_order"}
+        for panel in panels
+    ]
+    legacy_core = _manifest_core(
+        manifest_version=LEGACY_MANIFEST_VERSION,
+        source_asset_fingerprint=str(value["source_asset_fingerprint"]),
+        source_assets=source_assets,
+        panels=legacy_panels,
+        panel_identity_hashes=hashes,
+        source_identity_hash=source_identity_hash,
+        segmentation_state=segmentation_state,
+        feasible_visual_ledger=ledger_summary,
+    )
+    manifest_hash = _require_hash(value.get("manifest_hash"), "manifest hash")
+    if manifest_hash != _hash(legacy_core):
+        raise PreparedPanelManifestError("prepared manifest hash mismatch")
+    return _make_manifest(
+        manifest_version=MANIFEST_VERSION,
+        source_assets=source_assets,
+        panels=panels,
+        panel_identity_hashes=hashes,
+        source_identity_hash=source_identity_hash,
+        segmentation_state=segmentation_state,
+        feasible_visual_ledger=ledger_summary,
+    )
+
+
+def validate_manifest(value: Mapping[str, Any]) -> PreparedPanelManifest:
+    if not isinstance(value, Mapping):
+        raise PreparedPanelManifestError("prepared manifest version is unsupported")
+    if value.get("manifest_version") == LEGACY_MANIFEST_VERSION:
+        value = migrate_legacy_manifest(value)
+    if value.get("manifest_version") != MANIFEST_VERSION:
+        raise PreparedPanelManifestError("prepared manifest version is unsupported")
+    (
+        source_assets,
+        panels,
+        hashes,
+        source_identity_hash,
+        segmentation_state,
+        ledger_summary,
+    ) = _validated_parts(value, require_prepared_order=True)
+    core = _manifest_core(
+        manifest_version=MANIFEST_VERSION,
+        source_asset_fingerprint=str(value["source_asset_fingerprint"]),
+        source_assets=source_assets,
+        panels=panels,
+        panel_identity_hashes=hashes,
+        source_identity_hash=source_identity_hash,
+        segmentation_state=segmentation_state,
+        feasible_visual_ledger=ledger_summary,
+    )
     manifest_hash = _require_hash(value.get("manifest_hash"), "manifest hash")
     if manifest_hash != _hash(core):
         raise PreparedPanelManifestError("prepared manifest hash mismatch")
     return PreparedPanelManifest(
         manifest_version=MANIFEST_VERSION,
-        source_asset_fingerprint=source_fingerprint,
+        source_asset_fingerprint=str(value["source_asset_fingerprint"]),
         source_assets=source_assets,
         panel_descriptors=panels,
         panel_identity_hashes=hashes,
         source_identity_hash=source_identity_hash,
         segmentation_state=dict(segmentation_state),
-        feasible_visual_ledger=dict(ledger_summary) if ledger_summary is not None else None,
+        feasible_visual_ledger=ledger_summary,
         manifest_hash=manifest_hash,
     )
 
@@ -386,6 +560,7 @@ def restore_cloud_panels(manifest: PreparedPanelManifest, panel_type: type[Any])
                 panel_id=descriptor["panel_id"],
                 source_asset_id=descriptor["source_asset_id"],
                 source_order=descriptor["source_order"],
+                prepared_order=descriptor["prepared_order"],
                 mime_type="image/png",
                 payload=marker,
                 source_checksum=descriptor["source_checksum"],
@@ -436,11 +611,13 @@ def require_source_assets_match(
 
 __all__ = [
     "MANIFEST_VERSION",
+    "LEGACY_MANIFEST_VERSION",
     "PAYLOAD_MARKER_PREFIX",
     "PreparedPanelManifest",
     "PreparedPanelManifestError",
     "build_manifest",
     "build_manifest_from_descriptors",
+    "migrate_legacy_manifest",
     "require_source_assets_match",
     "restore_cloud_panels",
     "source_asset_fingerprint",
