@@ -574,3 +574,29 @@ lineage and all existing analyzer/visual gates; no migration, manual DB edit,
 provider retry, or fallback is permitted. Re-run only after an offline RED /
 GREEN persistence regression proves the exact boundary, then use the same
 zero-budget normal entrypoint before any cloud or TTS stage.
+
+## Repair evidence-closure boundary — 2026-08-21
+
+Rollback parent: `bbd2211343715f781be821930b218d63ea713175`.
+
+The targeted repair reducer now has a strict closure identity separate from
+the text rewrite vector. Local code takes the exact retained passage and claim
+IDs from the persisted candidate, resolves each claim to canonical story-map
+evidence, and derives the allowed panel set from the matching beat/section
+ancestry. It records ordered section keys, permitted panels, candidate/story
+visual and model/prompt identity, ordered story panel IDs, and a closure hash
+under `narration-repair-evidence-closure-v1`. Requested context outside that
+closure, unresolved or duplicate IDs, unrelated same-chapter sections, missing
+beat ancestry, stale story identity, or changed hashes fail closed as
+`cloud.narrative_repair_evidence_closure_invalid`.
+
+The provider has no evidence-ID field in this contract: it returns only the
+ordered rewrite strings. Reconciliation validates the exact local closure and
+copies trusted claim/evidence lineage; it never accepts provider IDs or
+silently widens the panel set. The focused suite includes a positive exact-p2
+ancestry case plus unrelated-panel, missing-ancestry, and stale-story negative
+cases: focused closure 5/5, cloud file 122/122, and related matrix 275/275.
+This change is offline-only; no visual/story/provider request or runtime
+artifact was touched. After publication, permit one bounded repair
+request with zero retries, then admit/persist only after all existing
+grounding, causal, duration, display, identity, and cache gates pass.

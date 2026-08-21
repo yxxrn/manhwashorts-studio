@@ -54,17 +54,18 @@ STORY_MAP_COVERAGE_MIN_STEP = 30
 NARRATION_CHUNK_STEP = 180
 NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
-NARRATION_REPAIR_VERSION = "narration-targeted-repair-v5"
+NARRATION_REPAIR_VERSION = "narration-targeted-repair-v6"
 NARRATION_REPAIR_MAX_ATTEMPTS = 3
 NARRATION_REPAIR_POSITION_MAX_ATTEMPTS = 1
 NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
-NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v6"
+NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v7"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
-NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v3"
+NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v4"
 NARRATION_REPAIR_PASSAGE_LINEAGE_VERSION = "narration-repair-passage-lineage-v1"
 NARRATION_REPAIR_IDENTITY_VERSION = "narration-repair-identity-v1"
 NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION = "narration-repair-identity-migration-v1"
+NARRATION_REPAIR_EVIDENCE_CLOSURE_VERSION = "narration-repair-evidence-closure-v1"
 NARRATION_MICRO_COMPACTION_VERSION = "narration-micro-compaction-v1"
 NARRATION_MICRO_COMPACTION_MIN_WORDS = 126
 NARRATION_MICRO_COMPACTION_MAX_WORDS = 130
@@ -222,7 +223,10 @@ NARRATION_REPAIR_INSTRUCTION = (
     "third-person narrator language; never quote or preserve a four-word lexical "
     "sequence from dialogue_or_ocr. Quotation marks, capitalization changes, or "
     "renaming a speaker are not loopholes: local strict validation rejects "
-    "near-verbatim dialogue. Describe only the grounded event or consequence."
+    "near-verbatim dialogue. Describe only the grounded event or consequence. "
+    "Every supplied context panel and section belongs to the exact retained "
+    "passage/claim evidence closure; never mix a same-chapter panel from "
+    "another section."
 )
 EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
@@ -3404,6 +3408,115 @@ class CloudStageRunner:
         return compact_visual, compact_story
 
     @staticmethod
+    def _narration_repair_lineage_identity(candidate: NarrationResult) -> str:
+        """Hash repair context while excluding replaceable citation surfaces."""
+
+        passages = []
+        for passage in candidate.passages:
+            if not isinstance(passage, Mapping):
+                raise CloudStageError(
+                    "cloud.narrative_repair_evidence_closure_invalid",
+                    reviewable=True,
+                )
+            passages.append(
+                {
+                    "passage_id": str(passage.get("passage_id", "")),
+                    "editorial_role": str(passage.get("editorial_role", "")),
+                    "text": str(passage.get("text", "")),
+                    "claim_ids": [str(value) for value in passage.get("claim_ids", ())],
+                }
+            )
+        claims = []
+        raw_claims = candidate.evidence_graph.get("claims", ())
+        if not isinstance(raw_claims, (list, tuple)):
+            raise CloudStageError(
+                "cloud.narrative_repair_evidence_closure_invalid",
+                reviewable=True,
+            )
+        for claim in raw_claims:
+            if not isinstance(claim, Mapping):
+                raise CloudStageError(
+                    "cloud.narrative_repair_evidence_closure_invalid",
+                    reviewable=True,
+                )
+            claims.append(
+                {
+                    "claim_id": str(claim.get("claim_id", "")),
+                    "claim_type": str(claim.get("claim_type", "")),
+                    "text": str(claim.get("text", "")),
+                    "qualification": str(claim.get("qualification", "")),
+                }
+            )
+        return _hash(
+            {
+                "version": NARRATION_REPAIR_EVIDENCE_CLOSURE_VERSION,
+                "spoken_text": candidate.spoken_text,
+                "ending_kind": candidate.ending_kind,
+                "story_spine": dict(candidate.story_spine),
+                "passages": passages,
+                "claims": claims,
+                "visual_evidence_hash": candidate.visual_evidence_hash,
+                "model_identity_hash": candidate.model_identity_hash,
+                "prompt_version": candidate.prompt_version,
+                "prompt_sha256": candidate.prompt_sha256,
+            }
+        )
+
+    @staticmethod
+    def _story_evidence_panel_closure(
+        story_map: StoryMapResult,
+        claim_refs: Sequence[str],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Resolve exact claim refs to beat sections and permitted panels."""
+
+        story_panel_ids = {str(panel_id) for panel_id in story_map.panel_ids}
+        sections: set[str] = set()
+        for panel_id in claim_refs:
+            if not panel_id or panel_id not in story_panel_ids:
+                raise CloudStageError(
+                    "cloud.narrative_repair_evidence_closure_invalid",
+                    reviewable=True,
+                )
+            matching_sections = {
+                str(beat.get("beat_id", "")).split("__", 1)[0]
+                for beat in story_map.beats
+                if isinstance(beat, Mapping)
+                and panel_id in {str(value) for value in beat.get("panel_ids", ())}
+                and str(beat.get("beat_id", "")).strip()
+            }
+            if not matching_sections:
+                raise CloudStageError(
+                    "cloud.narrative_repair_evidence_closure_invalid",
+                    reviewable=True,
+                )
+            sections.update(matching_sections)
+        if not sections:
+            raise CloudStageError(
+                "cloud.narrative_repair_evidence_closure_invalid",
+                reviewable=True,
+            )
+        permitted = tuple(
+            panel_id
+            for panel_id in story_map.panel_ids
+            if any(
+                section in sections
+                for section in {
+                    str(beat.get("beat_id", "")).split("__", 1)[0]
+                    for beat in story_map.beats
+                    if isinstance(beat, Mapping)
+                    and str(panel_id) in {str(value) for value in beat.get("panel_ids", ())}
+                    and str(beat.get("beat_id", "")).strip()
+                }
+            )
+        )
+        if not permitted:
+            raise CloudStageError(
+                "cloud.narrative_repair_evidence_closure_invalid",
+                reviewable=True,
+            )
+        return tuple(sorted(sections)), tuple(str(value) for value in permitted)
+
+    @staticmethod
     def _build_narration_repair_slots(
         candidate: NarrationResult,
         story_map: StoryMapResult,
@@ -3486,13 +3599,17 @@ class CloudStageRunner:
                 for panel_id in claim_refs:
                     if panel_id not in trusted_evidence_panel_ids:
                         trusted_evidence_panel_ids.append(panel_id)
-            if (
-                not trusted_evidence_panel_ids
-                or not set(candidate_evidence_panel_ids).issubset(
-                    set(trusted_evidence_panel_ids)
-                )
+            _, permitted_panel_ids = CloudStageRunner._story_evidence_panel_closure(
+                story_map,
+                trusted_evidence_panel_ids,
+            )
+            if not set(candidate_evidence_panel_ids).issubset(
+                set(permitted_panel_ids)
             ):
-                raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+                raise CloudStageError(
+                    "cloud.narrative_repair_evidence_closure_invalid",
+                    reviewable=True,
+                )
             evidence_panel_ids = tuple(trusted_evidence_panel_ids)
             matching_beats = [
                 (beat_index, beat)
@@ -3552,6 +3669,242 @@ class CloudStageRunner:
             "removable_slot_ids": [slot.slot_id for slot in slots if slot.removable],
             "registry_hash": _hash(registry_identity),
         }
+
+    @staticmethod
+    def _narration_repair_evidence_closure(
+        positions: Sequence[NarrationRepairPosition | Mapping[str, Any]],
+        candidate: NarrationResult,
+        story_map: StoryMapResult,
+    ) -> dict[str, Any]:
+        """Build the exact panel/section closure for selected claim positions."""
+
+        candidate_passages = {
+            str(passage.get("passage_id", "")): passage
+            for passage in candidate.passages
+            if isinstance(passage, Mapping)
+        }
+        rows: list[dict[str, Any]] = []
+        permitted_panel_ids: list[str] = []
+        for value in positions:
+            row = value.as_dict() if isinstance(value, NarrationRepairPosition) else dict(value)
+            passage_id = str(row.get("passage_id", "")).strip()
+            claim_ids = tuple(str(item) for item in row.get("claim_ids", ()))
+            evidence_panel_ids = tuple(
+                str(item) for item in row.get("evidence_panel_ids", ())
+            )
+            passage = candidate_passages.get(passage_id)
+            context_panel_ids = tuple(
+                str(item)
+                for item in passage.get("evidence_panel_ids", ())
+            ) if passage is not None else ()
+            if (
+                passage is None
+                or not passage_id
+                or not claim_ids
+                or len(set(claim_ids)) != len(claim_ids)
+                or not evidence_panel_ids
+                or len(set(evidence_panel_ids)) != len(evidence_panel_ids)
+                or not context_panel_ids
+                or len(set(context_panel_ids)) != len(context_panel_ids)
+            ):
+                raise CloudStageError(
+                    "cloud.narrative_repair_evidence_closure_invalid",
+                    reviewable=True,
+                )
+            story_claims = {
+                str(claim.get("claim_id", "")): claim
+                for claim in story_map.claims
+                if isinstance(claim, Mapping)
+            }
+            trusted_claim_refs: list[str] = []
+            section_keys: set[str] = set()
+            for claim_id in claim_ids:
+                claim = story_claims.get(claim_id)
+                if claim is None:
+                    raise CloudStageError(
+                        "cloud.narrative_repair_evidence_closure_invalid",
+                        reviewable=True,
+                    )
+                claim_refs = tuple(
+                    str(item)
+                    for item in claim.get(
+                        "evidence_panel_ids",
+                        claim.get("panel_ids", ()),
+                    )
+                )
+                if not claim_refs or len(set(claim_refs)) != len(claim_refs):
+                    raise CloudStageError(
+                        "cloud.narrative_repair_evidence_closure_invalid",
+                        reviewable=True,
+                    )
+                sections, permitted = CloudStageRunner._story_evidence_panel_closure(
+                    story_map,
+                    claim_refs,
+                )
+                section_keys.update(sections)
+                if not set(claim_refs).issubset(set(evidence_panel_ids)):
+                    raise CloudStageError(
+                        "cloud.narrative_repair_evidence_closure_invalid",
+                        reviewable=True,
+                    )
+                for panel_id in claim_refs:
+                    if panel_id not in trusted_claim_refs:
+                        trusted_claim_refs.append(panel_id)
+                if not set(context_panel_ids).issubset(set(permitted)):
+                    raise CloudStageError(
+                        "cloud.narrative_repair_evidence_closure_invalid",
+                        reviewable=True,
+                    )
+            _, permitted = CloudStageRunner._story_evidence_panel_closure(
+                story_map,
+                trusted_claim_refs,
+            )
+            if (
+                not set(evidence_panel_ids).issubset(set(permitted))
+                or set(evidence_panel_ids) != set(trusted_claim_refs)
+            ):
+                raise CloudStageError(
+                    "cloud.narrative_repair_evidence_closure_invalid",
+                    reviewable=True,
+                )
+            row = {
+                "position": row.get("position"),
+                "slot_id": str(row.get("slot_id", "")),
+                "passage_id": passage_id,
+                "claim_ids": list(claim_ids),
+                "evidence_panel_ids": list(evidence_panel_ids),
+                "requested_context_panel_ids": list(context_panel_ids),
+                "beat_id": str(row.get("beat_id", "")),
+                "causal_position": row.get("causal_position"),
+                "section_keys": sorted(section_keys),
+                "permitted_panel_ids": list(permitted),
+            }
+            rows.append(row)
+            for panel_id in permitted:
+                if panel_id not in permitted_panel_ids:
+                    permitted_panel_ids.append(panel_id)
+        if not rows:
+            raise CloudStageError(
+                "cloud.narrative_repair_evidence_closure_invalid",
+                reviewable=True,
+            )
+        identity = {
+            "version": NARRATION_REPAIR_EVIDENCE_CLOSURE_VERSION,
+            "lineage_candidate_hash": CloudStageRunner._narration_repair_lineage_identity(
+                candidate
+            ),
+            "candidate_visual_evidence_hash": candidate.visual_evidence_hash,
+            "candidate_model_identity_hash": candidate.model_identity_hash,
+            "candidate_prompt_version": candidate.prompt_version,
+            "candidate_prompt_sha256": candidate.prompt_sha256,
+            "story_map_hash": story_map.story_map_hash,
+            "story_model_identity_hash": story_map.model_identity_hash,
+            "story_prompt_version": story_map.prompt_version,
+            "story_prompt_sha256": story_map.prompt_sha256,
+            "story_visual_evidence_hash": story_map.visual_evidence_hash,
+            "story_panel_ids": [str(value) for value in story_map.panel_ids],
+            "positions": rows,
+            "permitted_panel_ids": permitted_panel_ids,
+        }
+        return {
+            **identity,
+            "closure_hash": _hash(identity),
+        }
+
+    @staticmethod
+    def _validate_narration_repair_evidence_closure(
+        registry: Mapping[str, Any],
+        candidate: NarrationResult,
+        story_map: StoryMapResult | None = None,
+    ) -> Mapping[str, Any]:
+        closure = registry.get("evidence_closure")
+        if not isinstance(closure, Mapping):
+            raise CloudStageError(
+                "cloud.narrative_repair_evidence_closure_invalid",
+                reviewable=True,
+            )
+        closure_hash = str(closure.get("closure_hash", ""))
+        identity = {str(key): value for key, value in closure.items() if key != "closure_hash"}
+        if (
+            closure.get("version") != NARRATION_REPAIR_EVIDENCE_CLOSURE_VERSION
+            or not closure_hash
+            or _hash(identity) != closure_hash
+            or closure.get("lineage_candidate_hash")
+            != CloudStageRunner._narration_repair_lineage_identity(candidate)
+            or closure.get("candidate_visual_evidence_hash") != candidate.visual_evidence_hash
+            or closure.get("candidate_model_identity_hash") != candidate.model_identity_hash
+            or closure.get("candidate_prompt_version") != candidate.prompt_version
+            or closure.get("candidate_prompt_sha256") != candidate.prompt_sha256
+            or registry.get("evidence_closure_hash") != closure_hash
+        ):
+            raise CloudStageError(
+                "cloud.narrative_repair_evidence_closure_invalid",
+                reviewable=True,
+            )
+        if story_map is not None:
+            if (
+                closure.get("story_map_hash") != story_map.story_map_hash
+                or closure.get("story_model_identity_hash") != story_map.model_identity_hash
+                or closure.get("story_prompt_version") != story_map.prompt_version
+                or closure.get("story_prompt_sha256") != story_map.prompt_sha256
+                or closure.get("story_visual_evidence_hash") != story_map.visual_evidence_hash
+                or closure.get("story_panel_ids")
+                != [str(value) for value in story_map.panel_ids]
+            ):
+                raise CloudStageError(
+                    "cloud.narrative_repair_evidence_closure_invalid",
+                    reviewable=True,
+                )
+            story_claims = {
+                str(claim.get("claim_id", "")): claim
+                for claim in story_map.claims
+                if isinstance(claim, Mapping)
+            }
+            for row in closure.get("positions", ()):
+                if not isinstance(row, Mapping):
+                    raise CloudStageError(
+                        "cloud.narrative_repair_evidence_closure_invalid",
+                        reviewable=True,
+                    )
+                trusted_refs = []
+                for claim_id in row.get("claim_ids", ()):
+                    claim = story_claims.get(str(claim_id))
+                    if claim is None:
+                        raise CloudStageError(
+                            "cloud.narrative_repair_evidence_closure_invalid",
+                            reviewable=True,
+                        )
+                    refs = tuple(
+                        str(item)
+                        for item in claim.get(
+                            "evidence_panel_ids",
+                            claim.get("panel_ids", ()),
+                        )
+                    )
+                    sections, permitted = CloudStageRunner._story_evidence_panel_closure(
+                        story_map,
+                        refs,
+                    )
+                    if not set(refs).issubset(
+                        {str(item) for item in row.get("evidence_panel_ids", ())}
+                    ) or not set(row.get("evidence_panel_ids", ())).issubset(
+                        set(permitted)
+                    ) or not set(row.get("requested_context_panel_ids", ())).issubset(
+                        set(permitted)
+                    ) or list(sections) != list(row.get("section_keys", ())) or list(
+                        permitted
+                    ) != list(row.get("permitted_panel_ids", ())):
+                        raise CloudStageError(
+                            "cloud.narrative_repair_evidence_closure_invalid",
+                            reviewable=True,
+                        )
+                    trusted_refs.extend(item for item in refs if item not in trusted_refs)
+                if set(trusted_refs) != set(row.get("evidence_panel_ids", ())):
+                    raise CloudStageError(
+                        "cloud.narrative_repair_evidence_closure_invalid",
+                        reviewable=True,
+                    )
+        return closure
 
     def _narration_repair_position_registry(
         self,
@@ -3636,6 +3989,11 @@ class CloudStageRunner:
                 reviewable=True,
             )
         prompt_identity = prompt or self.prompts["narration"]
+        evidence_closure = self._narration_repair_evidence_closure(
+            canonical_positions,
+            candidate,
+            story_map,
+        )
         identity = {
             "version": NARRATION_REPAIR_POSITION_REGISTRY_VERSION,
             "candidate_hash": _hash(candidate.as_dict()),
@@ -3645,10 +4003,12 @@ class CloudStageRunner:
             "prompt_version": prompt_identity[0],
             "prompt_sha256": prompt_identity[1],
             "positions": rows,
+            "evidence_closure_hash": evidence_closure["closure_hash"],
         }
         return {
             **identity,
             "positions": rows,
+            "evidence_closure": evidence_closure,
             "target_word_count": target_word_count,
             "target_duration_s": script.estimate_narration_duration(
                 " ".join(["word"] * target_word_count),
@@ -4065,9 +4425,16 @@ class CloudStageRunner:
         raw: Mapping[str, Any],
         registry: Mapping[str, Any],
         candidate: NarrationResult,
+        *,
+        story_map: StoryMapResult | None = None,
     ) -> dict[str, Any]:
         """Map provider rewrite index N to trusted local position N."""
 
+        evidence_closure = CloudStageRunner._validate_narration_repair_evidence_closure(
+            registry,
+            candidate,
+            story_map,
+        )
         if not isinstance(raw, Mapping) or set(raw) != {"rewrites"}:
             raise CloudStageError(
                 "cloud.narrative_repair_position_contract_invalid",
@@ -4143,6 +4510,11 @@ class CloudStageRunner:
             registry,
         )
         positions: list[NarrationRepairPosition] = []
+        closure_rows = {
+            int(row["position"]): row
+            for row in evidence_closure.get("positions", ())
+            if isinstance(row, Mapping) and isinstance(row.get("position"), int)
+        }
         for index, value in enumerate(raw_positions):
             try:
                 position = NarrationRepairPosition(
@@ -4174,6 +4546,22 @@ class CloudStageRunner:
                     "cloud.narrative_repair_position_contract_invalid",
                     reviewable=True,
                 ) from None
+            closure_row = closure_rows.get(index)
+            if (
+                closure_row is None
+                or str(closure_row.get("slot_id", "")) != position.slot_id
+                or str(closure_row.get("passage_id", "")) != position.passage_id
+                or tuple(str(item) for item in closure_row.get("claim_ids", ()))
+                != position.claim_ids
+                or tuple(str(item) for item in closure_row.get("evidence_panel_ids", ()))
+                != position.evidence_panel_ids
+                or str(closure_row.get("beat_id", "")) != position.beat_id
+                or int(closure_row.get("causal_position", -1)) != position.causal_position
+            ):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_lineage_invalid",
+                    reviewable=True,
+                )
             positions.append(position)
             text = rewrites[index]
             if not isinstance(text, str) or not text.strip():
@@ -5254,7 +5642,7 @@ class CloudStageRunner:
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v4"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v5"
         repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
         repair_prompt = (
             repair_prompt_version,
@@ -5539,6 +5927,7 @@ class CloudStageRunner:
                             raw,
                             repair_position_registry,
                             repair_candidate,
+                            story_map=story_map,
                         )
                         passage_lineage = provider_output.pop(
                             "_passage_lineage", None

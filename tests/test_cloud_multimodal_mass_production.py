@@ -2924,7 +2924,7 @@ def test_position_repair_preselection_is_deterministic_and_budgeted():
     second = runner._build_narration_repair_position_registry(candidate, story_map)
 
     positions = first["positions"]
-    assert first["version"] == "narration-repair-position-registry-v3"
+    assert first["version"] == "narration-repair-position-registry-v4"
     assert len(positions) == 8
     assert 8 <= len({claim_id for row in positions for claim_id in row["claim_ids"]}) <= 12
     assert 4 <= len({row["passage_id"] for row in positions}) <= 6
@@ -4183,7 +4183,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-position-repair-v4"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v5"
     )
     assert len(repair_prompt_sha256) == 64
     assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text
@@ -4200,7 +4200,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert result.qc_report["narration_repair"]["candidate_hash"]
     assert result.qc_report["narration_repair"]["position_registry_version"] == (
-        "narration-repair-position-registry-v3"
+        "narration-repair-position-registry-v4"
     )
     assert result.qc_report["narration_repair"]["slot_order_hash"]
     assert result.qc_report["narration_repair"]["passage_lineage_version"] == (
@@ -4314,13 +4314,16 @@ def test_repair_slots_reconstruct_trusted_evidence_when_candidate_omits_ref():
                 "editorial_role": "role",
                 "text": f"Grounded passage {passage_index}.",
                 "claim_ids": passage_claim_ids,
-                "evidence_panel_ids": [refs[0]],
+                "evidence_panel_ids": [
+                    refs[0],
+                    "panel-8" if passage_index == 0 else refs[1],
+                ],
             }
         )
         beats.append(
             {
-                "beat_id": f"beat-{passage_index}",
-                "panel_ids": list(refs),
+                "beat_id": f"b{passage_index}__sub0__beat",
+                "panel_ids": [*refs, "panel-8"] if passage_index == 0 else list(refs),
                 "summary": "The ordered beat remains grounded.",
             }
         )
@@ -4342,7 +4345,7 @@ def test_repair_slots_reconstruct_trusted_evidence_when_candidate_omits_ref():
         visual_evidence_hash="v" * 64,
     )
     story_map = module.StoryMapResult(
-        panel_ids=panel_ids,
+        panel_ids=(*panel_ids, "panel-8"),
         beats=tuple(beats),
         causal_chain=(),
         claims=tuple(claims),
@@ -4360,6 +4363,95 @@ def test_repair_slots_reconstruct_trusted_evidence_when_candidate_omits_ref():
 
     assert len(slots) == 4
     assert slots[0].evidence_panel_ids == ("panel-0", "panel-1")
+
+
+def test_repair_evidence_closure_admits_exact_p2_story_ancestry():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    candidate = replace(candidate, passages=tuple(candidate.passages[:4]))
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+
+    closure = runner._validate_narration_repair_evidence_closure(
+        registry,
+        candidate,
+        story_map,
+    )
+    p2_rows = [
+        row
+        for row in closure["positions"]
+        if isinstance(row, dict) and row.get("passage_id") == "immutable-passage-2"
+    ]
+
+    assert p2_rows
+    assert closure["closure_hash"] == registry["evidence_closure_hash"]
+    for row in p2_rows:
+        assert row["beat_id"]
+        assert row["section_keys"]
+        assert set(row["evidence_panel_ids"]).issubset(
+            set(row["permitted_panel_ids"])
+        )
+
+
+def test_repair_evidence_closure_rejects_unrelated_same_chapter_panel():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    first = dict(candidate.passages[0])
+    first["evidence_panel_ids"] = [
+        str(first["evidence_panel_ids"][0]),
+        str(candidate.passages[1]["evidence_panel_ids"][0]),
+    ]
+    mixed = replace(candidate, passages=(first, *candidate.passages[1:]))
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._build_narration_repair_position_registry(mixed, story_map)
+
+    assert caught.value.code == "cloud.narrative_repair_evidence_closure_invalid"
+
+
+def test_repair_evidence_closure_rejects_missing_story_panel_ancestry():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    first_panel = str(candidate.passages[0]["evidence_panel_ids"][0])
+    beats = tuple(
+        {
+            **dict(beat),
+            "panel_ids": [
+                panel_id
+                for panel_id in beat.get("panel_ids", ())
+                if str(panel_id) != first_panel
+            ],
+        }
+        for beat in story_map.beats
+    )
+    missing = replace(story_map, beats=beats)
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._build_narration_repair_position_registry(candidate, missing)
+
+    assert caught.value.code == "cloud.narrative_repair_evidence_closure_invalid"
+
+
+def test_repair_evidence_closure_rejects_stale_story_identity_at_vector_boundary():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(row["word_budget"], f"closure{index}_")
+            for index, row in enumerate(registry["positions"])
+        ]
+    }
+    stale_story = replace(story_map, story_map_hash="z" * 64)
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(
+            raw,
+            registry,
+            candidate,
+            story_map=stale_story,
+        )
+
+    assert caught.value.code == "cloud.narrative_repair_evidence_closure_invalid"
 
 
 def test_out_of_range_candidate_stays_out_of_final_narration_cache():
@@ -4869,7 +4961,7 @@ def test_position_repair_rejects_claim_evidence_mismatch_before_analyzer():
     with pytest.raises(module.CloudStageError) as caught:
         runner._build_narration_repair_position_registry(expanded, story_map)
 
-    assert caught.value.code == "cloud.narrative_repair_slot_lineage_invalid"
+    assert caught.value.code == "cloud.narrative_repair_evidence_closure_invalid"
 
 
 def test_position_repair_lineage_merge_is_ordered_and_cache_identity_changes_with_refs():

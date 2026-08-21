@@ -1310,3 +1310,32 @@ Do not edit the DB/job JSON manually, repeat visual/story work, or issue a
 provider/TTS request. The next exact step is to test and fix the normal
 701-panel persistence round-trip locally, rerun the zero-budget entrypoint,
 and only then evaluate downstream rendering gates.
+
+## 2026-08-21 strict repair evidence-closure checkpoint
+
+Rollback parent: `bbd2211343715f781be821930b218d63ea713175`.
+
+The rejected broad same-chapter fallback was not reintroduced. The targeted
+repair registry computes `narration-repair-evidence-closure-v1` only from the
+persisted candidate's exact passage and claim IDs, canonical story-map claim
+evidence, and the beat/section ancestry for those claims. Its identity also
+binds candidate visual/model/prompt hashes and story-map hash, model, prompt,
+visual hash, and ordered panel IDs. Every candidate context panel must be in
+that exact permitted section closure; foreign, unresolved, duplicate,
+mixed-section, stale-story, changed-hash, or missing-ancestry data fails
+closed as `cloud.narrative_repair_evidence_closure_invalid`.
+
+The provider remains a positional text rewriter and returns no identifiers.
+Local reconciliation copies trusted claim/evidence lineage from the closure;
+it never accepts provider-owned panel or section IDs and never broadens to all
+same-chapter panels. Positive exact-p2 ancestry and negative unrelated-panel,
+missing-ancestry, and stale-story-identity regressions are collection clean.
+The focused closure matrix is 5/5, the full cloud file is 122/122, and the
+related analyzer/script/narrative matrix is 275/275. No provider request,
+runtime-state edit, DB write, media, or secret was used for this checkpoint.
+
+After publication, make exactly one bounded repair request to the already
+configured same model, with zero retries and no visual/story repeat. Do not
+proceed to persistence, silent render, or voice until the repaired result
+passes the full closure, grounding, causal, duration, display, and cache
+gates.

@@ -1321,3 +1321,26 @@ guess a migration or rerun cloud work. The next resume command is the same
 zero-budget `scripts/run_cloud_multimodal_batch.py` invocation after a local
 test/fix of the 701-panel persistence boundary. Stop before provider/TTS and
 do not claim narration persistence, MP4, or QC.
+
+## Strict repair evidence closure — 2026-08-21
+
+Rollback parent: `bbd2211343715f781be821930b218d63ea713175`.
+
+The targeted repair now has an exact local evidence-closure boundary. It starts
+with the persisted candidate's retained passage and claim IDs, resolves each
+claim to canonical story-map evidence, then resolves those panel IDs to their
+beat/section ancestry. Only the resulting ordered permitted panel set may
+appear as candidate context. Closure identity includes candidate/story
+visual/model/prompt hashes and ordered story panel IDs. No broad same-chapter
+fallback, hash rewrite, or provider-owned lineage is accepted.
+
+The provider response remains positional rewrite text only. Local code copies
+claim/evidence lineage from the trusted registry and rejects foreign,
+unresolved, unrelated-section, duplicate/mixed, missing-ancestry, stale-story,
+changed-hash, and closure-metadata drift as
+`cloud.narrative_repair_evidence_closure_invalid`. The positive exact p2
+ancestry case and negative closure cases are tested: focused closure 5/5,
+cloud file 122/122, and related matrix 275/275. Closure RED was recorded
+before production edits; no provider request or runtime-state/DB/media/secret
+change was made. Publish the source/test/docs checkpoint before the single
+same-model zero-retry repair request.

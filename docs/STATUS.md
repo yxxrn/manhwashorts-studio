@@ -2575,3 +2575,41 @@ Next command boundary: inspect and test the 701-panel persistence round-trip
 using the cached job/manifest only, then rerun the same zero-budget normal
 entrypoint. Do not call provider, rerun visual/story, or manually edit runtime
 state until that boundary passes.
+
+## Strict repair evidence closure — 2026-08-21
+
+Rollback parent: `bbd2211343715f781be821930b218d63ea713175`.
+
+The latest local slice closes the exact lineage boundary that previously
+rejected the current targeted passage before repair. It does not relax the
+gate or accept a broad chapter panel set. For each retained position, local
+code derives the permitted evidence set from the candidate's exact passage and
+claim IDs, the canonical story-map claim evidence, and the beat/section
+ancestry that resolves those claims. The closure records ordered sections,
+permitted panel IDs, exact candidate/story visual and model/prompt identities,
+and a closure hash under `narration-repair-evidence-closure-v1`.
+
+Every requested context panel must resolve inside that closure. Unknown or
+foreign panels, unrelated same-chapter sections, missing beat ancestry,
+duplicate/mixed IDs, stale story identity, changed visual/model/prompt hashes,
+and changed closure metadata fail closed as
+`cloud.narrative_repair_evidence_closure_invalid`. The provider still returns
+only positional rewrite text; it never supplies claim, panel, or section IDs.
+Local reconciliation reconstructs trusted claim/evidence lineage and keeps
+the existing grounding, causal, duration, identity, display, and persistence
+gates unchanged.
+
+TDD evidence for this checkpoint: the four intended collection-clean RED
+regressions failed on the published parent at the old generic slot-lineage
+boundary; after the strict closure implementation, the focused closure set
+including the exact p2 ancestry admission is 5/5, the full cloud file is
+122/122, and the related analyzer/script/narrative matrix is 275/275. Ruff,
+compileall, diff-check, no-churn, and scoped secret checks remain required
+before publication. No provider request, DB/runtime edit, media, or secret was
+used. The next authorized runtime step, only after this source/test/docs
+checkpoint is published, is one same-model bounded repair request with zero
+retries and no visual/story repeat.
+The full Oracle non-slow run collected 1,154 tests: 1,134 passed, 16 failed,
+and 4 skipped. Thirteen pipeline fixture failures match the clean-parent set,
+two launcher tests require Windows `cmd.exe`, and one split-focus render
+assertion remains an unrelated baseline failure; the full suite is not green.
