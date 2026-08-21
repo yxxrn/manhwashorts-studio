@@ -820,3 +820,27 @@ guidance only, and local 115-125-word/50-60-second gates are unchanged.
 Focused verification is 149/149 with Ruff, compileall, diff-check, no-churn,
 and key-shaped secret scan clean. Publish before another request; no
 narration, MP4, voice, or final QC is proven.
+
+## Position-vector response-shape propagation correction (2026-08-21)
+
+Parent checkpoint: `c39215d61211a80cf0f19729bcd0a026b1bb39cc`. The one bounded
+real repair request after that checkpoint used request/retry counts 1/0 and
+failed closed as `cloud.narrative_word_count_out_of_range`. Its sanitized
+report is `/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`248525989776f6a52bb626f3439ef1ca36ecd0fd4cff13ece59ef5c946185ff2`.
+The report had no response-shape metrics because the positional reconciler
+accepted the response before a later gate failed; no provider prose was
+retained or printed.
+
+Collection-clean RED reproduced the missing durable metrics boundary. GREEN
+now carries only sanitized metadata (container/keys, array length,
+per-position word counts, total words, duration, slot/order identity, and
+failed predicate) from successful positional reconciliation into the existing
+failure report, then removes the private transport field before analyzer
+validation. It does not relax grounding, causal, duration, identity, or
+lineage gates and never persists provider prose. Focused verification is
+151/151 with five existing warnings; Ruff, compileall, diff-check, no-churn,
+and key-shaped secret scan are clean. Publish this checkpoint before at most
+one new bounded repair request. No narration, MP4, voice, or final QC is
+proven.

@@ -123,3 +123,22 @@ production run is green only with real narration, a real video-only MP4 and
 FFprobe/blackdetect/contact-sheet/QC evidence. Voice/TTS may follow the
 verified silent preview; publish_allowed remains false until rights and
 editorial approval gates pass.
+
+## Positional repair observability correction
+
+The positional rewrite reducer now emits a private, in-process shape record
+only after the response has passed local positional reconciliation. The
+record contains non-prose response metadata: container type and top-level
+keys, array length, per-position word counts, total words, duration estimate,
+trusted slot/order identity, and the next local predicate/code when a later
+gate rejects the candidate. `_run_narration_batched` copies that record into
+the existing sanitized failure report and removes the private field before
+the normal analyzer contract sees it. This keeps later-gate diagnosis durable
+without storing provider prose or changing admission gates.
+
+The current parent attempt failed once with
+`cloud.narrative_word_count_out_of_range`; its report had empty shape metrics,
+which is the defect this checkpoint closes. The focused regression is
+collection-clean and 151/151 green. A new provider request is prohibited
+until this source/test/docs checkpoint is published; visual/story caches are
+not invalidated.

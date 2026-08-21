@@ -1105,6 +1105,17 @@ class CloudStageRunner:
         if any(stage in expected and expected[stage] != prompt[0] for stage, prompt in self.prompts.items()):
             raise CloudStageError("cloud.prompt_identity_mismatch")
 
+    def _response_shape_metrics_for_failure(self, code: str) -> dict[str, Any]:
+        """Attach only current positional shape metadata to a later safe error."""
+
+        metrics = dict(self.last_response_shape_metrics)
+        if not metrics:
+            return {}
+        metrics["failed_code"] = code
+        if not metrics.get("failed_predicate"):
+            metrics["failed_predicate"] = code
+        return metrics
+
     def _call(self, operation) -> Any:
         last_error: Exception | None = None
         for _ in range(self.max_attempts):
@@ -2299,9 +2310,13 @@ class CloudStageRunner:
             remaining_failures = self._narration_contract_failures(result)
             if remaining_failures:
                 self._last_narration_result = result
+                failure_code = remaining_failures[0]
                 raise CloudStageError(
-                    "cloud.narrative_duration_out_of_range",
+                    failure_code,
                     reviewable=True,
+                    safe_metadata=self._response_shape_metrics_for_failure(
+                        failure_code
+                    ),
                 )
         qc_report = dict(result.qc_report)
         qc_report["editorial_selection"] = selection.as_dict()
@@ -2325,12 +2340,22 @@ class CloudStageRunner:
             require_grounding=True,
         ):
             self._last_narration_result = result
-            if self._narration_contract_failures(result):
+            failure_codes = self._narration_contract_failures(result)
+            if failure_codes:
+                failure_code = failure_codes[0]
                 raise CloudStageError(
-                    "cloud.narrative_duration_out_of_range",
+                    failure_code,
                     reviewable=True,
+                    safe_metadata=self._response_shape_metrics_for_failure(
+                        failure_code
+                    ),
                 )
-            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            failure_code = "cloud.narrative_not_grounded"
+            raise CloudStageError(
+                failure_code,
+                reviewable=True,
+                safe_metadata=self._response_shape_metrics_for_failure(failure_code),
+            )
         if self.cache is not None:
             self.cache.put(key, result.as_dict())
         return result
@@ -3162,7 +3187,7 @@ class CloudStageRunner:
             )
 
         def response_shape_metrics(
-            failed_predicate: str,
+            failed_predicate: str | None,
             word_counts: Sequence[int | None],
             total_words: int | None,
             duration: float | None,
@@ -3191,6 +3216,7 @@ class CloudStageRunner:
                 "per_position_word_counts": list(word_counts),
                 "total_word_count": total_words,
                 "estimated_duration_s": duration,
+                "slot_order_hash": str(registry.get("slot_order_hash", "")),
                 "expected_ranges": expected_ranges,
                 "accepted_word_bounds": {"min": 115, "max": 125},
                 "accepted_duration_bounds_s": {"min": 50.0, "max": 60.0},
@@ -3366,6 +3392,12 @@ class CloudStageRunner:
             },
             "script_passages": passages,
             "evidence_graph": {"claims": claims},
+            "_response_shape_metrics": response_shape_metrics(
+                None,
+                word_counts,
+                total_words if all_strings else None,
+                duration,
+            ),
         }
 
     @staticmethod
@@ -4038,11 +4070,17 @@ class CloudStageRunner:
                     require_grounding=True,
                 ):
                     failures = self._narration_contract_failures(repaired)
-                    last_error = CloudStageError(
+                    failure_code = (
                         failures[0]
                         if failures
-                        else "cloud.narrative_not_grounded",
+                        else "cloud.narrative_not_grounded"
+                    )
+                    last_error = CloudStageError(
+                        failure_code,
                         reviewable=True,
+                        safe_metadata=self._response_shape_metrics_for_failure(
+                            failure_code
+                        ),
                     )
                     continue
                 report = dict(repaired.qc_report)
@@ -4100,6 +4138,8 @@ class CloudStageRunner:
         repair_position_registry: Mapping[str, Any] | None = None,
         repair_candidate: NarrationResult | None = None,
     ) -> NarrationResult:
+        if repair_position_registry is not None:
+            self.last_response_shape_metrics = {}
         retryable_codes = {
             "cloud.provider_request_failed",
             "cloud.provider_response_invalid",
@@ -4206,6 +4246,11 @@ class CloudStageRunner:
                             repair_position_registry,
                             repair_candidate,
                         )
+                        shape_metrics = provider_output.pop(
+                            "_response_shape_metrics", None
+                        )
+                        if isinstance(shape_metrics, Mapping):
+                            self.last_response_shape_metrics = dict(shape_metrics)
                     else:
                         provider_output = raw.get("analyzer_output", raw)
                     if not isinstance(provider_output, Mapping):
@@ -5689,8 +5734,24 @@ class CloudBatchService:
         record.error_message = str(exc)
         if exc.reviewable:
             review_entry = {"code": exc.code, "reason": str(exc)}
-            if exc.safe_metadata:
-                review_entry["safe_metadata"] = dict(exc.safe_metadata)
+            safe_metadata = dict(exc.safe_metadata)
+            metrics_for_failure = getattr(
+                self.runner, "_response_shape_metrics_for_failure", None
+            )
+            if (
+                not safe_metadata
+                and callable(metrics_for_failure)
+                and (
+                    exc.code.startswith("cloud.narrative_")
+                    or exc.code == "cloud.request_budget_exceeded"
+                )
+            ):
+                safe_metadata = metrics_for_failure(exc.code)
+            if "array_key" in safe_metadata:
+                safe_metadata.setdefault("failed_code", exc.code)
+                safe_metadata.setdefault("failed_predicate", exc.code)
+            if safe_metadata:
+                review_entry["safe_metadata"] = safe_metadata
             record.review_queue.append(review_entry)
         self.store.save(record)
         return record
@@ -6195,8 +6256,24 @@ class CloudBatchService:
             record.error_message = str(exc)
             if exc.reviewable:
                 review_entry = {"code": exc.code, "reason": str(exc)}
-                if exc.safe_metadata:
-                    review_entry["safe_metadata"] = dict(exc.safe_metadata)
+                safe_metadata = dict(exc.safe_metadata)
+                metrics_for_failure = getattr(
+                    self.runner, "_response_shape_metrics_for_failure", None
+                )
+                if (
+                    not safe_metadata
+                    and callable(metrics_for_failure)
+                    and (
+                        exc.code.startswith("cloud.narrative_")
+                        or exc.code == "cloud.request_budget_exceeded"
+                    )
+                ):
+                    safe_metadata = metrics_for_failure(exc.code)
+                if "array_key" in safe_metadata:
+                    safe_metadata.setdefault("failed_code", exc.code)
+                    safe_metadata.setdefault("failed_predicate", exc.code)
+                if safe_metadata:
+                    review_entry["safe_metadata"] = safe_metadata
                 record.review_queue.append(review_entry)
             self.store.save(record)
             return record

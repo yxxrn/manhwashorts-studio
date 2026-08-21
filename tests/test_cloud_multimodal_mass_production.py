@@ -2679,6 +2679,30 @@ def test_position_repair_budget_failure_exposes_sanitized_shape_metrics():
     assert "metrics0_word" not in json.dumps(metrics)
 
 
+def test_position_repair_success_exposes_sanitized_shape_metrics():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [row["word_budget"] for row in registry["positions"]]
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"accepted{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+
+    reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    metrics = reconciled["_response_shape_metrics"]
+    assert metrics["container_type"] == "dict"
+    assert metrics["top_level_keys"] == ["rewrites"]
+    assert metrics["array_count"] == len(counts)
+    assert metrics["per_position_word_counts"] == counts
+    assert metrics["total_word_count"] == 120
+    assert metrics["failed_predicate"] is None
+    assert "accepted0_word" not in json.dumps(metrics)
+
+
 def test_position_repair_accepts_total_below_guidance_inside_final_bounds():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
@@ -3561,3 +3585,37 @@ def test_narration_targeted_repair_canonicalizes_non_lineage_provider_drift():
     assert reconciled.evidence_graph == candidate.evidence_graph
     assert reconciled.observations == candidate.observations
     assert reconciled.story_spine == candidate.story_spine
+def test_later_gate_failure_persists_success_shape_metrics(tmp_path):
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [row["word_budget"] for row in registry["positions"]]
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"durable{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+    reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
+    runner.last_response_shape_metrics = dict(
+        reconciled.pop("_response_shape_metrics")
+    )
+
+    store = module.JsonJobStore(tmp_path)
+    service = module.CloudBatchService(runner=runner, store=store)
+    record = module.ChapterJobRecord(job_id="later-gate-shape")
+    failure = module.CloudStageError(
+        "cloud.narrative_word_count_out_of_range",
+        reviewable=True,
+    )
+    service._record_failure(record, failure)
+
+    persisted = store.load("later-gate-shape")
+    assert persisted is not None
+    metrics = persisted.review_queue[-1]["safe_metadata"]
+    assert metrics["slot_order_hash"] == registry["slot_order_hash"]
+    assert metrics["array_count"] == len(counts)
+    assert metrics["per_position_word_counts"] == counts
+    assert metrics["failed_code"] == failure.code
+    assert metrics["failed_predicate"] == failure.code
+    assert "durable0_word" not in json.dumps(metrics)

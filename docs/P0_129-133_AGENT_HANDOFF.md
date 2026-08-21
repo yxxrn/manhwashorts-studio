@@ -811,6 +811,25 @@ gates remain strict and exact 120 is guidance only. Focused verification is
 clean. Publish before another one-request repair; no narration, MP4, voice, or
 final QC is proven.
 
+## Position-vector response-shape propagation correction - 2026-08-21
+
+Parent checkpoint: `c39215d61211a80cf0f19729bcd0a026b1bb39cc`. The single
+bounded real repair request after it used request/retry counts 1/0 and failed
+closed as `cloud.narrative_word_count_out_of_range`. The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+(`248525989776f6a52bb626f3439ef1ca36ecd0fd4cff13ece59ef5c946185ff2`).
+Its response-shape metrics were empty because a later gate failed after
+positional reconciliation; no provider prose was retained.
+
+RED reproduced the missing propagation. GREEN now carries sanitized shape
+metrics (array length, per-position counts, total/duration, slot/order
+identity, and failed predicate) through the durable report and strips the
+private field before analyzer validation. Focused verification is 151/151
+with five existing warnings; Ruff, compileall, diff-check, no-churn, and
+key-shaped secret scan are clean. Publish before one new bounded repair call;
+visual/story stages remain cached. No narration, MP4, voice, or final QC is
+proven.
+
 ## Position-vector safe target correction - 2026-08-21
 
 The first request after `cd209c10ea6c1995adb09a3728c11be4b17b8626` returned
