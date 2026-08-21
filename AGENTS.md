@@ -1184,3 +1184,29 @@ service boundary with no visual/story repeat and no provider call required by
 the local reconciliation path. Keep the runtime job's current `NEEDS_REVIEW`
 state until the repaired result is persisted through the normal transaction;
 do not claim narration, MP4, TTS, or QC readiness from this checkpoint.
+
+## 2026-08-21 cached narration state-boundary continuation fix
+
+Rollback parent for this follow-up is `5cff1984f48a6711e47fadad94557bb42cdb08fb`.
+Publication commit is `eb753e1e06bd8a5287665599fad113267b1fadfe`.
+The published continuity fix made local admission strict, but a resume of an
+existing cached job could still treat a failed cached candidate as permission
+to call `run_narration` again. That would turn a local state discrepancy into
+an unnecessary cloud request.
+
+`CloudBatchService._reconcile_cached_narration` now rebuilds only the ordered
+observation and continuity fields from the current reconciled visual/panel
+registry through `_reconcile_narration_full_scope`, before cached metadata and
+grounding admission. A reconciled candidate can reach `READY_TO_RENDER`
+without provider work; an unreconcilable cached object is recorded as a
+fail-closed stage error. Provider prose, claim/evidence lineage, hashes,
+duration, and all quality gates remain authoritative and unchanged.
+
+The state-boundary regression stores a mixed selected-scope candidate, resumes
+it through `CloudBatchService.run_job`, and installs a provider-dispatch
+sentinel; it proves the job becomes `READY_TO_RENDER` and persists the full
+continuity ledger without a narration call. The next runtime operation is the
+provider-free normal reconciliation/persistence boundary using the existing
+job and visual/story state. Do not repeat visual/story stages, issue a new
+provider request, or edit runtime JSON/DB manually. No narration, MP4, TTS, or
+QC readiness is claimed until that transaction and downstream gates pass.

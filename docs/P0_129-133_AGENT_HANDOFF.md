@@ -1199,3 +1199,25 @@ visual/story stages, issue a provider request, edit runtime JSON/DB manually,
 or claim narration/render/voice/QC readiness. After publication, resume with
 the existing cached job and record the state transition before any downstream
 stage.
+## Cached narration state-boundary continuation — 2026-08-21
+
+Rollback parent: `5cff1984f48a6711e47fadad94557bb42cdb08fb`.
+Publication commit: `eb753e1e06bd8a5287665599fad113267b1fadfe`.
+
+The published continuity fix correctly rejects a 40-panel repair ledger mixed
+with 701 observations. The resume path had to honor that invariant too: its
+old cache-miss branch could dispatch a new narration request after a local
+cached candidate failed strict admission. `CloudBatchService` now performs a
+metadata-only `_reconcile_cached_narration` step from the exact current visual
+and ordered panel registry before cached admission. It reconstructs only
+locally owned observations/continuity and calls no provider. Any unreconcilable
+cached record is fail-closed.
+
+RED reproduced the missing state helper; GREEN resumes the persisted mixed
+candidate through `run_job` with a provider-call sentinel and proves
+`READY_TO_RENDER`, full continuity persistence, and zero narration dispatch.
+The runtime job remains untouched and still needs the normal persistence
+transaction. Resume only after publication with the existing cached visual,
+story, and narration identities; do not repeat visual/story calls, edit DB or
+job JSON manually, or issue a cloud request in this boundary. No MP4, voice,
+or QC artifact is proven.

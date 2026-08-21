@@ -459,3 +459,28 @@ is 1,154 collected with 1,148 passed, 2 failed, and 4 skipped; both failures
 are the Oracle-Linux host's inability to execute Windows `cmd.exe` launcher
 tests. No narration, MP4, TTS, or QC readiness is claimed until the published
 code resumes the existing job through normal persistence and downstream gates.
+## Cached narration state admission invariant — 2026-08-21
+
+Rollback parent: `5cff1984f48a6711e47fadad94557bb42cdb08fb`.
+Publication commit: `eb753e1e06bd8a5287665599fad113267b1fadfe`.
+
+The map/reduce runtime has two legitimate scopes: provider repair may operate
+on a selected panel scope, while final narration admission requires the
+complete ordered visual scope. A cached repair result once crossed those
+boundaries with all observations but a selected continuity ledger. The
+published continuity predicate rejects that object; this follow-up prevents
+the resume state machine from interpreting the local rejection as permission
+to call narration again.
+
+`CloudBatchService._reconcile_cached_narration` rebuilds full observations and
+the continuity ledger from the current visual/panel registry through the same
+`_reconcile_narration_full_scope` helper used by final assembly. Only after
+that local reconciliation do model/prompt/visual identity, canonical duration,
+grounding, and shared analyzer gates run. A valid cached object resumes to
+`READY_TO_RENDER` with zero cloud calls; invalid lineage is recorded as a
+fail-closed error. No provider-owned prose, claim/evidence IDs, hash rewrite,
+or quality-gate relaxation is possible at this boundary.
+
+The new regression proves the full state transition using a provider-dispatch
+sentinel and persists the 701-panel continuity ledger. Runtime caches and the
+job remain unchanged until the normal provider-free persistence step is run.

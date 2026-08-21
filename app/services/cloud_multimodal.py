@@ -6964,6 +6964,33 @@ class CloudBatchService:
         self.max_concurrent = max(1, int(max_concurrent))
         self.review_root = Path(review_root) if review_root is not None else None
 
+    def _reconcile_cached_narration(
+        self,
+        narration: NarrationResult,
+        visual: VisualStageResult,
+        panels: Sequence[CloudPanelInput],
+    ) -> NarrationResult:
+        """Repair local full-scope fields before cached-state admission.
+
+        A cached narration owns prose and trusted claim lineage; the visual
+        stage owns the ordered observation and continuity ledger.  Rebuild
+        only those local fields from the current reconciled panel registry so
+        a selected-scope repair result cannot be admitted as a full chapter.
+        No provider call is valid at this boundary.
+        """
+
+        observations, structural = self.runner._narration_observations(
+            visual,
+            panels,
+        )
+        return _reconcile_narration_full_scope(
+            narration,
+            observations=observations,
+            structural=structural,
+            expected_panel_ids=visual.panel_ids,
+            visual_evidence_hash=visual.visual_evidence_hash,
+        )
+
     def run_job(self, job_id: str, panels: Sequence[CloudPanelInput]) -> ChapterJobRecord:
         _validate_job_id(job_id)
         record = self.store.load(job_id) or ChapterJobRecord(job_id=job_id)
@@ -7031,6 +7058,7 @@ class CloudBatchService:
             record.state = ChapterState.STORY_MAPPED
             self.store.save(record)
             narration = NarrationResult.from_dict(record.stage_results["narration"])
+            narration = self._reconcile_cached_narration(narration, visual, panels)
             current_narration_prompt = self.runner.prompts["narration"]
             if (
                 narration.model_identity_hash != self.runner.model_identity.identity_hash
@@ -7045,6 +7073,8 @@ class CloudBatchService:
                 )
             ):
                 raise KeyError("stale_narration_cache")
+        except CloudStageError as exc:
+            return self._record_failure(record, exc)
         except (KeyError, TypeError, ValueError):
             try:
                 narration = self.runner.run_narration(visual, story_map, panels=panels)

@@ -2066,7 +2066,7 @@ def test_narration_cache_requires_complete_grounded_result_even_with_matching_vi
         require_duration=False,
     ) is True
 
-def test_final_narration_scope_rejects_mixed_observations_and_continuity():
+def test_final_narration_scope_rejects_mixed_observations_and_continuity(tmp_path):
     module = _module()
     panels = _panels(module, "scope-reconcile")
     runner = module.CloudStageRunner(
@@ -2158,6 +2158,62 @@ def test_final_narration_scope_rejects_mixed_observations_and_continuity():
         require_duration=True,
         require_grounding=True,
     ) is True
+
+    service = module.CloudBatchService(
+        runner=runner,
+        store=module.JsonJobStore(tmp_path),
+    )
+    state_reconciled = service._reconcile_cached_narration(
+        mixed_scope,
+        visual,
+        panels,
+    )
+    assert state_reconciled.continuity_ledger == full_structural["continuity_ledger"]
+    assert state_reconciled.observations == tuple(full_observations)
+
+    story_map = module.StoryMapResult(
+        panel_ids=visual.panel_ids,
+        beats=(
+            {
+                "beat_id": "scope-beat",
+                "panel_ids": list(visual.panel_ids),
+                "summary": "the ordered evidence develops",
+            },
+        ),
+        causal_chain=(),
+        claims=(),
+        story_map_hash="s" * 64,
+        model_identity_hash=runner.model_identity.identity_hash,
+        prompt_version=runner.prompts["story_map"][0],
+        prompt_sha256=runner.prompts["story_map"][1],
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    store = module.JsonJobStore(tmp_path / "resume")
+    record = module.ChapterJobRecord(
+        job_id="scope-resume",
+        stage_results={
+            "visual": visual.as_dict(),
+            "story_map": story_map.as_dict(),
+            "narration": mixed_scope.as_dict(),
+        },
+    )
+    store.save(record)
+
+    def unexpected_narration(*_args, **_kwargs):
+        raise AssertionError("cached narration must not dispatch a provider call")
+
+    runner.run_narration = unexpected_narration
+    resumed = module.CloudBatchService(runner=runner, store=store).run_job(
+        "scope-resume",
+        panels,
+    )
+    assert resumed.state == module.ChapterState.READY_TO_RENDER
+    persisted = store.load("scope-resume")
+    assert persisted is not None
+    assert persisted.stage_results["narration"]["continuity_ledger"] == full_structural[
+        "continuity_ledger"
+    ]
+
     broken = replace(
         reconciled,
         continuity_ledger=dict(selected_structural["continuity_ledger"]),

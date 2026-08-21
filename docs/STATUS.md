@@ -2442,3 +2442,27 @@ reconciliation/persistence boundary from the existing visual/story state. Do
 not repeat visual/story calls, issue a new cloud request, or manually edit
 runtime state. Stop before provider/TTS and report the persisted state
 transition and downstream availability.
+## 2026-08-21 cached narration state-boundary continuation fix
+
+Rollback parent: `5cff1984f48a6711e47fadad94557bb42cdb08fb`.
+Publication commit: `eb753e1e06bd8a5287665599fad113267b1fadfe`.
+
+The first continuity correction fixed the mixed result itself, but the resume
+state machine still had a second local gap: when an existing cached narration
+failed strict admission, `CloudBatchService.run_job` fell through to
+`run_narration`, which could spend another provider request. The new
+`_reconcile_cached_narration` boundary derives the full ordered observations
+and continuity ledger locally from the current visual/panel registry before
+cached metadata and grounding checks. It copies no prose, claim IDs, evidence,
+or identity from a provider response. If local reconciliation fails, the job
+fails closed; it never uses that failure to dispatch cloud narration.
+
+The expanded RED/GREEN regression resumes a persisted mixed candidate through
+the normal `CloudBatchService.run_job` boundary with a provider-dispatch
+sentinel. GREEN proves `READY_TO_RENDER` and a persisted full continuity
+ledger with zero narration dispatch. This is still an offline code/test
+checkpoint: the real job JSON, DB/WAL, caches, media, credentials, and
+`ms_env.sh` remain untouched; no provider request, narration persistence,
+MP4, TTS, or QC result is claimed. After publication, run only the normal
+provider-free reconciliation/persistence transaction, then stop before any
+provider/TTS work.
