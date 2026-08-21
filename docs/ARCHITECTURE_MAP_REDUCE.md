@@ -1,5 +1,34 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Persistence round-trip invariant - 2026-08-21
+
+Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.
+
+`persist_cloud_chapter` is a single exact-analysis persistence boundary:
+after flushing a new `StoryAnalysis`, it calls `generate_script(...,
+analysis_id=row.id)`. The loader uses that row when supplied and rejects a
+foreign project. Legacy callers without `analysis_id` retain the existing
+latest-row behavior. The earlier write/reload mismatch also came from a
+preview-only `allow_dialogue_copy=True` persistence call; both write and
+reload now use the strict analyzer contract, so copied dialogue remains a
+blocking quality failure.
+
+The database model preserves immutable source lineage (`source_order`) while
+the persisted observation ledger records the contiguous execution order
+(`source_index`). A fake-provider 701-panel round trip proves 701/701 rows,
+stable panel IDs, sparse original source orders, and a full coverage manifest
+after a new-session reload. A foreign-analysis test and a post-flush rollback
+test cover fail-closed identity and transaction behavior. The cloud suite is
+116 passed and the analyzer/script matrix is 110 passed; Ruff, compileall,
+diff-check, and no-churn pass.
+
+The protected real sample DB was not manually edited. A zero-budget normal
+entrypoint replay made no requests and ended `NEEDS_REVIEW` with
+`cloud.narrative_not_grounded` because the current candidate fails the strict
+`script passage copies source dialogue` predicate. SQLite integrity is `ok`,
+and no narration, MP4, TTS, or QC stage is admitted. This checkpoint therefore
+proves the persistence contract offline, not real 701-panel admission.
+
 ## Post-publication identity outcome and CLI redaction boundary - 2026-08-21
 
 After identity checkpoint `87aed29e1600484dec07e8e1aadbdcfdeae7573e`, the

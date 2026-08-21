@@ -10,6 +10,7 @@ import importlib
 import json
 import re
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -1086,13 +1087,13 @@ def test_reconciled_evidence_cannot_enter_regular_render_until_state_is_ready():
     assert module.review_only_render_gate(result).publish_allowed is False
 
 
-def test_project_persistence_reuses_regular_script_gate_without_approval():
+def test_project_persistence_reuses_regular_script_gate_without_approval(monkeypatch):
     module = _module()
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
 
     from app.db import Base
-    from app.models import Project, SourceAsset, User, Workspace
+    from app.models import Project, SourceAsset, StoryAnalysis, User, Workspace
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
@@ -1102,6 +1103,15 @@ def test_project_persistence_reuses_regular_script_gate_without_approval():
         workspace = Workspace(owner=user, name="Cloud Workspace")
         project = Project(workspace=workspace, title="Cloud chapter", chapter="1")
         db.add_all([user, workspace, project])
+        db.flush()
+
+        stale = StoryAnalysis(
+            project_id=project.id,
+            analysis_run_id="stale-280-panel-analysis",
+            state="RECONCILED",
+            created_at=datetime.now(UTC) + timedelta(days=1),
+        )
+        db.add(stale)
         db.flush()
 
         panels = tuple(
@@ -1139,6 +1149,15 @@ def test_project_persistence_reuses_regular_script_gate_without_approval():
 
         runner = module.CloudStageRunner(provider=_FakeProvider(), model_identity=_identity(module))
         result = runner.run_chapter(panels)
+        validation_flags = []
+        analyzer_contract = importlib.import_module("app.services.analyzer_contract")
+        original_validate = analyzer_contract.validate_analyzer_output
+
+        def capture_validation(output, **kwargs):
+            validation_flags.append(kwargs.get("allow_dialogue_copy", False))
+            return original_validate(output, **kwargs)
+
+        monkeypatch.setattr(analyzer_contract, "validate_analyzer_output", capture_validation)
         analysis, script = module.persist_cloud_chapter(
             db,
             project.id,
@@ -1152,7 +1171,250 @@ def test_project_persistence_reuses_regular_script_gate_without_approval():
         assert script.editorial_metadata["editorial_review_confirmed"] is False
         assert script.editorial_metadata["narrative_identity"]["profile_id"] == "sharp_friend_v1"
         assert len(analysis.panel_regions) == 3
+        assert validation_flags == [False, False]
         assert module.regular_render_allowed(result) is False
+
+
+def test_persistence_round_trip_retains_701_prepared_panels_and_source_order():
+    module = _module()
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.db import Base
+    from app.models import Project, SourceAsset, StoryAnalysis, User, Workspace
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    source_orders = [index if index < 699 else index + 2 for index in range(701)]
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"roundtrip-panel-{index}",
+            source_asset_id=f"roundtrip-asset-{index}",
+            source_order=source_order,
+            prepared_order=index,
+            mime_type="image/png",
+            payload=f"roundtrip-payload-{index}".encode(),
+            panel_bounds=(0, 0, 100, 100),
+            source_dimensions=(100, 100),
+            strip_region_id=f"roundtrip-region-{index}",
+            coverage_map_version="cloud-coverage-v1",
+            coverage_map_hash="c" * 64,
+        )
+        for index, source_order in enumerate(source_orders)
+    )
+
+    with Session(engine) as db:
+        user = User(email="roundtrip-owner@example.com", name="Roundtrip Owner", password_hash="test")
+        workspace = Workspace(owner=user, name="Roundtrip Workspace")
+        project = Project(workspace=workspace, title="701-panel chapter", chapter="1")
+        db.add_all([user, workspace, project])
+        db.flush()
+        db.add_all(
+            [
+                SourceAsset(
+                    id=panel.source_asset_id,
+                    project_id=project.id,
+                    type="image",
+                    original_filename=f"{panel.panel_id}.png",
+                    storage_key=f"cloud/{panel.panel_id}.png",
+                    checksum=panel.source_checksum,
+                    original_checksum=panel.source_checksum,
+                    original_width=100,
+                    original_height=100,
+                    width=100,
+                    height=100,
+                )
+                for panel in panels
+            ]
+        )
+        db.flush()
+
+        runner = module.CloudStageRunner(
+            provider=_FakeProvider(),
+            model_identity=_identity(module),
+        )
+        small_result = runner.run_chapter(_panels(module, "roundtrip-fixture"))
+        panel_ids = [panel.panel_id for panel in panels]
+        visual_rows = []
+        for panel in panels:
+            visual_row = _visual_row(panel.descriptor())
+            visual_row["source_checksum"] = panel.source_checksum
+            visual_rows.append(visual_row)
+        visual = module.VisualStageResult(
+            panels=tuple(visual_rows),
+            source_hash="roundtrip-701-source",
+            model_identity_hash=small_result.visual.model_identity_hash,
+            prompt_version=small_result.visual.prompt_version,
+            prompt_sha256=small_result.visual.prompt_sha256,
+        )
+        continuity = json.loads(json.dumps(small_result.narration.continuity_ledger))
+        continuity["chunks"] = [
+            {**dict(continuity["chunks"][0]), "panel_ids": panel_ids}
+        ]
+        for entity in continuity["entities"]:
+            entity["panel_ids"] = panel_ids
+        for motive in continuity["motives"]:
+            motive["evidence_panel_ids"] = panel_ids
+        for change in continuity["state_changes"]:
+            change["evidence_panel_ids"] = panel_ids
+        for link in continuity["causal_links"]:
+            link["from_panel_id"] = panel_ids[0]
+            link["to_panel_id"] = panel_ids[-1]
+            link["evidence_panel_ids"] = panel_ids
+        observations = []
+        for index, panel in enumerate(panels):
+            observation = dict(small_result.narration.observations[index % len(small_result.narration.observations)])
+            observation.update(
+                {
+                    "panel_id": panel.panel_id,
+                    "source_asset_id": panel.source_asset_id,
+                    "evidence_refs": [panel.panel_id],
+                    "source_index": index,
+                }
+            )
+            observations.append(observation)
+        evidence_graph = json.loads(json.dumps(small_result.narration.evidence_graph))
+        for claim in evidence_graph["claims"]:
+            claim["evidence_panel_ids"] = panel_ids
+        passages = tuple(
+            {**dict(passage), "evidence_panel_ids": panel_ids}
+            for passage in small_result.narration.passages
+        )
+        narration = replace(
+            small_result.narration,
+            observations=tuple(observations),
+            continuity_ledger=continuity,
+            evidence_graph=evidence_graph,
+            passages=passages,
+            visual_evidence_hash=visual.visual_evidence_hash,
+        )
+        story_map = replace(
+            small_result.story_map,
+            panel_ids=tuple(panel_ids),
+            visual_evidence_hash=visual.visual_evidence_hash,
+        )
+        result = module.ChapterResult(
+            state=module.ChapterState.READY_TO_RENDER,
+            visual=visual,
+            story_map=story_map,
+            narration=narration,
+        )
+        analysis, _script = module.persist_cloud_chapter(
+            db,
+            project.id,
+            panels,
+            result,
+            model_identity=runner.model_identity,
+        )
+        analysis_id = analysis.id
+        db.commit()
+
+    with Session(engine) as db:
+        persisted = db.get(StoryAnalysis, analysis_id)
+        assert persisted is not None
+        regions = sorted(
+            persisted.panel_regions,
+            key=lambda row: row.observation_json["source_index"],
+        )
+        assert len(regions) == 701
+        assert [row.observation_json["source_index"] for row in regions] == list(range(701))
+        assert [row.source_order for row in regions] == source_orders
+        assert [row.panel_id for row in regions] == [panel.panel_id for panel in panels]
+        assert persisted.coverage_manifest_json["panel_ids"] == [panel.panel_id for panel in panels]
+        assert persisted.coverage_manifest_json["total_panels"] == 701
+        assert persisted.coverage_manifest_json["processed_panels"] == 701
+        assert persisted.coverage_manifest_json["processed_canonical_panel_count"] == 701
+
+
+def test_generate_script_rejects_foreign_analysis_id_before_materialization():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.db import Base
+    from app.models import Project, StoryAnalysis, User, Workspace
+    from app.services import pipeline
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    with Session(engine) as db:
+        user = User(email="foreign-analysis@example.com", name="Foreign Analysis", password_hash="test")
+        workspace = Workspace(owner=user, name="Foreign Analysis Workspace")
+        requested = Project(workspace=workspace, title="Requested", chapter="1")
+        owner = Project(workspace=workspace, title="Owner", chapter="2")
+        db.add_all([user, workspace, requested, owner])
+        db.flush()
+        foreign = StoryAnalysis(project_id=owner.id, state="RECONCILED")
+        db.add(foreign)
+        db.flush()
+
+        with pytest.raises(pipeline.PipelineError, match="analysis_project_mismatch"):
+            pipeline.generate_script(
+                db,
+                requested.id,
+                analysis_id=foreign.id,
+                narrative_profile_id="sharp_friend_v1",
+            )
+
+
+def test_persistence_failure_rolls_back_uncommitted_analysis_and_regions(monkeypatch):
+    module = _module()
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.db import Base
+    from app.models import PanelRegion, Project, SourceAsset, StoryAnalysis, User, Workspace
+    from app.services import pipeline
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    with Session(engine) as db:
+        user = User(email="rollback-owner@example.com", name="Rollback Owner", password_hash="test")
+        workspace = Workspace(owner=user, name="Rollback Workspace")
+        project = Project(workspace=workspace, title="Rollback chapter", chapter="1")
+        db.add_all([user, workspace, project])
+        db.flush()
+        panels = _panels(module, "rollback")
+        db.add_all(
+            [
+                SourceAsset(
+                    id=panel.source_asset_id,
+                    project_id=project.id,
+                    type="image",
+                    original_filename=f"{panel.panel_id}.png",
+                    storage_key=f"cloud/{panel.panel_id}.png",
+                    checksum=panel.source_checksum,
+                    original_checksum=panel.source_checksum,
+                    original_width=100,
+                    original_height=100,
+                    width=100,
+                    height=100,
+                )
+                for panel in panels
+            ]
+        )
+        db.flush()
+        runner = module.CloudStageRunner(
+            provider=_FakeProvider(),
+            model_identity=_identity(module),
+        )
+        result = runner.run_chapter(panels)
+
+        def fail_after_flush(*args, **kwargs):
+            raise RuntimeError("intentional persistence boundary failure")
+
+        monkeypatch.setattr(pipeline, "generate_script", fail_after_flush)
+        with pytest.raises(module.CloudStageError) as caught:
+            module.persist_cloud_chapter(
+                db,
+                project.id,
+                panels,
+                result,
+                model_identity=runner.model_identity,
+            )
+        assert caught.value.code == "cloud.persistence_failed"
+        db.rollback()
+        assert db.query(StoryAnalysis).count() == 0
+        assert db.query(PanelRegion).count() == 0
 
 
 def test_batch_operator_entrypoint_exposes_resume_safe_project_options():

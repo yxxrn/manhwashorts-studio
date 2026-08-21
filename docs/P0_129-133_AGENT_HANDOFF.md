@@ -1,5 +1,35 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## DB persistence round-trip checkpoint
+
+Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.
+
+The persistence boundary is now exact-analysis keyed. The old `latest_analysis`
+selection could choose a stale 280-panel row after the new row was flushed;
+`persist_cloud_chapter` now passes `analysis_id=row.id` and rejects a row from
+another project. Its preview-only `allow_dialogue_copy=True` exception was
+also removed so the initial write and later reload use the same strict
+analyzer contract. No quality, grounding, lineage, duration, visual, audio,
+or QC gate was relaxed.
+
+Offline TDD proof: the intended stale-row RED failed with
+`narrative_profile_mismatch`; GREEN is 116/116 cloud tests, including
+701-panel semantic write/read round-trip, preserved original sparse
+`source_order`, contiguous persisted `source_index` 0..700, foreign-analysis
+rejection, and rollback after a post-flush failure. The related analyzer/script
+matrix is 110/110; Ruff, compileall, diff-check, and no-churn pass.
+
+Real zero-budget replay (same normal entrypoint, no provider/TTS calls) ended
+honestly at `NEEDS_REVIEW` with `cloud.narrative_not_grounded`; usage was
+`request_count=0` and all per-stage counters were zero. The strict predicate
+is `script passage copies source dialogue`, so the candidate is genuinely not
+admissible. SQLite integrity is `ok`; the protected DB still has only its
+pre-existing StoryAnalysis rows, with the newest two at 280 regions, because
+the failed candidate transaction did not commit. No real 701-row persistence,
+narration artifact, MP4, TTS, or QC is claimed. Next resume must repair or
+replace the blocked candidate under the existing strict contract, then rerun
+normal persistence with zero visual/story repetition.
+
 ## Post-publication repair outcome and output hardening
 
 Published identity checkpoint: `87aed29e1600484dec07e8e1aadbdcfdeae7573e`.

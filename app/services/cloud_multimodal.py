@@ -6608,7 +6608,6 @@ def persist_cloud_chapter(
             validator_output,
             expected_panel_ids=panel_ids,
             narrative_profile_id="sharp_friend_v1",
-            allow_dialogue_copy=True,  # preview-only relaxation
         )
     except Exception:
         raise CloudStageError("cloud.narrative_not_grounded", reviewable=True) from None
@@ -6667,6 +6666,7 @@ def persist_cloud_chapter(
             project_id,
             actor_id=actor_id,
             narrative_profile_id="sharp_friend_v1",
+            analysis_id=row.id,
         )
     except Exception:
         import traceback as _tb

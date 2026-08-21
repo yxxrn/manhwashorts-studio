@@ -1723,6 +1723,7 @@ def generate_script(
     db: Session,
     project_id: str,
     *,
+    analysis_id: str | None = None,
     keep_locked: bool = True,
     hook_count: int = 3,
     seed: int | None = None,
@@ -1731,9 +1732,15 @@ def generate_script(
 ) -> ScriptVersion:
     """Materialize provider passages from the latest reconciled evidence."""
     project = get_project(db, project_id)
-    row = latest_analysis(db, project_id)
+    row = (
+        db.get(StoryAnalysis, analysis_id)
+        if analysis_id is not None
+        else latest_analysis(db, project_id)
+    )
     if row is None:
         raise PipelineError("run vision analysis before generating a script")
+    if row.project_id != project_id:
+        raise PipelineError("analysis_project_mismatch")
     if row.state != "RECONCILED":
         raise PipelineError("script generation requires reconciled vision analysis")
     profile = _requested_narrative_profile(row, narrative_profile_id)

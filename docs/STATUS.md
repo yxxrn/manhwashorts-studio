@@ -1,5 +1,36 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## DB persistence round-trip checkpoint - 2026-08-21
+
+Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.
+
+The local audit found no 280-row cap in `persist_cloud_chapter`: a valid
+701-panel result flushes 701 `PanelRegion` rows. The actual defect was stale
+analysis selection after flush plus an inconsistent preview-only
+`allow_dialogue_copy=True` write gate. The fix passes `analysis_id=row.id` to
+`pipeline.generate_script`, rejects a foreign project, and uses strict
+analyzer validation at both persistence and reload.
+
+TDD evidence: collection-clean RED reproduced stale selection as
+`narrative_profile_mismatch`. GREEN is 116/116 cloud tests, including
+701-panel write/read with contiguous persisted `source_index` 0..700 and
+preserved sparse original `source_order`, foreign-analysis rejection, and
+post-flush rollback; the analyzer/script compatibility matrix is 110/110.
+Ruff, compileall, `git diff --check`, and no-churn pass. Five existing Pillow
+deprecation warnings are non-blocking.
+
+The normal entrypoint was run with `--max-requests 0
+--max-narration-requests 0 --max-repair-requests 0`. It exited 0 with
+`NEEDS_REVIEW`, `cloud.narrative_not_grounded`, and
+`request_count=0,narration=0,narration_repair=0,other=0`. The strict local
+predicate is `script passage copies source dialogue`; this is a real candidate
+quality blocker, not a persistence mismatch. SQLite integrity is `ok`, the
+protected DB remains unchanged with pre-existing 280-region rows, and no real
+701-row persistence, narration, MP4, TTS, or QC is claimed. The next boundary
+is an offline candidate repair/replacement under the same strict gates, or a
+new separately authorized provider request; visual/story stages must not be
+repeated by this slice.
+
 ## POST-PUBLICATION REPAIR OUTCOME AND CLI OUTPUT HARDENING - 2026-08-21
 
 After `87aed29e1600484dec07e8e1aadbdcfdeae7573e`, the metadata-only runtime

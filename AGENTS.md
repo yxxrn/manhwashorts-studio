@@ -1,5 +1,36 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## DB persistence round-trip checkpoint - 2026-08-21
+
+Rollback parent for this source/test/docs slice is
+`f1f08bc2e9cd067b8703ba1d28298012cf27b74f`. The local persistence audit
+proved that a valid 701-panel result builds 701 `PanelRegion` rows; the old
+280-row records in the protected sample DB are stale history, not a hidden
+production cap. The actual defect was two-part: persistence called
+`generate_script` without binding the newly created `StoryAnalysis`, so
+`latest_analysis()` could select a stale row, and persistence passed
+`allow_dialogue_copy=True` while the reload path used the strict analyzer
+contract. The fix binds `analysis_id=row.id`, rejects a foreign analysis
+project, and keeps both persistence/reload validation boundaries strict.
+
+Collection-clean RED reproduced stale selection as `narrative_profile_mismatch`.
+GREEN evidence is the stale-row regression, a 701-row DB write/read test with
+contiguous persisted `source_index` 0..700 and preserved sparse original
+`source_order`, a foreign-analysis rejection test, and a post-flush rollback
+test. The complete cloud file is 116 passed; the analyzer/script compatibility
+matrix is 110 passed. Ruff, compileall, `git diff --check`, and no-churn checks
+pass; five existing Pillow deprecation warnings remain.
+
+The normal Oracle entrypoint was replayed with all cloud/narration/repair
+budgets set to zero. It exited 0 with state `NEEDS_REVIEW`,
+`cloud.narrative_not_grounded`, and request counts
+`narration=0,narration_repair=0,other=0`. The strict sanitized predicate is
+`script passage copies source dialogue`; no new StoryAnalysis or ScriptVersion
+was committed, SQLite integrity is `ok`, and no narration, MP4, TTS, or QC is
+claimed. The next boundary is an offline repair/replacement of that genuinely
+blocked candidate, or a separately authorized fresh provider candidate; do
+not weaken the strict gate or repeat visual/story work in this slice.
+
 ## POST-PUBLICATION REPAIR OUTCOME AND CLI OUTPUT HARDENING - 2026-08-21
 
 After `87aed29e1600484dec07e8e1aadbdcfdeae7573e` was published, metadata-only
