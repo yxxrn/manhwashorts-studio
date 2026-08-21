@@ -2466,3 +2466,27 @@ checkpoint: the real job JSON, DB/WAL, caches, media, credentials, and
 MP4, TTS, or QC result is claimed. After publication, run only the normal
 provider-free reconciliation/persistence transaction, then stop before any
 provider/TTS work.
+
+## 2026-08-21 provider-free persistence boundary outcome
+
+The source/test fix was published as `392298a5b837462c9f3440a3e02328f316e3990c`.
+After publication, the normal `run_cloud_multimodal_batch.py` entrypoint was
+run against the existing cached job with `--max-requests 0`,
+`--max-narration-requests 0`, and `--max-repair-requests 0`. It made zero new
+provider calls and reconciled the cached narration locally to 701/701 ordered
+continuity before entering persistence. The DB transaction then rolled back
+at `pipeline.generate_script` / `_validated_persisted_vision_output` with
+`PipelineError: persisted vision evidence is invalid`; the job recorded
+`cloud.persistence_failed` and `FAILED` for this attempt.
+
+Read-only DB evidence: SQLite integrity is `ok`; the current project has two
+pre-existing `StoryAnalysis` rows, each with 280 panel regions, while the
+durable cached job/manifest has 701 panels. The exact mismatch between DB
+round-trip/row selection/serialization and the 701-panel analyzer contract is
+not yet isolated, so no production persistence claim is made. No DB row was
+committed, no provider/TTS call occurred, and no MP4/QC artifact exists.
+
+Next command boundary: inspect and test the 701-panel persistence round-trip
+using the cached job/manifest only, then rerun the same zero-budget normal
+entrypoint. Do not call provider, rerun visual/story, or manually edit runtime
+state until that boundary passes.

@@ -484,3 +484,22 @@ or quality-gate relaxation is possible at this boundary.
 The new regression proves the full state transition using a provider-dispatch
 sentinel and persists the 701-panel continuity ledger. Runtime caches and the
 job remain unchanged until the normal provider-free persistence step is run.
+
+## Persistence boundary checkpoint — 2026-08-21
+
+The zero-budget normal entrypoint run after publication made no provider calls
+and passed local narration scope reconciliation (`701/701` continuity). It
+failed at the downstream DB round-trip in
+`pipeline.generate_script` / `_validated_persisted_vision_output` with
+`cloud.persistence_failed` (`PipelineError: persisted vision evidence is
+invalid`). The transaction rolled back and SQLite integrity remained `ok`.
+
+The durable job/manifest has 701 panels, while read-only inspection of the
+current project's two pre-existing `StoryAnalysis` rows found 280 panel
+regions in each. This establishes a persistence-context mismatch but does not
+yet identify whether row selection, serialization, or another DB round-trip
+predicate is responsible. The repair must keep the canonical 701-panel
+lineage and all existing analyzer/visual gates; no migration, manual DB edit,
+provider retry, or fallback is permitted. Re-run only after an offline RED /
+GREEN persistence regression proves the exact boundary, then use the same
+zero-budget normal entrypoint before any cloud or TTS stage.

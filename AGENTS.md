@@ -1210,3 +1210,23 @@ provider-free normal reconciliation/persistence boundary using the existing
 job and visual/story state. Do not repeat visual/story stages, issue a new
 provider request, or edit runtime JSON/DB manually. No narration, MP4, TTS, or
 QC readiness is claimed until that transaction and downstream gates pass.
+
+## 2026-08-21 provider-free persistence boundary outcome
+
+The published source/test checkpoint is `392298a5b837462c9f3440a3e02328f316e3990c`.
+The normal checked-in batch entrypoint was then run with narration and repair
+budgets set to zero. It made zero provider requests and locally reconciled the
+cached candidate to one ordered 701-panel continuity ledger, but failed closed
+at `pipeline.generate_script` / `_validated_persisted_vision_output` with
+`PipelineError: persisted vision evidence is invalid` (`cloud.persistence_failed`).
+The SQLite transaction rolled back and integrity remains `ok`; the current
+project still has two existing `StoryAnalysis` rows with 280 panel regions
+each, while the cached job manifest contains 701 panels. This is a DB
+round-trip/selection or serialization mismatch still to isolate, not evidence
+that the 118-word candidate is ungrounded. The job JSON is now `FAILED` from
+this zero-budget attempt and its narration continuity is 701/701.
+
+Do not edit the DB/job JSON manually, repeat visual/story work, or issue a
+provider/TTS request. The next exact step is to test and fix the normal
+701-panel persistence round-trip locally, rerun the zero-budget entrypoint,
+and only then evaluate downstream rendering gates.

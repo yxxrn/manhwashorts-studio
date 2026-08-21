@@ -1221,3 +1221,25 @@ transaction. Resume only after publication with the existing cached visual,
 story, and narration identities; do not repeat visual/story calls, edit DB or
 job JSON manually, or issue a cloud request in this boundary. No MP4, voice,
 or QC artifact is proven.
+
+## Post-publication zero-budget persistence attempt — 2026-08-21
+
+Published code: `392298a5b837462c9f3440a3e02328f316e3990c`.
+
+The normal checked-in batch runner was executed with all narration/repair
+request budgets set to zero. It did not call the provider and did not repeat
+visual/story stages. Cached narration admission passed after local full-scope
+reconciliation (118 words, 51.3 seconds, 5 passages, 8 claims, 701
+observations, continuity `701/701`). The next persistence boundary failed
+closed at `pipeline.generate_script` / `_validated_persisted_vision_output`:
+`PipelineError: persisted vision evidence is invalid`. The job JSON now records
+`FAILED` / `cloud.persistence_failed`; the DB transaction rolled back and
+SQLite integrity is `ok`.
+
+Read-only current-project DB facts are two older `StoryAnalysis` rows with 280
+panel regions each, versus the cached 701-panel prepared manifest. The exact
+DB round-trip/selection/serialization predicate still needs isolation; do not
+guess a migration or rerun cloud work. The next resume command is the same
+zero-budget `scripts/run_cloud_multimodal_batch.py` invocation after a local
+test/fix of the 701-panel persistence boundary. Stop before provider/TTS and
+do not claim narration persistence, MP4, or QC.
