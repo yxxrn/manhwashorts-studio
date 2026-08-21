@@ -748,3 +748,26 @@ within the required 8-12 range, preserves at least four causal passages, and
 drops only deterministic lowest-priority removable claims. The focused matrix
 is 145/145 with Ruff, compileall, diff-check, no-churn, and secret scan clean.
 Publish before the next one-request repair; do not repeat visual/story stages.
+
+## Position-vector selection-count v3 correction - 2026-08-21
+
+The published max-9 checkpoint `68f0e71298e8718e53b78b3d239671e8c204c0ec`
+was tested with one bounded real repair request. It failed closed as
+`cloud.narrative_repair_position_budget_invalid` after request count 1 and
+retry count 0. The sanitized report remains at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+and has SHA-256
+`ad198b21e470f7c530c71219f511a45d05a306699060eb9be8d97f478d916f14`.
+Non-prose metrics were array length 9, per-position word counts
+`[15,15,15,14,15,13,13,13,13]`, total 126, estimated duration 52.61 seconds,
+expected maxima 15/14/13 by position, and failed predicate
+`position_word_budget`.
+
+The RED test demonstrates that max-9 can still exceed the strict local
+position budget. The GREEN correction selects at most 8 trusted positions,
+still within the required 8-12 range, retaining causal order, at least four
+passages, and exact local evidence lineage. Focused verification is 145/145
+with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan clean.
+Publish this checkpoint before one new bounded repair request; do not repeat
+the 701-panel visual or story stages. No narration, MP4, voice, or final QC is
+proven at this checkpoint.

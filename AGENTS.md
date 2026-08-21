@@ -738,3 +738,19 @@ priority removable claims while retaining causal order and at least four
 passages. The focused matrix is 145/145 green with static/security gates.
 Publish before another real request; visual/story stages remain cached and no
 narration, MP4, voice, or final QC is proven.
+
+## Position-vector selection-count v3 correction (2026-08-21)
+
+After the published `68f0e71298e8718e53b78b3d239671e8c204c0ec` max-9
+checkpoint, one bounded real request used 9 positions and returned counts
+`[15,15,15,14,15,13,13,13,13]`: total 126 words, duration 52.61 seconds,
+and failed `cloud.narrative_repair_position_budget_invalid` after one request
+and zero retries. The sanitized report SHA is
+`ad198b21e470f7c530c71219f511a45d05a306699060eb9be8d97f478d916f14`.
+
+RED proves max-9 can still exceed strict per-position maxima. GREEN caps the
+trusted deterministic selection at the minimum 8 positions, still within the
+required 8-12 range, preserving at least four causal passages and trusted
+lineage. The focused matrix is 145/145 with Ruff, compileall, diff-check,
+no-churn, and key-shaped secret scan clean. Publish before the next request;
+no narration, MP4, voice, or final QC is proven.

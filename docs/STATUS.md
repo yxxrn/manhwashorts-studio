@@ -1934,3 +1934,26 @@ fix selects at most 9 trusted positions, still within the required 8-12 range,
 and keeps deterministic priority/causal ordering, at least four passages, and
 strict 115-125-word/50-60-second admission. Publish before another real
 request. No narration, MP4, voice, or final QC is proven.
+
+## Position-vector selection-count v3 correction (2026-08-21)
+
+After the published `68f0e71298e8718e53b78b3d239671e8c204c0ec` max-9
+checkpoint, one bounded real request failed closed after exactly one request
+and zero retries as `cloud.narrative_repair_position_budget_invalid`. The
+sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`ad198b21e470f7c530c71219f511a45d05a306699060eb9be8d97f478d916f14`.
+It recorded array length 9, counts `[15,15,15,14,15,13,13,13,13]`, total 126
+words, estimated duration 52.61 seconds, expected maxima 15 for positions
+0-2, 14 for positions 3-4, and 13 thereafter, and failed predicate
+`position_word_budget`.
+
+The collection-clean RED regression showed that max-9 still permits a
+provider response above the strict position maxima. GREEN lowers the local
+trusted preselection ceiling to 8 positions, the minimum of the required
+8-12 range, while preserving causal order, at least four passages, and
+trusted evidence lineage. The focused matrix is 145/145; Ruff, compileall,
+diff-check, no-churn, and key-shaped secret scan are clean. Publish this
+correction before another one-request repair. No valid narration, MP4, voice,
+or final QC is proven yet.
