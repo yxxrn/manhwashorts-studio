@@ -239,3 +239,15 @@ PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal
 If the repair fails, keep only sanitized shape/predicate metrics and stop
 provider calls. If it succeeds, advance through narration persistence, silent
 render/QC, TTS/alignment, voiced QC, and warm-resume accounting.
+
+### Repair observability checkpoint — 2026-08-21
+
+The first real positional-vector attempt after `99b042ed` is durably
+classified without provider prose: request count 1, retry count 0,
+8-string response, per-position counts `[15,17,17,17,16,16,15,14]`, total
+127, canonical duration estimate 55.22s, and failed predicate
+`aggregate_word_count`. The report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-canonical-99b042e.json`.
+Because 127 exceeds the hard 115-125 admission range, the rejection is
+correct and no stage cache or quality gate is weakened; no automatic retry
+is permitted.

@@ -950,3 +950,17 @@ Do not rerun visual/story stages, print `/tmp/ms_env.sh`, store provider
 prose, or issue an automatic retry. If repair succeeds, continue to silent
 render/QC, then the configured voice stage and warm-resume proof; otherwise
 persist only sanitized metrics and stop provider calls.
+
+## 2026-08-21 bounded repair result
+
+The published canonical-duration checkpoint is `99b042ed`. The single
+real positional repair request used the durable 160-word/64.35-second
+candidate with `grok-4.3`, made exactly one request and zero retries, and
+failed closed at `cloud.narrative_repair_position_budget_invalid`.
+The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-canonical-99b042e.json`:
+8 strings, counts `[15,17,17,17,16,16,15,14]`, total 127, estimated 55.22s,
+predicate `aggregate_word_count`. The 115-125 word bound is hard, so this
+is a provider-output rejection, not a reason to weaken the contract. No
+automatic retry or visual/story call is authorized until a new bounded
+repair decision is published.

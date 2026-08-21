@@ -2181,3 +2181,17 @@ PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal
 No narration, MP4, voice, or final QC is proven until that run and the
 production-host render gates succeed. Keep `/tmp/ms_env.sh`, DB/WAL, caches,
 media, and provider state outside Git.
+
+### Bounded positional repair outcome — 2026-08-21
+
+After `99b042ed` was published, one real `grok-4.3` positional repair call
+was made against the durable 160-word/64.35-second candidate. It used one
+request and zero retries and failed closed with
+`cloud.narrative_repair_position_budget_invalid`. The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-canonical-99b042e.json`:
+8 rewrite strings, per-position counts `[15,17,17,17,16,16,15,14]`, total
+127 words, canonical estimate 55.22s, failed predicate
+`aggregate_word_count`. The canonical 115-125 word bound remains hard;
+there is no local duration discrepancy or justified code relaxation. No
+automatic retry, visual/story repeat, narration admission, MP4, TTS, or
+QC is claimed from this attempt.

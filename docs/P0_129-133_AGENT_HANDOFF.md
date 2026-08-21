@@ -974,3 +974,14 @@ PATH=/home/ubuntu/.local/bin:$PATH .venv/bin/python scripts/run_cloud_multimodal
 Do not rerun visual/story, print credentials, retain provider prose, or retry
 automatically. On repair success continue to silent render/QC, configured TTS,
 final voiced QC, and warm resume; on failure retain sanitized metrics only.
+
+### Latest repair checkpoint
+
+Published source is `99b042ed`. The one bounded real positional repair call
+used the exact durable candidate and made one provider request with zero
+retries. It failed closed at `aggregate_word_count` with sanitized shape
+metrics: 8 strings, counts `[15,17,17,17,16,16,15,14]`, total 127, estimate
+55.22s. The durable report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-canonical-99b042e.json`.
+The hard final range remains 115-125 words and 50-60s; do not relax it or
+issue another provider call without a newly published repair change.
