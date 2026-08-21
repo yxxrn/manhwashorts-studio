@@ -805,3 +805,18 @@ gates remain strict. Exact 120 is guidance only. Focused verification is
 148/148 with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan
 clean. Publish before another request; no narration, MP4, voice, or final QC is
 proven.
+
+## Position-vector safe target correction (2026-08-21)
+
+The first request after `cd209c10ea6c1995adb09a3728c11be4b17b8626` returned
+8 strings with counts `[17,16,15,16,17,15,15,15]`, total 126 words, and
+estimated duration 53.04 seconds. It failed closed after request/retry counts
+1/0 because the strict final word ceiling was exceeded; sanitized report SHA:
+`8656b36af56854bfa3cde52530b5ea1d1cabbe34f5ecb11d1b3dee627eddc3bd`.
+
+RED added a safe-target prompt regression. GREEN aims for 118 total words so
+normal provider variation remains in the accepted range; exact 120 remains
+guidance only, and local 115-125-word/50-60-second gates are unchanged.
+Focused verification is 149/149 with Ruff, compileall, diff-check, no-churn,
+and key-shaped secret scan clean. Publish before another request; no
+narration, MP4, voice, or final QC is proven.

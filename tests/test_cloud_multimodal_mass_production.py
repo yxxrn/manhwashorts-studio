@@ -2414,6 +2414,13 @@ def test_targeted_repair_prompt_targets_compact_eight_position_vector():
     assert "never exceed 15 words unless required to preserve a claim" in instruction
 
 
+def test_targeted_repair_prompt_targets_safe_in_range_total():
+    module = _module()
+    instruction = module.NARRATION_REPAIR_INSTRUCTION
+    assert "Aim for 118 total words" in instruction
+    assert "exactly 120 is guidance only" in instruction
+
+
 def _position_rewrite_text(word_budget, prefix):
     return " ".join(f"{prefix.rstrip('_')}word{index}" for index in range(word_budget))
 

@@ -2015,3 +2015,21 @@ exact 120 is guidance only. The focused matrix is 148/148 with Ruff,
 compileall, diff-check, no-churn, and key-shaped secret scan clean. Publish
 this correction before another one-request repair. No narration, MP4, voice,
 or final QC is proven yet.
+
+## Position-vector safe target correction (2026-08-21)
+
+The first request after `cd209c10ea6c1995adb09a3728c11be4b17b8626` returned
+array length 8 and counts `[17,16,15,16,17,15,15,15]`: total 126 words and
+estimated duration 53.04 seconds. It failed closed after request/retry counts
+1/0 because the strict final word ceiling was exceeded. The sanitized report
+is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`8656b36af56854bfa3cde52530b5ea1d1cabbe34f5ecb11d1b3dee627eddc3bd`.
+
+RED added a safe-target prompt regression. GREEN aims for 118 total words so
+normal provider variation stays inside the accepted range; exact 120 is
+guidance only, and local 115-125-word/50-60-second gates remain strict. The
+focused matrix is 149/149 with Ruff, compileall, diff-check, no-churn, and
+key-shaped secret scan clean. Publish this correction before another
+one-request repair. No narration, MP4, voice, or final QC is proven yet.

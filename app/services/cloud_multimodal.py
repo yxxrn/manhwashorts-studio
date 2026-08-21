@@ -93,7 +93,8 @@ NARRATION_REPAIR_INSTRUCTION = (
     "Do not fill a position budget with extra words. Exactly 120 is guidance; "
     "For the eight-position vector, aim for 14-15 words per position and "
     "never exceed 15 words unless required to preserve a claim. Count every "
-    "rewrite before returning. "
+    "rewrite before returning. Aim for 118 total words so natural variation "
+    "stays inside the accepted range; exactly 120 is guidance only. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
     "metadata, or alternate key."
 )
