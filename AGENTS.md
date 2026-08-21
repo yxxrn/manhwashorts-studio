@@ -664,3 +664,22 @@ discarded. The prompt now states exact 120 words as guidance, while admission
 still accepts 115-125 words and 50-60 seconds. RED covered the prompt and
 metrics assertions; GREEN is 142 focused tests plus static/security gates.
 Publish this instrumentation before the next single real request.
+
+## Position-vector trusted-subset correction (2026-08-21)
+
+The first request after `f47262fd16fd75522fdbfa65e79d18dfb9f967ea` used one
+request and no retry, then failed closed as
+`cloud.narrative_repair_scope_invalid`. Its sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256 `d66bb529e2633785d7c93a8fdab6eaba4d445d5ae94d1e04f3f28194ff60a5b7`.
+The response passed the positional budget boundary, so no budget-predicate
+metrics were available; provider prose and raw payload remain discarded.
+
+The RED regression proved that local compaction could retain a trusted subset
+of a passage's claims without introducing lineage. The GREEN correction now
+accepts only an ordered, duplicate-free subset of the candidate claim/evidence
+arrays and preserves that subset during canonical reconstruction; new,
+foreign, reordered, or empty lineage remains rejected. The focused matrix is
+143/143 green with Ruff, compileall, diff-check, no-churn, and secret checks.
+Publish this correction before one further bounded real request; visual/story
+stages remain cached and no narration, MP4, voice, or final QC is proven.

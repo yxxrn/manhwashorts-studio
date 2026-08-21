@@ -2496,6 +2496,39 @@ def test_position_repair_reconciles_vector_by_index_and_copies_trusted_lineage()
     )
 
 
+def test_position_repair_scope_accepts_trusted_claim_subset_without_new_lineage():
+    module = _module()
+    runner, candidate, _visual, _story_map = _immutable_slot_fixture(module)
+    first_passage = dict(candidate.passages[0])
+    retained_claim_id = first_passage["claim_ids"][0]
+    first_passage["claim_ids"] = [retained_claim_id]
+    repaired_passages = (first_passage, *candidate.passages[1:])
+    repaired_claims = [
+        dict(claim)
+        for claim in candidate.evidence_graph["claims"]
+        if claim["claim_id"] == retained_claim_id
+        or claim["claim_id"]
+        not in set(candidate.passages[0]["claim_ids"])
+    ]
+    reduced = replace(
+        candidate,
+        passages=tuple(repaired_passages),
+        evidence_graph={"claims": repaired_claims},
+    )
+
+    reconciled = runner._narration_repair_scope_reconciled(
+        candidate,
+        reduced,
+        (),
+    )
+
+    assert reconciled is not None
+    assert reconciled.passages[0]["claim_ids"] == [retained_claim_id]
+    assert [claim["claim_id"] for claim in reconciled.evidence_graph["claims"]] == [
+        claim["claim_id"] for claim in repaired_claims
+    ]
+
+
 def test_position_repair_accepts_uneven_bounded_slot_budgets():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)

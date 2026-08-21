@@ -1849,3 +1849,25 @@ prepared manifest 7, adapter 23, synthesis 36), Ruff, compileall, diff-check,
 no-churn, and key-shaped secret scan. This checkpoint is not yet published;
 publish before one new bounded real request. Visual/story caches remain valid;
 no narration, silent MP4, voice, or QC is proven.
+
+## Position-vector trusted-subset correction - 2026-08-21
+
+After the published `f47262fd16fd75522fdbfa65e79d18dfb9f967ea` instrumentation
+checkpoint, one bounded real repair request ran with `request_count=1` and
+`retry_count=0`, then failed closed as `cloud.narrative_repair_scope_invalid`.
+The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256 `d66bb529e2633785d7c93a8fdab6eaba4d445d5ae94d1e04f3f28194ff60a5b7`.
+This was a post-reconciliation scope failure rather than a budget predicate,
+so the response-shape metric object is empty; no provider prose/raw payload was
+retained.
+
+The RED regression was collection-clean and body-failing for a passage that
+retains one trusted claim while dropping another. GREEN is 143/143 focused
+cloud/manifest/adapter/synthesis tests, plus Ruff, compileall, diff-check,
+no-churn, and key-shaped secret scan. The fix admits only an ordered,
+duplicate-free local subset of candidate claim/evidence lineage and keeps that
+subset in the canonical result; foreign, reordered, empty, and invented
+references remain blocked. Publish this checkpoint before one further real
+request. Visual/story caches are untouched; no narration, MP4, voice, or QC is
+proven.

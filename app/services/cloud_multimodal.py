@@ -3704,7 +3704,23 @@ class CloudStageRunner:
             before = candidate_passages[passage_id]
             after = repaired_passages[passage_id]
             for key in ("claim_ids", "evidence_panel_ids"):
-                if before.get(key) != after.get(key):
+                before_values = before.get(key)
+                after_values = after.get(key)
+                if not isinstance(before_values, (list, tuple)) or not isinstance(
+                    after_values, (list, tuple)
+                ):
+                    return None
+                before_values = tuple(str(value) for value in before_values)
+                after_values = tuple(str(value) for value in after_values)
+                if (
+                    not after_values
+                    or len(set(after_values)) != len(after_values)
+                    or any(value not in before_values for value in after_values)
+                    or tuple(
+                        value for value in before_values if value in set(after_values)
+                    )
+                    != after_values
+                ):
                     return None
         candidate_claims = {
             str(item.get("claim_id", "")): item
@@ -3749,8 +3765,8 @@ class CloudStageRunner:
             canonical = dict(passage)
             original = candidate_passages[passage_id]
             canonical["editorial_role"] = original.get("editorial_role", "")
-            canonical["claim_ids"] = list(original.get("claim_ids", ()))
-            canonical["evidence_panel_ids"] = list(original.get("evidence_panel_ids", ()))
+            canonical["claim_ids"] = list(passage.get("claim_ids", ()))
+            canonical["evidence_panel_ids"] = list(passage.get("evidence_panel_ids", ()))
             canonical_passages.append(canonical)
         canonical_claims = [
             dict(claim)

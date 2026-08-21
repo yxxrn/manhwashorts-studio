@@ -670,3 +670,22 @@ RED: one collection-clean prompt failure plus one collection-clean metrics
 failure. GREEN: 142/142 focused tests, Ruff, compileall, diff-check,
 no-churn, and secret scan. Publish before one new real request; never rerun
 visual/story stages. No narration, MP4, voice, or final QC is proven.
+
+## Position-vector scope correction - 2026-08-21
+
+The first real request after `f47262fd16fd75522fdbfa65e79d18dfb9f967ea`
+failed closed with `cloud.narrative_repair_scope_invalid` after exactly one
+request and zero retries. The sanitized report is at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`d66bb529e2633785d7c93a8fdab6eaba4d445d5ae94d1e04f3f28194ff60a5b7`.
+It failed after positional budget reconciliation, so its response-shape
+metrics are empty; no provider prose/raw payload was retained.
+
+RED was one collection-clean body failure for trusted claim compaction. GREEN
+is 143/143 focused tests with Ruff, compileall, diff-check, no-churn, and
+secret scan clean. The correction permits only an ordered trusted subset of
+candidate claim/evidence references and preserves that subset in the canonical
+result. This correction must be published before the next single bounded real
+request. Resume command remains the isolated repair harness after publication;
+do not rerun visual/story stages.
