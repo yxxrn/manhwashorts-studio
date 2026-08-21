@@ -2463,6 +2463,15 @@ def test_position_repair_preselection_is_deterministic_and_budgeted():
     assert caught.value.code == "cloud.narrative_repair_position_order_invalid"
 
 
+def test_position_registry_maxima_cannot_exceed_final_word_bound():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+
+    assert sum(row["word_budget_max"] for row in registry["positions"]) <= 125
+
+
 def test_position_repair_reconciles_vector_by_index_and_copies_trusted_lineage():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
@@ -2534,8 +2543,8 @@ def test_position_repair_accepts_uneven_bounded_slot_budgets():
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
     registry = runner._build_narration_repair_position_registry(candidate, story_map)
     counts = [row["word_budget"] for row in registry["positions"]]
-    counts[0] += 2
-    counts[1] -= 2
+    counts[0] += 1
+    counts[1] -= 1
     raw = {
         "rewrites": [
             _position_rewrite_text(count, f"uneven{index}_")
@@ -2552,11 +2561,13 @@ def test_position_repair_accepts_uneven_bounded_slot_budgets():
     assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 120
 
 
-def test_position_repair_accepts_wide_deterministic_distribution_within_ranges():
+def test_position_repair_accepts_deterministic_uneven_distribution_within_ranges():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
     registry = runner._build_narration_repair_position_registry(candidate, story_map)
-    counts = [7 if index % 2 == 0 else 17 for index in range(len(registry["positions"]))]
+    counts = [row["word_budget"] for row in registry["positions"]]
+    counts[0] += 1
+    counts[1] -= 1
     assert sum(counts) == 120
     raw = {
         "rewrites": [
@@ -2608,7 +2619,9 @@ def test_position_repair_accepts_total_below_guidance_inside_final_bounds():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
     registry = runner._build_narration_repair_position_registry(candidate, story_map)
-    counts = [10, *([12] * (len(registry["positions"]) - 1))]
+    counts = [row["word_budget"] for row in registry["positions"]]
+    counts[0] -= 1
+    counts[1] -= 1
     assert sum(counts) == 118
     raw = {
         "rewrites": [

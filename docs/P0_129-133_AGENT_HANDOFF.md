@@ -689,3 +689,23 @@ candidate claim/evidence references and preserves that subset in the canonical
 result. This correction must be published before the next single bounded real
 request. Resume command remains the isolated repair harness after publication;
 do not rerun visual/story stages.
+
+## Position-vector aggregate budget correction - 2026-08-21
+
+After `7f17e6ed6b38fd8d85e0cd9e6acd50f937278f14`, the one bounded real
+position-vector request failed closed with
+`cloud.narrative_repair_position_budget_invalid`; request count was 1 and
+retry count 0. The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`22b4fd1b8a4ecf29f458a010bbf9879e936629d04fd720cc8c14684f70db1621`.
+Its non-prose shape metrics were array length 12, string items, counts
+`[14,9,13,8,10,10,9,13,15,9,12,13]`, total 135, duration 56.96 seconds,
+expected `7..18` ranges, and `aggregate_word_count`.
+
+RED proved the registry's per-position maxima could describe an impossible
+aggregate. GREEN is 144/144 focused tests with Ruff, compileall, diff-check,
+no-churn, and secret scan clean. The correction caps the sum of position
+maxima at 125 while retaining final 115-125-word/50-60-second gates and
+exact-120 as guidance only. Publish before the next one-request repair;
+visual/story caches remain reusable and no final media is proven.

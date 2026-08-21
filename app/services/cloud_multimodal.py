@@ -65,10 +65,17 @@ NARRATION_REPAIR_POSITION_MIN_WORDS = 7
 NARRATION_REPAIR_POSITION_WORD_SLACK = 8
 
 
-def _position_word_budget_bounds(word_budget: int) -> tuple[int, int]:
+def _position_word_budget_bounds(
+    word_budget: int,
+    *,
+    max_word_budget: int | None = None,
+) -> tuple[int, int]:
+    maximum = word_budget + NARRATION_REPAIR_POSITION_WORD_SLACK
+    if max_word_budget is not None:
+        maximum = min(maximum, max_word_budget)
     return (
         max(NARRATION_REPAIR_POSITION_MIN_WORDS, word_budget - NARRATION_REPAIR_POSITION_WORD_SLACK),
-        word_budget + NARRATION_REPAIR_POSITION_WORD_SLACK,
+        maximum,
     )
 NARRATION_REPAIR_INSTRUCTION = (
     "TARGETED NARRATION POSITION REPAIR: return exactly one JSON object with "
@@ -78,7 +85,8 @@ NARRATION_REPAIR_INSTRUCTION = (
     "never return, create, or rewrite claim IDs, evidence panel IDs, slot IDs, "
     "passage IDs, observations, beat IDs, or hashes. Preserve the supplied causal "
     "order and evidence-grounded meaning. Write natural English within each "
-    "position's inclusive word_budget_min/word_budget_max range. Target "
+    "position's inclusive word_budget_min/word_budget_max range. The sum "
+    "of all position maxima is capped at 125. Target "
     "exactly 120 total words; the accepted total is 115-125 words and "
     "50-60 seconds. Count every rewrite before returning. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
@@ -3076,7 +3084,12 @@ class CloudStageRunner:
                     base_budget + (1 if index < remainder else 0)
                 )[0],
                 word_budget_max=_position_word_budget_bounds(
-                    base_budget + (1 if index < remainder else 0)
+                    base_budget + (1 if index < remainder else 0),
+                    max_word_budget=(
+                        base_budget
+                        + (1 if index < remainder else 0)
+                        + (1 if index < 125 - target_word_count else 0)
+                    ),
                 )[1],
             )
             for index, item in enumerate(selected)

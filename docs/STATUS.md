@@ -1871,3 +1871,25 @@ subset in the canonical result; foreign, reordered, empty, and invented
 references remain blocked. Publish this checkpoint before one further real
 request. Visual/story caches are untouched; no narration, MP4, voice, or QC is
 proven.
+
+## Position-vector aggregate budget correction - 2026-08-21
+
+After the published `7f17e6ed6b38fd8d85e0cd9e6acd50f937278f14` scope fix, one
+bounded real repair request ran with `request_count=1` and `retry_count=0` and
+failed closed as `cloud.narrative_repair_position_budget_invalid`. The
+sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256 `22b4fd1b8a4ecf29f458a010bbf9879e936629d04fd720cc8c14684f70db1621`.
+It recorded array length 12, all item type `str`, per-position counts
+`[14,9,13,8,10,10,9,13,15,9,12,13]`, total 135 words, estimated duration
+56.96 seconds, expected ranges `7..18`, accepted totals `115..125` and
+`50.0..60.0` seconds, and predicate `aggregate_word_count`. No provider prose
+or raw payload was retained.
+
+RED was collection-clean and body-failing for an aggregate-feasibility
+invariant. GREEN is 144/144 focused cloud/manifest/adapter/synthesis tests,
+plus Ruff, compileall, diff-check, no-churn, and key-shaped secret scan. The
+fix makes the sum of position maxima at most 125 by distributing the five
+words above the exact-120 guidance target deterministically; final bounds are
+unchanged and an in-range non-120 response remains admissible. Publish before
+another real request. No narration, MP4, voice, or final QC is proven.

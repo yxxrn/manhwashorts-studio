@@ -683,3 +683,24 @@ foreign, reordered, or empty lineage remains rejected. The focused matrix is
 143/143 green with Ruff, compileall, diff-check, no-churn, and secret checks.
 Publish this correction before one further bounded real request; visual/story
 stages remain cached and no narration, MP4, voice, or final QC is proven.
+
+## Position-vector aggregate budget correction (2026-08-21)
+
+After the published `7f17e6ed6b38fd8d85e0cd9e6acd50f937278f14` scope
+correction, one bounded real request used exactly one request and zero retries
+and failed closed as `cloud.narrative_repair_position_budget_invalid`. The
+sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256 `22b4fd1b8a4ecf29f458a010bbf9879e936629d04fd720cc8c14684f70db1621`.
+Its metadata recorded 12 string rewrites with per-position counts
+`[14,9,13,8,10,10,9,13,15,9,12,13]`, total 135 words, estimated duration
+56.96 seconds, expected `7..18` ranges, and failed predicate
+`aggregate_word_count`; no provider prose/raw payload was retained.
+
+The RED regression required the sum of local position maxima to stay within
+the final 125-word bound. GREEN deterministically distributes the five-word
+slack above the 120-word guidance target across the earliest positions while
+keeping strict 115-125-word and 50-60-second admission. The focused matrix is
+144/144 green with Ruff, compileall, diff-check, no-churn, and secret checks.
+Publish this correction before another real request; visual/story stages stay
+cached and no narration, MP4, voice, or final QC is proven.
