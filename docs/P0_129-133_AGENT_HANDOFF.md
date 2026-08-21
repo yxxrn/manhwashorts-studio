@@ -1387,3 +1387,21 @@ Resume only after publication with the one authorized same-model repair
 request, zero retries and no visual/story repeat. Do not rerun cached visual
 or story stages and do not continue to narration/render unless the complete
 strict admission contract passes.
+
+### Micro-compaction v2 correction — 2026-08-22
+
+The single authorized cached repair call used one request and zero retries but
+returned a structurally valid 128-word vector. Local admission correctly
+failed at `micro_compaction_no_safe_operation` with an estimated 55.65 seconds;
+only sanitized shape metrics were retained and no provider prose was stored.
+
+The local RED regression showed the policy vocabulary was still v1. GREEN adds
+only standard meaning-preserving future/modal and negative contractions,
+bumps the identity to `narration-micro-compaction-v2`, and stops at 125 words.
+The hard 115–125 word, 50–60 second, grounding, anti-copy, lineage, identity,
+display, and persistence gates are unchanged. Compaction tests are 4/4, cloud
+is 124/124, related analyzer/story/narrative is 211/211, and static/no-churn
+gates pass. No second provider request has been made.
+
+Publish this source/test/docs correction before another single same-model
+repair request; visual/story caches remain reusable and must not be rerun.

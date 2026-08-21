@@ -1394,3 +1394,24 @@ existing cached repair harness exactly once with the same configured model,
 zero retries, and no visual/story
 repeat. Persist only a fully admitted result; preserve all protected runtime
 paths and never print `/tmp/ms_env.sh`.
+
+## Micro-compaction v2 repair checkpoint — 2026-08-22
+
+The one authorized post-closure repair request consumed exactly one request,
+zero retries, and no visual/story calls. It failed closed locally as
+`cloud.narrative_repair_micro_compaction_unavailable`; sanitized metrics were
+8 strings, 128 words, 55.65 seconds, and
+`micro_compaction_no_safe_operation`. Provider prose was not retained.
+
+TDD then captured the RED on published v2-closure code: the new standard
+future/modal contraction regression observed policy v1. GREEN adds only
+audited meaning-preserving auxiliary/negative contractions, bumps the policy
+identity to `narration-micro-compaction-v2`, and stops immediately at 125
+words. The focused compaction set is 4/4, the full cloud file is 124/124, the
+related analyzer/story/narrative matrix is 211/211, Ruff/compileall/
+diff-check/no-churn pass, and no second provider request has been made.
+
+Publish this source/test/docs fix before one new bounded same-model repair
+request. Zero retries and no visual/story repeat remain mandatory; all
+grounding, anti-copy, identity, duration, display, persistence, and render
+gates remain unchanged.

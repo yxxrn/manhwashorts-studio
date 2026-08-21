@@ -66,7 +66,7 @@ NARRATION_REPAIR_PASSAGE_LINEAGE_VERSION = "narration-repair-passage-lineage-v1"
 NARRATION_REPAIR_IDENTITY_VERSION = "narration-repair-identity-v1"
 NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION = "narration-repair-identity-migration-v1"
 NARRATION_REPAIR_EVIDENCE_CLOSURE_VERSION = "narration-repair-evidence-closure-v2"
-NARRATION_MICRO_COMPACTION_VERSION = "narration-micro-compaction-v1"
+NARRATION_MICRO_COMPACTION_VERSION = "narration-micro-compaction-v2"
 NARRATION_MICRO_COMPACTION_MIN_WORDS = 126
 NARRATION_MICRO_COMPACTION_MAX_WORDS = 130
 NARRATION_REPAIR_POSITION_MIN_WORDS = 7
@@ -93,6 +93,26 @@ def _position_word_budget_bounds(
 _MICRO_COMPACTION_RULES = (
     ("it is", "it's", "it_is_to_its"),
     ("does not", "doesn't", "does_not_to_doesnt"),
+    ("he is", "he's", "he_is_to_hes"),
+    ("she is", "she's", "she_is_to_shes"),
+    ("it will", "it'll", "it_will_to_itll"),
+    ("I will", "I'll", "i_will_to_ill"),
+    ("you will", "you'll", "you_will_to_youll"),
+    ("he will", "he'll", "he_will_to_hell"),
+    ("she will", "she'll", "she_will_to_shell"),
+    ("we will", "we'll", "we_will_to_well"),
+    ("they will", "they'll", "they_will_to_theyll"),
+    ("I would", "I'd", "i_would_to_id"),
+    ("you would", "you'd", "you_would_to_youd"),
+    ("he would", "he'd", "he_would_to_hed"),
+    ("she would", "she'd", "she_would_to_shed"),
+    ("we would", "we'd", "we_would_to_wed"),
+    ("they would", "they'd", "they_would_to_theyd"),
+    ("did not", "didn't", "did_not_to_didnt"),
+    ("could not", "couldn't", "could_not_to_couldnt"),
+    ("should not", "shouldn't", "should_not_to_shouldnt"),
+    ("would not", "wouldn't", "would_not_to_wouldnt"),
+    ("must not", "mustn't", "must_not_to_mustnt"),
     ("they are", "they're", "they_are_to_theyre"),
     ("we are", "we're", "we_are_to_were"),
     ("you are", "you're", "you_are_to_youre"),

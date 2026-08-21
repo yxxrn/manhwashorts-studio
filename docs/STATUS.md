@@ -2674,3 +2674,23 @@ transport parity. The next and only external action is one bounded cached
 same-model repair request with zero retries and no visual/story repeat. A
 valid result must still pass anti-copy, grounding, causal, identity,
 115–125-word, 50–60-second, display, persistence, and render gates.
+
+## Micro-compaction v2 repair checkpoint — 2026-08-22
+
+The one authorized repair request after closure publication used exactly one
+provider request and zero retries, then failed closed locally with
+`cloud.narrative_repair_micro_compaction_unavailable`. Sanitized shape metrics
+were array length 8, total 128 words, estimated 55.65 seconds, and failed
+predicate `micro_compaction_no_safe_operation`; no provider prose was stored.
+
+The required RED regression reproduced the old v1 policy. GREEN adds a
+bounded, deterministic vocabulary of standard auxiliary/negative contractions
+only, changes the policy identity to
+`narration-micro-compaction-v2`, and stops at 125 rather than deleting content
+or relaxing the 115–125/50–60 admission gates. Compaction is recomputed into
+the result/display/cache identity.
+
+GREEN evidence is 4/4 compaction tests, 124/124 cloud tests, 211/211 related
+analyzer/story/narrative tests, Ruff/compileall/diff-check/no-churn clean, and
+zero second provider requests. This fix is not yet committed; publish it
+before the next single bounded same-model repair attempt.

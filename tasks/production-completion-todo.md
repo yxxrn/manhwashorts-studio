@@ -37,3 +37,12 @@ complete from unit tests alone.
       `bd6f7d791d033f36f62c725b724fdcad9fdc2b8b`.
 - [ ] Run the one authorized cached repair request only after publication;
       continue only on strict admission.
+
+## Micro-compaction v2 addendum — 2026-08-22
+
+- [x] Record the one-request sanitized 128-word/55.65-second local failure.
+- [x] Add and verify the versioned meaning-preserving compaction correction
+      (4/4 focused; 124/124 cloud; 211/211 related).
+- [ ] Commit/push this correction and verify exact parity.
+- [ ] Run one new bounded same-model repair request after publication; no
+      retries or visual/story repetition.

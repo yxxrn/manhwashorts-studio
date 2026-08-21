@@ -21,6 +21,21 @@ makes no provider call. The next bounded stage is one cached narration repair
 request, followed only by local persistence and silent render if strict
 admission succeeds.
 
+### Repair compaction v2 — 2026-08-22
+
+The repair reducer now records a sanitized response shape before any local
+failure. The first post-closure response was 8 strings/128 words/55.65 seconds
+and failed only because v1 had no safe contraction match. Compaction v2 is a
+versioned local post-reconciliation transform with a narrow audited standard
+contraction vocabulary. It can reduce 126–130 words only to the hard maximum
+125, preserves slot order/meaning/lineage, and changes cache identity through
+the policy version and result hash. It never relaxes duration, grounding,
+anti-copy, visual, or publish gates.
+
+GREEN proof: compaction 4/4, cloud 124/124, related 211/211, static and
+no-churn checks pass; no second provider request occurred. Publish before the
+next bounded repair call.
+
 ### Evidence-closure v2 for multi-section passages — 2026-08-22
 
 The repair reducer has two distinct closure scopes. A position resolves its

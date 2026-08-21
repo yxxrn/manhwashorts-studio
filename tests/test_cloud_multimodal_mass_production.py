@@ -3235,7 +3235,7 @@ def test_position_repair_micro_compacts_exact_127_words_without_losing_negation(
 
     metrics = reconciled["_response_shape_metrics"]
     compact = metrics["micro_compaction"]
-    assert compact["version"] == "narration-micro-compaction-v1"
+    assert compact["version"] == "narration-micro-compaction-v2"
     assert compact["applied"] is True
     assert compact["before_word_count"] == 127
     assert compact["after_word_count"] == 125
@@ -3248,6 +3248,34 @@ def test_position_repair_micro_compacts_exact_127_words_without_losing_negation(
     assert "it's" in text
     assert "doesn't" in text
     assert "does not" not in text
+
+
+def test_micro_compaction_supports_standard_future_and_modal_contractions():
+    module = _module()
+    counts = [17, 16, 16, 16, 16, 16, 15, 16]
+    prefixes = ("it will", "should not", "they will")
+    rewrites = []
+    for index, count in enumerate(counts):
+        prefix = prefixes[index] if index < len(prefixes) else ""
+        filler_count = count - len(prefix.split())
+        fillers = [f"newcompact{index}word{word_index}" for word_index in range(filler_count)]
+        rewrites.append(" ".join(part for part in (prefix, *fillers) if part))
+
+    compacted, metadata = module._micro_compact_rewrites(
+        tuple(rewrites),
+        total_words=sum(counts),
+    )
+
+    assert metadata["version"] == "narration-micro-compaction-v2"
+    assert metadata["after_word_count"] == 125
+    assert metadata["operation_types"][:3] == [
+        "it_will_to_itll",
+        "should_not_to_shouldnt",
+        "they_will_to_theyll",
+    ]
+    assert "it'll" in compacted[0]
+    assert "shouldn't" in compacted[1]
+    assert "they'll" in compacted[2]
 
 
 def test_position_repair_micro_compaction_without_safe_operation_fails_closed():
@@ -3293,7 +3321,7 @@ def test_position_repair_in_range_vector_remains_unchanged_by_micro_compaction()
     reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
 
     compact = reconciled["_response_shape_metrics"]["micro_compaction"]
-    assert compact["version"] == "narration-micro-compaction-v1"
+    assert compact["version"] == "narration-micro-compaction-v2"
     assert compact["applied"] is False
     assert compact["before_word_count"] == 120
     assert compact["after_word_count"] == 120

@@ -94,3 +94,14 @@ zero provider requests. The source/test/docs checkpoint is published as
 `bd6f7d791d033f36f62c725b724fdcad9fdc2b8b` with parent
 `24971e742653aeae48a2b15757adccf44a5dedb9`; the immediate next action is one
 bounded cached repair request.
+
+## Micro-compaction addendum — 2026-08-22
+
+The first authorized repair request after closure publication used one request
+and zero retries, then failed locally with sanitized metrics 128 words,
+55.65 seconds, and `micro_compaction_no_safe_operation`. The bounded local
+fix is policy v2: standard auxiliary/negative contractions only, stop at 125,
+preserve meaning/lineage, and include policy/result identity in the cache.
+GREEN is compaction 4/4, cloud 124/124, related 211/211, and static/no-churn
+clean. The source/test/docs correction is the immediate unpublished
+checkpoint; publish it before one new same-model repair request.
