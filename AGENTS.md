@@ -1009,9 +1009,9 @@ and key-shaped secret scan passed. The previous normal-run blocker was
 `PreparedPanelManifestError: prepared panel order is not contiguous`, with
 durable taxonomy `cloud.narrative_repair_scope_invalid`; the fix separates
 execution order from source lineage and rejects duplicate/reordered IDs,
-changed payload/crop identity, and invalid legacy hashes. The next normal
-resume is exactly one bounded `grok-4.3` repair request with cached visual/story
-stages and zero retries; do not rerun visual/story or print `/tmp/ms_env.sh`.
+changed payload/crop identity, and invalid legacy hashes. The planned normal
+resume was executed once; its outcome is recorded below. Do not rerun
+visual/story or print `/tmp/ms_env.sh`.
 
 The one-request resume completed with `request_count=1` and zero retries, but
 ended `NEEDS_REVIEW` at the local narration boundary with sanitized

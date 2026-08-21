@@ -306,8 +306,8 @@ and 701 visual rows. It proves preserved source orders, `prepared_order`
 0..700, metadata-only cached rebuild, stable restoration, legacy migration,
 and rejection of duplicate/reordered/crop/payload identity tampering. Focused
 manifest/cloud/narrative verification is 128 passed; no provider request was
-made by this fix. After publication, the normal cached batch runner may make
-exactly one bounded narration repair request; visual/story stages must remain
+made by this fix. The subsequent cached batch runner used its one authorized
+request and failed at the local narration boundary; visual/story stages remain
 cache hits and all downstream grounding, duration, render, and voice gates
 remain authoritative.
 

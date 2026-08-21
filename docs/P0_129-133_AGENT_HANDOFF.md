@@ -1037,10 +1037,10 @@ payload identity mismatches remain fail-closed.
 
 Verification is 128 focused tests passed (11 manifest, 93 cloud, 14 narrative
 pipeline, 10 narrative QC), plus Ruff, compileall, diff-check, and secret scan.
-The next resume command is the previously published normal runner with the
-same project/model/cache identity, `--max-attempts 1 --max-requests 1`, and no
-visual/story repeat. Runtime DB, caches, media, `data`, and `/tmp/ms_env.sh`
-remain outside Git.
+The previously published normal runner was executed once with the same
+project/model/cache identity and no visual/story repeat; its failure is
+recorded below. Do not issue another provider call from this checkpoint.
+Runtime DB, caches, media, `data`, and `/tmp/ms_env.sh` remain outside Git.
 
 ## 2026-08-21 repair result after manifest publication
 

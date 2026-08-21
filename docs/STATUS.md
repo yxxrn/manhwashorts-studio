@@ -2259,10 +2259,9 @@ TDD evidence: collection-clean RED was 7 existing passes plus 3 intended
 failures at the old contiguous-source-order guard. GREEN is 11 manifest tests,
 93 cloud-multimodal tests, 14 narrative-pipeline tests, and 10 narrative-QC
 tests: 128 passed. Ruff, compileall, `git diff --check`, and the key-shaped
-secret scan passed. The previous failed repair made zero provider calls; after
-this checkpoint is published, run only the existing cached normal entrypoint
-with `--max-attempts 1 --max-requests 1`, then continue to render only if all
-strict narration gates pass. No MP4, TTS, or QC artifact is claimed here.
+secret scan passed. The subsequent one-request cached run is recorded below;
+no further provider call is authorized from this checkpoint. No MP4, TTS, or
+QC artifact is claimed here.
 
 ## 2026-08-21 one-request repair outcome
 
