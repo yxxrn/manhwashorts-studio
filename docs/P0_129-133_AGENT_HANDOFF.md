@@ -895,3 +895,29 @@ gates remain strict and exact 120 is guidance only. Focused verification is
 148/148 with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan
 clean. Publish before another one-request repair; no narration, MP4, voice, or
 final QC is proven.
+
+## Current resume checkpoint: post-repair final-gate diagnostics - 2026-08-21
+
+Current published parent is
+`6e389e1f343308ebd08864e414a8cb301bbbaf25`. Do not rerun visual or story
+stages. The one authorized real `grok-4.3` positional repair request after
+that parent used request/retry counts 1/0 and failed closed as
+`cloud.narrative_duration_out_of_range`. Sanitized report:
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`bce6fee0304ece68e6f730abc75f1c53dd4afe2d1c89fe2e7debc4b353d026b6`.
+
+Safe response metadata: eight rewrite strings; counts
+`[18,17,16,16,16,13,13,13]`; total 122; pre-reconciliation estimate 51.3s;
+slot-order hash
+`cb0ce195a2e661f703e3330bf1373a20e7e3e7ac83c49314cb9d661d9d12db6e`.
+The vector aggregate was in range, but the durable report lacked the final
+reconstructed result shape needed to classify the later gate. The published
+follow-up source/test boundary now records those reconstructed metrics and
+failed predicates without provider prose. Focused verification is 153 passed
+with five existing Pillow warnings; Ruff, compileall, diff-check, no-churn,
+and key-shaped secret scan are clean.
+
+No further provider call is authorized in this checkpoint. Preserve the
+durable report, DB, caches, and `/tmp/ms_env.sh`; do not print or copy secrets.
+There is still no valid narration, silent MP4, voice output, or QC artifact.

@@ -3643,3 +3643,31 @@ def test_later_gate_failure_persists_success_shape_metrics(tmp_path):
     assert metrics["failed_code"] == failure.code
     assert metrics["failed_predicate"] == failure.code
     assert "durable0_word" not in json.dumps(metrics)
+
+
+def test_later_gate_metrics_include_reconciled_result_shape():
+    module = _module()
+    runner, candidate, visual, _story_map = _immutable_slot_fixture(module)
+
+    metrics = runner._narration_repair_result_shape_metrics(
+        candidate,
+        visual,
+        scope_ok=True,
+    )
+
+    assert metrics["reconciled_word_count"] == candidate.word_count
+    assert metrics["reconciled_duration_s"] == candidate.estimated_duration_s
+    assert metrics["reconciled_passage_count"] == len(candidate.passages)
+    assert metrics["reconciled_observation_count"] == len(candidate.observations)
+    assert metrics["reconciled_visual_panel_count"] == len(visual.panels)
+    assert metrics["reconciled_scope_ok"] is True
+    assert "duration_bounds" in metrics["reconciled_failed_predicates"]
+    assert "word_bounds" in metrics["reconciled_failed_predicates"]
+    assert "reconciled_spoken_text" not in json.dumps(metrics)
+
+    runner.last_response_shape_metrics = dict(metrics)
+    failure_metrics = runner._response_shape_metrics_for_failure(
+        "cloud.narrative_not_grounded"
+    )
+    assert failure_metrics["failed_code"] == "cloud.narrative_not_grounded"
+    assert failure_metrics["failed_predicate"] == "duration_bounds"

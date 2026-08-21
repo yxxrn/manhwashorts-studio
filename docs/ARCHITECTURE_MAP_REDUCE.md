@@ -170,3 +170,23 @@ only a broad pathological single-position share above
 The repair prompt is `vision-first-story-analyzer-v3-targeted-position-repair-v3`;
 cache/result identities are versioned so old results cannot be reused under the
 changed contract.
+
+## Post-repair final-gate diagnostic checkpoint
+
+The single authorized request after `6e389e1f343308ebd08864e414a8cb301bbbaf25`
+used `grok-4.3`, request/retry counts 1/0, and failed closed as
+`cloud.narrative_duration_out_of_range`. Its sanitized report SHA-256 is
+`bce6fee0304ece68e6f730abc75f1c53dd4afe2d1c89fe2e7debc4b353d026b6`.
+The response shape was a dict with only `rewrites`, eight strings, counts
+`[18,17,16,16,16,13,13,13]`, total 122, estimate 51.3s, and slot-order hash
+`cb0ce195a2e661f703e3330bf1373a20e7e3e7ac83c49314cb9d661d9d12db6e`.
+
+The repair reducer now adds post-reconciliation metrics to its private
+sanitized snapshot: reconstructed word count, spoken-token count, duration,
+passage/observation/display counts, visual-panel count, scope status, and a
+stable failed-predicate list. `_response_shape_metrics_for_failure` preserves
+the first reconstructed predicate while retaining the public stable error
+code. No provider prose is stored, and this follow-up does not relax the
+final vector, grounding, causal, identity, or duration gates. Focused tests:
+153 passed with five existing Pillow warnings; no narration, MP4, voice, or
+QC artifact is proven and no second provider request is authorized here.

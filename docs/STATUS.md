@@ -2099,3 +2099,28 @@ no-churn, and key-shaped secret scan are clean.
 The GREEN source/test/docs checkpoint must be published before exactly one new
 bounded real repair request. Visual/story caches remain valid and untouched;
 no narration, MP4, voice, or final QC is proven.
+
+## Post-repair final-gate diagnostic checkpoint (2026-08-21)
+
+After published checkpoint `6e389e1f343308ebd08864e414a8cb301bbbaf25`, the
+authorized isolated harness made exactly one real `grok-4.3` repair request
+and zero retries. It failed closed as `cloud.narrative_duration_out_of_range`.
+The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`bce6fee0304ece68e6f730abc75f1c53dd4afe2d1c89fe2e7debc4b353d026b6`.
+The non-prose response shape was eight strings with counts
+`[18,17,16,16,16,13,13,13]`, total 122, pre-reconciliation estimate 51.3s,
+and slot-order hash
+`cb0ce195a2e661f703e3330bf1373a20e7e3e7ac83c49314cb9d661d9d12db6e`.
+
+The aggregate vector metrics were within the hard bounds, but the report did
+not yet contain the reconstructed result metrics needed to distinguish a
+final duration gate from a later structural/grounding gate. A collection-clean
+RED/GREEN follow-up now carries reconstructed word/duration, passage,
+observation, display, scope, and failed-predicate metadata through the same
+sanitized boundary. It changes observability only; hard admission gates remain
+unchanged. Focused verification is 153 passed with five existing Pillow
+warnings; Ruff, compileall, diff-check, no-churn, and key-shaped secret scan
+are clean. No further provider call is made in this checkpoint, and no valid
+narration, MP4, voice, or final QC is proven.

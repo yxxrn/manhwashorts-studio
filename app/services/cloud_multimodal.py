@@ -1117,9 +1117,70 @@ class CloudStageRunner:
             return {}
         metrics["failed_code"] = code
         if not metrics.get("failed_predicate"):
-            metrics["failed_predicate"] = code
+            metrics["failed_predicate"] = (
+                metrics.get("reconciled_failed_predicate") or code
+            )
         self.last_response_shape_metrics = dict(metrics)
         return metrics
+
+    @staticmethod
+    def _narration_repair_result_shape_metrics(
+        result: NarrationResult,
+        visual: VisualStageResult,
+        *,
+        scope_ok: bool | None = None,
+    ) -> dict[str, Any]:
+        """Describe reconstructed repair gates without retaining provider prose."""
+
+        spoken_word_count = len(re.findall(r"[A-Za-z0-9]+", result.spoken_text))
+        expected_display = tuple(re.findall(r"[A-Z0-9]+", result.spoken_text.upper()))
+        observation_ids = tuple(
+            str(item.get("panel_id", ""))
+            for item in result.observations
+            if isinstance(item, Mapping)
+        )
+        visual_ids = tuple(
+            str(item.get("panel_id", ""))
+            for item in visual.panels
+            if isinstance(item, Mapping)
+        )
+        failed: list[str] = []
+        try:
+            duration = float(result.estimated_duration_s)
+        except (TypeError, ValueError, OverflowError):
+            duration = None
+        try:
+            reported_word_count = int(result.word_count)
+        except (TypeError, ValueError, OverflowError):
+            reported_word_count = None
+        if duration is None or not 50.0 <= duration <= 60.0:
+            failed.append("duration_bounds")
+        if reported_word_count is None or not 115 <= reported_word_count <= 125:
+            failed.append("word_bounds")
+        if reported_word_count != spoken_word_count:
+            failed.append("word_count_reconciliation")
+        if not 4 <= len(result.passages) <= 6:
+            failed.append("passage_count")
+        if tuple(str(word) for word in result.display_words) != expected_display:
+            failed.append("display_derivation")
+        if len(observation_ids) != len(visual_ids):
+            failed.append("observation_count")
+        elif observation_ids != visual_ids:
+            failed.append("observation_panel_order")
+        if scope_ok is False:
+            failed.append("scope_compatibility")
+        return {
+            "reconciled_word_count": reported_word_count,
+            "reconciled_spoken_word_count": spoken_word_count,
+            "reconciled_duration_s": duration,
+            "reconciled_passage_count": len(result.passages),
+            "reconciled_observation_count": len(result.observations),
+            "reconciled_visual_panel_count": len(visual.panels),
+            "reconciled_display_word_count": len(result.display_words),
+            "reconciled_scope_ok": scope_ok,
+            "reconciled_failed_predicates": failed,
+            "reconciled_failed_predicate": failed[0] if failed else None,
+        }
 
     def _call(self, operation) -> Any:
         last_error: Exception | None = None
@@ -4059,11 +4120,30 @@ class CloudStageRunner:
                     removable_passage_ids,
                 )
                 if reconciled is None:
+                    self.last_response_shape_metrics.update(
+                        {
+                            "reconciled_scope_ok": False,
+                            "reconciled_failed_predicates": [
+                                "scope_compatibility"
+                            ],
+                            "reconciled_failed_predicate": "scope_compatibility",
+                        }
+                    )
                     raise CloudStageError(
                         "cloud.narrative_repair_scope_invalid",
                         reviewable=True,
+                        safe_metadata=self._response_shape_metrics_for_failure(
+                            "cloud.narrative_repair_scope_invalid"
+                        ),
                     )
                 repaired = reconciled
+                self.last_response_shape_metrics.update(
+                    self._narration_repair_result_shape_metrics(
+                        repaired,
+                        visual,
+                        scope_ok=True,
+                    )
+                )
                 if not _narration_result_is_usable(
                     repaired,
                     visual,

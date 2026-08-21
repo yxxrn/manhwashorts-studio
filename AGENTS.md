@@ -876,3 +876,19 @@ still requires exact positional shape/order, non-empty text, trusted lineage,
 causal order, 115-125 words, 50-60 seconds, grounding, identity, and cache
 contracts. A broad dominance guard rejects one position over
 `max(24, ceil(total_words * 0.25))`; it admits the observed 124-word vector.
+
+## Post-repair final-gate diagnostic checkpoint (2026-08-21)
+
+Published source/test checkpoint: `6e389e1f343308ebd08864e414a8cb301bbbaf25`.
+The one authorized real `grok-4.3` repair request after it used request/retry
+counts 1/0 and failed closed as `cloud.narrative_duration_out_of_range`.
+Sanitized report SHA-256:
+`bce6fee0304ece68e6f730abc75f1c53dd4afe2d1c89fe2e7debc4b353d026b6`.
+Its provider-shape metadata was eight strings with counts
+`[18,17,16,16,16,13,13,13]`, total 122, pre-reconciliation estimate 51.3s,
+and slot hash `cb0ce195a2e661f703e3330bf1373a20e7e3e7ac83c49314cb9d661d9d12db6e`.
+
+The follow-up diagnostic boundary now records reconstructed word/duration,
+passage/observation/display counts, scope status, and the exact local failed
+predicate without retaining provider prose. No second provider request is
+permitted from this checkpoint; narration, MP4, voice, and QC remain unproven.
