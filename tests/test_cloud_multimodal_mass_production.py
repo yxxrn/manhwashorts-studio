@@ -3235,7 +3235,7 @@ def test_position_repair_micro_compacts_exact_127_words_without_losing_negation(
 
     metrics = reconciled["_response_shape_metrics"]
     compact = metrics["micro_compaction"]
-    assert compact["version"] == "narration-micro-compaction-v2"
+    assert compact["version"] == "narration-micro-compaction-v3"
     assert compact["applied"] is True
     assert compact["before_word_count"] == 127
     assert compact["after_word_count"] == 125
@@ -3266,7 +3266,7 @@ def test_micro_compaction_supports_standard_future_and_modal_contractions():
         total_words=sum(counts),
     )
 
-    assert metadata["version"] == "narration-micro-compaction-v2"
+    assert metadata["version"] == "narration-micro-compaction-v3"
     assert metadata["after_word_count"] == 125
     assert metadata["operation_types"][:3] == [
         "it_will_to_itll",
@@ -3276,6 +3276,35 @@ def test_micro_compaction_supports_standard_future_and_modal_contractions():
     assert "it'll" in compacted[0]
     assert "shouldn't" in compacted[1]
     assert "they'll" in compacted[2]
+
+
+def test_position_repair_micro_compacts_126_words_with_auxiliary_contraction():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [16, 16, 16, 16, 16, 16, 15, 15]
+    assert sum(counts) == 126
+    rewrites = []
+    for index, count in enumerate(counts):
+        prefix = "it would" if index == 0 else ""
+        filler_count = count - len(prefix.split())
+        fillers = [f"auxcompact{index}word{word_index}" for word_index in range(filler_count)]
+        rewrites.append(" ".join(part for part in (prefix, *fillers) if part))
+
+    reconciled = runner._reconcile_narration_repair_vector(
+        {"rewrites": rewrites},
+        registry,
+        candidate,
+    )
+
+    metrics = reconciled["_response_shape_metrics"]
+    compact = metrics["micro_compaction"]
+    assert compact["version"] == "narration-micro-compaction-v3"
+    assert compact["before_word_count"] == 126
+    assert compact["after_word_count"] == 125
+    assert compact["operation_types"] == ["it_would_to_itd"]
+    assert metrics["total_word_count"] == 125
+    assert "it'd" in " ".join(str(passage["text"]) for passage in reconciled["script_passages"])
 
 
 def test_position_repair_micro_compaction_without_safe_operation_fails_closed():
@@ -3321,7 +3350,7 @@ def test_position_repair_in_range_vector_remains_unchanged_by_micro_compaction()
     reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
 
     compact = reconciled["_response_shape_metrics"]["micro_compaction"]
-    assert compact["version"] == "narration-micro-compaction-v2"
+    assert compact["version"] == "narration-micro-compaction-v3"
     assert compact["applied"] is False
     assert compact["before_word_count"] == 120
     assert compact["after_word_count"] == 120

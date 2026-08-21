@@ -50,3 +50,11 @@ complete from unit tests alone.
       (112 words, 48.7 seconds).
 - [ ] Obtain a separately authorized valid narration repair; never pad or
       weaken the hard contract.
+
+
+## Micro-compaction v3 checkpoint — 2026-08-22
+
+- [x] Record one newly authorized bounded repair attempt: 8 strings, 126 words, 54.78 seconds, one request, zero retries, no visual/story repeat, failed micro_compaction_no_safe_operation.
+- [x] Add RED/GREEN regression for deterministic 126-to-125 auxiliary contraction and bump the policy identity to v3 without changing hard bounds.
+- [x] Verify compaction-focused 6/6, cloud/related 336/336, Ruff, compileall, diff/no-churn, allowlist, and secret scans.
+- [ ] Commit and publish the v3 source/test checkpoint, then make the next bounded repair request only from the published SHA.

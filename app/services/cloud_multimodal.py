@@ -66,7 +66,7 @@ NARRATION_REPAIR_PASSAGE_LINEAGE_VERSION = "narration-repair-passage-lineage-v1"
 NARRATION_REPAIR_IDENTITY_VERSION = "narration-repair-identity-v1"
 NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION = "narration-repair-identity-migration-v1"
 NARRATION_REPAIR_EVIDENCE_CLOSURE_VERSION = "narration-repair-evidence-closure-v2"
-NARRATION_MICRO_COMPACTION_VERSION = "narration-micro-compaction-v2"
+NARRATION_MICRO_COMPACTION_VERSION = "narration-micro-compaction-v3"
 NARRATION_MICRO_COMPACTION_MIN_WORDS = 126
 NARRATION_MICRO_COMPACTION_MAX_WORDS = 130
 NARRATION_REPAIR_POSITION_MIN_WORDS = 7
@@ -132,6 +132,11 @@ _MICRO_COMPACTION_RULES = (
     ("we have", "we've", "we_have_to_weve"),
     ("they have", "they've", "they_have_to_theyve"),
     ("you have", "you've", "you_have_to_youve"),
+    ("it would", "it'd", "it_would_to_itd"),
+    ("that would", "that'd", "that_would_to_thatd"),
+    ("there would", "there'd", "there_would_to_thered"),
+    ("that will", "that'll", "that_will_to_thatll"),
+    ("there will", "there'll", "there_will_to_therell"),
 )
 
 

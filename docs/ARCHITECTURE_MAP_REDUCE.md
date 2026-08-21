@@ -662,3 +662,12 @@ one bounded same-model request was consumed. Its sanitized response shape was
 `aggregate_word_count` predicate. No provider prose was retained, no retry was
 issued, and no local expansion or threshold relaxation is safe. Downstream
 script persistence, silent/voiced render, TTS, and QC remain closed.
+
+
+## Micro-compaction v3 repair checkpoint — 2026-08-22
+
+After published f4fa6e77bde41758e5b02e62dfb241aa5bbf0cf6, one newly authorized bounded same-model repair request used exactly one request, zero retries, and no visual/story calls. Sanitized response metadata was eight strings, 126 words, and 54.78 seconds; local admission failed closed as cloud.narrative_repair_micro_compaction_unavailable with predicate micro_compaction_no_safe_operation. Provider prose was not retained.
+
+The RED regression reproduced the 126-word narrow overshoot. GREEN adds five audited conversational auxiliary contractions, bumps the policy identity to narration-micro-compaction-v3, and retains the hard 115-125-word and 50-60-second gates. The new 126-to-125 reconciliation regression passes. The full cloud/related matrix is 336/336; the complete compaction-focused selection is 6/6; Ruff, compileall, diff-check, no-churn, allowlist, and secret-shape scans are clean. No padding, truncation, lineage change, or gate relaxation was introduced.
+
+The two owned source/test files are the current green checkpoint to commit and publish next. Visual/story caches remain reusable; narration persistence, silent/voiced render, TTS, and QC remain closed until a repair result passes strict admission.
