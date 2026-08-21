@@ -1,5 +1,55 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## METADATA-ONLY NARRATION IDENTITY RECONCILIATION - 2026-08-21
+
+The scoped source/test checkpoint is based on published main
+`5eaf91762f45ec4111d88e21ac458618bb86f42a`. It adds
+`narration-repair-identity-v1` and compares only canonical metadata: the
+ordered 701-panel IDs and visual-evidence identities, model/prompt identity,
+story beats/claims/causal hashes, editorial selection, trusted slot order and
+claim/evidence identities, and candidate dependencies. `prepared_order` is a
+derived execution index and is ignored for equivalence; canonical panel rows
+are normalized by panel ID, while `ordered_panel_ids` remains authoritative.
+Any semantic panel, model, prompt, story, selection, slot, or candidate change
+fails closed as `cloud.narrative_repair_identity_mismatch` with counts,
+mismatch field, comparison hash, and reason only.
+
+The durable legacy repair candidate has visual identity
+`73c224732858ead17bdee4003cfc8824a7f1470e7e0a238f8baa5d80fd0b9579`; the
+current persisted 701-panel story context has visual identity
+`a9a43faf0a198b1bf3a995858fba39bea65cb27be3152b7019e2dba8a9b24b9f`.
+The old candidate records do not contain the required canonical
+`identity_metadata`, so they are rejected as `legacy_identity_metadata_missing`;
+no migration is admitted and no hash is rewritten. This is an unsafe/unknown
+legacy boundary, not proof of semantic equivalence. The new loader replaces
+the active record with an equivalent migrated record before validating warm
+reuse; changed identity remains rejected.
+
+Narration budgets are independent: configured normal narration may use at most
+one request and targeted repair at most one request. They can total two only
+when a fresh candidate is genuinely required; other stages do not consume
+either counter. The legacy `max_requests` global budget remains compatible for
+older callers. No provider request was made during this checkpoint.
+
+TDD/static evidence: the initial collection-clean RED had 13 intended
+identity/budget failures; GREEN reached 13/13, then a warm-loader RED exposed
+the discarded migration record and GREEN reached 14/14. The cloud file is
+111 passed with five known Pillow deprecation warnings; the related
+manifest/analyzer/script/vision matrix is 83 passed. Ruff, compileall,
+`git diff --check`, and the key-shaped secret scan pass. The 13
+`tests/test_pipeline.py` failures are reproduced with the identical first
+failure (`PipelineError: run vision analysis before generating a draft`) on
+the clean parent and current tree; they remain a named pre-vision fixture
+exception, not a full-suite or production-render GREEN claim.
+
+No narration, MP4, TTS, or QC artifact is proven. After publication, resume
+the normal cached project entrypoint with the same configured model and
+`--max-attempts 1 --max-narration-requests 1 --max-repair-requests 1`, without
+repeating visual/story stages. A valid result must still pass grounding,
+causal order, 115-125 words, 50-60 seconds, display, lineage, and cache gates;
+only then may silent render and later voice run. Runtime data, DB/WAL, caches,
+media, `data`, `ms_env.sh`, and credentials stay outside Git.
+
 ## FRESH BOUNDED RETRY RESULT
 
 This retry started from published parent

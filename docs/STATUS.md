@@ -1,5 +1,50 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## METADATA-ONLY NARRATION IDENTITY RECONCILIATION - 2026-08-21
+
+Implementation parent/rollback is published main
+`5eaf91762f45ec4111d88e21ac458618bb86f42a`. The new
+`narration-repair-identity-v1` boundary compares canonical metadata only:
+ordered 701-panel IDs and visual identities, model/prompt hashes, story
+beats/claims/causal hashes, selection, trusted slot order and claim/evidence
+refs, and candidate dependencies. `prepared_order` is derived execution
+metadata and is ignored for equivalence; panel rows normalize by panel ID but
+the ordered panel-ID list remains authoritative. Semantic changes reject with
+`cloud.narrative_repair_identity_mismatch` and sanitized counts,
+`mismatch_field`, comparison hash, and reason.
+
+The stale durable candidate carries visual identity
+`73c224732858ead17bdee4003cfc8824a7f1470e7e0a238f8baa5d80fd0b9579`, while
+the current 701-panel story context carries
+`a9a43faf0a198b1bf3a995858fba39bea65cb27be3152b7019e2dba8a9b24b9f`.
+Its legacy record has no canonical `identity_metadata`, so the loader records
+`legacy_identity_metadata_missing` and rejects it; no migration status is
+claimed and no hash is rewritten. Exact-equivalent metadata migration is
+tested and warm reuse now validates the returned migrated record.
+
+Request accounting is explicit: normal narration max one request and targeted
+repair max one request, independently; the combined maximum is two only for a
+genuinely fresh candidate. Other stages do not consume these counters, and
+legacy `max_requests` callers retain their global behavior. No provider call
+was made before this checkpoint.
+
+Verification: intended RED 13 collection-clean failures; final focused
+identity/budget GREEN 14 passed; full cloud-multimodal GREEN 111 passed with
+five known Pillow deprecation warnings; related manifest/analyzer/script/vision
+matrix 83 passed; Ruff, compileall, diff-check, and key-shaped secret scan
+passed. `tests/test_pipeline.py` still has 13 failures, with the same first
+failure and full failure set on clean parent/current (`PipelineError: run
+vision analysis before generating a draft`); this is a named pre-vision
+fixture exception, not a full-suite or production-render GREEN claim.
+
+No narration, MP4, TTS, or QC is proven. After publication, resume the normal
+cached project entrypoint with `--max-attempts 1
+--max-narration-requests 1 --max-repair-requests 1`, same model, and no
+visual/story repeat. Admission remains gated by trusted lineage, grounding,
+causal order, 115-125 words, 50-60 seconds, display derivation, and cache
+identity. Runtime data, DB/WAL, caches, media, `data`, `ms_env.sh`, and
+credentials remain untracked/protected.
+
 The retry began from published `813ec6e342584b38e4a5e379a25391406df5440e`,
 reused the durable 160-word/64.35-second candidate and 701-panel visual/story
 identities, and issued exactly one `grok-4.3` request. It failed closed again

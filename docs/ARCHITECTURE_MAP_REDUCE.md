@@ -1,5 +1,41 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Narration repair identity and independent request budgets - 2026-08-21
+
+The metadata-only reconciliation boundary is versioned
+`narration-repair-identity-v1`. Its canonical dependency shape contains the
+exact ordered processed-panel IDs and visual-evidence identities, model and
+prompt hashes, story beat/claim/causal hashes, selection, trusted slot order
+and claim/evidence refs, and candidate dependencies. Derived `prepared_order`
+is ignored for equivalence; panel rows are normalized by panel ID, while the
+ordered ID list is never reordered or relabeled. A semantic mismatch fails
+closed as `cloud.narrative_repair_identity_mismatch` and persists only safe
+counts, mismatch field, comparison hash, and reason.
+
+The prior durable candidate is visual identity
+`73c224732858ead17bdee4003cfc8824a7f1470e7e0a238f8baa5d80fd0b9579`; the
+current 701-panel story context is
+`a9a43faf0a198b1bf3a995858fba39bea65cb27be3152b7019e2dba8a9b24b9f`.
+Because the legacy candidate record lacks `identity_metadata`, the migration
+decision is fail-closed `legacy_identity_metadata_missing`; no semantic
+equivalence is asserted and no hash is rewritten. Exact-equivalent metadata
+migration, semantic-change rejection, idempotent migration records, and warm
+loader reuse are tested.
+
+Normal narration and targeted repair have separate caps of one request each;
+the combined maximum is two only when a fresh candidate is required. Visual,
+story-map, and other stages use a separate counter. Legacy callers using the
+single global `max_requests` cap remain compatible. This prevents a normal
+narration request from consuming the only repair budget. No provider call was
+made while implementing or verifying this boundary.
+
+Verification is 14 focused identity/budget passes, 111 cloud-multimodal passes
+(five known Pillow deprecation warnings), and 83 related manifest/analyzer/
+script/vision passes, with Ruff, compileall, diff-check, and secret scan
+passing. The separate pipeline suite has the same 13 pre-vision fixture
+failures on clean parent/current and remains an explicit non-regression
+exception. No narration, MP4, TTS, or QC artifact is admitted by this slice.
+
 Source/test fix checkpoint:
 b66210204e2616903844cbf3dc414558a53035d4
 (parent dfb8c26e6148bb8b3e098d25b1bf691e14f94cbd).

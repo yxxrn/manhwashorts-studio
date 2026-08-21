@@ -1,5 +1,42 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Metadata-only narration identity checkpoint
+
+Published rollback parent: `5eaf91762f45ec4111d88e21ac458618bb86f42a`.
+The source/test slice adds canonical `narration-repair-identity-v1` metadata
+for the ordered 701-panel visual lineage, model/prompt identity, story
+beats/claims/causal chain, editorial selection, trusted slot order and
+claim/evidence refs, and candidate dependencies. Only derived
+`prepared_order` is representation-insensitive; trusted ordered panel IDs
+remain exact. Semantic changes fail closed as
+`cloud.narrative_repair_identity_mismatch` with sanitized counts, field,
+comparison hash, and reason.
+
+The old durable candidate visual identity is
+`73c224732858ead17bdee4003cfc8824a7f1470e7e0a238f8baa5d80fd0b9579`; current
+story context is
+`a9a43faf0a198b1bf3a995858fba39bea65cb27be3152b7019e2dba8a9b24b9f`.
+The legacy candidate has no `identity_metadata`, so runtime loading must
+record `legacy_identity_metadata_missing` and reject it, not relabel or mix
+the hashes. Exact-equivalent migration and idempotent migration records are
+covered by tests; warm loader validation now uses the migrated record.
+
+The request budget is split into one normal narration request and one
+targeted-repair request, independently, with other stages excluded from both;
+legacy global `max_requests` remains compatible. No provider request was made
+in this checkpoint. RED was 13 intended collection-clean failures; GREEN is
+14 focused identity/budget tests, 111 cloud tests, and 83 related manifest/
+analyzer/script/vision tests. Ruff, compileall, diff-check, and secret scan
+passed. The 13 pipeline failures reproduce identically on the clean parent and
+current tree at the existing pre-vision fixture prerequisite and are not a
+full-suite/render GREEN claim.
+
+After publication, use the normal cached runner with
+`--max-attempts 1 --max-narration-requests 1 --max-repair-requests 1`, same
+model, no visual/story repeat. Do not issue a request until publication;
+runtime media, DB/WAL, caches, `data`, `ms_env.sh`, and credentials remain
+outside Git. Narration, MP4, TTS, and QC are still unproven.
+
 ## Fresh retry blocker
 
 From published parent `813ec6e342584b38e4a5e379a25391406df5440e`, the isolated

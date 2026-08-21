@@ -37,6 +37,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--actor-id", default="", help="Optional non-secret audit actor ID.")
     parser.add_argument("--max-attempts", type=int, default=2)
     parser.add_argument("--max-requests", type=int, default=None)
+    parser.add_argument(
+        "--max-narration-requests",
+        type=int,
+        default=None,
+        help="Independent normal narration request budget.",
+    )
+    parser.add_argument(
+        "--max-repair-requests",
+        type=int,
+        default=None,
+        help="Independent targeted narration-repair request budget.",
+    )
     parser.add_argument("--min-request-interval-s", type=float, default=0.0)
     parser.add_argument("--estimated-cost-per-request", type=float, default=0.0)
     parser.add_argument("--max-concurrent", type=int, default=1)
@@ -56,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
                     model=options.model,
                     max_attempts=options.max_attempts,
                     max_requests=options.max_requests,
+                    max_narration_requests=options.max_narration_requests,
+                    max_repair_requests=options.max_repair_requests,
                     min_request_interval_s=options.min_request_interval_s,
                     estimated_cost_per_request=options.estimated_cost_per_request,
                 )

@@ -2879,6 +2879,277 @@ def test_position_repair_in_range_vector_remains_unchanged_by_micro_compaction()
     assert all(_position_rewrite_text(count, f"unchanged{index}_") in combined for index, count in enumerate(counts))
 
 
+def _repair_identity_metadata(module):
+    return {
+        "policy_version": "narration-repair-identity-v1",
+        "panel_lineage": {
+            "ordered_panel_ids": ["panel-1", "panel-2", "panel-3"],
+            "panel_identity_hashes": ["a" * 64, "b" * 64, "c" * 64],
+            "visual_evidence_hash": "v" * 64,
+            "panels": [
+                {
+                    "panel_id": "panel-1",
+                    "source_order": 10,
+                    "prepared_order": 0,
+                    "evidence_hash": "a" * 64,
+                },
+                {
+                    "panel_id": "panel-2",
+                    "source_order": 11,
+                    "prepared_order": 1,
+                    "evidence_hash": "b" * 64,
+                },
+                {
+                    "panel_id": "panel-3",
+                    "source_order": 12,
+                    "prepared_order": 2,
+                    "evidence_hash": "c" * 64,
+                },
+            ],
+        },
+        "model": {"identity_hash": "m" * 64},
+        "prompt": {"version": "narration-v1", "sha256": "p" * 64},
+        "story": {
+            "panel_ids": ["panel-1", "panel-2", "panel-3"],
+            "beats_hash": "b" * 64,
+            "claims_hash": "c" * 64,
+            "causal_chain_hash": "h" * 64,
+            "story_map_hash": "s" * 64,
+            "beat_count": 2,
+            "claim_count": 3,
+            "causal_link_count": 1,
+        },
+        "selection": {
+            "beat_ids": ["beat-1", "beat-2"],
+            "panel_ids": ["panel-1", "panel-2", "panel-3"],
+            "claim_ids": ["claim-1", "claim-2"],
+            "selection_hash": "e" * 64,
+        },
+        "slot_registry": {
+            "slot_ids": ["slot-1", "slot-2"],
+            "claim_ids": ["claim-1", "claim-2"],
+            "evidence_panel_ids": ["panel-1", "panel-2", "panel-3"],
+            "slot_order_hash": "o" * 64,
+        },
+        "candidate": {
+            "candidate_hash": "q" * 64,
+            "visual_evidence_hash": "v" * 64,
+            "model_identity_hash": "m" * 64,
+            "prompt_version": "narration-v1",
+            "prompt_sha256": "p" * 64,
+            "story_map_hash": "s" * 64,
+        },
+    }
+
+
+def test_repair_identity_migration_accepts_reordered_serialization_and_prepared_order_only_change():
+    module = _module()
+    old = _repair_identity_metadata(module)
+    new = json.loads(json.dumps(old))
+    new["panel_lineage"]["panels"] = list(reversed(new["panel_lineage"]["panels"]))
+    for panel in new["panel_lineage"]["panels"]:
+        panel["prepared_order"] = 700 - panel["source_order"]
+    new["story"] = dict(reversed(list(new["story"].items())))
+
+    record = module.reconcile_narration_repair_identity(
+        old,
+        new,
+        old_identity_hash="old-identity",
+        new_identity_hash="new-identity",
+        reason="prepared-order-only migration",
+    )
+
+    assert record["status"] == "migrated"
+    assert record["old_identity_hash"] == "old-identity"
+    assert record["new_identity_hash"] == "new-identity"
+    assert len(record["canonical_comparison_hash"]) == 64
+    assert record["counts"] == {
+        "old_panel_count": 3,
+        "new_panel_count": 3,
+        "old_beat_count": 2,
+        "new_beat_count": 2,
+        "old_claim_count": 3,
+        "new_claim_count": 3,
+        "old_slot_count": 2,
+        "new_slot_count": 2,
+    }
+
+
+def test_repair_identity_migration_event_is_idempotent_for_warm_resume():
+    module = _module()
+    old = _repair_identity_metadata(module)
+    new = json.loads(json.dumps(old))
+    cache = module.MemoryStageCache()
+
+    first = module.persist_narration_repair_identity_migration(
+        cache,
+        old,
+        new,
+        old_identity_hash="old-identity",
+        new_identity_hash="new-identity",
+        model_identity_hash="m" * 64,
+        prompt_version="narration-v1",
+        prompt_sha256="p" * 64,
+        reason="equivalent cache migration",
+    )
+    second = module.persist_narration_repair_identity_migration(
+        cache,
+        old,
+        new,
+        old_identity_hash="old-identity",
+        new_identity_hash="new-identity",
+        model_identity_hash="m" * 64,
+        prompt_version="narration-v1",
+        prompt_sha256="p" * 64,
+        reason="equivalent cache migration",
+    )
+
+    assert first == second
+    assert len(list(cache.iter_records(cache_type=module.NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION))) == 1
+
+
+def test_candidate_load_uses_equivalent_identity_migration_record(monkeypatch):
+    module = _module()
+    identity = _identity(module)
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+    prompt = runner.prompts["narration"]
+    source = {"source_identity": "current"}
+    candidate_payload = {"spoken_text": "candidate"}
+    candidate = __import__("types").SimpleNamespace(
+        as_dict=lambda: candidate_payload,
+        visual_evidence_hash="v" * 64,
+    )
+    visual = __import__("types").SimpleNamespace(
+        visual_evidence_hash="v" * 64,
+        panels=(),
+    )
+    record = {
+        "cache_type": module.NARRATION_REPAIR_CANDIDATE_VERSION,
+        "candidate": candidate_payload,
+        "candidate_hash": module._hash(candidate_payload),
+        "source_identity_hash": "old-identity",
+        "model_identity_hash": identity.identity_hash,
+        "prompt_version": prompt[0],
+        "prompt_sha256": prompt[1],
+        "failure_codes": ["cloud.narrative_duration_out_of_range"],
+    }
+    runner.cache.put(runner._narration_repair_candidate_key(source, prompt), record)
+    migrated = {
+        **record,
+        "source_identity_hash": module._hash(source),
+        "identity_migration": {"status": "migrated"},
+    }
+    monkeypatch.setattr(
+        module.NarrationResult,
+        "from_dict",
+        classmethod(lambda _cls, _payload: candidate),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_migrate_narration_repair_candidate_record",
+        lambda **_kwargs: migrated,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_narration_contract_failures",
+        lambda _candidate: ("cloud.narrative_duration_out_of_range",),
+    )
+    monkeypatch.setattr(module, "_narration_result_is_usable", lambda *_args, **_kwargs: True)
+
+    loaded = runner._load_narration_repair_candidate(
+        source=source,
+        prompt=prompt,
+        visual=visual,
+    )
+
+    assert loaded == (candidate, ("cloud.narrative_duration_out_of_range",))
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    (
+        ("panel_lineage", "visual_evidence_hash"),
+        ("model", "identity_hash"),
+        ("prompt", "sha256"),
+        ("story", "beats_hash"),
+        ("story", "claims_hash"),
+        ("story", "causal_chain_hash"),
+        ("selection", "claim_ids"),
+        ("slot_registry", "evidence_panel_ids"),
+        ("candidate", "story_map_hash"),
+    ),
+)
+def test_repair_identity_migration_rejects_semantic_dependency_changes(section, field):
+    module = _module()
+    old = _repair_identity_metadata(module)
+    new = json.loads(json.dumps(old))
+    value = new[section][field]
+    if isinstance(value, list):
+        new[section][field] = [*value, "changed"]
+    else:
+        new[section][field] = "changed"
+
+    with pytest.raises(module.CloudStageError) as caught:
+        module.reconcile_narration_repair_identity(
+            old,
+            new,
+            old_identity_hash="old-identity",
+            new_identity_hash="new-identity",
+            reason="semantic mismatch",
+        )
+
+    assert caught.value.code == "cloud.narrative_repair_identity_mismatch"
+    assert caught.value.safe_metadata["mismatch_field"] == f"{section}.{field}"
+    assert caught.value.safe_metadata["status"] == "rejected"
+    assert "changed" not in json.dumps(caught.value.safe_metadata)
+
+
+def test_narration_and_targeted_repair_request_budgets_are_independent():
+    module = _module()
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        max_attempts=1,
+        max_narration_requests=1,
+        max_repair_requests=1,
+    )
+
+    assert runner._call(lambda: "narration", request_stage="narration") == "narration"
+    assert runner._call(lambda: "repair", request_stage="narration_repair") == "repair"
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._call(lambda: "must-not-run", request_stage="narration")
+
+    assert caught.value.code == "cloud.request_budget_exceeded"
+    assert runner.request_count == 2
+    assert runner.request_counts == {
+        "narration": 1,
+        "narration_repair": 1,
+        "other": 0,
+    }
+
+
+def test_legacy_global_request_budget_remains_compatible_with_stage_labels():
+    module = _module()
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        max_attempts=1,
+        max_requests=1,
+    )
+
+    assert runner._call(lambda: "first", request_stage="narration") == "first"
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._call(lambda: "must-not-run", request_stage="narration_repair")
+
+    assert caught.value.code == "cloud.request_budget_exceeded"
+    assert runner.request_count == 1
+
+
 def test_position_repair_duration_gate_remains_hard_after_compaction_boundary(monkeypatch):
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)

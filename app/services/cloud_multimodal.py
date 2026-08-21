@@ -63,6 +63,8 @@ NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
 NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v3"
 NARRATION_REPAIR_PASSAGE_LINEAGE_VERSION = "narration-repair-passage-lineage-v1"
+NARRATION_REPAIR_IDENTITY_VERSION = "narration-repair-identity-v1"
+NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION = "narration-repair-identity-migration-v1"
 NARRATION_MICRO_COMPACTION_VERSION = "narration-micro-compaction-v1"
 NARRATION_MICRO_COMPACTION_MIN_WORDS = 126
 NARRATION_MICRO_COMPACTION_MAX_WORDS = 130
@@ -469,6 +471,11 @@ class MemoryStageCache:
     def delete(self, key: str) -> None:
         self._values.pop(key, None)
 
+    def iter_records(self, *, cache_type: str | None = None):
+        for value in self._values.values():
+            if cache_type is None or value.get("cache_type") == cache_type:
+                yield json.loads(json.dumps(value))
+
 
 class FileStageCache:
     """Atomic JSON stage cache for restartable local production jobs."""
@@ -504,6 +511,18 @@ class FileStageCache:
     def delete(self, key: str) -> None:
         with suppress(FileNotFoundError):
             self._path(key).unlink()
+
+    def iter_records(self, *, cache_type: str | None = None):
+        for path in sorted(self.root.glob("*.json")):
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                continue
+            if (
+                isinstance(value, Mapping)
+                and (cache_type is None or value.get("cache_type") == cache_type)
+            ):
+                yield value
 
 
 @dataclass(frozen=True)
@@ -806,6 +825,245 @@ def _canonical(value: object) -> str:
 
 def _hash(value: object) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+_NARRATION_REPAIR_IDENTITY_SECTIONS = (
+    "panel_lineage",
+    "model",
+    "prompt",
+    "story",
+    "selection",
+    "slot_registry",
+    "candidate",
+)
+_NARRATION_REPAIR_IDENTITY_IGNORED_FIELDS = frozenset({"prepared_order"})
+
+
+def _canonical_repair_identity(value: object, *, key: str = "") -> object:
+    """Normalize only representation-only fields for repair identity comparison."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(name): _canonical_repair_identity(item, key=str(name))
+            for name, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if str(name) not in _NARRATION_REPAIR_IDENTITY_IGNORED_FIELDS
+        }
+    if isinstance(value, (list, tuple)):
+        items = [_canonical_repair_identity(item, key=key) for item in value]
+        if key == "panels" and all(isinstance(item, Mapping) for item in items):
+            return sorted(items, key=lambda item: str(item.get("panel_id", "")))
+        return items
+    return value
+
+
+def _repair_identity_counts(value: Mapping[str, Any]) -> dict[str, int]:
+    panel_lineage = value.get("panel_lineage", {})
+    story = value.get("story", {})
+    slots = value.get("slot_registry", {})
+
+    def _count(section: Mapping[str, Any], field: str) -> int:
+        item = section.get(field, ()) if isinstance(section, Mapping) else ()
+        return len(item) if isinstance(item, (list, tuple)) else 0
+
+    return {
+        "panel_count": _count(panel_lineage, "ordered_panel_ids"),
+        "beat_count": int(story.get("beat_count", _count(story, "beat_ids")))
+        if isinstance(story, Mapping)
+        else 0,
+        "claim_count": int(story.get("claim_count", _count(story, "claim_ids")))
+        if isinstance(story, Mapping)
+        else 0,
+        "slot_count": _count(slots, "slot_ids"),
+    }
+
+
+def _repair_identity_shape_error(field: str) -> CloudStageError:
+    return CloudStageError(
+        "cloud.narrative_repair_identity_mismatch",
+        reviewable=True,
+        safe_metadata={
+            "status": "rejected",
+            "mismatch_field": field,
+            "policy_version": NARRATION_REPAIR_IDENTITY_VERSION,
+        },
+    )
+
+
+def _validate_repair_identity_shape(value: Mapping[str, Any]) -> None:
+    if not isinstance(value, Mapping):
+        raise _repair_identity_shape_error("identity")
+    if value.get("policy_version") != NARRATION_REPAIR_IDENTITY_VERSION:
+        raise _repair_identity_shape_error("policy_version")
+    for section in _NARRATION_REPAIR_IDENTITY_SECTIONS:
+        if not isinstance(value.get(section), Mapping):
+            raise _repair_identity_shape_error(section)
+    panel_lineage = value["panel_lineage"]
+    panel_ids = panel_lineage.get("ordered_panel_ids")
+    panel_hashes = panel_lineage.get("panel_identity_hashes")
+    if (
+        not isinstance(panel_ids, (list, tuple))
+        or not panel_ids
+        or len({str(item) for item in panel_ids}) != len(panel_ids)
+        or any(not str(item).strip() for item in panel_ids)
+        or not isinstance(panel_hashes, (list, tuple))
+        or len(panel_hashes) != len(panel_ids)
+        or not str(panel_lineage.get("visual_evidence_hash", "")).strip()
+    ):
+        raise _repair_identity_shape_error("panel_lineage")
+    model = value["model"]
+    prompt = value["prompt"]
+    if not str(model.get("identity_hash", "")).strip():
+        raise _repair_identity_shape_error("model.identity_hash")
+    if not str(prompt.get("version", "")).strip() or not str(prompt.get("sha256", "")).strip():
+        raise _repair_identity_shape_error("prompt")
+    story = value["story"]
+    if not all(
+        str(story.get(field, "")).strip()
+        for field in ("beats_hash", "claims_hash", "causal_chain_hash", "story_map_hash")
+    ):
+        raise _repair_identity_shape_error("story")
+    selection = value["selection"]
+    if not all(
+        isinstance(selection.get(field), (list, tuple))
+        for field in ("beat_ids", "panel_ids", "claim_ids")
+    ) or not str(selection.get("selection_hash", "")).strip():
+        raise _repair_identity_shape_error("selection")
+    slots = value["slot_registry"]
+    if not all(
+        isinstance(slots.get(field), (list, tuple))
+        for field in ("slot_ids", "claim_ids", "evidence_panel_ids")
+    ) or not str(slots.get("slot_order_hash", "")).strip():
+        raise _repair_identity_shape_error("slot_registry")
+    candidate = value["candidate"]
+    if not all(
+        str(candidate.get(field, "")).strip()
+        for field in (
+            "candidate_hash",
+            "visual_evidence_hash",
+            "model_identity_hash",
+            "prompt_version",
+            "prompt_sha256",
+            "story_map_hash",
+        )
+    ):
+        raise _repair_identity_shape_error("candidate")
+
+
+def _first_repair_identity_difference(
+    old: object,
+    new: object,
+    path: tuple[str, ...] = (),
+) -> str:
+    if isinstance(old, Mapping) and isinstance(new, Mapping):
+        for key in sorted(set(old) | set(new), key=str):
+            if key not in old or key not in new:
+                return ".".join((*path, str(key)))
+            difference = _first_repair_identity_difference(old[key], new[key], (*path, str(key)))
+            if difference:
+                return difference
+        return ""
+    if isinstance(old, list) and isinstance(new, list):
+        if len(old) != len(new):
+            return ".".join(path)
+        for index, (old_item, new_item) in enumerate(zip(old, new, strict=True)):
+            difference = _first_repair_identity_difference(old_item, new_item, (*path, str(index)))
+            if difference:
+                return difference
+        return ""
+    return "" if old == new else ".".join(path)
+
+
+def reconcile_narration_repair_identity(
+    old_metadata: Mapping[str, Any],
+    current_metadata: Mapping[str, Any],
+    *,
+    old_identity_hash: str | None = None,
+    new_identity_hash: str | None = None,
+    reason: str,
+) -> dict[str, Any]:
+    """Compare cache dependencies without accepting provider prose or IDs."""
+
+    _validate_repair_identity_shape(old_metadata)
+    _validate_repair_identity_shape(current_metadata)
+    old_canonical = _canonical_repair_identity(old_metadata)
+    current_canonical = _canonical_repair_identity(current_metadata)
+    assert isinstance(old_canonical, Mapping)
+    assert isinstance(current_canonical, Mapping)
+    counts = _repair_identity_counts(old_canonical)
+    current_counts = _repair_identity_counts(current_canonical)
+    count_record = {
+        **{f"old_{key}": value for key, value in counts.items()},
+        **{f"new_{key}": value for key, value in current_counts.items()},
+    }
+    comparison_hash = _hash({"old": old_canonical, "new": current_canonical})
+    if old_canonical != current_canonical:
+        mismatch_field = _first_repair_identity_difference(old_canonical, current_canonical)
+        metadata = {
+            "status": "rejected",
+            "policy_version": NARRATION_REPAIR_IDENTITY_VERSION,
+            "mismatch_field": mismatch_field or "identity",
+            "canonical_comparison_hash": comparison_hash,
+            "counts": count_record,
+            "reason": str(reason),
+        }
+        raise CloudStageError(
+            "cloud.narrative_repair_identity_mismatch",
+            reviewable=True,
+            safe_metadata=metadata,
+        )
+    return {
+        "cache_type": NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION,
+        "status": "migrated",
+        "policy_version": NARRATION_REPAIR_IDENTITY_VERSION,
+        "old_identity_hash": old_identity_hash or _hash(old_metadata),
+        "new_identity_hash": new_identity_hash or _hash(current_metadata),
+        "canonical_comparison_hash": comparison_hash,
+        "counts": count_record,
+        "reason": str(reason),
+    }
+
+
+def persist_narration_repair_identity_migration(
+    cache: StageCache,
+    old_metadata: Mapping[str, Any],
+    current_metadata: Mapping[str, Any],
+    *,
+    old_identity_hash: str,
+    new_identity_hash: str,
+    model_identity_hash: str,
+    prompt_version: str,
+    prompt_sha256: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Persist one metadata-only migration record and reuse it on warm resume."""
+
+    record = reconcile_narration_repair_identity(
+        old_metadata,
+        current_metadata,
+        old_identity_hash=old_identity_hash,
+        new_identity_hash=new_identity_hash,
+        reason=reason,
+    )
+    key = "narration-repair-identity-migration:" + _hash(
+        {
+            "old_identity_hash": old_identity_hash,
+            "new_identity_hash": new_identity_hash,
+            "model_identity_hash": model_identity_hash,
+            "prompt_version": prompt_version,
+            "prompt_sha256": prompt_sha256,
+        }
+    )
+    existing = cache.get(key)
+    if isinstance(existing, Mapping):
+        return dict(existing)
+    stored = {
+        **record,
+        "model_identity_hash": model_identity_hash,
+        "prompt_version": prompt_version,
+        "prompt_sha256": prompt_sha256,
+    }
+    cache.put(key, stored)
+    return stored
 
 
 def _narration_result_is_usable(
@@ -1218,6 +1476,8 @@ class CloudStageRunner:
         cache: StageCache | None = None,
         max_attempts: int = 2,
         max_requests: int | None = None,
+        max_narration_requests: int | None = None,
+        max_repair_requests: int | None = None,
         min_request_interval_s: float = 0.0,
         estimated_cost_per_request: float = 0.0,
         allow_balloon_unknown: bool = False,
@@ -1237,6 +1497,19 @@ class CloudStageRunner:
         # Production keeps the strict contract (allow_balloon_unknown=False).
         self.allow_balloon_unknown = bool(allow_balloon_unknown)
         self.max_requests = max_requests if max_requests is None else max(1, int(max_requests))
+        self.max_narration_requests = (
+            None
+            if max_narration_requests is None
+            else max(1, int(max_narration_requests))
+        )
+        self.max_repair_requests = (
+            None if max_repair_requests is None else max(1, int(max_repair_requests))
+        )
+        self._use_legacy_global_request_budget = (
+            self.max_requests is not None
+            and self.max_narration_requests is None
+            and self.max_repair_requests is None
+        )
         self.min_request_interval_s = max(0.0, float(min_request_interval_s))
         self.estimated_cost_per_request = max(0.0, float(estimated_cost_per_request))
         inferred_checkpoint = getattr(cache, "checkpoint_path", None)
@@ -1254,6 +1527,7 @@ class CloudStageRunner:
         )
         self._checkpoint_lock = threading.Lock()
         self.request_count = 0
+        self.request_counts = {"narration": 0, "narration_repair": 0, "other": 0}
         self.estimated_cost_usd = 0.0
         self.last_response_shape_metrics: dict[str, Any] = {}
         self._last_request_at = 0.0
@@ -1273,6 +1547,8 @@ class CloudStageRunner:
             metrics["failed_predicate"] = (
                 metrics.get("reconciled_failed_predicate") or code
             )
+        metrics["request_count"] = self.request_count
+        metrics["request_counts"] = dict(self.request_counts)
         self.last_response_shape_metrics = dict(metrics)
         return metrics
 
@@ -1349,16 +1625,31 @@ class CloudStageRunner:
             "reconciled_failed_predicate": failed[0] if failed else None,
         }
 
-    def _call(self, operation) -> Any:
+    def _call(self, operation, *, request_stage: str = "other") -> Any:
         last_error: Exception | None = None
+        stage = request_stage if request_stage in self.request_counts else "other"
         for _ in range(self.max_attempts):
-            if self.max_requests is not None and self.request_count >= self.max_requests:
+            stage_limit = (
+                self.max_narration_requests
+                if stage == "narration"
+                else self.max_repair_requests
+                if stage == "narration_repair"
+                else None
+            )
+            if stage_limit is not None and self.request_counts[stage] >= stage_limit:
+                raise CloudStageError("cloud.request_budget_exceeded", reviewable=True)
+            if (
+                self._use_legacy_global_request_budget
+                and self.max_requests is not None
+                and self.request_count >= self.max_requests
+            ):
                 raise CloudStageError("cloud.request_budget_exceeded", reviewable=True)
             if self.min_request_interval_s:
                 wait = self.min_request_interval_s - (time.monotonic() - self._last_request_at)
                 if wait > 0:
                     time.sleep(wait)
             self.request_count += 1
+            self.request_counts[stage] += 1
             self.estimated_cost_usd += self.estimated_cost_per_request
             self._last_request_at = time.monotonic()
             try:
@@ -1382,7 +1673,8 @@ class CloudStageRunner:
                     prompt_sha256=prompt[1],
                     prompt_text=prompt[2],
                     payload={**payload, "lineage_retry_attempt": attempt},
-                )
+                ),
+                request_stage="other",
             )
             if not isinstance(raw, Mapping):
                 return raw
@@ -1564,7 +1856,8 @@ class CloudStageRunner:
                         analysis_run_id=f"{request.analysis_run_id}-attempt-{attempt}",
                     )
                     raw_rows = self._call(
-                        lambda request=attempt_request: self.provider.observe(request)
+                        lambda request=attempt_request: self.provider.observe(request),
+                        request_stage="other",
                     )
                     if not isinstance(raw_rows, list) or len(raw_rows) != len(chunk):
                         raise CloudStageError("cloud.provider_response_invalid")
@@ -2212,7 +2505,8 @@ class CloudStageRunner:
                         prompt_sha256=prompt[1],
                         prompt_text=prompt[2],
                         payload=attempt_source,
-                    )
+                    ),
+                    request_stage="other",
                 )
                 result = self._reconcile_story_map(raw, chunk_ids, prompt)
             except CloudStageError as exc:
@@ -2485,6 +2779,8 @@ class CloudStageRunner:
                         prompt=prompt,
                         result=cached_result,
                         failure_codes=failure_codes,
+                        visual=selected_visual,
+                        story_map=selected_story,
                     )
                     deleter = getattr(self.cache, "delete", None)
                     if callable(deleter):
@@ -2526,6 +2822,8 @@ class CloudStageRunner:
                 prompt=prompt,
                 result=result,
                 failure_codes=failure_codes,
+                visual=selected_visual,
+                story_map=selected_story,
             )
             try:
                 result = self._run_targeted_narration_repair(
@@ -4022,6 +4320,172 @@ class CloudStageRunner:
             "evidence_graph": {"claims": claims},
         }
 
+    def _narration_repair_identity_metadata(
+        self,
+        *,
+        source: Mapping[str, Any],
+        prompt: tuple[str, str, str],
+        candidate: NarrationResult,
+        visual: VisualStageResult | None = None,
+        story_map: StoryMapResult | None = None,
+    ) -> dict[str, Any]:
+        """Build the metadata-only dependency identity for a repair candidate."""
+
+        story_value = (
+            story_map.as_dict()
+            if story_map is not None
+            else source.get("story_map", {})
+        )
+        if not isinstance(story_value, Mapping):
+            raise CloudStageError("cloud.narrative_repair_identity_mismatch", reviewable=True)
+        if story_map is None:
+            try:
+                story_map = StoryMapResult.from_dict(story_value)
+            except (KeyError, TypeError, ValueError):
+                raise CloudStageError(
+                    "cloud.narrative_repair_identity_mismatch",
+                    reviewable=True,
+                ) from None
+        panel_ids = list(
+            visual.panel_ids
+            if visual is not None
+            else tuple(str(value) for value in source.get("panel_ids", story_map.panel_ids))
+        )
+        panel_rows = list(visual.panels) if visual is not None else []
+        panel_by_id = {
+            str(row.get("panel_id", "")): row
+            for row in panel_rows
+            if isinstance(row, Mapping)
+        }
+        panel_identity_hashes = []
+        canonical_panel_rows = []
+        for panel_id in panel_ids:
+            row = panel_by_id.get(panel_id, {})
+            visual_row = row.get("visual_evidence", {})
+            evidence_hash = str(
+                row.get("evidence_hash")
+                or (visual_row.get("evidence_hash") if isinstance(visual_row, Mapping) else "")
+                or _hash({"panel_id": panel_id, "visual_evidence_hash": visual.visual_evidence_hash if visual else ""})
+            )
+            panel_identity_hashes.append(evidence_hash)
+            canonical_panel_rows.append(
+                {
+                    "panel_id": panel_id,
+                    "source_order": row.get("source_order"),
+                    "source_asset_id": row.get("source_asset_id"),
+                    "source_checksum": row.get("source_checksum"),
+                    "panel_bounds": row.get("panel_bounds"),
+                    "evidence_hash": evidence_hash,
+                }
+            )
+        selection = source.get("editorial_selection", {})
+        if not isinstance(selection, Mapping):
+            selection = {}
+        selection_summary = {
+            "beat_ids": [str(value) for value in selection.get("beat_ids", ())],
+            "panel_ids": [str(value) for value in selection.get("panel_ids", panel_ids)],
+            "claim_ids": [str(value) for value in selection.get("claim_ids", ())],
+            "selection_hash": str(selection.get("selection_hash", _hash(selection))),
+        }
+        try:
+            position_registry = self._build_narration_repair_position_registry(
+                candidate,
+                story_map,
+                prompt=prompt,
+            )
+            position_rows = list(position_registry["positions"])
+            slot_summary = {
+                "slot_ids": [str(row["slot_id"]) for row in position_rows],
+                "claim_ids": [
+                    str(claim_id)
+                    for row in position_rows
+                    for claim_id in row.get("claim_ids", ())
+                ],
+                "evidence_panel_ids": [
+                    str(panel_id)
+                    for row in position_rows
+                    for panel_id in row.get("evidence_panel_ids", ())
+                ],
+                "slot_order_hash": str(position_registry["slot_order_hash"]),
+            }
+        except CloudStageError:
+            slot_summary = {
+                "slot_ids": [],
+                "claim_ids": [],
+                "evidence_panel_ids": [],
+                "slot_order_hash": "unavailable",
+            }
+        return {
+            "policy_version": NARRATION_REPAIR_IDENTITY_VERSION,
+            "panel_lineage": {
+                "ordered_panel_ids": panel_ids,
+                "panel_identity_hashes": panel_identity_hashes,
+                "visual_evidence_hash": visual.visual_evidence_hash if visual else str(source.get("visual_evidence_hash", "")),
+                "panels": canonical_panel_rows,
+            },
+            "model": {"identity_hash": self.model_identity.identity_hash},
+            "prompt": {"version": prompt[0], "sha256": prompt[1]},
+            "story": {
+                "panel_ids": [str(value) for value in story_map.panel_ids],
+                "beats_hash": _hash(story_map.beats),
+                "claims_hash": _hash(story_map.claims),
+                "causal_chain_hash": _hash(story_map.causal_chain),
+                "story_map_hash": story_map.story_map_hash,
+                "beat_count": len(story_map.beats),
+                "claim_count": len(story_map.claims),
+                "causal_link_count": len(story_map.causal_chain),
+            },
+            "selection": selection_summary,
+            "slot_registry": slot_summary,
+            "candidate": {
+                "candidate_hash": _hash(candidate.as_dict()),
+                "visual_evidence_hash": candidate.visual_evidence_hash,
+                "model_identity_hash": candidate.model_identity_hash,
+                "prompt_version": candidate.prompt_version,
+                "prompt_sha256": candidate.prompt_sha256,
+                "story_map_hash": story_map.story_map_hash,
+            },
+        }
+
+    def _persist_narration_repair_identity_rejection(
+        self,
+        *,
+        old_identity_hash: str,
+        new_identity_hash: str,
+        metadata: Mapping[str, Any],
+        reason: str,
+        model_identity_hash: str,
+        prompt: tuple[str, str, str],
+    ) -> None:
+        if self.cache is None:
+            return
+        record = {
+            "cache_type": NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION,
+            "status": "rejected",
+            "policy_version": NARRATION_REPAIR_IDENTITY_VERSION,
+            "old_identity_hash": old_identity_hash,
+            "new_identity_hash": new_identity_hash,
+            "canonical_comparison_hash": str(metadata.get("canonical_comparison_hash", "")),
+            "counts": dict(metadata.get("counts", {})),
+            "mismatch_field": str(metadata.get("mismatch_field", "identity")),
+            "reason": str(reason),
+            "model_identity_hash": model_identity_hash,
+            "prompt_version": prompt[0],
+            "prompt_sha256": prompt[1],
+        }
+        key = "narration-repair-identity-rejection:" + _hash(
+            {
+                "old_identity_hash": old_identity_hash,
+                "new_identity_hash": new_identity_hash,
+                "mismatch_field": record["mismatch_field"],
+                "model_identity_hash": model_identity_hash,
+                "prompt_version": prompt[0],
+                "prompt_sha256": prompt[1],
+            }
+        )
+        if not isinstance(self.cache.get(key), Mapping):
+            self.cache.put(key, record)
+
     def _store_narration_repair_candidate(
         self,
         *,
@@ -4029,10 +4493,22 @@ class CloudStageRunner:
         prompt: tuple[str, str, str],
         result: NarrationResult,
         failure_codes: Sequence[str],
+        visual: VisualStageResult | None = None,
+        story_map: StoryMapResult | None = None,
     ) -> None:
         if self.cache is None:
             return
         payload = result.as_dict()
+        try:
+            identity_metadata = self._narration_repair_identity_metadata(
+                source=source,
+                prompt=prompt,
+                candidate=result,
+                visual=visual,
+                story_map=story_map,
+            )
+        except CloudStageError:
+            identity_metadata = None
         self.cache.put(
             self._narration_repair_candidate_key(source, prompt),
             {
@@ -4045,8 +4521,88 @@ class CloudStageRunner:
                 "prompt_sha256": prompt[1],
                 "visual_evidence_hash": result.visual_evidence_hash,
                 "failure_codes": list(dict.fromkeys(str(code) for code in failure_codes)),
+                "identity_metadata": identity_metadata,
             },
         )
+
+    def _migrate_narration_repair_candidate_record(
+        self,
+        *,
+        record: Mapping[str, Any],
+        source: Mapping[str, Any],
+        prompt: tuple[str, str, str],
+        visual: VisualStageResult,
+        candidate: NarrationResult,
+    ) -> Mapping[str, Any] | None:
+        stored_identity = record.get("identity_metadata")
+        current_identity: dict[str, Any]
+        try:
+            current_identity = self._narration_repair_identity_metadata(
+                source=source,
+                prompt=prompt,
+                candidate=candidate,
+                visual=visual,
+            )
+        except CloudStageError as exc:
+            self._persist_narration_repair_identity_rejection(
+                old_identity_hash=str(record.get("source_identity_hash", "legacy")),
+                new_identity_hash=_hash(source),
+                metadata=exc.safe_metadata,
+                reason="current_identity_invalid",
+                model_identity_hash=self.model_identity.identity_hash,
+                prompt=prompt,
+            )
+            return None
+        if not isinstance(stored_identity, Mapping):
+            self._persist_narration_repair_identity_rejection(
+                old_identity_hash=str(record.get("source_identity_hash", "legacy")),
+                new_identity_hash=_hash(source),
+                metadata={
+                    "mismatch_field": "identity_metadata",
+                    "counts": {
+                        "new_panel_count": len(visual.panels),
+                    },
+                },
+                reason="legacy_identity_metadata_missing",
+                model_identity_hash=self.model_identity.identity_hash,
+                prompt=prompt,
+            )
+            return None
+        try:
+            migration = reconcile_narration_repair_identity(
+                stored_identity,
+                current_identity,
+                old_identity_hash=str(record.get("source_identity_hash", "")),
+                new_identity_hash=_hash(source),
+                reason="candidate_identity_reconciliation",
+            )
+        except CloudStageError as exc:
+            self._persist_narration_repair_identity_rejection(
+                old_identity_hash=str(record.get("source_identity_hash", "")),
+                new_identity_hash=_hash(source),
+                metadata=exc.safe_metadata,
+                reason="semantic_identity_mismatch",
+                model_identity_hash=self.model_identity.identity_hash,
+                prompt=prompt,
+            )
+            return None
+        persist_narration_repair_identity_migration(
+            self.cache,
+            stored_identity,
+            current_identity,
+            old_identity_hash=str(record.get("source_identity_hash", "")),
+            new_identity_hash=_hash(source),
+            model_identity_hash=self.model_identity.identity_hash,
+            prompt_version=prompt[0],
+            prompt_sha256=prompt[1],
+            reason="candidate_identity_reconciliation",
+        )
+        migrated = dict(record)
+        migrated["identity_metadata"] = current_identity
+        migrated["identity_migration"] = migration
+        migrated["source_identity_hash"] = _hash(source)
+        self.cache.put(self._narration_repair_candidate_key(source, prompt), migrated)
+        return migrated
 
     def _load_narration_repair_candidate(
         self,
@@ -4059,7 +4615,41 @@ class CloudStageRunner:
             return None
         record = self.cache.get(self._narration_repair_candidate_key(source, prompt))
         if not isinstance(record, Mapping) or record.get("cache_type") != NARRATION_REPAIR_CANDIDATE_VERSION:
-            return None
+            record = None
+            iterator = getattr(self.cache, "iter_records", None)
+            if callable(iterator):
+                for candidate_record in iterator(
+                    cache_type=NARRATION_REPAIR_CANDIDATE_VERSION
+                ):
+                    if (
+                        not isinstance(candidate_record, Mapping)
+                        or candidate_record.get("model_identity_hash")
+                        != self.model_identity.identity_hash
+                        or candidate_record.get("prompt_version") != prompt[0]
+                        or candidate_record.get("prompt_sha256") != prompt[1]
+                    ):
+                        continue
+                    payload = candidate_record.get("candidate")
+                    if not isinstance(payload, Mapping):
+                        continue
+                    try:
+                        candidate = NarrationResult.from_dict(payload)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if candidate_record.get("candidate_hash") != _hash(candidate.as_dict()):
+                        continue
+                    migrated = self._migrate_narration_repair_candidate_record(
+                        record=candidate_record,
+                        source=source,
+                        prompt=prompt,
+                        visual=visual,
+                        candidate=candidate,
+                    )
+                    if migrated is not None:
+                        record = migrated
+                        break
+            if record is None:
+                return None
         payload = record.get("candidate")
         if not isinstance(payload, Mapping):
             return None
@@ -4067,6 +4657,16 @@ class CloudStageRunner:
             candidate = NarrationResult.from_dict(payload)
         except (KeyError, TypeError, ValueError):
             return None
+        migrated_record = self._migrate_narration_repair_candidate_record(
+            record=record,
+            source=source,
+            prompt=prompt,
+            visual=visual,
+            candidate=candidate,
+        )
+        if migrated_record is None:
+            return None
+        record = migrated_record
         if (
             record.get("candidate_hash") != _hash(candidate.as_dict())
             or record.get("source_identity_hash") != _hash(source)
@@ -4499,6 +5099,8 @@ class CloudStageRunner:
             prompt=prompt,
             result=candidate,
             failure_codes=failure_codes,
+            visual=compact_visual,
+            story_map=compact_story_map,
         )
         return self._run_targeted_narration_repair(
             prompt,
@@ -4822,7 +5424,14 @@ class CloudStageRunner:
                             prompt_sha256=request_prompt_sha256 or prompt[1],
                             prompt_text=request_prompt_text or prompt[2],
                             payload=request_payload,
-                        )
+                        ),
+                        request_stage=(
+                            "narration_repair"
+                            if stage == "narration_repair"
+                            else "narration"
+                            if stage == "narration"
+                            else "other"
+                        ),
                     )
                     if not isinstance(raw, Mapping):
                         raise CloudStageError("cloud.provider_response_invalid")
@@ -5100,6 +5709,8 @@ class CloudStageRunner:
                             prompt=cache_prompt,
                             result=result,
                             failure_codes=failures,
+                            visual=visual,
+                            story_map=story_map,
                         )
             # narration_repair results are written only after scope validation
             # by _run_targeted_narration_repair.
@@ -5241,7 +5852,8 @@ class CloudStageRunner:
                         prompt_sha256=prompt[1],
                         prompt_text=prompt[2],
                         payload=request_payload,
-                    )
+                    ),
+                    request_stage="other",
                 )
                 if not isinstance(raw, Mapping):
                     raise CloudStageError("cloud.provider_response_invalid")
@@ -6384,6 +6996,7 @@ class CloudBatchService:
             record.state = ChapterState.SCRIPTED
             record.stage_results["usage"] = {
                 "request_count": self.runner.request_count,
+                "request_counts": dict(self.runner.request_counts),
                 "estimated_cost_usd": round(self.runner.estimated_cost_usd, 8),
             }
             self.store.save(record)
@@ -6396,6 +7009,7 @@ class CloudBatchService:
     def _record_failure(self, record: ChapterJobRecord, exc: CloudStageError) -> ChapterJobRecord:
         record.stage_results["usage"] = {
             "request_count": self.runner.request_count,
+            "request_counts": dict(self.runner.request_counts),
             "estimated_cost_usd": round(self.runner.estimated_cost_usd, 8),
         }
         record.state = ChapterState.NEEDS_REVIEW if exc.reviewable else ChapterState.FAILED
@@ -6979,6 +7593,8 @@ def resolve_cloud_runner(
     cache: StageCache | None = None,
     max_attempts: int = 2,
     max_requests: int | None = None,
+    max_narration_requests: int | None = None,
+    max_repair_requests: int | None = None,
     min_request_interval_s: float = 0.0,
     estimated_cost_per_request: float = 0.0,
     allow_balloon_unknown: bool = False,
@@ -7012,6 +7628,8 @@ def resolve_cloud_runner(
         cache=cache,
         max_attempts=max_attempts,
         max_requests=max_requests,
+        max_narration_requests=max_narration_requests,
+        max_repair_requests=max_repair_requests,
         min_request_interval_s=min_request_interval_s,
         estimated_cost_per_request=estimated_cost_per_request,
         allow_balloon_unknown=allow_balloon_unknown,
@@ -7046,9 +7664,13 @@ __all__ = [
     "derive_display_words",
     "regular_render_allowed",
     "require_final_render_ready",
-    "resolve_cloud_runner",
-    "review_only_render_gate",
-]
+      "resolve_cloud_runner",
+      "review_only_render_gate",
+      "NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION",
+      "NARRATION_REPAIR_IDENTITY_VERSION",
+      "persist_narration_repair_identity_migration",
+      "reconcile_narration_repair_identity",
+  ]
 
 VISUAL_CACHE_IDENTITY_VERSION = "visual-cache-identity-v2"
 LEGACY_VISUAL_CACHE_IDENTITY_VERSION = "legacy-descriptor-v1"
