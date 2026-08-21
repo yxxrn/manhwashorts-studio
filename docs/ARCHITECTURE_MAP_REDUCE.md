@@ -1,5 +1,28 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Post-publication identity outcome and CLI redaction boundary - 2026-08-21
+
+After identity checkpoint `87aed29e1600484dec07e8e1aadbdcfdeae7573e`, the
+metadata-only runtime scan found four legacy narration-repair candidates with
+no canonical `identity_metadata`; migration was correctly not admitted. The
+first normal command used the default empty DB and made zero requests; a
+process-local `MS_DATABASE_URL` override selected the protected sample DB.
+
+The single authorized same-model run consumed two independent requests
+(`narration=1`, `narration_repair=1`, `other=0`) without visual/story repeat.
+It ended `NEEDS_REVIEW` with `cloud.narrative_not_grounded`. Safe metrics show
+118 words, 51.3 seconds, 5 passages, 8 claims, and 701 ordered observations;
+display, duration-contract, and passage/claim/panel lineage checks all pass.
+The remaining admission/state discrepancy is unresolved; no downstream
+narration, silent render, voice, or QC stage may proceed and no new provider
+request is allowed.
+
+The normal CLI was also printing its complete job object, including stage
+payloads, despite its safe-output contract. A body-level RED regression led to
+the narrow `_safe_job_summary` boundary, which emits only job ID, state, stable
+error/review codes, and request counts. This follow-up is the current
+source/test/docs publication checkpoint.
+
 ## Narration repair identity and independent request budgets - 2026-08-21
 
 The metadata-only reconciliation boundary is versioned

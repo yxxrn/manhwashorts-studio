@@ -1,5 +1,30 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## POST-PUBLICATION REPAIR OUTCOME AND CLI OUTPUT HARDENING - 2026-08-21
+
+After `87aed29e1600484dec07e8e1aadbdcfdeae7573e`, the metadata-only runtime
+scan found four legacy candidate records and no `identity_metadata`, so no
+equivalent migration was admitted. The first normal command made zero
+requests because the default DB lacked the project; a process-local
+`MS_DATABASE_URL` override selected the protected sample DB without editing
+runtime state.
+
+The single authorized same-model run then used exactly two requests
+(`narration=1`, `narration_repair=1`, `other=0`) and no visual/story repeat.
+It ended `NEEDS_REVIEW` as `cloud.narrative_not_grounded`. Sanitized final
+metrics: 118 words, 51.3 seconds, 5 passages, 8 claims, and 701 ordered
+observations; display derivation, duration contract, and all passage/claim/
+panel lineage booleans were true. This admission/state discrepancy is not
+resolved; no narration, MP4, TTS, or QC is claimed and no further provider
+request is allowed from this checkpoint.
+
+The runner also printed its complete job object to stdout, contrary to its
+redaction contract. A collection-clean RED regression exposed this. The
+follow-up GREEN fix adds `_safe_job_summary`, retaining only job ID, state,
+stable error/review codes, and request counts. It does not serialize stage
+payloads or provider prose. The follow-up source/test/docs change is the
+current GREEN publication checkpoint; no provider retry follows it.
+
 ## METADATA-ONLY NARRATION IDENTITY RECONCILIATION - 2026-08-21
 
 Implementation parent/rollback is published main

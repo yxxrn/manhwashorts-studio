@@ -3150,6 +3150,38 @@ def test_legacy_global_request_budget_remains_compatible_with_stage_labels():
     assert runner.request_count == 1
 
 
+def test_batch_cli_summary_does_not_serialize_stage_payloads():
+    batch_cli = importlib.import_module("scripts.run_cloud_multimodal_batch")
+    simple_namespace = __import__("types").SimpleNamespace
+    record = simple_namespace(
+        job_id="job-a",
+        state=simple_namespace(value="NEEDS_REVIEW"),
+        error_code="cloud.narrative_not_grounded",
+        review_queue=[{"code": "cloud.narrative_not_grounded"}],
+        stage_results={
+            "narration": {"spoken_text": "provider text must not print"},
+            "usage": {
+                "request_count": 2,
+                "request_counts": {"narration": 1, "narration_repair": 1},
+            },
+        },
+    )
+
+    summary = batch_cli._safe_job_summary(record)
+
+    encoded = json.dumps(summary, sort_keys=True)
+    assert summary["job_id"] == "job-a"
+    assert summary["state"] == "NEEDS_REVIEW"
+    assert summary["error_code"] == "cloud.narrative_not_grounded"
+    assert summary["usage"] == {
+        "request_count": 2,
+        "request_counts": {"narration": 1, "narration_repair": 1},
+    }
+    assert summary["review_codes"] == ["cloud.narrative_not_grounded"]
+    assert "stage_results" not in summary
+    assert "provider text must not print" not in encoded
+
+
 def test_position_repair_duration_gate_remains_hard_after_compaction_boundary(monkeypatch):
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)

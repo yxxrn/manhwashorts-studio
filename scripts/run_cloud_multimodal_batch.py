@@ -55,6 +55,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _safe_job_summary(record: object) -> dict[str, object]:
+    stage_results = getattr(record, "stage_results", {})
+    usage = stage_results.get("usage", {}) if isinstance(stage_results, dict) else {}
+    review_queue = getattr(record, "review_queue", ())
+    review_codes = sorted(
+        {
+            str(entry.get("code", ""))
+            for entry in review_queue
+            if isinstance(entry, dict) and str(entry.get("code", "")).strip()
+        }
+    )
+    state = getattr(record, "state", "")
+    return {
+        "job_id": str(getattr(record, "job_id", "")),
+        "state": str(getattr(state, "value", state)),
+        "error_code": getattr(record, "error_code", None),
+        "review_codes": review_codes,
+        "usage": {
+            "request_count": usage.get("request_count"),
+            "request_counts": dict(usage.get("request_counts", {}))
+            if isinstance(usage.get("request_counts", {}), dict)
+            else {},
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     options = build_parser().parse_args(argv)
     state_dir = Path(options.state_dir)
@@ -80,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
                     review_root=Path(options.segmentation_review_dir),
                 )
                 record = service.run_project(db, project_id, actor_id=options.actor_id)
-                jobs[project_id] = record.as_dict()
+                jobs[project_id] = _safe_job_summary(record)
             except cloud_multimodal.CloudStageError as exc:
                 jobs[project_id] = {
                     "job_id": project_id,

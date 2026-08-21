@@ -1,5 +1,28 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Post-publication repair outcome and output hardening
+
+Published identity checkpoint: `87aed29e1600484dec07e8e1aadbdcfdeae7573e`.
+The metadata-only scan found four legacy candidate records, all missing
+`identity_metadata`; migration was not safe and no hash was rewritten. The
+first normal command made zero requests because the default DB did not contain
+the project. A process-local `MS_DATABASE_URL` override selected the protected
+sample DB without modifying it.
+
+The one authorized same-model attempt consumed exactly two requests
+(`narration=1`, `narration_repair=1`, `other=0`) with no visual/story repeat,
+then ended `NEEDS_REVIEW` as `cloud.narrative_not_grounded`. Sanitized result
+metrics are 118 words, 51.3 seconds, 5 passages, 8 claims, and 701 ordered
+observations. Display, duration-contract, and all local passage/claim/panel
+lineage checks passed, but job admission still disagrees; no narration, MP4,
+TTS, or QC is valid. No further provider call is allowed.
+
+The runner printed full stage payloads to stdout, violating its stated safe
+output boundary. A focused RED regression now has a GREEN fix: `_safe_job_summary`
+prints only job ID, state, stable error/review codes, and request counts. This
+follow-up source/test/docs change is the current publication checkpoint; do not
+resume cloud work until the local admission discrepancy is diagnosed.
+
 ## Metadata-only narration identity checkpoint
 
 Published rollback parent: `5eaf91762f45ec4111d88e21ac458618bb86f42a`.

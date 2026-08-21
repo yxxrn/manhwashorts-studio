@@ -1,5 +1,30 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## POST-PUBLICATION REPAIR OUTCOME AND CLI OUTPUT HARDENING - 2026-08-21
+
+After `87aed29e1600484dec07e8e1aadbdcfdeae7573e` was published, metadata-only
+runtime classification found four legacy candidate records, all with
+`identity_metadata_present=false`; no equivalent migration was admitted. The
+first normal-run command made zero requests because the default DB did not
+contain the project. A process-local `MS_DATABASE_URL` override selected the
+protected sample DB without editing it.
+
+The one authorized same-model run then used exactly two requests
+(`narration=1`, `narration_repair=1`, `other=0`), with no visual/story repeat,
+and ended `NEEDS_REVIEW` as `cloud.narrative_not_grounded`. Sanitized final
+metrics are 118 words, 51.3 seconds, 5 passages, 8 claims, and 701 ordered
+observations; display, duration-contract, and passage/claim/panel lineage
+boolean checks all passed. The state/admission discrepancy is unresolved, so
+no narration, MP4, TTS, or QC is claimed and no further provider request is
+allowed from this checkpoint.
+
+The runner was also found to print the entire job object, including stage
+payloads, despite its redaction docstring. A body-level RED caught this; the
+GREEN follow-up adds `_safe_job_summary` and prints only job ID, state, stable
+error/review codes, and request counts. No provider data is serialized to CLI
+stdout by the fixed boundary. The follow-up source/test/docs gates are GREEN
+in the checkpoint committed with this handoff.
+
 ## METADATA-ONLY NARRATION IDENTITY RECONCILIATION - 2026-08-21
 
 The scoped source/test checkpoint is based on published main
