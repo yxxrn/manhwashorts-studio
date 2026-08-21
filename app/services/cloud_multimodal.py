@@ -3446,14 +3446,21 @@ class CloudStageRunner:
                 raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
             seen_passage_ids.add(passage_id)
             claim_ids = tuple(str(value) for value in claim_ids_raw)
-            evidence_panel_ids = tuple(str(value) for value in evidence_panel_ids_raw)
+            candidate_evidence_panel_ids = tuple(
+                str(value) for value in evidence_panel_ids_raw
+            )
             if (
                 any(not value.strip() for value in claim_ids)
-                or any(not value.strip() or value not in story_panel_ids for value in evidence_panel_ids)
+                or any(
+                    not value.strip() or value not in story_panel_ids
+                    for value in candidate_evidence_panel_ids
+                )
                 or len(set(claim_ids)) != len(claim_ids)
-                or len(set(evidence_panel_ids)) != len(evidence_panel_ids)
+                or len(set(candidate_evidence_panel_ids))
+                != len(candidate_evidence_panel_ids)
             ):
                 raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+            trusted_evidence_panel_ids: list[str] = []
             for claim_id in claim_ids:
                 candidate_claim = candidate_claims.get(claim_id)
                 story_claim = story_claims.get(claim_id)
@@ -3466,8 +3473,27 @@ class CloudStageRunner:
                         story_claim.get("panel_ids", ()),
                     )
                 )
-                if not claim_refs or not set(claim_refs).issubset(set(evidence_panel_ids)):
+                if (
+                    not claim_refs
+                    or any(
+                        not value.strip() or value not in story_panel_ids
+                        for value in claim_refs
+                    )
+                    or len(set(claim_refs)) != len(claim_refs)
+                    or not set(claim_refs) & set(candidate_evidence_panel_ids)
+                ):
                     raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+                for panel_id in claim_refs:
+                    if panel_id not in trusted_evidence_panel_ids:
+                        trusted_evidence_panel_ids.append(panel_id)
+            if (
+                not trusted_evidence_panel_ids
+                or not set(candidate_evidence_panel_ids).issubset(
+                    set(trusted_evidence_panel_ids)
+                )
+            ):
+                raise CloudStageError("cloud.narrative_repair_slot_lineage_invalid", reviewable=True)
+            evidence_panel_ids = tuple(trusted_evidence_panel_ids)
             matching_beats = [
                 (beat_index, beat)
                 for beat_index, beat in enumerate(story_map.beats)

@@ -21,6 +21,17 @@ makes no provider call. The next bounded stage is one cached narration repair
 request, followed only by local persistence and silent render if strict
 admission succeeds.
 
+## Trusted passage-evidence reconstruction
+
+The repair path previously required every trusted story-claim reference to
+already appear in the persisted candidate passage. That made a valid local
+lineage repair impossible when a stale candidate carried an incomplete
+passage evidence list, producing `cloud.narrative_repair_slot_lineage_invalid`
+with zero provider calls. Slot construction now validates the candidate list
+and deterministically rebuilds the ordered evidence union from trusted local
+claim refs; unrelated or foreign refs remain blocking. This is lineage
+reconciliation, not evidence invention or gate relaxation.
+
 ## Anti-copy repair-trigger correction
 
 The persisted 118-word candidate was valid for duration but not for strict

@@ -42,6 +42,18 @@ strict and unchanged. No new provider request has been made after this fix.
 The next resume is one bounded `narration_repair` request against the same
 cached visual/story context, with zero retries and no visual/story calls.
 
+## Trusted passage-evidence reconstruction - 2026-08-21
+
+The first post-trigger retry also made zero requests and failed locally with
+`cloud.narrative_repair_slot_lineage_invalid`. Sanitized inspection showed
+that p2's persisted passage evidence omitted one panel required by a trusted
+story claim. The repair slot boundary now reconstructs each slot's ordered
+claim-evidence union from the local story map, while rejecting foreign,
+unrelated, duplicate, or unknown references. The focused regression and full
+271-test affected matrix are green; no provider request has been made after
+this correction. Publish this checkpoint, then spend exactly one bounded
+cached repair request.
+
 ## DB persistence round-trip checkpoint - 2026-08-21
 
 Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.

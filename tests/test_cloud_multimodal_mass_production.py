@@ -4287,6 +4287,81 @@ def test_narration_contract_failures_trigger_repair_for_source_dialogue_copy():
     assert "cloud.narrative_source_dialogue_copy" in failures
 
 
+def test_repair_slots_reconstruct_trusted_evidence_when_candidate_omits_ref():
+    module = _module()
+    panel_ids = tuple(f"panel-{index}" for index in range(8))
+    claims = []
+    passages = []
+    beats = []
+    for passage_index in range(4):
+        refs = [panel_ids[passage_index * 2], panel_ids[passage_index * 2 + 1]]
+        passage_claim_ids = []
+        for claim_index in range(2):
+            claim_id = f"claim-{passage_index}-{claim_index}"
+            passage_claim_ids.append(claim_id)
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "claim_type": "fact",
+                    "text": f"Grounded claim {claim_id}.",
+                    "evidence_panel_ids": list(refs),
+                    "qualification": "The ordered evidence supports this claim.",
+                }
+            )
+        passages.append(
+            {
+                "passage_id": f"p{passage_index}",
+                "editorial_role": "role",
+                "text": f"Grounded passage {passage_index}.",
+                "claim_ids": passage_claim_ids,
+                "evidence_panel_ids": [refs[0]],
+            }
+        )
+        beats.append(
+            {
+                "beat_id": f"beat-{passage_index}",
+                "panel_ids": list(refs),
+                "summary": "The ordered beat remains grounded.",
+            }
+        )
+    candidate = module.NarrationResult(
+        spoken_text="Grounded passage text.",
+        display_words=("GROUNDED", "PASSAGE", "TEXT"),
+        passages=tuple(passages),
+        ending_kind="consequence",
+        word_count=118,
+        estimated_duration_s=51.3,
+        qc_report={},
+        model_identity_hash="m" * 64,
+        prompt_version="vision-first-story-analyzer-v3",
+        prompt_sha256="p" * 64,
+        observations=(),
+        continuity_ledger={},
+        evidence_graph={"claims": [dict(claim) for claim in claims]},
+        story_spine={},
+        visual_evidence_hash="v" * 64,
+    )
+    story_map = module.StoryMapResult(
+        panel_ids=panel_ids,
+        beats=tuple(beats),
+        causal_chain=(),
+        claims=tuple(claims),
+        story_map_hash="s" * 64,
+        model_identity_hash="m" * 64,
+        prompt_version="story-map-v1",
+        prompt_sha256="c" * 64,
+        visual_evidence_hash="v" * 64,
+    )
+
+    slots = module.CloudStageRunner._build_narration_repair_slots(
+        candidate,
+        story_map,
+    )
+
+    assert len(slots) == 4
+    assert slots[0].evidence_panel_ids == ("panel-0", "panel-1")
+
+
 def test_out_of_range_candidate_stays_out_of_final_narration_cache():
     module = _module()
     identity = _identity(module)
@@ -4791,20 +4866,10 @@ def test_position_repair_rejects_claim_evidence_mismatch_before_analyzer():
     first_panel, foreign_panel = first["evidence_panel_ids"][0], candidate.passages[1]["evidence_panel_ids"][0]
     first["evidence_panel_ids"] = [first_panel, foreign_panel]
     expanded = replace(candidate, passages=(first, *candidate.passages[1:]))
-    registry = runner._build_narration_repair_position_registry(expanded, story_map)
-    broken = json.loads(json.dumps(registry))
-    broken["positions"][0]["evidence_panel_ids"] = [foreign_panel]
-    raw = {
-        "rewrites": [
-            _position_rewrite_text(row["word_budget"], f"mismatch{index}_")
-            for index, row in enumerate(broken["positions"])
-        ]
-    }
-
     with pytest.raises(module.CloudStageError) as caught:
-        runner._reconcile_narration_repair_vector(raw, broken, expanded)
+        runner._build_narration_repair_position_registry(expanded, story_map)
 
-    assert caught.value.code == "cloud.narrative_repair_position_lineage_invalid"
+    assert caught.value.code == "cloud.narrative_repair_slot_lineage_invalid"
 
 
 def test_position_repair_lineage_merge_is_ordered_and_cache_identity_changes_with_refs():

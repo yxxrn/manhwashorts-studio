@@ -39,6 +39,16 @@ the final validator or alter source/story caches. The next allowed runtime
 action remains exactly one cached narration-repair request with no
 visual/story repetition.
 
+## Trusted passage-evidence reconstruction - 2026-08-21
+
+The next offline attempt reached `cloud.narrative_repair_slot_lineage_invalid`
+before dispatch because the persisted p2 passage omitted one panel reference
+that its trusted story claim required. Slot construction now validates the
+candidate references as nonempty, known, unique, and related, then rebuilds
+the ordered union solely from the trusted story claims. Foreign or unrelated
+references still fail closed. No provider request was spent; the next action
+remains one bounded cached narration repair after publication.
+
 ## DB persistence round-trip checkpoint - 2026-08-21
 
 Rollback parent for this source/test/docs slice is

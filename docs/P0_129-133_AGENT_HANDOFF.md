@@ -38,6 +38,16 @@ validator, grounding, lineage, and duration gates unchanged. No provider call
 has been made after this trigger correction. Resume with one bounded cached
 repair request only after this checkpoint is published.
 
+## Trusted passage-evidence reconstruction
+
+The first retry after the anti-copy trigger correction made zero provider
+requests and failed locally with `cloud.narrative_repair_slot_lineage_invalid`.
+The candidate p2 passage had a nonempty but incomplete evidence list; the
+trusted story claim refs were valid and supplied the missing panel. GREEN now
+reconstructs the ordered union from those trusted refs and still rejects
+foreign/unrelated/duplicate refs. The affected matrix is 271/271; publish
+this checkpoint before the one allowed cached repair request.
+
 ## DB persistence round-trip checkpoint
 
 Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.
