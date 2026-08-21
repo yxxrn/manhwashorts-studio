@@ -1339,3 +1339,24 @@ configured same model, with zero retries and no visual/story repeat. Do not
 proceed to persistence, silent render, or voice until the repaired result
 passes the full closure, grounding, causal, duration, display, and cache
 gates.
+
+## Exact claim-position closure correction - 2026-08-21
+
+The offline replay of the persisted candidate still failed before the provider:
+the position registry attached each claim position to its passage-wide evidence
+union, while the strict closure validator requires the exact evidence refs of
+that position's trusted claim. This was a local admission contradiction, not a
+reason to widen the permitted panel set. The correction publishes
+`narration-repair-position-registry-v5` and binds each position to its validated
+claim refs; passage reconstruction continues to union only those trusted
+position refs. The candidate/story identity and
+`cloud.narrative_repair_evidence_closure_invalid` fail-closed boundary are
+unchanged.
+
+The p2 regression now proves the two positions carry exactly their separate
+trusted panels, while unrelated same-chapter, missing-ancestry, duplicate or
+stale-identity cases remain rejected. Focused closure is 5/5, the cloud file is
+122/122, and the related matrix is 275/275; no provider request or runtime
+state was used. After this checkpoint is published, only the single previously
+authorized same-model repair request may run, with zero retries and no
+visual/story repeat.

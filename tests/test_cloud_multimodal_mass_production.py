@@ -2924,7 +2924,7 @@ def test_position_repair_preselection_is_deterministic_and_budgeted():
     second = runner._build_narration_repair_position_registry(candidate, story_map)
 
     positions = first["positions"]
-    assert first["version"] == "narration-repair-position-registry-v4"
+    assert first["version"] == "narration-repair-position-registry-v5"
     assert len(positions) == 8
     assert 8 <= len({claim_id for row in positions for claim_id in row["claim_ids"]}) <= 12
     assert 4 <= len({row["passage_id"] for row in positions}) <= 6
@@ -4200,7 +4200,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert result.qc_report["narration_repair"]["candidate_hash"]
     assert result.qc_report["narration_repair"]["position_registry_version"] == (
-        "narration-repair-position-registry-v4"
+        "narration-repair-position-registry-v5"
     )
     assert result.qc_report["narration_repair"]["slot_order_hash"]
     assert result.qc_report["narration_repair"]["passage_lineage_version"] == (
@@ -4304,7 +4304,7 @@ def test_repair_slots_reconstruct_trusted_evidence_when_candidate_omits_ref():
                     "claim_id": claim_id,
                     "claim_type": "fact",
                     "text": f"Grounded claim {claim_id}.",
-                    "evidence_panel_ids": list(refs),
+                        "evidence_panel_ids": [refs[claim_index]],
                     "qualification": "The ordered evidence supports this claim.",
                 }
             )
@@ -4314,10 +4314,9 @@ def test_repair_slots_reconstruct_trusted_evidence_when_candidate_omits_ref():
                 "editorial_role": "role",
                 "text": f"Grounded passage {passage_index}.",
                 "claim_ids": passage_claim_ids,
-                "evidence_panel_ids": [
-                    refs[0],
-                    "panel-8" if passage_index == 0 else refs[1],
-                ],
+                "evidence_panel_ids": (
+                    [*refs, "panel-8"] if passage_index == 0 else list(refs)
+                ),
             }
         )
         beats.append(
@@ -4338,7 +4337,7 @@ def test_repair_slots_reconstruct_trusted_evidence_when_candidate_omits_ref():
         model_identity_hash="m" * 64,
         prompt_version="vision-first-story-analyzer-v3",
         prompt_sha256="p" * 64,
-        observations=(),
+        observations=tuple({"panel_id": panel_id} for panel_id in panel_ids),
         continuity_ledger={},
         evidence_graph={"claims": [dict(claim) for claim in claims]},
         story_spine={},
@@ -4363,6 +4362,22 @@ def test_repair_slots_reconstruct_trusted_evidence_when_candidate_omits_ref():
 
     assert len(slots) == 4
     assert slots[0].evidence_panel_ids == ("panel-0", "panel-1")
+
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+    )
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    p2_rows = [
+        row
+        for row in registry["positions"]
+        if row["passage_id"] == "p2"
+    ]
+    assert len(p2_rows) == 2
+    assert {tuple(row["evidence_panel_ids"]) for row in p2_rows} == {
+        ("panel-4",),
+        ("panel-5",),
+    }
 
 
 def test_repair_evidence_closure_admits_exact_p2_story_ancestry():

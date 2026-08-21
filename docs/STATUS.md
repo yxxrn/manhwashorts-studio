@@ -2613,3 +2613,29 @@ The full Oracle non-slow run collected 1,154 tests: 1,134 passed, 16 failed,
 and 4 skipped. Thirteen pipeline fixture failures match the clean-parent set,
 two launcher tests require Windows `cmd.exe`, and one split-focus render
 assertion remains an unrelated baseline failure; the full suite is not green.
+
+## Exact claim-position closure correction - 2026-08-21
+
+Rollback parent: `5c4f492678eedb5787d526a19a9742fd53bb27d1`.
+
+The first corrected-DB replay after that checkpoint made zero provider calls
+and failed locally as `cloud.narrative_repair_evidence_closure_invalid`. The
+sanitized diagnosis was that positions for p2/p3 carried the passage-wide
+trusted evidence union, while the strict validator correctly requires each
+position to carry exactly the canonical evidence refs of its own claim. The
+permitted closure was not widened and no foreign or unrelated same-chapter
+panel was admitted.
+
+GREEN changes are limited to binding each position to its validated claim refs
+and bumping the cache-bound registry identity to
+`narration-repair-position-registry-v5`; passage-level reconstruction still
+unions only trusted retained position refs. The p2 regression proves separate
+claim/panel rows, and negative closure tests retain fail-closed handling for
+unrelated panels, missing ancestry, duplicates, mixed/foreign IDs, and stale
+story identity. Focused closure is 5/5, the cloud file is 122/122, and the
+related analyzer/script/narrative matrix is 275/275. Ruff, compileall,
+diff-check, no-churn, and secret scans remain publication gates. No provider
+request, DB/runtime edit, media, or secret was used. After publication, run
+exactly one same-model bounded repair request with zero retries and no
+visual/story repeat; do not claim narration or render readiness until every
+existing admission gate passes.

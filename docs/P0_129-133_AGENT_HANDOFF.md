@@ -1344,3 +1344,21 @@ cloud file 122/122, and related matrix 275/275. Closure RED was recorded
 before production edits; no provider request or runtime-state/DB/media/secret
 change was made. Publish the source/test/docs checkpoint before the single
 same-model zero-retry repair request.
+
+### Position-level evidence closure correction - 2026-08-21
+
+The published closure replay was still blocked locally because each expanded
+claim position inherited its passage-wide evidence union. That contradicted the
+validator's exact-claim rule and produced
+`cloud.narrative_repair_evidence_closure_invalid` before any provider call.
+Registry v5 now stores only the validated claim refs on each position; the
+passage result reconstructs the trusted union from those positions. This is a
+stricter provenance repair, not a broader same-chapter fallback. The exact p2
+positive case proves separate panel refs, and unrelated, unresolved, duplicate,
+mixed-section, missing-ancestry, and stale-identity cases remain rejected.
+
+The offline gates are 5/5 focused closure, 122/122 cloud, and 275/275 related;
+no provider request or runtime-state edit occurred. After publication, make
+only the one authorized same-model repair request, zero retries, no visual/story
+repeat, and continue only if the complete grounding/lineage/causal/
+word-duration/display/cache contract admits the result.

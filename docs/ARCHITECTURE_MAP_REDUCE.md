@@ -600,3 +600,21 @@ This change is offline-only; no visual/story/provider request or runtime
 artifact was touched. After publication, permit one bounded repair
 request with zero retries, then admit/persist only after all existing
 grounding, causal, duration, display, identity, and cache gates pass.
+
+### Position-level evidence closure correction - 2026-08-21
+
+The closure replay exposed a local representation mismatch: an expanded
+position had been assigned its passage-wide evidence union, but the closure
+predicate is claim-specific. Registry identity is now
+`narration-repair-position-registry-v5`; each position carries only the exact
+canonical story-map evidence refs for its own claim, and passage lineage is
+reconstructed by an ordered union of those trusted rows. No panel or section
+set is widened. The p2 regression proves distinct claim/panel rows, while
+unrelated same-chapter, missing-ancestry, duplicate/mixed, foreign, and stale
+story identities remain rejected with the stable closure code.
+
+Offline proof is focused 5/5, cloud 122/122, related 275/275, with no provider
+request or runtime artifact change. The next authorized action after publication
+is exactly one same-model zero-retry repair request; visual/story caches remain
+untouched and downstream persistence/render/voice gates stay closed until full
+admission succeeds.

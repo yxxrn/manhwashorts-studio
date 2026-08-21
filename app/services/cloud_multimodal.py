@@ -61,7 +61,7 @@ NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
 NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v7"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
-NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v4"
+NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v5"
 NARRATION_REPAIR_PASSAGE_LINEAGE_VERSION = "narration-repair-passage-lineage-v1"
 NARRATION_REPAIR_IDENTITY_VERSION = "narration-repair-identity-v1"
 NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION = "narration-repair-identity-migration-v1"
@@ -4073,7 +4073,7 @@ class CloudStageRunner:
                         slot_id=f"narration_position_v1_{_hash(identity)}",
                         passage_id=slot.passage_id,
                         claim_ids=(claim_id,),
-                        evidence_panel_ids=slot.evidence_panel_ids,
+                        evidence_panel_ids=claim_refs,
                         beat_id=slot.beat_id,
                         causal_position=slot.causal_position,
                         priority=slot.priority - claim_index,
