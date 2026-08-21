@@ -2066,6 +2066,109 @@ def test_narration_cache_requires_complete_grounded_result_even_with_matching_vi
         require_duration=False,
     ) is True
 
+def test_final_narration_scope_rejects_mixed_observations_and_continuity():
+    module = _module()
+    panels = _panels(module, "scope-reconcile")
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        max_attempts=1,
+    )
+    visual = runner.run_visual_evidence(panels)
+    full_observations, full_structural = runner._narration_observations(
+        visual, panels
+    )
+    selected_visual = replace(visual, panels=(visual.panels[0],))
+    selected_observations, selected_structural = runner._narration_observations(
+        selected_visual, panels[:1]
+    )
+    selected_panel_id = panels[0].panel_id
+    passage_texts = []
+    for index in range(4):
+        words = (
+            f"Passage {index} explains why this grounded turn matters while "
+            "the evidence keeps the next decision connected to the visible "
+            "panel and its changing stakes"
+        ).split()
+        words.extend(["clearly"] * (30 - len(words)))
+        passage_texts.append(" ".join(words) + ".")
+    passages = tuple(
+        {
+            "passage_id": f"scope-passage-{index}",
+            "editorial_role": f"scope-role-{index}",
+            "text": text,
+            "claim_ids": ["scope-claim"],
+            "evidence_panel_ids": [selected_panel_id],
+        }
+        for index, text in enumerate(passage_texts)
+    )
+    spoken_text = "\n\n".join(item["text"] for item in passages)
+    duration_contract = module.script.narration_duration_metrics(
+        spoken_text,
+        "dramatic",
+    )
+    candidate = module.NarrationResult(
+        spoken_text=spoken_text,
+        display_words=module.derive_display_words(spoken_text),
+        passages=passages,
+        ending_kind="consequence",
+        word_count=int(duration_contract["word_count"]),
+        estimated_duration_s=float(duration_contract["estimated_duration_s"]),
+        observations=tuple(selected_observations),
+        continuity_ledger=dict(selected_structural["continuity_ledger"]),
+        evidence_graph={
+            "claims": [
+                {
+                    "claim_id": "scope-claim",
+                    "claim_type": "interpretation",
+                    "text": "A grounded turn changes the next decision.",
+                    "qualification": "The visible sequence supports this reading.",
+                    "evidence_panel_ids": [selected_panel_id],
+                }
+            ]
+        },
+        story_spine={},
+        qc_report={"duration_contract": duration_contract},
+        model_identity_hash=runner.model_identity.identity_hash,
+        prompt_version=runner.prompts["narration"][0],
+        prompt_sha256=runner.prompts["narration"][1],
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    mixed_scope = replace(candidate, observations=tuple(full_observations))
+
+    assert module._narration_result_is_usable(
+        mixed_scope,
+        visual,
+        require_duration=True,
+        require_grounding=True,
+    ) is False
+
+    reconciled = module._reconcile_narration_full_scope(
+        mixed_scope,
+        observations=full_observations,
+        structural=full_structural,
+        expected_panel_ids=visual.panel_ids,
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+
+    assert reconciled.continuity_ledger == full_structural["continuity_ledger"]
+    assert module._narration_result_is_usable(
+        reconciled,
+        visual,
+        require_duration=True,
+        require_grounding=True,
+    ) is True
+    broken = replace(
+        reconciled,
+        continuity_ledger=dict(selected_structural["continuity_ledger"]),
+    )
+    assert module._narration_result_is_usable(
+        broken,
+        visual,
+        require_duration=True,
+        require_grounding=True,
+    ) is False
+
 def test_editorial_selection_is_bounded_ordered_and_panel_keyed():
     module = _module()
     panels = tuple(

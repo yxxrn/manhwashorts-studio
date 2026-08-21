@@ -1167,3 +1167,35 @@ reuse a different story map, rerun visual/story, or send another provider
 request. The next implementation slice is a metadata-only exact-cache
 reconciliation with focused identity tests, then a newly authorized bounded
 repair attempt.
+
+## 2026-08-21 local narration admission/state discrepancy fix
+
+Rollback parent: `78759e92dedf0c0ba9b6c6f49408c25dd4d7c68a`.
+
+The sanitized persisted candidate reports 118 words, 51.3 seconds, 5
+passages, 8 claims, and 701 observations with matching visual identity and
+complete observation/passage/claim evidence checks. The exact local defect was
+scope mixing: targeted repair kept a continuity ledger for 40 selected panels,
+then final assembly widened observations to 701 panels. The lightweight
+admission missed continuity coverage; persistence correctly rejected the mixed
+object as `cloud.narrative_not_grounded`.
+
+The fix uses the existing analyzer continuity predicate at grounded admission
+and validates/copies the locally derived full structural ledger through
+`_reconcile_narration_full_scope` before final admission. It preserves all
+hard grounding, lineage, causal, duration, visual, audio, and QC gates.
+
+Offline replay used only the existing 701 prepared-panel descriptors (no image
+decode, DB write, cache write, or provider call). The old object is 40/701 for
+continuity and fails strict admission; metadata-only reconstruction is 701/701
+and passes the shared analyzer validator and final admission. The new RED
+regression reproduced the old false-positive admission; GREEN is 113 cloud
+tests plus 83 related tests. Non-slow is 1,154 collected: 1,148 passed, 2
+failed, 4 skipped; the two failures are Oracle-Linux `cmd.exe` launcher tests.
+
+Current job state remains `NEEDS_REVIEW` until the published code is resumed
+through the normal local reconciliation/persistence transaction. Do not repeat
+visual/story stages, issue a provider request, edit runtime JSON/DB manually,
+or claim narration/render/voice/QC readiness. After publication, resume with
+the existing cached job and record the state transition before any downstream
+stage.

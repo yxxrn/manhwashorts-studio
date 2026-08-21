@@ -2404,3 +2404,41 @@ implement and test metadata-only cache reconciliation or restore an exact
 matching story/visual snapshot, without changing hashes or repeating provider
 stages. Until then, no narration admission, silent render, voice, or final QC
 claim is valid.
+
+## 2026-08-21 local narration admission/state discrepancy fix
+
+Rollback parent: `78759e92dedf0c0ba9b6c6f49408c25dd4d7c68a`.
+
+The persisted candidate is structurally strong (118 words, 51.3 seconds, 5
+passages, 8 claims, 701 observations, matching visual identity and complete
+observation/passage/claim evidence checks), but its continuity ledger was
+assembled at the 40-panel targeted-repair scope. Final assembly widened
+observations to all 701 panels without widening continuity. The lightweight
+admission therefore returned true while the shared analyzer validator correctly
+rejected continuity coverage and surfaced `cloud.narrative_not_grounded`.
+
+The narrow fix makes the shared continuity predicate authoritative at grounded
+admission and adds `_reconcile_narration_full_scope`: it verifies exact
+ordered full panel IDs and the locally derived full structural ledger before
+final admission, then copies that ledger into the result. It does not relax
+grounding, lineage, causal, duration, visual, audio, or QC gates.
+
+TDD evidence: the collection-clean RED regression reproduced the false
+positive mixed object; GREEN is 113 cloud tests plus 83 related tests passed.
+Ruff, compileall, `git diff --check`, no-churn stats, and the changed-diff
+secret scan pass. The non-slow run collected 1,154 tests: 1,148 passed, 2
+failed, and 4 skipped. Both failures are the existing Windows `cmd.exe`
+launcher tests on Oracle Linux, before changed code executes.
+
+Provider-free replay against the existing job and prepared manifest proves the
+old persisted object fails strict continuity at 40/701, while metadata-only
+reconstruction produces 701/701 continuity and passes the shared analyzer
+validator and final admission. The job JSON, DB/WAL, cache, media, and
+credentials were not modified; its state remains `NEEDS_REVIEW`. No provider
+request, narration persistence, MP4, voice, or QC artifact is claimed.
+
+Next: publish this source/test/docs checkpoint, then run only the normal local
+reconciliation/persistence boundary from the existing visual/story state. Do
+not repeat visual/story calls, issue a new cloud request, or manually edit
+runtime state. Stop before provider/TTS and report the persisted state
+transition and downstream availability.

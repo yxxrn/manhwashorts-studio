@@ -427,3 +427,35 @@ identity checks correctly prevent mixing them. The next bounded slice is local
 metadata-only reconciliation of an exact matching visual/story/candidate cache
 or a fail-closed stale-cache report; no hash rewrite, visual/story re-call, or
 provider retry is allowed before that fix is published.
+
+## Local narration admission/state discrepancy invariant — 2026-08-21
+
+Rollback parent: `78759e92dedf0c0ba9b6c6f49408c25dd4d7c68a`.
+
+The repair path has two legitimate scopes: a selected-panel repair scope and
+the complete ordered chapter scope. The defect mixed them by retaining the
+selected 40-panel `continuity_ledger` while replacing observations with all
+701 panels. The old lightweight admission checked observation and claim
+lineage but not continuity coverage; persistence then rejected the same object
+through the shared analyzer validator as `cloud.narrative_not_grounded`.
+
+The canonical boundary now calls the existing analyzer continuity predicate at
+grounded admission. `_reconcile_narration_full_scope` requires exact ordered
+panel IDs and a valid locally derived full structural ledger before final
+assembly; it copies no provider-owned evidence or identifiers. Intermediate
+chunk/selected repair validation remains scoped to its own visual input, while
+the final result and persistence boundary use the complete scope.
+
+Offline evidence is metadata-only: the persisted candidate is 118 words,
+51.3 seconds, 5 passages, 8 claims, and 701 observations, but its continuity
+chunk covers 40/701. Rebuilding from the durable 701 descriptor manifest gives
+one ordered 701-panel continuity chunk and passes the shared analyzer validator
+and final admission. No image bytes, DB/WAL, cache, provider, or secret state
+was touched.
+
+TDD/static evidence is 113 cloud tests and 83 related tests passed; Ruff,
+compileall, diff-check, no-churn, and changed-diff secret scan pass. Non-slow
+is 1,154 collected with 1,148 passed, 2 failed, and 4 skipped; both failures
+are the Oracle-Linux host's inability to execute Windows `cmd.exe` launcher
+tests. No narration, MP4, TTS, or QC readiness is claimed until the published
+code resumes the existing job through normal persistence and downstream gates.

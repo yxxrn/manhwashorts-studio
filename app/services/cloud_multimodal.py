@@ -1066,6 +1066,61 @@ def persist_narration_repair_identity_migration(
     return stored
 
 
+def _continuity_ledger_is_valid(
+    continuity_ledger: object,
+    expected_panel_ids: Sequence[str],
+) -> bool:
+    expected = tuple(str(panel_id) for panel_id in expected_panel_ids)
+    if not expected or len(set(expected)) != len(expected):
+        return False
+    try:
+        analyzer_contract._validate_continuity(continuity_ledger, expected)
+    except (
+        analyzer_contract.AnalyzerContractError,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+    return True
+
+
+def _narration_continuity_is_valid(result: NarrationResult) -> bool:
+    try:
+        observation_ids = tuple(
+            str(item.get("panel_id", "")) for item in result.observations
+        )
+    except (AttributeError, TypeError):
+        return False
+    return _continuity_ledger_is_valid(result.continuity_ledger, observation_ids)
+
+
+def _reconcile_narration_full_scope(
+    result: NarrationResult,
+    *,
+    observations: Sequence[Mapping[str, Any]],
+    structural: Mapping[str, Any],
+    expected_panel_ids: Sequence[str],
+    visual_evidence_hash: str,
+) -> NarrationResult:
+    expected = tuple(str(panel_id) for panel_id in expected_panel_ids)
+    full_observations = tuple(dict(item) for item in observations)
+    observed = tuple(str(item.get("panel_id", "")) for item in full_observations)
+    if observed != expected or len(set(observed)) != len(observed):
+        raise CloudStageError("cloud.panel_lineage_invalid")
+    continuity_ledger = structural.get("continuity_ledger")
+    if not _continuity_ledger_is_valid(continuity_ledger, expected):
+        raise CloudStageError("cloud.panel_coverage_incomplete")
+    assert isinstance(continuity_ledger, Mapping)
+    return replace(
+        result,
+        observations=full_observations,
+        continuity_ledger=dict(continuity_ledger),
+        visual_evidence_hash=visual_evidence_hash,
+    )
+
+
 def _narration_result_is_usable(
     result: NarrationResult,
     visual: VisualStageResult,
@@ -1126,6 +1181,8 @@ def _narration_result_is_usable(
                 str(item.get("panel_id", "")) for item in visual.panels
             )
             if observation_ids != visual_ids:
+                return False
+            if not _narration_continuity_is_valid(result):
                 return False
             claims = result.evidence_graph.get("claims", ())
             if not isinstance(claims, (list, tuple)) or not claims:
@@ -2859,12 +2916,14 @@ class CloudStageRunner:
         qc_report["model_identity_hash"] = self.model_identity.identity_hash
         qc_report["prompt_version"] = prompt[0]
         qc_report["prompt_sha256"] = prompt[1]
-        result = replace(
+        result = _reconcile_narration_full_scope(
             result,
-            observations=tuple(observations),
+            observations=observations,
+            structural=_structural,
+            expected_panel_ids=visual.panel_ids,
             visual_evidence_hash=visual.visual_evidence_hash,
-            qc_report=qc_report,
         )
+        result = replace(result, qc_report=qc_report)
         if not _narration_result_is_usable(
             result,
             visual,

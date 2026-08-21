@@ -1145,3 +1145,42 @@ identity. No matching visual/story cache was found. The strict repair boundary
 therefore blocks rather than mixing identities or rewriting hashes. Do not
 repeat visual/story calls, issue another provider request, or manually edit
 runtime state until an exact local cache-reconciliation fix is reviewed.
+
+## 2026-08-21 local narration admission/state discrepancy fix
+
+The verified implementation parent is `78759e92dedf0c0ba9b6c6f49408c25dd4d7c68a`.
+The scoped change is `app/services/cloud_multimodal.py` plus its focused
+regression and the four handoff documents. Protected `data`, `ms_env.sh`,
+DB/WAL, caches, logs, media, and credentials remain outside Git.
+
+Root cause: targeted repair produced a continuity ledger for its selected
+40-panel scope. Final assembly replaced only `NarrationResult.observations`
+with the complete 701-panel observation ledger, leaving the selected 40-panel
+continuity ledger attached. The lightweight admission predicate did not check
+continuity coverage, so it returned usable; the shared persistence validator
+then correctly rejected the mixed object as `cloud.narrative_not_grounded`.
+
+The fix calls the existing analyzer continuity predicate at grounded admission,
+validates panel order and full continuity in `_reconcile_narration_full_scope`,
+and uses that helper before final narration admission. It copies only the
+locally derived full structural ledger; it does not alter provider prose,
+claims, evidence, hashes, duration, or quality gates.
+
+Offline replay of the persisted job remains provider-free: the old object is
+118 words/51.3 seconds/5 passages/8 claims/701 observations but has a 40-panel
+continuity chunk and fails strict admission. Rebuilding from the existing
+701-descriptor prepared manifest gives 701/701 continuity and passes the shared
+analyzer validator and final admission. No DB or cache was modified.
+
+Verification: the new RED regression failed on the old false-positive
+admission; GREEN is 113/113 cloud tests and 83/83 related manifest/narrative/
+script/vision tests, with Ruff, compileall, diff-check, no-churn, and changed
+diff secret scan clean. Oracle non-slow is 1,154 collected: 1,148 passed,
+2 failed, 4 skipped. The two failures are Windows `cmd.exe` launcher tests
+that cannot run on Oracle Linux and are unrelated to this slice.
+
+Resume only after the GREEN checkpoint is published: rerun the normal cached
+service boundary with no visual/story repeat and no provider call required by
+the local reconciliation path. Keep the runtime job's current `NEEDS_REVIEW`
+state until the repaired result is persisted through the normal transaction;
+do not claim narration, MP4, TTS, or QC readiness from this checkpoint.
