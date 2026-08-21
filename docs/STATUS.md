@@ -1978,3 +1978,21 @@ is guidance only. The focused matrix is 146/146 with Ruff, compileall,
 diff-check, no-churn, and key-shaped secret scan clean. Publish this correction
 before another one-request repair. No narration, MP4, voice, or final QC is
 proven yet.
+
+## Position-vector concise drafting correction (2026-08-21)
+
+The first request after `cd458804e0e73344ac0cebc6c49f325e1b93ecd9` returned
+array length 8 and string counts `[17,17,18,18,18,15,17,16]`: total 136 words
+and estimated duration 57.39 seconds. It failed closed after request/retry
+counts 1/0 on the final word-bound contract; the sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`5654413fcb1a03698d0a93e34742addf137bc13b6913697255074c61b34f6b80`.
+
+RED added a prompt regression for concise position drafting. GREEN explicitly
+instructs the provider to treat each `word_budget_max` as a hard drafting
+target and not fill budgets with extra words. The local final 115-125-word and
+50-60-second gates remain strict; exact 120 is guidance only. The focused
+matrix is 147/147 with Ruff, compileall, diff-check, no-churn, and key-shaped
+secret scan clean. Publish this correction before another one-request repair.
+No narration, MP4, voice, or final QC is proven yet.

@@ -791,3 +791,22 @@ per-position values as guidance once the complete response is in range. Exact
 120 is guidance only. Focused verification is 146/146 with Ruff, compileall,
 diff-check, no-churn, and key-shaped secret scan clean. Publish this fix before
 another one-request repair; no narration, MP4, voice, or final QC is proven.
+
+## Position-vector concise drafting correction - 2026-08-21
+
+The first request after `cd458804e0e73344ac0cebc6c49f325e1b93ecd9` returned
+8 strings with per-position counts `[17,17,18,18,18,15,17,16]`, total 136
+words, and estimated duration 57.39 seconds. It failed closed after request
+count 1 and retry count 0 because the final word bound was exceeded. The
+sanitized report remains at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`5654413fcb1a03698d0a93e34742addf137bc13b6913697255074c61b34f6b80`.
+
+The RED regression checks the concise drafting instruction. GREEN tells the
+provider to treat each `word_budget_max` as a hard drafting target and not fill
+position budgets with extra words. Local aggregate 115-125-word/50-60-second
+gates remain strict and exact 120 is guidance only. Focused verification is
+147/147 with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan
+clean. Publish before another one-request repair; no narration, MP4, voice, or
+final QC is proven.

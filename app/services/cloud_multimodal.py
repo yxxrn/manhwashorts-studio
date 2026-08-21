@@ -89,7 +89,9 @@ NARRATION_REPAIR_INSTRUCTION = (
     "position's inclusive word_budget_min/word_budget_max range. The sum "
     "of all position maxima is capped at 125. Target "
     "exactly 120 total words; the accepted total is 115-125 words and "
-    "50-60 seconds. Count every rewrite before returning. "
+    "50-60 seconds. Treat each word_budget_max as a hard drafting target. "
+    "Do not fill a position budget with extra words. Exactly 120 is guidance; "
+    "count every rewrite before returning. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
     "metadata, or alternate key."
 )

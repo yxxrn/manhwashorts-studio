@@ -773,3 +773,19 @@ is in range. Exact 120 remains guidance only. Focused verification is 146/146
 with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan clean.
 Publish before another real request; no narration, MP4, voice, or final QC is
 proven.
+
+## Position-vector concise drafting correction (2026-08-21)
+
+The first request after `cd458804e0e73344ac0cebc6c49f325e1b93ecd9` returned
+8 strings with counts `[17,17,18,18,18,15,17,16]`, total 136 words, and
+estimated duration 57.39 seconds. It failed closed after request/retry counts
+1/0 because the final word bound was exceeded; sanitized report SHA:
+`5654413fcb1a03698d0a93e34742addf137bc13b6913697255074c61b34f6b80`.
+
+RED added a prompt regression. GREEN makes the provider drafting instruction
+explicitly treat each `word_budget_max` as a hard drafting target and forbids
+filling a position with extra words; local final 115-125-word/50-60-second
+admission remains authoritative and exact 120 remains guidance. Focused
+verification is 147/147 with Ruff, compileall, diff-check, no-churn, and
+key-shaped secret scan clean. Publish before another request; no narration,
+MP4, voice, or final QC is proven.

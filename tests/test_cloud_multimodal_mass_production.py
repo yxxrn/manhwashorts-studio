@@ -2399,6 +2399,14 @@ def test_targeted_repair_prompt_declares_exact_slot_wire_shape():
     assert "word_budget_min/word_budget_max" in instruction
 
 
+def test_targeted_repair_prompt_requires_concise_position_drafting():
+    module = _module()
+    instruction = module.NARRATION_REPAIR_INSTRUCTION
+    assert "Treat each word_budget_max as a hard drafting target" in instruction
+    assert "Do not fill a position budget with extra words" in instruction
+    assert "Exactly 120 is guidance" in instruction
+
+
 def _position_rewrite_text(word_budget, prefix):
     return " ".join(f"{prefix.rstrip('_')}word{index}" for index in range(word_budget))
 
