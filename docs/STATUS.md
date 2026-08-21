@@ -1996,3 +1996,22 @@ target and not fill budgets with extra words. The local final 115-125-word and
 matrix is 147/147 with Ruff, compileall, diff-check, no-churn, and key-shaped
 secret scan clean. Publish this correction before another one-request repair.
 No narration, MP4, voice, or final QC is proven yet.
+
+## Position-vector compact drafting correction (2026-08-21)
+
+The first request after `e7cd76b34830fe9f9ea02eeb913a8eb28abbeb4f` returned
+array length 8 and counts `[17,17,16,16,17,15,15,14]`: total 127 words and
+estimated duration 53.48 seconds. It failed closed after request/retry counts
+1/0 because the strict final word ceiling was exceeded. The sanitized report
+is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`c99db623cc4ad565083cfdd893c3803c802774db8347c503502eaa5093c2cbff`.
+
+RED added a compact-vector prompt regression. GREEN asks for 14-15 words per
+position in the fixed eight-position vector and no more than 15 unless needed
+to preserve a claim. The local 115-125-word/50-60-second gates remain strict;
+exact 120 is guidance only. The focused matrix is 148/148 with Ruff,
+compileall, diff-check, no-churn, and key-shaped secret scan clean. Publish
+this correction before another one-request repair. No narration, MP4, voice,
+or final QC is proven yet.

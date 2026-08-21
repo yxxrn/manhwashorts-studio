@@ -2407,6 +2407,13 @@ def test_targeted_repair_prompt_requires_concise_position_drafting():
     assert "Exactly 120 is guidance" in instruction
 
 
+def test_targeted_repair_prompt_targets_compact_eight_position_vector():
+    module = _module()
+    instruction = module.NARRATION_REPAIR_INSTRUCTION
+    assert "For the eight-position vector, aim for 14-15 words per position" in instruction
+    assert "never exceed 15 words unless required to preserve a claim" in instruction
+
+
 def _position_rewrite_text(word_budget, prefix):
     return " ".join(f"{prefix.rstrip('_')}word{index}" for index in range(word_budget))
 

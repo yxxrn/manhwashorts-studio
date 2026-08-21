@@ -91,7 +91,9 @@ NARRATION_REPAIR_INSTRUCTION = (
     "exactly 120 total words; the accepted total is 115-125 words and "
     "50-60 seconds. Treat each word_budget_max as a hard drafting target. "
     "Do not fill a position budget with extra words. Exactly 120 is guidance; "
-    "count every rewrite before returning. "
+    "For the eight-position vector, aim for 14-15 words per position and "
+    "never exceed 15 words unless required to preserve a claim. Count every "
+    "rewrite before returning. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
     "metadata, or alternate key."
 )

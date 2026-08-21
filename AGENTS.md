@@ -789,3 +789,19 @@ admission remains authoritative and exact 120 remains guidance. Focused
 verification is 147/147 with Ruff, compileall, diff-check, no-churn, and
 key-shaped secret scan clean. Publish before another request; no narration,
 MP4, voice, or final QC is proven.
+
+## Position-vector compact drafting correction (2026-08-21)
+
+The first request after `e7cd76b34830fe9f9ea02eeb913a8eb28abbeb4f` returned
+8 strings with counts `[17,17,16,16,17,15,15,14]`, total 127 words, and
+estimated duration 53.48 seconds. It failed closed after request/retry counts
+1/0 because the strict final word ceiling was exceeded; sanitized report SHA:
+`c99db623cc4ad565083cfdd893c3803c802774db8347c503502eaa5093c2cbff`.
+
+RED added a compact-vector prompt regression. GREEN asks the provider to aim
+for 14-15 words per position in the fixed eight-position vector and never
+exceed 15 unless a claim requires it, while local 115-125-word/50-60-second
+gates remain strict. Exact 120 is guidance only. Focused verification is
+148/148 with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan
+clean. Publish before another request; no narration, MP4, voice, or final QC is
+proven.

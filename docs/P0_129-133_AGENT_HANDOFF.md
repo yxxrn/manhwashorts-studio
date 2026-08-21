@@ -810,3 +810,22 @@ gates remain strict and exact 120 is guidance only. Focused verification is
 147/147 with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan
 clean. Publish before another one-request repair; no narration, MP4, voice, or
 final QC is proven.
+
+## Position-vector compact drafting correction - 2026-08-21
+
+The first request after `e7cd76b34830fe9f9ea02eeb913a8eb28abbeb4f` returned
+8 strings with counts `[17,17,16,16,17,15,15,14]`, total 127 words, and
+estimated duration 53.48 seconds. It failed closed after request count 1 and
+retry count 0 because the strict final word ceiling was exceeded. The
+sanitized report remains at
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256
+`c99db623cc4ad565083cfdd893c3803c802774db8347c503502eaa5093c2cbff`.
+
+The RED regression checks the compact-vector prompt. GREEN asks for 14-15
+words per position in the fixed eight-position vector and never more than 15
+unless a claim must be preserved. Local aggregate 115-125-word/50-60-second
+gates remain strict and exact 120 is guidance only. Focused verification is
+148/148 with Ruff, compileall, diff-check, no-churn, and key-shaped secret scan
+clean. Publish before another one-request repair; no narration, MP4, voice, or
+final QC is proven.
