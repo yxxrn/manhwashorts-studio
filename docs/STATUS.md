@@ -2445,7 +2445,7 @@ transition and downstream availability.
 ## 2026-08-21 cached narration state-boundary continuation fix
 
 Rollback parent: `5cff1984f48a6711e47fadad94557bb42cdb08fb`.
-Publication commit: `eb753e1e06bd8a5287665599fad113267b1fadfe`.
+Publication commit: `392298a5b837462c9f3440a3e02328f316e3990c`.
 
 The first continuity correction fixed the mixed result itself, but the resume
 state machine still had a second local gap: when an existing cached narration

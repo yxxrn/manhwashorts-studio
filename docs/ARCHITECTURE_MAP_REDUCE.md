@@ -462,7 +462,7 @@ code resumes the existing job through normal persistence and downstream gates.
 ## Cached narration state admission invariant — 2026-08-21
 
 Rollback parent: `5cff1984f48a6711e47fadad94557bb42cdb08fb`.
-Publication commit: `eb753e1e06bd8a5287665599fad113267b1fadfe`.
+Publication commit: `392298a5b837462c9f3440a3e02328f316e3990c`.
 
 The map/reduce runtime has two legitimate scopes: provider repair may operate
 on a selected panel scope, while final narration admission requires the

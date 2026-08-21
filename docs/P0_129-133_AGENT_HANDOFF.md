@@ -1202,7 +1202,7 @@ stage.
 ## Cached narration state-boundary continuation — 2026-08-21
 
 Rollback parent: `5cff1984f48a6711e47fadad94557bb42cdb08fb`.
-Publication commit: `eb753e1e06bd8a5287665599fad113267b1fadfe`.
+Publication commit: `392298a5b837462c9f3440a3e02328f316e3990c`.
 
 The published continuity fix correctly rejects a 40-panel repair ledger mixed
 with 701 observations. The resume path had to honor that invariant too: its

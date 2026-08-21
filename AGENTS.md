@@ -1188,7 +1188,7 @@ do not claim narration, MP4, TTS, or QC readiness from this checkpoint.
 ## 2026-08-21 cached narration state-boundary continuation fix
 
 Rollback parent for this follow-up is `5cff1984f48a6711e47fadad94557bb42cdb08fb`.
-Publication commit is `eb753e1e06bd8a5287665599fad113267b1fadfe`.
+Publication commit is `392298a5b837462c9f3440a3e02328f316e3990c`.
 The published continuity fix made local admission strict, but a resume of an
 existing cached job could still treat a failed cached candidate as permission
 to call `run_narration` again. That would turn a local state discrepancy into
