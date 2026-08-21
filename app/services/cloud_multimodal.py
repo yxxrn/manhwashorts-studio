@@ -1114,6 +1114,7 @@ class CloudStageRunner:
         metrics["failed_code"] = code
         if not metrics.get("failed_predicate"):
             metrics["failed_predicate"] = code
+        self.last_response_shape_metrics = dict(metrics)
         return metrics
 
     def _call(self, operation) -> Any:

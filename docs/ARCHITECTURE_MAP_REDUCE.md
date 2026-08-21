@@ -142,3 +142,18 @@ which is the defect this checkpoint closes. The focused regression is
 collection-clean and 151/151 green. A new provider request is prohibited
 until this source/test/docs checkpoint is published; visual/story caches are
 not invalidated.
+
+## Live positional repair result and snapshot correction
+
+The one authorized real repair request after `e743ab2` used `grok-4.3`,
+request/retry counts 1/0, and failed closed as
+`cloud.narrative_word_count_out_of_range`. The sanitized report recorded a
+dict containing only `rewrites`, array length 8, counts
+`[18,16,16,17,15,14,14,14]`, total 124, duration 52.17 seconds, and
+slot-order hash
+`a0c1a311a8a9e10ee9ccfc97b1bbac791abf59ae501c5f9b3a6bc4a8ba8f8823`.
+The aggregate bounds passed, but the later gate rejected the candidate. The
+runner snapshot originally kept `failed_predicate=null`; the follow-up fix
+updates the same non-prose snapshot with the stable failure code/predicate so
+future durable reports retain the later-gate taxonomy. No second provider
+call is permitted by this checkpoint, and visual/story caches are untouched.

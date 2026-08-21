@@ -811,6 +811,22 @@ gates remain strict and exact 120 is guidance only. Focused verification is
 clean. Publish before another one-request repair; no narration, MP4, voice, or
 final QC is proven.
 
+## Position-vector live repair result and snapshot correction - 2026-08-21
+
+After published checkpoint `e743ab219a17f426c07baca5745dab82fdd7648b`, the
+authorized isolated harness made exactly one real `grok-4.3` repair request
+and zero retries. It failed closed as
+`cloud.narrative_word_count_out_of_range`; sanitized report SHA-256:
+`44c4a9712da510ee53b63fd4eac395e20505c51bc84f15ff4abda95c875897a4`.
+Non-prose response metrics were array length 8, counts
+`[18,16,16,17,15,14,14,14]`, total 124, duration 52.17 seconds, and
+slot-order hash
+`a0c1a311a8a9e10ee9ccfc97b1bbac791abf59ae501c5f9b3a6bc4a8ba8f8823`.
+The aggregate bounds passed, but a later gate rejected the candidate and the
+runner snapshot still had `failed_predicate=null`. The follow-up RED/GREEN
+fix updates that snapshot with stable failure code/predicate. No second
+provider call was made; no narration, MP4, voice, or final QC is proven.
+
 ## Position-vector response-shape propagation correction - 2026-08-21
 
 Parent checkpoint: `c39215d61211a80cf0f19729bcd0a026b1bb39cc`. The single

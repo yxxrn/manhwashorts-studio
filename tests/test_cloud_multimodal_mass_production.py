@@ -3608,6 +3608,9 @@ def test_later_gate_failure_persists_success_shape_metrics(tmp_path):
         "cloud.narrative_word_count_out_of_range",
         reviewable=True,
     )
+    failure_metrics = runner._response_shape_metrics_for_failure(failure.code)
+    assert failure_metrics["failed_code"] == failure.code
+    assert runner.last_response_shape_metrics["failed_code"] == failure.code
     service._record_failure(record, failure)
 
     persisted = store.load("later-gate-shape")

@@ -2059,3 +2059,22 @@ with five existing warnings; Ruff, compileall, diff-check, no-churn, and
 key-shaped secret scan are clean. Do not issue another real request until this
 checkpoint is published. No valid narration, MP4, voice, or final QC is
 proven.
+
+## Position-vector live repair result and snapshot correction (2026-08-21)
+
+After the published `e743ab219a17f426c07baca5745dab82fdd7648b` checkpoint,
+the authorized isolated harness made exactly one real `grok-4.3` repair
+request and zero retries. It failed closed as
+`cloud.narrative_word_count_out_of_range`. The sanitized report SHA-256 is
+`44c4a9712da510ee53b63fd4eac395e20505c51bc84f15ff4abda95c875897a4`.
+The response shape was a dict with only `rewrites`, array length 8, word
+counts `[18,16,16,17,15,14,14,14]`, total 124, estimated duration 52.17
+seconds, and trusted `slot_order_hash`
+`a0c1a311a8a9e10ee9ccfc97b1bbac791abf59ae501c5f9b3a6bc4a8ba8f8823`.
+
+Aggregate word/duration bounds were in range, but the later gate rejected the
+candidate. The report exposed a second observability defect: the runner
+snapshot retained `failed_predicate=null` after the later error. The
+follow-up RED/GREEN fix now updates that in-process snapshot with the stable
+failure code/predicate; it does not alter admission behavior, and no second
+provider call was made. No valid narration, MP4, voice, or final QC is proven.
