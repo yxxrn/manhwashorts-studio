@@ -54,11 +54,11 @@ STORY_MAP_COVERAGE_MIN_STEP = 30
 NARRATION_CHUNK_STEP = 180
 NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
-NARRATION_REPAIR_VERSION = "narration-targeted-repair-v4"
+NARRATION_REPAIR_VERSION = "narration-targeted-repair-v5"
 NARRATION_REPAIR_MAX_ATTEMPTS = 3
 NARRATION_REPAIR_POSITION_MAX_ATTEMPTS = 1
 NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
-NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v5"
+NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v6"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
 NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v3"
@@ -218,7 +218,11 @@ NARRATION_REPAIR_INSTRUCTION = (
     "total words so natural variation stays inside the accepted range; exactly "
     "120 is guidance only. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
-    "metadata, or alternate key."
+    "metadata, or alternate key. Every rewrite must paraphrase any dialogue into "
+    "third-person narrator language; never quote or preserve a four-word lexical "
+    "sequence from dialogue_or_ocr. Quotation marks, capitalization changes, or "
+    "renaming a speaker are not loopholes: local strict validation rejects "
+    "near-verbatim dialogue. Describe only the grounded event or consequence."
 )
 EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
@@ -5219,7 +5223,7 @@ class CloudStageRunner:
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v3"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v4"
         repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
         repair_prompt = (
             repair_prompt_version,
@@ -5638,7 +5642,6 @@ class CloudStageRunner:
                         output,
                         expected_panel_ids=tuple(str(item["panel_id"]) for item in chunk_obs),
                         narrative_profile_id="sharp_friend_v1",
-                        allow_dialogue_copy=True,  # preview-only relaxation
                     )
                     claims = {claim["claim_id"]: claim for claim in claims_list}
                     passages = tuple(dict(item) for item in output["script_passages"])
@@ -5953,7 +5956,6 @@ class CloudStageRunner:
                     output,
                     expected_panel_ids=tuple(str(item["panel_id"]) for item in observations),
                     narrative_profile_id="sharp_friend_v1",
-                    allow_dialogue_copy=True,  # preview-only relaxation
                 )
                 claims_by_id = {str(claim["claim_id"]): claim for claim in claims}
                 passage_rows = tuple(dict(item) for item in passages)

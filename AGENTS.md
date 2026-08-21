@@ -1,5 +1,32 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## Narration anti-copy repair checkpoint - 2026-08-21
+
+Rollback parent for this contract/repair slice is
+`a2d9e85eb5caa05abf792294b7265eed0300c67b`. Offline replay of the durable
+candidate localized the strict rejection to passage `p2`, claims
+`b1__sub0__claim2`, `b1__sub0__claim3`, and `b1__sub0__claim4`, with one
+normalized four-word overlap from panel `region-a1ceb6aece5c808c9bee`.
+The candidate otherwise had 701 observations, five passages, 118 words, and
+51.3 seconds; no prose was copied into diagnostics.
+
+RED was collection-clean: the new paraphrase and quoted/name-variant gates
+passed, while the repair prompt/version and strict-call regressions failed
+against the old repair v3 and `allow_dialogue_copy=True` call site. GREEN is
+five focused regressions plus 269 affected cloud/analyzer/script/narrative
+tests. Production narration and visual-repair validation no longer pass the
+dialogue-copy bypass; targeted repair prompt/cache identities are v4/v5/v6
+and require third-person paraphrase without preserving a four-word dialogue
+sequence. Existing grounding, causal, 701-panel lineage, duration, and
+identity gates remain strict.
+
+No provider or TTS request was made in this slice. After this source/test/docs
+checkpoint is published, the next command may spend exactly one bounded
+`narration_repair` request using cached visual/story evidence only; do not
+repeat visual/story calls. A valid result must persist through the exact
+analysis boundary before local silent rendering is attempted. No narration,
+MP4, TTS, or QC completion is claimed here.
+
 ## DB persistence round-trip checkpoint - 2026-08-21
 
 Rollback parent for this source/test/docs slice is

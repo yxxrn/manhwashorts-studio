@@ -466,6 +466,47 @@ def test_v3_rejects_ungrounded_or_forbidden_narration(mutation):
     assert "marked gate opens" not in str(caught.value)
 
 
+def test_v3_accepts_grounded_third_person_paraphrase_of_dialogue():
+    chapter = _v3_chapter(
+        chapter_prefix="paraphrase",
+        passages=_passages("paraphrase", 4, "consequence"),
+        ending_kind="consequence",
+        dialogue=["the marked gate opens for the patient red-eyed stranger"],
+    )
+    chapter["script_passages"][0]["text"] = (
+        "A guarded entrance yields to a waiting stranger, shifting who controls "
+        "the next move."
+    )
+
+    _validate_v3(chapter)
+    assert len(chapter["observations"]) == 3
+    assert chapter["script_passages"][0]["claim_ids"]
+    assert chapter["script_passages"][0]["evidence_panel_ids"]
+
+
+@pytest.mark.parametrize(
+    "copied_text",
+    (
+        '"The marked gate opens for the patient red-eyed stranger," the guard says.',
+        "The marked gate opens for the patient blue-eyed stranger.",
+    ),
+)
+def test_v3_rejects_quoted_or_name_changed_near_verbatim_dialogue(copied_text):
+    module = importlib.import_module("app.services.analyzer_contract")
+    chapter = _v3_chapter(
+        chapter_prefix="near-copy",
+        passages=_passages("near-copy", 4, "consequence"),
+        ending_kind="consequence",
+        dialogue=["the marked gate opens for the patient red-eyed stranger"],
+    )
+    chapter["script_passages"][0]["text"] = copied_text
+
+    with pytest.raises(module.AnalyzerContractError) as caught:
+        _validate_v3(chapter)
+    assert caught.value.code == "analyzer_contract_invalid"
+    assert "marked gate opens" not in str(caught.value)
+
+
 def test_v3_reuses_shared_observation_coverage_and_continuity_gates():
     module = importlib.import_module("app.services.analyzer_contract")
     chapter = _v3_chapter(

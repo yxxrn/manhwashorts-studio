@@ -1,5 +1,34 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## Narration anti-copy repair checkpoint - 2026-08-21
+
+Rollback parent: `a2d9e85eb5caa05abf792294b7265eed0300c67b`.
+
+Offline replay of the persisted 701-observation candidate found one strict
+anti-copy failure: passage `p2` and claims
+`b1__sub0__claim2/b1__sub0__claim3/b1__sub0__claim4` overlap one normalized
+four-word source-dialogue sequence from
+`region-a1ceb6aece5c808c9bee`. The remaining sanitized metrics were five
+passages, 118 words, 51.3 seconds, and complete ordered lineage.
+
+TDD RED was valid and collection-clean: the new paraphrase and quote/name
+variant cases passed, while repair prompt v4 and strict validation failed on
+the old v3 prompt and `allow_dialogue_copy=True`. GREEN is five focused tests
+and 269 affected cloud/analyzer/script/narrative tests. The production and
+visual-repair callers now use the strict validator; repair version/cache
+identities are v5/v6, and the versioned repair instruction requires natural
+third-person paraphrase rather than dialogue quotation or near-verbatim
+four-word sequences. No quality, grounding, lineage, duration, or identity
+gate was relaxed.
+
+No provider/TTS call occurred. The single post-publication boundary is one
+bounded `narration_repair` request against the existing grok-4.3 profile using
+cached visual/story evidence only, with zero visual/story repetition. Until a
+strict candidate is admitted and persisted, no narration, MP4, TTS, or QC
+artifact is claimed. The earlier full non-slow environment exceptions remain
+the Oracle-Linux `cmd.exe` launcher tests; the 13 pre-vision pipeline fixture
+failures remain unchanged from the clean parent.
+
 ## DB persistence round-trip checkpoint - 2026-08-21
 
 Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.

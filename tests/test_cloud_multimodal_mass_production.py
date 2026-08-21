@@ -2835,6 +2835,9 @@ def test_targeted_repair_prompt_declares_exact_slot_wire_shape():
     assert "never return, create, or rewrite claim IDs" in instruction
     assert "approximately 120 total words" in instruction
     assert "word_budget_min/word_budget_max" in instruction
+    assert "third-person narrator language" in instruction
+    assert "never quote or preserve a four-word lexical sequence" in instruction
+    assert "renaming a speaker are not loopholes" in instruction
 
 
 def test_targeted_repair_prompt_requires_concise_position_drafting():
@@ -4020,7 +4023,9 @@ def test_batch_resume_migrates_legacy_visual_without_visual_provider_call(tmp_pa
         == module.VISUAL_CACHE_IDENTITY_VERSION
     )
 
-def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_path):
+def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
+    tmp_path, monkeypatch
+):
     module = _module()
     panels = _panels(module)
     panel_ids = [panel.panel_id for panel in panels]
@@ -4134,6 +4139,19 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
             )
 
     provider = TargetedRepairProvider()
+    analyzer_contract = importlib.import_module("app.services.analyzer_contract")
+    dialogue_copy_flags = []
+    original_validate = analyzer_contract.validate_analyzer_output
+
+    def capture_validation(output, **kwargs):
+        dialogue_copy_flags.append(kwargs.get("allow_dialogue_copy", False))
+        return original_validate(output, **kwargs)
+
+    monkeypatch.setattr(
+        analyzer_contract,
+        "validate_analyzer_output",
+        capture_validation,
+    )
     runner = module.CloudStageRunner(
         provider=provider,
         model_identity=_identity(module),
@@ -4165,7 +4183,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-position-repair-v3"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v4"
     )
     assert len(repair_prompt_sha256) == 64
     assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text
@@ -4174,6 +4192,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(tmp_pat
         "cloud.narrative_duration_out_of_range",
         "cloud.narrative_word_count_out_of_range",
     ]
+    assert dialogue_copy_flags == [False]
     assert result.estimated_duration_s >= 50.0
     assert 115 <= result.word_count <= 125
     assert result.qc_report["narration_repair"]["scope"] == (

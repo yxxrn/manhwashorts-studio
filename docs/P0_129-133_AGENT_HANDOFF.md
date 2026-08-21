@@ -1,5 +1,31 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Narration anti-copy repair checkpoint
+
+Rollback parent: `a2d9e85eb5caa05abf792294b7265eed0300c67b`.
+
+The offline durable-candidate replay proved the current blocker is local and
+specific: passage `p2` (claims
+`b1__sub0__claim2/b1__sub0__claim3/b1__sub0__claim4`) shares one normalized
+four-word dialogue sequence with panel
+`region-a1ceb6aece5c808c9bee`. The candidate still has 701 observations,
+five passages, 118 words, and 51.3 seconds; no source prose is stored in the
+diagnostic evidence.
+
+RED covered paraphrase acceptance, quote/name-variant rejection, repair
+prompt shape, and the production validator seam. GREEN is 5/5 focused and
+269/269 affected matrix tests. The old preview relaxation was removed from
+both narration and visual-review repair call sites; the repair prompt is
+version v4, the repair contract is v5, and the result cache is v6. Strict
+grounding, causal order, complete 701-panel lineage, duration, and identity
+checks remain unchanged.
+
+Next resume command, only after publishing this checkpoint, is the normal
+cached targeted repair boundary with `max_repair_requests=1` and no visual or
+story requests. If admitted, persist the exact analysis, then proceed to the
+local silent render/QC boundary. Voice remains after silent QC; no provider or
+TTS call, narration persistence, MP4, or QC completion is proven yet.
+
 ## DB persistence round-trip checkpoint
 
 Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.

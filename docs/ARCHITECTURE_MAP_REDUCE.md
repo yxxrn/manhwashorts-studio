@@ -1,5 +1,26 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Strict narration anti-copy boundary - 2026-08-21
+
+Rollback parent: `a2d9e85eb5caa05abf792294b7265eed0300c67b`.
+
+The persisted 701-observation candidate was replayed offline through the
+authoritative analyzer gate. Only passage `p2` failed: claims
+`b1__sub0__claim2`, `b1__sub0__claim3`, and `b1__sub0__claim4` shared one
+normalized four-word dialogue sequence from panel
+`region-a1ceb6aece5c808c9bee`; all other sanitized metrics remained 5
+passages, 118 words, 51.3 seconds, and complete lineage.
+
+The repair instruction is now versioned with explicit third-person paraphrase,
+quote/name-change anti-loophole guidance, and four-word sequence avoidance.
+Both production narration validation call sites use the strict default; repair
+contract/result versions advance to v5/v6 so old copied-dialogue results are
+not reused. RED exposed the old prompt/bypass and GREEN is the 5-test focused
+set plus 269 affected matrix tests. This changes no visual/story cache and
+makes no provider call. The next bounded stage is one cached narration repair
+request, followed only by local persistence and silent render if strict
+admission succeeds.
+
 ## Persistence round-trip invariant - 2026-08-21
 
 Rollback parent: `f1f08bc2e9cd067b8703ba1d28298012cf27b74f`.
