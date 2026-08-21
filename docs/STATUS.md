@@ -1914,3 +1914,23 @@ caps the local trusted selection at 10 positions, drops only deterministic
 lowest-priority removable claims, preserves causal order and at least four
 passages, and keeps final 115-125-word/50-60-second gates strict. Publish
 before another real request. No narration, MP4, voice, or final QC is proven.
+
+## Position-vector selection-count v2 correction - 2026-08-21
+
+After the published `10eb14ef0a3bfe332cc8c7e3b3083b2216df6cb9` max-10
+checkpoint, one bounded real repair request used `request_count=1` and
+`retry_count=0`, then failed closed as `cloud.narrative_repair_position_budget_invalid`.
+The sanitized report is
+`/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-budget.json`
+with SHA-256 `f6436f8a0cbcc4670593918b482c4f9756497386cb6834130e85ee4ab8c48590`.
+It recorded array length 10, all string items, counts `[13,13,13,13,13,13,13,13,13,13]`,
+total 130 words, estimated duration 54.78 seconds, maxima `13` for positions
+0-4 and `12` thereafter, and predicate `position_word_budget`.
+
+RED was collection-clean and body-failing for the deterministic selection
+ceiling. GREEN is 145/145 focused cloud/manifest/adapter/synthesis tests,
+plus Ruff, compileall, diff-check, no-churn, and key-shaped secret scan. The
+fix selects at most 9 trusted positions, still within the required 8-12 range,
+and keeps deterministic priority/causal ordering, at least four passages, and
+strict 115-125-word/50-60-second admission. Publish before another real
+request. No narration, MP4, voice, or final QC is proven.

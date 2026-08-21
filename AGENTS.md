@@ -705,6 +705,23 @@ keeping strict 115-125-word and 50-60-second admission. The focused matrix is
 Publish this correction before another real request; visual/story stages stay
 cached and no narration, MP4, voice, or final QC is proven.
 
+## Position-vector selection-count v2 correction (2026-08-21)
+
+After the published `10eb14ef0a3bfe332cc8c7e3b3083b2216df6cb9` max-10
+checkpoint, one bounded real request used 10 positions and returned 13 words
+per position: total 130 words, duration 54.78 seconds, and failed closed on
+`position_word_budget` because the later positions had max 12. The sanitized
+report SHA is
+`f6436f8a0cbcc4670593918b482c4f9756497386cb6834130e85ee4ab8c48590`.
+
+The RED regression tightens the deterministic preselection ceiling to 9,
+still inside the required 8-12 range. GREEN preserves at least four causal
+passages, drops only the lowest-priority removable claims, and produces a
+117-word target at the observed provider granularity while retaining strict
+115-125-word/50-60-second admission. The focused matrix remains 145/145 with
+static/security gates clean. Publish before another real request; no
+narration, MP4, voice, or final QC is proven.
+
 ## Position-vector selection-count correction (2026-08-21)
 
 After `bfb0ee137683f81caaf908cd47b8ea9216caa654`, the one bounded real

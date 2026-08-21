@@ -2444,7 +2444,7 @@ def test_position_repair_preselection_is_deterministic_and_budgeted():
 
     positions = first["positions"]
     assert first["version"] == "narration-repair-position-registry-v2"
-    assert 8 <= len(positions) <= 12
+    assert 8 <= len(positions) <= 9
     assert 8 <= len({claim_id for row in positions for claim_id in row["claim_ids"]}) <= 12
     assert 4 <= len({row["passage_id"] for row in positions}) <= 6
     assert [row["causal_position"] for row in positions] == sorted(
@@ -2509,7 +2509,7 @@ def test_position_preselection_drops_low_priority_claims_before_provider_call():
         enriched_story_map,
     )
 
-    assert 8 <= len(registry["positions"]) <= 10
+    assert 8 <= len(registry["positions"]) <= 9
 
 
 def test_position_repair_reconciles_vector_by_index_and_copies_trusted_lineage():
@@ -2629,7 +2629,9 @@ def test_position_repair_budget_failure_exposes_sanitized_shape_metrics():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
     registry = runner._build_narration_repair_position_registry(candidate, story_map)
-    counts = [6 if index % 2 == 0 else 18 for index in range(len(registry["positions"]))]
+    counts = [row["word_budget"] for row in registry["positions"]]
+    counts[0] = 6
+    counts[-1] += 8
     assert sum(counts) == 120
     raw = {
         "rewrites": [
