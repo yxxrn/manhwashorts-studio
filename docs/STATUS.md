@@ -2195,3 +2195,44 @@ request and zero retries and failed closed with
 there is no local duration discrepancy or justified code relaxation. No
 automatic retry, visual/story repeat, narration admission, MP4, TTS, or
 QC is claimed from this attempt.
+
+## Deterministic narration micro-compaction - 2026-08-21
+
+Implementation parent: `9960076ce4d7dba93de968e0dc7b1581d92cfe8b`.
+The exact 127-word repair failure is handled by a local, meaning-preserving
+post-reconciliation policy `narration-micro-compaction-v1`; it does not ask
+the provider to repeat the request and does not weaken the hard 115-125 word
+or 50-60 second gates. Only 126-130 words enter the policy. Operations are
+deterministic by position and rule order, limited to audited English
+contractions/normalizations, and stop immediately once the canonical count is
+at most 125. A no-op opportunity fails closed as
+`cloud.narrative_repair_micro_compaction_unavailable` with predicate
+`micro_compaction_no_safe_operation`; totals outside the narrow window use
+`micro_compaction_window`. Negations are preserved, and all existing
+grounding, causal order, trusted lineage, display, dominance, and cache gates
+run again on the transformed result.
+
+The canonical tokenizer now treats an apostrophe contraction as one spoken
+word while leaving legacy `word_count`/`estimate_duration` helpers unchanged.
+Repair result version is `narration-repair-result-v5`; cache identity includes
+the policy version and the stored result/metrics include the transformed
+rewrite-vector hash, operation types/count, and pre/post counts. RED was
+collection-clean: 4 intended failures and 1 hard-duration regression already
+passing. GREEN was 5/5 focused tests, the complete
+`tests/test_cloud_multimodal_mass_production.py` regression file passing, and
+Ruff, compileall, and `git diff --check` passing. No provider request was made
+for this checkpoint; no valid narration, MP4, voice, or final QC is proven.
+
+After publication, run exactly one bounded repair request from the existing
+cached visual/story state. If its 126-130 response compacts and passes every
+strict gate, continue to persistence and silent QC; otherwise retain only
+sanitized pre/post counts, operation types/count, duration, and predicate and
+make no automatic retry.
+
+The full non-slow Oracle run collected 1130 tests and ended at 1124 passed,
+2 failed, and 4 skipped. The two failures are
+`tests/test_operator_launcher.py::test_actual_cmd_dispatch_handles_repository_path_without_malformed_python_join`
+and `::test_actual_cmd_dispatch_handles_path_with_spaces`; both fail before
+launch because this Linux host has no `cmd.exe`. They are unrelated to the
+micro-compaction files and remain an environment-gated exception. The related
+cloud/narrative matrix was 117 passed, and no provider request was made.

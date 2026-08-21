@@ -251,3 +251,31 @@ classified without provider prose: request count 1, retry count 0,
 Because 127 exceeds the hard 115-125 admission range, the rejection is
 correct and no stage cache or quality gate is weakened; no automatic retry
 is permitted.
+
+## Narrow repair compaction boundary - 2026-08-21
+
+The positional repair reducer now has a local `narration-micro-compaction-v1`
+step between provider-vector shape validation and final admission. It accepts
+only 126-130 canonical words, walks rewrite positions and the fixed audited
+contraction table deterministically, and stops at 125. It never drops content
+words or evidence slots. `script.narration_word_count` is the canonical
+tokenizer for this path and treats apostrophe contractions as one word; the
+legacy helpers remain unchanged. The reducer recomputes duration, display,
+grounding, causal, lineage, dominance, and cache checks after transformation.
+
+Failure taxonomy is explicit: `micro_compaction_window` for totals outside
+the narrow window and `micro_compaction_no_safe_operation` when no approved
+operation remains, both surfaced as
+`cloud.narrative_repair_micro_compaction_unavailable` with non-prose metrics.
+Repair cache version is `narration-repair-result-v5`; its key contains the
+policy version and its value records the transformed rewrite hash, operation
+types/count, and pre/post totals. Valid in-range vectors bypass compaction
+unchanged. RED/GREEN proof is 4 intended failures + 1 duration-pass RED, then
+5 focused passes plus the full cloud multimodal file and scoped static gates.
+No real repair request has been made after this code checkpoint.
+
+Full non-slow Oracle verification collected 1130 tests and measured 1124
+passed, 2 failed, and 4 skipped. The two failures are the existing Windows
+`cmd.exe` operator-launcher dispatch tests on Linux and occur before the
+changed code runs. The related 117-test cloud/narrative matrix passed. This
+checkpoint is source/test green but not a host-level production-render claim.

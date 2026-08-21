@@ -58,10 +58,13 @@ NARRATION_REPAIR_VERSION = "narration-targeted-repair-v4"
 NARRATION_REPAIR_MAX_ATTEMPTS = 3
 NARRATION_REPAIR_POSITION_MAX_ATTEMPTS = 1
 NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
-NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v4"
+NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v5"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
 NARRATION_REPAIR_SLOT_REGISTRY_VERSION = "narration-repair-slot-registry-v1"
 NARRATION_REPAIR_POSITION_REGISTRY_VERSION = "narration-repair-position-registry-v3"
+NARRATION_MICRO_COMPACTION_VERSION = "narration-micro-compaction-v1"
+NARRATION_MICRO_COMPACTION_MIN_WORDS = 126
+NARRATION_MICRO_COMPACTION_MAX_WORDS = 130
 NARRATION_REPAIR_POSITION_MIN_WORDS = 7
 NARRATION_REPAIR_POSITION_WORD_SLACK = 8
 NARRATION_REPAIR_POSITION_MAX_COUNT = 8
@@ -81,6 +84,118 @@ def _position_word_budget_bounds(
         max(NARRATION_REPAIR_POSITION_MIN_WORDS, word_budget - NARRATION_REPAIR_POSITION_WORD_SLACK),
         maximum,
     )
+
+
+_MICRO_COMPACTION_RULES = (
+    ("it is", "it's", "it_is_to_its"),
+    ("does not", "doesn't", "does_not_to_doesnt"),
+    ("they are", "they're", "they_are_to_theyre"),
+    ("we are", "we're", "we_are_to_were"),
+    ("you are", "you're", "you_are_to_youre"),
+    ("do not", "don't", "do_not_to_dont"),
+    ("is not", "isn't", "is_not_to_isnt"),
+    ("are not", "aren't", "are_not_to_arent"),
+    ("was not", "wasn't", "was_not_to_wasnt"),
+    ("were not", "weren't", "were_not_to_werent"),
+    ("will not", "won't", "will_not_to_wont"),
+    ("have not", "haven't", "have_not_to_havent"),
+    ("has not", "hasn't", "has_not_to_hasnt"),
+    ("there is", "there's", "there_is_to_theres"),
+    ("that is", "that's", "that_is_to_thats"),
+    ("what is", "what's", "what_is_to_whats"),
+    ("I am", "I'm", "i_am_to_im"),
+    ("I have", "I've", "i_have_to_ive"),
+    ("we have", "we've", "we_have_to_weve"),
+    ("they have", "they've", "they_have_to_theyve"),
+    ("you have", "you've", "you_have_to_youve"),
+)
+
+
+def _case_preserving_replacement(original: str, replacement: str) -> str:
+    if original.isupper():
+        return replacement.upper()
+    if original[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+def _micro_compaction_metadata(
+    rewrites: Sequence[str],
+    *,
+    before_word_count: int,
+    operation_types: Sequence[str] = (),
+    applied: bool,
+    failed_predicate: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "version": NARRATION_MICRO_COMPACTION_VERSION,
+        "applied": applied,
+        "before_word_count": before_word_count,
+        "after_word_count": sum(script.narration_word_count(text) for text in rewrites),
+        "operation_count": len(operation_types),
+        "operation_types": list(operation_types),
+        "result_hash": _hash({"rewrites": list(rewrites)}),
+        "failed_predicate": failed_predicate,
+    }
+
+
+def _micro_compact_rewrites(
+    rewrites: Sequence[str],
+    *,
+    total_words: int,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """Apply only deterministic, meaning-preserving contractions in a narrow window."""
+
+    original = tuple(rewrites)
+    if total_words <= 125:
+        return original, _micro_compaction_metadata(
+            original,
+            before_word_count=total_words,
+            applied=False,
+        )
+    if not NARRATION_MICRO_COMPACTION_MIN_WORDS <= total_words <= NARRATION_MICRO_COMPACTION_MAX_WORDS:
+        return original, _micro_compaction_metadata(
+            original,
+            before_word_count=total_words,
+            applied=False,
+            failed_predicate="micro_compaction_window",
+        )
+
+    current = list(original)
+    operation_types: list[str] = []
+    while sum(script.narration_word_count(text) for text in current) > 125:
+        replaced = False
+        for position, text in enumerate(current):
+            for source, replacement, operation_type in _MICRO_COMPACTION_RULES:
+                pattern = re.compile(r"\b" + re.escape(source) + r"\b", re.IGNORECASE)
+                match = pattern.search(text)
+                if match is None:
+                    continue
+                current[position] = (
+                    text[: match.start()]
+                    + _case_preserving_replacement(match.group(0), replacement)
+                    + text[match.end() :]
+                )
+                operation_types.append(operation_type)
+                replaced = True
+                break
+            if replaced:
+                break
+        if not replaced:
+            break
+
+    compacted = tuple(current)
+    after_words = sum(script.narration_word_count(text) for text in compacted)
+    failed_predicate = "micro_compaction_no_safe_operation" if after_words > 125 else None
+    return compacted, _micro_compaction_metadata(
+        compacted,
+        before_word_count=total_words,
+        operation_types=operation_types,
+        applied=bool(operation_types),
+        failed_predicate=failed_predicate,
+    )
+
+
 NARRATION_REPAIR_INSTRUCTION = (
     "TARGETED NARRATION POSITION REPAIR: return exactly one JSON object with "
     "the single top-level key {\"rewrites\": [\"text for position 0\", \"...\"]}. "
@@ -3319,6 +3434,7 @@ class CloudStageRunner:
             word_counts: Sequence[int | None],
             total_words: int | None,
             duration: float | None,
+            micro_compaction: Mapping[str, Any] | None = None,
         ) -> dict[str, Any]:
             expected_ranges = []
             for item in raw_positions:
@@ -3335,7 +3451,7 @@ class CloudStageRunner:
                     expected_ranges.append(
                         {"position": None, "target": None, "min": None, "max": None}
                     )
-            return {
+            metrics = {
                 "container_type": type(raw).__name__,
                 "top_level_keys": sorted(str(key) for key in raw),
                 "array_key": "rewrites",
@@ -3350,9 +3466,12 @@ class CloudStageRunner:
                 "accepted_duration_bounds_s": {"min": 50.0, "max": 60.0},
                 "failed_predicate": failed_predicate,
             }
+            if micro_compaction is not None:
+                metrics["micro_compaction"] = dict(micro_compaction)
+            return metrics
 
         word_counts = [
-            len(re.findall(r"[A-Za-z0-9]+", text)) if isinstance(text, str) else None
+            script.narration_word_count(text) if isinstance(text, str) else None
             for text in rewrites
         ]
         total_words = sum(count for count in word_counts if count is not None)
@@ -3401,23 +3520,6 @@ class CloudStageRunner:
                     "cloud.narrative_repair_position_contract_invalid",
                     reviewable=True,
                 )
-            word_count = len(re.findall(r"[A-Za-z0-9]+", text))
-            if all_strings and total_words is not None and total_words > 0:
-                dominance_limit = max(
-                    NARRATION_REPAIR_POSITION_DOMINANCE_FLOOR,
-                    math.ceil(total_words * NARRATION_REPAIR_POSITION_MAX_SHARE),
-                )
-                if word_count > dominance_limit:
-                    raise CloudStageError(
-                        "cloud.narrative_repair_position_budget_invalid",
-                        reviewable=True,
-                        safe_metadata=response_shape_metrics(
-                            "position_word_dominance",
-                            word_counts,
-                            total_words,
-                            duration,
-                        ),
-                    )
             trusted_ids = (
                 position.slot_id,
                 position.passage_id,
@@ -3430,10 +3532,53 @@ class CloudStageRunner:
                     "cloud.narrative_repair_position_contract_invalid",
                     reviewable=True,
                 )
-        total_words = sum(
-            len(re.findall(r"[A-Za-z0-9]+", str(text))) for text in rewrites
-        )
-        if not 115 <= total_words <= 125 or not 50.0 <= duration <= 60.0:
+
+        micro_compaction: dict[str, Any] | None = None
+        if all_strings:
+            rewrites, micro_compaction = _micro_compact_rewrites(
+                tuple(rewrites),
+                total_words=total_words,
+            )
+            if micro_compaction.get("failed_predicate"):
+                raise CloudStageError(
+                    "cloud.narrative_repair_micro_compaction_unavailable",
+                    reviewable=True,
+                    safe_metadata=response_shape_metrics(
+                        str(micro_compaction["failed_predicate"]),
+                        [script.narration_word_count(text) for text in rewrites],
+                        int(micro_compaction["after_word_count"]),
+                        script.estimate_narration_duration(" ".join(rewrites), "dramatic"),
+                        micro_compaction,
+                    ),
+                )
+            word_counts = [script.narration_word_count(text) for text in rewrites]
+            total_words = sum(word_counts)
+            duration = script.estimate_narration_duration(
+                " ".join(rewrites),
+                "dramatic",
+            )
+            dominance_limit = max(
+                NARRATION_REPAIR_POSITION_DOMINANCE_FLOOR,
+                math.ceil(total_words * NARRATION_REPAIR_POSITION_MAX_SHARE),
+            )
+            for word_count in word_counts:
+                if word_count > dominance_limit:
+                    raise CloudStageError(
+                        "cloud.narrative_repair_position_budget_invalid",
+                        reviewable=True,
+                        safe_metadata=response_shape_metrics(
+                            "position_word_dominance",
+                            word_counts,
+                            total_words,
+                            duration,
+                            micro_compaction,
+                        ),
+                    )
+        if (
+            not 115 <= total_words <= 125
+            or duration is None
+            or not 50.0 <= duration <= 60.0
+        ):
             failed_predicate = (
                 "aggregate_word_count"
                 if not 115 <= total_words <= 125
@@ -3447,6 +3592,7 @@ class CloudStageRunner:
                     word_counts,
                     total_words if all_strings else None,
                     duration,
+                    micro_compaction,
                 ),
             )
         candidate_passages = {
@@ -3521,6 +3667,7 @@ class CloudStageRunner:
                 word_counts,
                 total_words if all_strings else None,
                 duration,
+                micro_compaction,
             ),
         }
 
@@ -3719,6 +3866,8 @@ class CloudStageRunner:
         if self.cache is None:
             return
         payload = result.as_dict()
+        repair_report = result.qc_report.get("narration_repair", {})
+        micro_compaction = repair_report.get("micro_compaction", {})
         self.cache.put(
             self._narration_repair_result_key(
                 source=source,
@@ -3739,6 +3888,12 @@ class CloudStageRunner:
                     targeted_repair.get("position_registry_version", "")
                 ),
                 "slot_order_hash": str(targeted_repair.get("slot_order_hash", "")),
+                "micro_compaction_version": str(
+                    micro_compaction.get("version", "")
+                ),
+                "micro_compaction_result_hash": str(
+                    micro_compaction.get("result_hash", "")
+                ),
             },
         )
 
@@ -3770,6 +3925,8 @@ class CloudStageRunner:
             result = NarrationResult.from_dict(payload)
         except (KeyError, TypeError, ValueError):
             return None
+        repair_report = result.qc_report.get("narration_repair", {})
+        micro_compaction = repair_report.get("micro_compaction", {})
         if (
             record.get("result_hash") != _hash(result.as_dict())
             or record.get("source_identity_hash") != _hash(source)
@@ -3781,6 +3938,12 @@ class CloudStageRunner:
             != str(targeted_repair.get("position_registry_version", ""))
             or record.get("slot_order_hash")
             != str(targeted_repair.get("slot_order_hash", ""))
+            or record.get("micro_compaction_version")
+            != NARRATION_MICRO_COMPACTION_VERSION
+            or micro_compaction.get("version")
+            != NARRATION_MICRO_COMPACTION_VERSION
+            or record.get("micro_compaction_result_hash")
+            != micro_compaction.get("result_hash")
             or not _narration_result_is_usable(
                 result,
                 visual,
@@ -3799,6 +3962,7 @@ class CloudStageRunner:
         report = dict(result.qc_report)
         report["narration_repair"] = {
             "contract_version": NARRATION_REPAIR_VERSION,
+            "micro_compaction": dict(micro_compaction),
             "scope": "position_locked_rewrite_vector",
             "candidate_hash": str(targeted_repair.get("candidate_hash", "")),
             "position_registry_version": str(
@@ -4105,6 +4269,7 @@ class CloudStageRunner:
         removable_passage_ids = self._removable_narration_passage_ids(candidate)
         repair_context = {
             "contract_version": NARRATION_REPAIR_VERSION,
+            "micro_compaction_version": NARRATION_MICRO_COMPACTION_VERSION,
             "failure_codes": list(dict.fromkeys(str(code) for code in failure_codes)),
             "candidate_hash": candidate_hash,
             "position_registry_version": position_registry["version"],
@@ -4228,8 +4393,19 @@ class CloudStageRunner:
                     )
                     continue
                 report = dict(repaired.qc_report)
+                micro_compaction = self.last_response_shape_metrics.get(
+                    "micro_compaction",
+                    {
+                        "version": NARRATION_MICRO_COMPACTION_VERSION,
+                        "applied": False,
+                        "operation_count": 0,
+                        "operation_types": [],
+                        "result_hash": _hash({"rewrites": []}),
+                    },
+                )
                 report["narration_repair"] = {
                     "contract_version": NARRATION_REPAIR_VERSION,
+                    "micro_compaction": dict(micro_compaction),
                     "scope": "position_locked_rewrite_vector",
                     "candidate_hash": candidate_hash,
                     "position_registry_version": position_registry["version"],

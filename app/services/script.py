@@ -92,7 +92,9 @@ def estimate_duration(text: str, style: str = NarrationStyle.DRAMATIC) -> float:
 
 
 NARRATION_DURATION_CONTRACT_VERSION = "narration-duration-v1"
-_NARRATION_WORD_PATTERN = re.compile(r"[A-Za-z0-9]+")
+# Apostrophe contractions are one spoken word for the explicit narration
+# duration contract.  Punctuation outside a contraction remains excluded.
+_NARRATION_WORD_PATTERN = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?")
 
 
 def narration_word_count(text: str) -> int:

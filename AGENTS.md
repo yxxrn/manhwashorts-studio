@@ -964,3 +964,30 @@ predicate `aggregate_word_count`. The 115-125 word bound is hard, so this
 is a provider-output rejection, not a reason to weaken the contract. No
 automatic retry or visual/story call is authorized until a new bounded
 repair decision is published.
+
+## Micro-compaction checkpoint - 2026-08-21
+
+Parent: `9960076ce4d7dba93de968e0dc7b1581d92cfe8b`. The published repair
+boundary now uses `narration-micro-compaction-v1` only for a narrow 126-130
+word overshoot. It applies a deterministic, ordered list of audited English
+contractions (including `it is` to `it's` and `does not` to `doesn't`), then
+recomputes the canonical `narration-duration-v1` word count, duration, display
+derivation, grounding, lineage, dominance, and final gates. It stops at 125,
+never accepts below 115, rejects a missing safe operation as
+`cloud.narrative_repair_micro_compaction_unavailable`, and rejects totals over
+the window without provider retry. Valid 115-125 results are unchanged.
+
+The repair result/cache contract is v5. The targeted-repair identity includes
+the compaction policy version; the result and sanitized response metrics carry
+the operation count/types, pre/post counts, and a hash of the transformed
+rewrite vector. No provider prose is stored. RED was 4 intended failures and 1
+existing hard-duration pass; GREEN was 5 focused tests, the full cloud
+multimodal file passed, and scoped Ruff/compileall/diff checks passed. Visual,
+story, narration admission, silent MP4, voice, and final QC remain unproven.
+
+The complete Oracle non-slow run collected 1130 tests: 1124 passed, 2 failed,
+and 4 skipped. Both failures are the existing `tests/test_operator_launcher.py`
+Windows `cmd.exe` dispatch checks on this Linux host; they do not execute the
+changed narration path. Treat this as an environment exception, not a
+release-green claim, and rerun those launcher checks on Windows before
+production acceptance.

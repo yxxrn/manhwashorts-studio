@@ -985,3 +985,34 @@ metrics: 8 strings, counts `[15,17,17,17,16,16,15,14]`, total 127, estimate
 `/data/data/p0-aws-acceptance/cloud-jobs/repair-attempts/20260821-position-vector-canonical-99b042e.json`.
 The hard final range remains 115-125 words and 50-60s; do not relax it or
 issue another provider call without a newly published repair change.
+
+## Micro-compaction release handoff - 2026-08-21
+
+Source checkpoint before this slice: `9960076ce4d7dba93de968e0dc7b1581d92cfe8b`.
+The new local policy is `narration-micro-compaction-v1`: only a 126-130 word
+repair result may be transformed, using deterministic audited contractions;
+the canonical narration tokenizer counts each contraction as one spoken word.
+The transformed vector is remeasured for 115-125 words and 50-60 seconds and
+then revalidated for display derivation, grounding, causal order, lineage,
+dominance, and cache identity. No safe operation or a total outside the window
+fails closed with sanitized metrics; no content words are deleted and no
+provider retry is introduced.
+
+RED: 4 intended failures, 1 duration-gate pass. GREEN: 5 focused tests, the
+full cloud multimodal regression file, scoped Ruff, compileall, and diff-check
+passed. The policy/result version and transformed-vector hash are persisted in
+repair cache metadata. Visual/story caches were not touched and no provider
+request was made. Narration admission, MP4, TTS, and QC remain unproven.
+
+Fresh-agent next command after the GREEN commit is the existing one-request
+resume command in the preceding canonical-duration section, with the same
+database/cache/model identity and no visual/story repeat. Do not print
+`/tmp/ms_env.sh`; leave data, DB/WAL, cache, media, logs, and credentials
+outside Git.
+
+The full non-slow verification after this change collected 1130 tests: 1124
+passed, 2 failed, and 4 skipped. Both failures are the Windows `cmd.exe`
+operator-launcher tests, which cannot execute on Oracle's Linux host; they are
+not failures in the changed narration path. The 117-test cloud/narrative
+matrix passed, and no provider request was made. Windows launcher verification
+remains required before a production-readiness claim.

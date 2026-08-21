@@ -2443,6 +2443,23 @@ def _position_rewrite_text(word_budget, prefix):
     return " ".join(f"{prefix.rstrip('_')}word{index}" for index in range(word_budget))
 
 
+def _micro_compaction_rewrite_texts(counts):
+    rewrites = []
+    for index, count in enumerate(counts):
+        if index == 0:
+            prefix = "it is"
+            filler_count = count - 2
+        elif index == 1:
+            prefix = "does not"
+            filler_count = count - 2
+        else:
+            prefix = ""
+            filler_count = count
+        fillers = [f"compact{index}word{word_index}" for word_index in range(filler_count)]
+        rewrites.append(" ".join(part for part in (prefix, *fillers) if part))
+    return rewrites
+
+
 def _provider_position_vector(payload):
     rows = payload["targeted_repair"]["position_context"]
     vocabulary = [
@@ -2780,6 +2797,105 @@ def test_position_repair_accepts_observed_in_range_distribution_as_guidance():
     assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 124
     instruction = module.NARRATION_REPAIR_INSTRUCTION
     assert "not hard admission bounds" in instruction
+
+
+def test_position_repair_micro_compacts_exact_127_words_without_losing_negation():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [16, 16, 16, 16, 16, 16, 15, 16]
+    assert sum(counts) == 127
+    raw = {"rewrites": _micro_compaction_rewrite_texts(counts)}
+
+    reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    metrics = reconciled["_response_shape_metrics"]
+    compact = metrics["micro_compaction"]
+    assert compact["version"] == "narration-micro-compaction-v1"
+    assert compact["applied"] is True
+    assert compact["before_word_count"] == 127
+    assert compact["after_word_count"] == 125
+    assert compact["operation_count"] == 2
+    assert compact["operation_types"] == ["it_is_to_its", "does_not_to_doesnt"]
+    assert len(compact["result_hash"]) == 64
+    assert metrics["total_word_count"] == 125
+    assert metrics["estimated_duration_s"] == pytest.approx(125 / 2.3, abs=0.01)
+    text = " ".join(str(passage["text"]) for passage in reconciled["script_passages"])
+    assert "it's" in text
+    assert "doesn't" in text
+    assert "does not" not in text
+
+
+def test_position_repair_micro_compaction_without_safe_operation_fails_closed():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [16, 16, 16, 16, 16, 16, 15, 16]
+    raw = {"rewrites": [_position_rewrite_text(count, f"nocompact{index}_") for index, count in enumerate(counts)]}
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    assert caught.value.code == "cloud.narrative_repair_micro_compaction_unavailable"
+    metrics = caught.value.safe_metadata
+    assert metrics["failed_predicate"] == "micro_compaction_no_safe_operation"
+    assert metrics["total_word_count"] == 127
+    assert metrics["micro_compaction"]["operation_count"] == 0
+    assert "no_compact0_word" not in json.dumps(metrics)
+
+
+def test_position_repair_micro_compaction_window_rejects_large_overshoot():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [17] * 8
+    raw = {"rewrites": [_position_rewrite_text(count, f"toowide{index}_") for index, count in enumerate(counts)]}
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    assert caught.value.code == "cloud.narrative_repair_micro_compaction_unavailable"
+    assert caught.value.safe_metadata["failed_predicate"] == "micro_compaction_window"
+    assert caught.value.safe_metadata["total_word_count"] == 136
+
+
+def test_position_repair_in_range_vector_remains_unchanged_by_micro_compaction():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [row["word_budget"] for row in registry["positions"]]
+    raw = {"rewrites": [_position_rewrite_text(count, f"unchanged{index}_") for index, count in enumerate(counts)]}
+
+    reconciled = runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    compact = reconciled["_response_shape_metrics"]["micro_compaction"]
+    assert compact["version"] == "narration-micro-compaction-v1"
+    assert compact["applied"] is False
+    assert compact["before_word_count"] == 120
+    assert compact["after_word_count"] == 120
+    assert compact["operation_count"] == 0
+    assert compact["result_hash"] == module._hash({"rewrites": raw["rewrites"]})
+    combined = " ".join(str(passage["text"]) for passage in reconciled["script_passages"])
+    assert all(_position_rewrite_text(count, f"unchanged{index}_") in combined for index, count in enumerate(counts))
+
+
+def test_position_repair_duration_gate_remains_hard_after_compaction_boundary(monkeypatch):
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    counts = [row["word_budget"] for row in registry["positions"]]
+    counts[0] += 5
+    assert sum(counts) == 125
+    raw = {"rewrites": [_position_rewrite_text(count, f"duration{index}_") for index, count in enumerate(counts)]}
+    monkeypatch.setattr(module.script, "estimate_narration_duration", lambda *_args: 61.0)
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    assert caught.value.code == "cloud.narrative_repair_position_budget_invalid"
+    assert caught.value.safe_metadata["failed_predicate"] == "aggregate_duration"
+    assert caught.value.safe_metadata["total_word_count"] == 125
+    assert caught.value.safe_metadata["estimated_duration_s"] == 61.0
 
 
 @pytest.mark.parametrize("mutation", ("old_id_wrapper", "wrong_count", "wrong_type"))
