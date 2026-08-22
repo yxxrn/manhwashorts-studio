@@ -6004,11 +6004,18 @@ class CloudStageRunner:
             "cloud.narrative_duration_out_of_range",
         }
         obs_by_id = {str(item["panel_id"]): item for item in observations}
-        chunk_step = 600
-        chunks = [
-            visual.panels[i:i + chunk_step]
-            for i in range(0, len(visual.panels), chunk_step)
-        ]
+        if repair_position_registry is not None:
+            # The targeted position vector is chapter-scoped: its claims and
+            # passage evidence always reference the full compact scope, so a
+            # per-chunk split would validate them against a partial panel set
+            # and reject every in-window vector as ungrounded.
+            chunks = [visual.panels]
+        else:
+            chunk_step = 600
+            chunks = [
+                visual.panels[i:i + chunk_step]
+                for i in range(0, len(visual.panels), chunk_step)
+            ]
         all_passages: list[dict[str, Any]] = []
         all_claims: list[dict[str, Any]] = []
         story_spine: dict[str, Any] = {}
