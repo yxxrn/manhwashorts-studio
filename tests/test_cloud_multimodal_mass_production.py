@@ -2041,6 +2041,59 @@ def test_visual_checkpoint_is_scoped_and_durable(tmp_path):
     assert len([call for call in unrelated_provider.calls if call[0] == "visual"]) == 1
 
 
+def test_cached_visual_reanalyzes_only_rows_without_visible_facts():
+    module = _module()
+    panels = _panels(module, "cached-facts")
+    identity = _identity(module)
+    seed_provider = _FakeProvider()
+    seed_runner = module.CloudStageRunner(
+        provider=seed_provider,
+        model_identity=identity,
+        cache=module.MemoryStageCache(),
+    )
+    valid = seed_runner.run_visual_evidence(panels)
+    invalid_rows = [dict(row) for row in valid.panels]
+    invalid_observation = dict(invalid_rows[1]["observation"])
+    invalid_observation["visible_facts"] = []
+    invalid_rows[1]["observation"] = invalid_observation
+    invalid = replace(valid, panels=tuple(invalid_rows))
+    cache = module.MemoryStageCache()
+    cache.put(
+        module._cache_key(
+            "visual",
+            list(module._visual_panel_identities(panels)),
+            identity,
+            seed_runner.prompts["visual"],
+        ),
+        invalid.as_dict(),
+    )
+
+    class _RepairProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.request_panel_ids = []
+
+        def observe(self, request):
+            self.request_panel_ids.append(
+                tuple(panel["panel_id"] for panel in request.panels)
+            )
+            return super().observe(request)
+
+    provider = _RepairProvider()
+    resumed = module.CloudStageRunner(
+        provider=provider,
+        model_identity=identity,
+        cache=cache,
+        max_attempts=1,
+    )
+    result = resumed.run_visual_evidence(panels)
+
+    assert provider.request_panel_ids == [(panels[1].panel_id,)]
+    assert result.panels[1]["observation"]["visible_facts"] == [
+        f"visible fact {panels[1].source_order}"
+    ]
+
+
 def test_file_stage_cache_round_trips_durable_values(tmp_path):
     module = _module()
     cache = module.FileStageCache(tmp_path / "stage-cache")

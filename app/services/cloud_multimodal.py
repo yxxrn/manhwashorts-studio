@@ -2133,9 +2133,30 @@ class CloudStageRunner:
         prompt = self.prompts["visual"]
         source = list(_visual_panel_identities(ordered))
         key = _cache_key("visual", source, self.model_identity, prompt)
-        if self.cache is not None and (cached := self.cache.get(key)) is not None:
-            return VisualStageResult.from_dict(cached)
-        if (migrated := self._migrate_legacy_visual_cache(ordered, key=key, prompt=prompt)) is not None:
+        cached_reusable: dict[str, dict[str, Any]] = {}
+        cached = self.cache.get(key) if self.cache is not None else None
+        if isinstance(cached, Mapping):
+            try:
+                cached_result = VisualStageResult.from_dict(cached)
+            except (KeyError, TypeError, ValueError):
+                cached_result = None
+            if cached_result is not None:
+                panels_by_id = {panel.panel_id: panel for panel in ordered}
+                cached_reusable = {
+                    str(row["panel_id"]): dict(row)
+                    for row in cached_result.panels
+                    if isinstance(row, Mapping)
+                    and _visual_cached_row_is_reusable(
+                        row,
+                        panels_by_id.get(str(row.get("panel_id", ""))),
+                    )
+                    if panels_by_id.get(str(row.get("panel_id", ""))) is not None
+                }
+                if len(cached_reusable) == len(ordered) and tuple(
+                    cached_reusable[panel.panel_id]["panel_id"] for panel in ordered
+                ) == tuple(panel.panel_id for panel in ordered):
+                    return cached_result
+        if cached is None and (migrated := self._migrate_legacy_visual_cache(ordered, key=key, prompt=prompt)) is not None:
             return VisualStageResult.from_dict(migrated)
         if any(getattr(panel, "metadata_only", False) for panel in ordered):
             raise CloudStageError("cloud.prepared_manifest_requires_materialization")
@@ -2143,7 +2164,7 @@ class CloudStageRunner:
         from concurrent.futures import ThreadPoolExecutor
 
         chunks = list(_visual_panel_chunks(ordered))
-        reconciled_by_id: dict[str, dict[str, Any]] = {}
+        reconciled_by_id: dict[str, dict[str, Any]] = dict(cached_reusable)
         skipped_codes: list[str] = []
         unknown_failure_metadata: dict[str, Any] | None = None
         reconcile_lock = threading.Lock()
@@ -2169,7 +2190,7 @@ class CloudStageRunner:
                 model_identity=self.model_identity,
                 prompt=prompt,
             )
-            seeded = {
+            checkpoint_seeded = {
                 item.panel_id
                 for item in chunk
                 if (
@@ -2178,12 +2199,20 @@ class CloudStageRunner:
                     == panel_identity_by_id[item.panel_id]
                     and _checkpoint_seed[item.panel_id].get("chunk_cache_key")
                     == chunk_cache_key
+                    and _visual_cached_row_is_reusable(
+                        _checkpoint_seed[item.panel_id], item
+                    )
                 )
             }
-            if seeded:
-                with reconcile_lock:
-                    for panel_id in seeded:
-                        reconciled_by_id[panel_id] = _checkpoint_seed[panel_id]
+            with reconcile_lock:
+                seeded = {
+                    item.panel_id
+                    for item in chunk
+                    if item.panel_id in reconciled_by_id
+                }
+                seeded.update(checkpoint_seeded)
+                for panel_id in checkpoint_seeded:
+                    reconciled_by_id[panel_id] = _checkpoint_seed[panel_id]
             live = [item for item in chunk if item.panel_id not in seeded]
             if not live:
                 print(
@@ -2283,6 +2312,8 @@ class CloudStageRunner:
                             )
                         evidence_json = visual_scoring.panel_visual_evidence_json(evidence)
                         merged["visual_evidence"] = evidence_json
+                        if not _visual_observation_has_visible_facts(merged):
+                            raise CloudStageError("cloud.visual_evidence_invalid")
                         chunk_reconciled[item.panel_id] = {
                             "panel_id": item.panel_id,
                             "source_asset_id": item.source_asset_id,
@@ -7442,6 +7473,43 @@ def _visual_panel_chunks(
     return tuple(chunks)
 
 
+def _visual_observation_has_visible_facts(row: Mapping[str, Any]) -> bool:
+    """Return whether one visual row can satisfy the narration observation gate."""
+
+    observation = row.get("observation", row)
+    if not isinstance(observation, Mapping):
+        return False
+    values = observation.get("visible_facts")
+    if not isinstance(values, list) or not values:
+        return False
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            continue
+        if isinstance(value, Mapping) and any(
+            isinstance(candidate, str) and candidate.strip()
+            for candidate in value.values()
+        ):
+            continue
+        return False
+    return True
+
+
+def _visual_cached_row_is_reusable(
+    row: Mapping[str, Any], panel: CloudPanelInput | None
+) -> bool:
+    """Validate cached lineage plus the shared analyzer's fact prerequisite."""
+
+    if panel is None:
+        return False
+    return (
+        str(row.get("panel_id", "")) == panel.panel_id
+        and str(row.get("source_asset_id", "")) == panel.source_asset_id
+        and int(row.get("source_order", -1)) == int(panel.source_order)
+        and str(row.get("source_checksum", "")) == panel.source_checksum
+        and _visual_observation_has_visible_facts(row)
+    )
+
+
 def _visual_provider_payload(panel: CloudPanelInput) -> tuple[bytes, str]:
     """Bound provider image size while leaving persisted panel bytes untouched."""
 
@@ -8027,8 +8095,14 @@ class CloudBatchService:
             if migrated_visual is None:
                 raise KeyError("stale_visual_cache")
             visual = VisualStageResult.from_dict(migrated_visual)
+            ordered_ids = tuple(panel.panel_id for panel in ordered)
+            if visual.panel_ids != ordered_ids or any(
+                not _visual_cached_row_is_reusable(row, panel)
+                for row, panel in zip(visual.panels, ordered, strict=False)
+            ):
+                visual = self.runner.run_visual_evidence(panels)
             if migrated_visual != cached_visual:
-                record.stage_results["visual"] = migrated_visual
+                record.stage_results["visual"] = visual.as_dict()
                 self.store.save(record)
             if "visual" not in record.stage_results:
                 raise KeyError("visual_missing")
