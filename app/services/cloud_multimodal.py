@@ -238,9 +238,10 @@ NARRATION_REPAIR_INSTRUCTION = (
     "enforces the exact vector shape and order, non-empty strings, trusted "
     "lineage, causal order, total 115-125 words, and 50-60 seconds; it rejects "
     "only a pathological single-position share. Target approximately 120 total "
-    "words; exactly 120 is guidance. For the eight-position vector, write 13-15 "
-    "words per position and never exceed 15 words in any single rewrite; trim "
-    "redundant words rather than padding any position. Count every rewrite "
+    "words; exactly 120 is guidance. For the eight-position vector, write "
+    "exactly 14 or 15 words per position, aiming for 15, and never exceed 15 "
+    "words in any single rewrite; trim redundant words rather than padding any "
+    "position. Count every rewrite "
     "before returning. Aim for 118 "
     "total words so natural variation stays inside the accepted range; exactly "
     "120 is guidance only. Before returning JSON, recount the complete vector "
@@ -5821,7 +5822,7 @@ class CloudStageRunner:
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v7"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v8"
         repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
         repair_prompt = (
             repair_prompt_version,
