@@ -8093,31 +8093,30 @@ class CloudBatchService:
             prepared: tuple[tuple[CloudPanelInput, ...], dict[str, Any]] | None = None
             manifest_loaded = False
             preparation_started = time.monotonic()
-            if not review_only_preview:
-                manifest_raw = record.stage_results.get("prepared_panel_manifest")
-                try:
-                    if not isinstance(manifest_raw, Mapping):
-                        visual_stage = record.stage_results.get("visual")
-                        if not isinstance(visual_stage, Mapping) or not isinstance(cached_segmentation, Mapping):
-                            raise prepared_panel_manifest.PreparedPanelManifestError(
-                                "prepared manifest seed is unavailable"
-                            )
-                        manifest_raw = _build_cached_prepared_manifest(
-                            db,
-                            project_id,
-                            visual_stage,
-                            cached_segmentation,
+            manifest_raw = record.stage_results.get("prepared_panel_manifest")
+            try:
+                if not isinstance(manifest_raw, Mapping):
+                    visual_stage = record.stage_results.get("visual")
+                    if not isinstance(visual_stage, Mapping) or not isinstance(cached_segmentation, Mapping):
+                        raise prepared_panel_manifest.PreparedPanelManifestError(
+                            "prepared manifest seed is unavailable"
                         )
-                    prepared = _restore_project_prepared_manifest(
+                    manifest_raw = _build_cached_prepared_manifest(
                         db,
                         project_id,
-                        manifest_raw,
+                        visual_stage,
+                        cached_segmentation,
                     )
-                    record.stage_results["prepared_panel_manifest"] = manifest_raw
-                    self.store.save(record)
-                    manifest_loaded = True
-                except prepared_panel_manifest.PreparedPanelManifestError:
-                    prepared = None
+                prepared = _restore_project_prepared_manifest(
+                    db,
+                    project_id,
+                    manifest_raw,
+                )
+                record.stage_results["prepared_panel_manifest"] = manifest_raw
+                self.store.save(record)
+                manifest_loaded = True
+            except prepared_panel_manifest.PreparedPanelManifestError:
+                prepared = None
             if prepared is None:
                 prepared = prepare_project_panels(
                     db,
@@ -8149,7 +8148,7 @@ class CloudBatchService:
                 "peak_rss_kb": _peak_rss_kb(),
                 "source_decode_required": not manifest_loaded,
             }
-            if not review_only_preview and not manifest_loaded:
+            if not manifest_loaded:
                 record.stage_results["prepared_panel_manifest"] = _build_project_prepared_manifest(
                     db,
                     project_id,

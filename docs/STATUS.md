@@ -1,5 +1,20 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## Warm review-manifest reuse - 2026-08-23
+
+Rollback parent: `ecd8a67cca65dd5f6c5ce117f0096d552111c46c`.
+
+The review-only entrypoint now restores the durable prepared-panel manifest
+before cold preparation and persists one after a genuine cold fallback. This
+removes the repeated 701-panel local materialization observed after the
+previous run, without changing source/payload identity, prepared order,
+visual evidence, feasibility, lineage, or publish gates. No provider/TTS/
+encoder request was made in this slice; no MP4/QC result is claimed.
+
+RED→GREEN proof is 150/150 focused tests (137 cloud, 13 visual-repair), plus
+Ruff, compileall, and diff-check. Publish this checkpoint, then resume the
+newly versioned visual-repair boundary using the existing visual/story cache.
+
 ## Visual-repair cache identity correction - 2026-08-23
 
 Rollback parent: `28ca2e37914a37f389210afe1aa333a923e48077`.

@@ -1,5 +1,18 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Warm prepared-manifest reuse - 2026-08-23
+
+The review DAG now follows the same durable prepared-manifest boundary as
+regular resume: restore first, cold-materialize only when the manifest is
+missing or invalid, and persist the rebuilt manifest atomically. This avoids
+the prior repeated 701-panel decode/OCR cost while keeping source checksum,
+prepared order, payload hash, visual identity, and feasibility validation
+unchanged. No cloud/TTS/render request was consumed by this fix.
+
+Verification is 150/150 focused cloud/visual-repair tests, Ruff, compileall,
+and diff-check. The next repair request is separately scoped by the v2/v3
+visual-repair contract; visual/story caches remain reusable.
+
 ## Versioned visual-repair cache boundary - 2026-08-23
 
 The review repair DAG now scopes provider-result reuse to an explicit repair

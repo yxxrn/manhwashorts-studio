@@ -1,5 +1,17 @@
 # ManhwaShorts production-completion plan
 
+## Latest verified checkpoint - 2026-08-23: warm prepared manifest
+
+Rollback parent: `ecd8a67cca65dd5f6c5ce117f0096d552111c46c`.
+
+Review-only resume now restores the durable prepared-panel manifest before
+cold preparation and persists a manifest after a genuine cold fallback. This
+addresses the measured repeated 701-panel materialization without weakening
+any source, evidence, feasibility, lineage, duration, or publish gate.
+GREEN is 150/150 focused cloud/visual-repair tests (137 + 13), Ruff,
+compileall, and diff-check. No new provider/TTS/render request or MP4/QC
+artifact is claimed. Publish, then run the versioned repair boundary.
+
 ## Latest verified checkpoint - 2026-08-23: versioned visual repair
 
 Rollback parent: `28ca2e37914a37f389210afe1aa333a923e48077`.

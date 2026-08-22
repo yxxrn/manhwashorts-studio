@@ -1,5 +1,14 @@
 # ManhwaShorts production-completion todo
 
+## Latest verified checkpoint - 2026-08-23: warm prepared manifest
+
+- [x] Restore `prepared_panel_manifest` before review-only cold preparation.
+- [x] Persist a rebuilt manifest only after a genuine cold fallback.
+- [x] Verify 150/150 focused cloud/visual-repair tests, Ruff, compileall,
+      and `git diff --check`; new provider/TTS/render requests: zero.
+- [ ] Publish, resume the v2/v3 visual-repair boundary, and produce the first
+      accepted silent MP4/QC bundle.
+
 ## Latest verified checkpoint - 2026-08-23: versioned visual repair
 
 - [x] Reproduce the stale visual-repair cache identity after the strict

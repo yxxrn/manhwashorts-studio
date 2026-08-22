@@ -1,5 +1,22 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## Warm review-manifest reuse - 2026-08-23
+
+Rollback parent: `ecd8a67cca65dd5f6c5ce117f0096d552111c46c`.
+
+Review-only resume now restores `prepared_panel_manifest` before calling
+`prepare_project_panels`, and persists a manifest when a true cold fallback is
+required. This prevents repeated 701-panel OCR/materialization on warm review
+runs while preserving source hashes, prepared order, payload identity, and
+all visual/lineage gates. The prior run had already accepted 122 words/53.04
+seconds but ended before preview at the visual repair boundary; no provider,
+TTS, or encoder call was added by this fix.
+
+The RED→GREEN warm-manifest regression and full focused matrix are 150/150
+(137 cloud, 13 visual-repair), with Ruff, compileall, and diff-check clean.
+The next run must use the v2/v3 repair identity and the durable manifest; do
+not repeat valid visual/story stages.
+
 ## Visual-repair cache identity correction - 2026-08-23
 
 Rollback parent: `28ca2e37914a37f389210afe1aa333a923e48077`.

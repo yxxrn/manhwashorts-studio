@@ -1,5 +1,20 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Warm review-manifest reuse - 2026-08-23
+
+Rollback parent: `ecd8a67cca65dd5f6c5ce117f0096d552111c46c`.
+
+The review path now restores `prepared_panel_manifest` before invoking cold
+panel preparation and writes a durable manifest when cold fallback is truly
+needed. This is a warm-resume correctness/performance fix only: it preserves
+all canonical payload/source identity and strict visual gates. The last
+runtime attempt made zero new requests and no encoder/TTS call, but still
+ended before a preview at `visual.narrative_repair_ungrounded`.
+
+The focused RED→GREEN matrix is 150/150 (137 cloud, 13 visual-repair), with
+Ruff, compileall, and diff-check clean. After publication, run the versioned
+repair boundary once; do not redo the 701-panel visual/story stages.
+
 ## Visual-repair cache identity correction - 2026-08-23
 
 Rollback parent: `28ca2e37914a37f389210afe1aa333a923e48077`.

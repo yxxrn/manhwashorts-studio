@@ -755,6 +755,55 @@ def test_review_preview_requests_audited_segmentation_auto_override(monkeypatch)
     assert captured["review_only_auto_override"] is True
 
 
+def test_review_project_restores_prepared_manifest_before_cold_prepare(monkeypatch):
+    module = _module()
+    from types import SimpleNamespace
+
+    panels = _panels(module)
+    failed = module.ChapterJobRecord(
+        job_id="project-a",
+        state=module.ChapterState.NEEDS_REVIEW,
+        error_code="cloud.narrative_not_grounded",
+        stage_results={
+            "prepared_panel_manifest": {"manifest": "durable"},
+            "segmentation": {"status": "RECONCILED"},
+        },
+    )
+
+    class Store:
+        def load(self, _project_id):
+            return failed
+
+        def save(self, _record):
+            return None
+
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.runner = SimpleNamespace(
+        model_identity=SimpleNamespace(identity_hash="m" * 64),
+        assess_strip_boundaries=lambda _request: {},
+    )
+    service.store = Store()
+    service.review_root = None
+    restored = {}
+
+    def restore(_db, _project_id, manifest):
+        restored["manifest"] = manifest
+        return panels, {"status": "RECONCILED"}
+
+    monkeypatch.setattr(module, "_restore_project_prepared_manifest", restore)
+    monkeypatch.setattr(
+        module,
+        "prepare_project_panels",
+        lambda *_args, **_kwargs: pytest.fail("review resume must not cold-prepare a durable manifest"),
+    )
+    monkeypatch.setattr(service, "run_job", lambda *_args, **_kwargs: failed)
+
+    result = service.run_project(object(), "project-a", review_only_preview=True)
+
+    assert result is failed
+    assert restored["manifest"] == {"manifest": "durable"}
+
+
 def test_review_preview_failure_code_keeps_nested_stable_code():
     module = _module()
 
@@ -843,6 +892,11 @@ def test_review_project_repairs_after_initial_narration_failure(monkeypatch, fai
         module,
         "prepare_project_panels",
         lambda *_args, **_kwargs: (all_panels, {"status": "RECONCILED"}),
+    )
+    monkeypatch.setattr(
+        module,
+        "_build_project_prepared_manifest",
+        lambda *_args, **_kwargs: {"manifest": "generated"},
     )
     monkeypatch.setattr(service, "run_job", lambda *_args, **_kwargs: failed)
     observed = {}
