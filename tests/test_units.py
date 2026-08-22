@@ -328,6 +328,76 @@ def test_american_english_is_the_default_tts_contract():
     assert VOICE_CATALOG["en"]["espeak"] == "en-us"
 
 
+def test_http_sections_synthesis_honors_grok_protocol(tmp_path, monkeypatch):
+    """The shared-reference sections boundary must speak the server protocol.
+
+    A grok-protocol endpoint rejects OpenAI-shaped payloads (``input`` instead
+    of ``text``) with HTTP 400, so the production voice-over path has to send
+    the same contract the single-clip boundary uses.
+    """
+    import io
+    import wave
+
+    import httpx
+
+    from app.config import settings
+    from app.services import tts as tts_svc
+
+    monkeypatch.setattr(settings, "tts_http_url", "http://tts.test/v1/tts")
+    monkeypatch.setattr(settings, "tts_http_key", None)
+    monkeypatch.setattr(settings, "tts_http_protocol", "grok")
+    monkeypatch.setattr(settings, "tts_http_model", "grok-voice-latest")
+    monkeypatch.setattr(settings, "tts_http_voice", "the-explainer-american")
+    monkeypatch.setattr(settings, "tts_http_language", "en")
+    monkeypatch.setattr(settings, "tts_http_audio_filter", "")
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(24000)
+        writer.writeframes(b"\x10\x00" * 24000)
+    wav_bytes = buffer.getvalue()
+
+    payloads = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        payloads.append(dict(json))
+        return httpx.Response(
+            200, content=wav_bytes, request=httpx.Request("POST", url)
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    clips = tts_svc.HttpProvider().synthesize_sections(
+        ["first section text", "second section text"],
+        tmp_path,
+        "the-explainer-american",
+        1.15,
+    )
+
+    assert len(clips) == 2
+    assert len(payloads) == 2
+    assert [clip.duration for clip in clips] == [1.0, 1.0]
+    for payload in payloads:
+        assert payload["model"] == "grok-voice-latest"
+        assert isinstance(payload["text"], str) and payload["text"].strip()
+        assert payload["language"] == "en"
+        for openai_only_key in (
+            "input",
+            "voice",
+            "response_format",
+            "speed",
+            "instruct",
+            "num_step",
+            "guidance_scale",
+            "seed",
+        ):
+            assert openai_only_key not in payload
+    assert payloads[0]["text"] == "first section text"
+    assert payloads[1]["text"] == "second section text"
+
+
 def test_indonesian_remains_explicit_opt_in():
     from app.schemas import ProjectCreate
 

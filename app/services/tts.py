@@ -337,25 +337,37 @@ class HttpProvider:
         headers = {"Content-Type": "application/json"}
         if settings.tts_http_key:
             headers["Authorization"] = f"Bearer {settings.tts_http_key.get_secret_value()}"
-        base_payload = {
-            "model": settings.tts_http_model,
-            "input": texts[0],
-            "voice": settings.tts_http_voice or voice_id or "default",
-            "response_format": settings.tts_http_response_format,
-            "speed": max(0.25, min(4.0, speed)),
-            "language": language,
-            "instruct": settings.tts_http_instruct,
-            "num_step": min(settings.tts_http_num_step, 8),
-            "guidance_scale": settings.tts_http_guidance_scale,
-            "seed": settings.tts_http_seed,
-        }
+        if settings.tts_http_protocol == "grok":
+            # Grok-protocol endpoints reject OpenAI-shaped payloads (they
+            # require "text"/"language" and have no voice/instruct fields),
+            # so mirror the single-clip grok contract for every section.
+            text_key = "text"
+            base_payload = {
+                "model": settings.tts_http_model,
+                "text": texts[0],
+                "language": language,
+            }
+        else:
+            text_key = "input"
+            base_payload = {
+                "model": settings.tts_http_model,
+                "input": texts[0],
+                "voice": settings.tts_http_voice or voice_id or "default",
+                "response_format": settings.tts_http_response_format,
+                "speed": max(0.25, min(4.0, speed)),
+                "language": language,
+                "instruct": settings.tts_http_instruct,
+                "num_step": min(settings.tts_http_num_step, 8),
+                "guidance_scale": settings.tts_http_guidance_scale,
+                "seed": settings.tts_http_seed,
+            }
         clips: list[SpeechClip] = []
         ref_path = work_dir / "shared_voice_reference.wav"
         try:
             response = httpx.post(settings.tts_http_url, headers=headers, json=base_payload, timeout=900)
             if response.status_code == 503:
                 fallback = dict(base_payload)
-                fallback["input"] = texts[0]
+                fallback[text_key] = texts[0]
                 response = httpx.post(settings.tts_http_url or "", headers=headers, json=fallback, timeout=900)
             response.raise_for_status()
             ref_path.write_bytes(response.content)
@@ -368,9 +380,10 @@ class HttpProvider:
                     # Reuse the same provider settings for every section. A
                     # transient 503 must not silently switch voices or providers.
                     stable_payload = dict(base_payload)
-                    stable_payload["input"] = text
-                    stable_payload["speed"] = max(0.25, min(4.0, speed))
-                    stable_payload["num_step"] = min(settings.tts_http_num_step, 8)
+                    stable_payload[text_key] = text
+                    if text_key == "input":
+                        stable_payload["speed"] = max(0.25, min(4.0, speed))
+                        stable_payload["num_step"] = min(settings.tts_http_num_step, 8)
                     result = None
                     for _attempt in range(4):
                         result = httpx.post(
