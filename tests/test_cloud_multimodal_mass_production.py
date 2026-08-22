@@ -3703,6 +3703,34 @@ def test_position_repair_rejects_non_positional_provider_shapes(mutation):
     assert caught.value.code == "cloud.narrative_repair_position_contract_invalid"
 
 
+def test_position_repair_shape_metrics_survive_early_contract_rejection():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    registry = runner._build_narration_repair_position_registry(candidate, story_map)
+    valid = [
+        _position_rewrite_text(row["word_budget"], f"position{index}_")
+        for index, row in enumerate(registry["positions"])
+    ]
+    raw = {"rewrites": valid[:-1]}
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, registry, candidate)
+
+    metadata = caught.value.safe_metadata
+    assert caught.value.code == "cloud.narrative_repair_position_contract_invalid"
+    assert metadata["failed_predicate"] == "rewrite_count"
+    assert metadata["array_count"] == len(valid) - 1
+    assert metadata["array_item_types"] == ["str"] * (len(valid) - 1)
+    assert metadata["per_position_word_counts"] == [
+        module.script.narration_word_count(text) for text in valid[:-1]
+    ]
+    assert metadata["total_word_count"] == sum(metadata["per_position_word_counts"])
+    assert isinstance(metadata["estimated_duration_s"], float)
+    assert len(metadata["expected_ranges"]) == len(registry["positions"])
+    assert "position" in json.dumps(metadata)
+    assert "position0_" not in json.dumps(metadata)
+
+
 def test_immutable_repair_slots_copy_trusted_lineage_and_reject_provider_ids():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)

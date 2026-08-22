@@ -4557,23 +4557,16 @@ class CloudStageRunner:
             candidate,
             story_map,
         )
-        if not isinstance(raw, Mapping) or set(raw) != {"rewrites"}:
-            raise CloudStageError(
-                "cloud.narrative_repair_position_contract_invalid",
-                reviewable=True,
-            )
         raw_positions = registry.get("positions")
-        rewrites = raw.get("rewrites")
-        if not isinstance(raw_positions, list) or not isinstance(rewrites, list):
-            raise CloudStageError(
-                "cloud.narrative_repair_position_contract_invalid",
-                reviewable=True,
-            )
-        if len(rewrites) != len(raw_positions):
-            raise CloudStageError(
-                "cloud.narrative_repair_position_contract_invalid",
-                reviewable=True,
-            )
+        rewrites = raw.get("rewrites") if isinstance(raw, Mapping) else None
+
+        def response_items(value: Any) -> list[Any] | None:
+            if isinstance(value, Sequence) and not isinstance(
+                value,
+                (str, bytes, bytearray, Mapping),
+            ):
+                return list(value)
+            return None
 
         def response_shape_metrics(
             failed_predicate: str | None,
@@ -4583,7 +4576,8 @@ class CloudStageRunner:
             micro_compaction: Mapping[str, Any] | None = None,
         ) -> dict[str, Any]:
             expected_ranges = []
-            for item in raw_positions:
+            position_items = raw_positions if isinstance(raw_positions, list) else []
+            for item in position_items:
                 if isinstance(item, Mapping):
                     expected_ranges.append(
                         {
@@ -4597,12 +4591,21 @@ class CloudStageRunner:
                     expected_ranges.append(
                         {"position": None, "target": None, "min": None, "max": None}
                     )
+            rewrite_items = response_items(rewrites)
             metrics = {
                 "container_type": type(raw).__name__,
-                "top_level_keys": sorted(str(key) for key in raw),
+                "top_level_keys": (
+                    sorted(str(key) for key in raw)
+                    if isinstance(raw, Mapping)
+                    else []
+                ),
                 "array_key": "rewrites",
-                "array_count": len(rewrites),
-                "array_item_types": [type(item).__name__ for item in rewrites],
+                "array_count": len(rewrite_items) if rewrite_items is not None else None,
+                "array_item_types": (
+                    [type(item).__name__ for item in rewrite_items]
+                    if rewrite_items is not None
+                    else []
+                ),
                 "per_position_word_counts": list(word_counts),
                 "total_word_count": total_words,
                 "estimated_duration_s": duration,
@@ -4615,6 +4618,51 @@ class CloudStageRunner:
             if micro_compaction is not None:
                 metrics["micro_compaction"] = dict(micro_compaction)
             return metrics
+
+        def current_response_shape(failed_predicate: str) -> dict[str, Any]:
+            rewrite_items = response_items(rewrites)
+            if rewrite_items is None:
+                return response_shape_metrics(failed_predicate, [], None, None)
+            word_counts = [
+                script.narration_word_count(text)
+                if isinstance(text, str)
+                else None
+                for text in rewrite_items
+            ]
+            total_words = sum(count for count in word_counts if count is not None)
+            all_strings = bool(rewrite_items) and all(
+                count is not None for count in word_counts
+            )
+            duration = (
+                script.estimate_narration_duration(" ".join(rewrite_items), "dramatic")
+                if all_strings
+                else None
+            )
+            return response_shape_metrics(
+                failed_predicate,
+                word_counts,
+                total_words,
+                duration,
+            )
+
+        if not isinstance(raw, Mapping) or set(raw) != {"rewrites"}:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_contract_invalid",
+                reviewable=True,
+                safe_metadata=current_response_shape("response_top_level_shape"),
+            )
+        if not isinstance(raw_positions, list) or not isinstance(rewrites, list):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_contract_invalid",
+                reviewable=True,
+                safe_metadata=current_response_shape("response_array_type"),
+            )
+        if len(rewrites) != len(raw_positions):
+            raise CloudStageError(
+                "cloud.narrative_repair_position_contract_invalid",
+                reviewable=True,
+                safe_metadata=current_response_shape("rewrite_count"),
+            )
 
         word_counts = [
             script.narration_word_count(text) if isinstance(text, str) else None
@@ -4667,6 +4715,7 @@ class CloudStageRunner:
                 raise CloudStageError(
                     "cloud.narrative_repair_position_contract_invalid",
                     reviewable=True,
+                    safe_metadata=current_response_shape("position_descriptor"),
                 ) from None
             closure_row = closure_rows.get(index)
             if (
@@ -4690,6 +4739,7 @@ class CloudStageRunner:
                 raise CloudStageError(
                     "cloud.narrative_repair_position_contract_invalid",
                     reviewable=True,
+                    safe_metadata=current_response_shape("rewrite_text"),
                 )
             trusted_ids = (
                 position.slot_id,
@@ -4702,6 +4752,7 @@ class CloudStageRunner:
                 raise CloudStageError(
                     "cloud.narrative_repair_position_contract_invalid",
                     reviewable=True,
+                    safe_metadata=current_response_shape("trusted_identifier_echo"),
                 )
 
         micro_compaction: dict[str, Any] | None = None
