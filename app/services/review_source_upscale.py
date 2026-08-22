@@ -30,10 +30,10 @@ class ReviewSourceUpscalePolicy:
     target_width: int = 1080
     target_height: int = 1920
     minimum_source_resolution_factor: float = 1.15
-    max_scale: float = 2.50
+    max_scale: float = 1.50
     allow_low_source_resolution_warning: bool = True
     resample_filter: str = "LANCZOS"
-    version: str = "1.2.0"
+    version: str = "1.3.0"
 
 
 REVIEW_SILENT_SOURCE_UPSCALE_V1 = ReviewSourceUpscalePolicy()

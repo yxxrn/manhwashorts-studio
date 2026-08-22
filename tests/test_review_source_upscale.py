@@ -49,7 +49,7 @@ def test_review_policy_prepares_900px_panel_and_transforms_bounds():
     assert manifest["original_dimensions"] == [900, 1600]
     assert manifest["prepared_dimensions"] == [1080, 1920]
     assert manifest["scale_factor"] == 1.2
-    assert policy.max_scale == 2.5
+    assert policy.max_scale == 1.5
     assert manifest["resolution_state"] == "UPSCALED"
     assert manifest["resample_filter"] == "LANCZOS"
     assert manifest["prepared_content_sha256"] == module.canonical_rgb_hash(prepared)
@@ -59,6 +59,18 @@ def test_review_policy_prepares_900px_panel_and_transforms_bounds():
         1068,
         1896,
     )
+
+
+def test_default_review_policy_uses_approved_mass_production_cap():
+    module = _upscale_module()
+
+    policy = module.resolve_review_source_upscale_policy(
+        "review_silent_source_upscale_v1"
+    )
+
+    assert policy is not None
+    assert policy.max_scale == 1.50
+    assert policy.version == "1.3.0"
 
 
 def test_review_policy_requires_explicit_silent_non_publish_boundary():
