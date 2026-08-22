@@ -157,6 +157,46 @@ def test_reference_loader_excludes_order_zero_front_matter_before_candidate_buil
     assert captured == ["region-a"]
 
 
+def test_reference_loader_keeps_cited_order_zero_panel(monkeypatch):
+    import io
+
+    image_bytes = io.BytesIO()
+    _crop((40, 60, 100), True).save(image_bytes, format="PNG")
+    asset = SimpleNamespace(
+        id="asset-a",
+        storage_key="asset-a.png",
+        checksum="asset-checksum",
+        original_checksum="asset-checksum",
+        source_family="family-a",
+    )
+    regions = [
+        _region("title", "region-title", "asset-a", 0, (0, 0, 100, 200), "asset-checksum"),
+        _region("panel-a", "region-a", "asset-a", 1, (0, 0, 100, 200), "asset-checksum"),
+    ]
+    captured: list[str] = []
+
+    def builder(**kwargs):
+        captured.extend(str(region.id) for region in kwargs["panel_regions"])
+        return ()
+
+    monkeypatch.setattr(pipeline, "latest_analysis", lambda *_args: SimpleNamespace(id="analysis"))
+    monkeypatch.setattr(pipeline.storage, "read_bytes", lambda _key: image_bytes.getvalue())
+    monkeypatch.setattr(pipeline, "_build_reference_panel_fallback_candidates", builder)
+    db = SimpleNamespace(scalars=lambda _statement: regions)
+    script = SimpleNamespace(sections=[{"section": "hook", "evidence_panel_ids": ["title"]}])
+
+    pipeline._load_reference_panel_fallback_candidates(
+        db,
+        "project",
+        script,
+        [asset],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        section_evidence_panel_ids={"hook": ("title",)},
+    )
+
+    assert captured == ["region-title", "region-a"]
+
+
 @pytest.mark.parametrize("panel_ids", (("missing-panel",), ("panel-a", "foreign-panel")))
 def test_panel_candidate_builder_rejects_missing_or_foreign_explicit_ids(panel_ids):
     builder = pipeline._build_reference_panel_fallback_candidates

@@ -2329,12 +2329,25 @@ def _load_reference_panel_fallback_candidates(
             select(PanelRegion)
             .where(
                 PanelRegion.story_analysis_id == analysis.id,
-                PanelRegion.source_order > 0,
+                PanelRegion.source_order >= 0,
             )
             .order_by(PanelRegion.source_order, PanelRegion.panel_id, PanelRegion.id)
         )
     )
-    regions = [region for region in regions if int(region.source_order) > 0]
+    # Order zero is front matter unless the persisted narration grounded
+    # explicit claim evidence on it; dropping a cited panel here would make
+    # the script's own evidence unresolvable at render time.
+    cited_panel_ids = {
+        str(value)
+        for ids in (section_evidence_panel_ids or {}).values()
+        for value in (ids or ())
+    }
+    regions = [
+        region
+        for region in regions
+        if int(region.source_order) > 0
+        or str(getattr(region, "panel_id", "")) in cited_panel_ids
+    ]
     if not regions:
         return ()
     assets = {asset.id: asset for asset in images}
