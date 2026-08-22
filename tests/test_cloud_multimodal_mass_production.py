@@ -239,6 +239,30 @@ def test_invalid_visual_repair_cache_does_not_bypass_bounded_provider_path(monke
     assert calls["count"] == repair.MAX_REPAIR_ATTEMPTS
 
 
+def test_visual_repair_contract_bump_scopes_stale_provider_cache():
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    ledger = type("Ledger", (), {"ledger_hash": "ledger-hash"})()
+    common = {
+        "ledger": ledger,
+        "model_identity_hash": "model-hash",
+        "prompt_sha256": "prompt-hash",
+        "narration_hash": "narration-hash",
+    }
+
+    old_key = repair.repair_cache_key(
+        **common,
+        contract_version="visual_narrative_repair_v1",
+    )
+    current_key = repair.repair_cache_key(
+        **common,
+        contract_version=repair.REPAIR_CONTRACT_VERSION,
+    )
+
+    assert repair.REPAIR_CONTRACT_VERSION == "visual_narrative_repair_v2"
+    assert repair.REPAIR_PROMPT_VERSION == "visual-narrative-repair-v3"
+    assert old_key != current_key
+
+
 def _visual_row(panel, *, unknown: bool = False, provider_hash: bool = False):
     sidecar = {
         "contract_version": "COLOR_AGNOSTIC_BALLOON_FREE_V1",

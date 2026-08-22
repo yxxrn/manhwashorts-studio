@@ -1,5 +1,19 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Versioned visual-repair cache boundary - 2026-08-23
+
+The review repair DAG now scopes provider-result reuse to an explicit repair
+contract version. The prior run reused the 701-panel visual/story cache and
+accepted 122-word narration, then failed at the current 36-panel/71-ROI
+feasible ledger with two missing sections and no new requests. Contract v2,
+prompt v3, and an explicit `contract_version` input to `repair_cache_key`
+invalidate old section-closure responses without invalidating visual/story
+evidence. The failure remains fail-closed; no visual or publish gate changed.
+
+Verification: 149/149 focused cloud/visual-repair tests, Ruff, compileall,
+and diff-check. No preview/QC artifact is claimed. The next resume must use
+the newly versioned repair request and retain the 701-panel cache.
+
 ## Visual-repair analyzer diagnostics - 2026-08-23
 
 The repair DAG now keeps strict analyzer failures actionable without retaining

@@ -1,4 +1,4 @@
-Version: visual-narrative-repair-v2
+Version: visual-narrative-repair-v3
 
 You are repairing a Sharp Friend v1 chapter narration for a review-only visual
 edit. The local system has already rejected some panels as unsafe to frame.

@@ -17,9 +17,9 @@ from typing import Any
 
 from app.services import framing_analysis
 
-REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v1"
+REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v2"
 VISUAL_SECTION_REMAP_VERSION = "visual_section_remap_v1"
-REPAIR_PROMPT_VERSION = "visual-narrative-repair-v2"
+REPAIR_PROMPT_VERSION = "visual-narrative-repair-v3"
 MAX_REPAIR_ATTEMPTS = 3
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "visual_narrative_repair_v1.txt"
 
@@ -673,9 +673,16 @@ def validate_repaired_section_visual_coverage(
             )
 
 
-def repair_cache_key(*, ledger: FeasibleVisualLedger, model_identity_hash: str, prompt_sha256: str, narration_hash: str) -> str:
+def repair_cache_key(
+    *,
+    ledger: FeasibleVisualLedger,
+    model_identity_hash: str,
+    prompt_sha256: str,
+    narration_hash: str,
+    contract_version: str = REPAIR_CONTRACT_VERSION,
+) -> str:
     return _hash({
-        "contract_version": REPAIR_CONTRACT_VERSION,
+        "contract_version": contract_version,
         "ledger_hash": ledger.ledger_hash,
         "model_identity_hash": model_identity_hash,
         "prompt_sha256": prompt_sha256,

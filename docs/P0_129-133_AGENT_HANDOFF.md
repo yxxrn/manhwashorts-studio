@@ -1,5 +1,24 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Visual-repair cache identity correction - 2026-08-23
+
+Rollback parent: `28ca2e37914a37f389210afe1aa333a923e48077`.
+
+The cached review retained 701 visual/story observations and the accepted
+122-word/53.04-second narration, but its current feasible ledger contained
+36 panels/71 ROIs and left two sections without safe visuals. It made zero
+new provider/TTS requests and ended `visual.narrative_repair_ungrounded`; no
+render artifact exists. This was a cache-identity defect, not a reason to
+relax feasibility: the repair contract is bumped to v2, the prompt to v3,
+and the cache key now carries an explicit contract version. The old v1 repair
+response is therefore not admissible under the stricter section-closure
+contract.
+
+The cache-bump RED/GREEN regression and focused matrix are 149/149 (136
+cloud, 13 visual-repair); Ruff, compileall, and diff-check pass. Publish this
+source/test/docs checkpoint, then resume only the repair boundary; do not
+repeat valid visual/story calls.
+
 ## Visual-repair analyzer diagnostics - 2026-08-23
 
 Rollback parent: `ac70d9903587f86627272542a9260b1188ec51a0`.

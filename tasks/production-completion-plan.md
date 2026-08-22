@@ -1,5 +1,19 @@
 # ManhwaShorts production-completion plan
 
+## Latest verified checkpoint - 2026-08-23: versioned visual repair
+
+Rollback parent: `28ca2e37914a37f389210afe1aa333a923e48077`.
+
+The cached review retained the accepted 701-observation, 122-word,
+53.04-second narration but ended `visual.narrative_repair_ungrounded` at a
+36-panel/71-ROI ledger with two missing sections and zero new provider/TTS
+requests. The repair cache previously reused v1 semantics after section
+closure had tightened. GREEN now bumps the repair contract to v2 and prompt
+to v3 and makes the cache key explicitly versioned. Focused proof is 149/149
+(136 cloud, 13 visual-repair), plus Ruff, compileall, and diff-check. No MP4,
+TTS, or QC result is claimed. Publish this checkpoint, then resume the repair
+boundary without repeating visual/story analysis.
+
 ## Latest verified checkpoint - 2026-08-23
 
 Rollback parent: `ac70d9903587f86627272542a9260b1188ec51a0`.

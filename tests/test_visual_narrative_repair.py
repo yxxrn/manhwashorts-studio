@@ -89,7 +89,7 @@ def test_zero_feasible_hook_is_explicitly_repairable_and_payload_is_panel_keyed(
     )
 
     assert missing == ("hook",)
-    assert payload["repair_contract_version"] == "visual_narrative_repair_v1"
+    assert payload["repair_contract_version"] == module.REPAIR_CONTRACT_VERSION
     assert payload["missing_sections"] == ["hook"]
     assert payload["feasible_panel_ids"] == ["panel-safe"]
     assert "visual_evidence_by_asset" not in payload

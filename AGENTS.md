@@ -1,5 +1,26 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## Visual-repair cache identity correction - 2026-08-23
+
+Rollback parent: `28ca2e37914a37f389210afe1aa333a923e48077`.
+
+The latest cached run reused the accepted 701-observation narration (122
+words, 53.04 seconds) and persisted analysis/script identities, but produced
+no preview: the current feasible ledger had 36 panels/71 ROIs and two missing
+visual sections. It consumed zero new provider/TTS requests and ended
+`visual.narrative_repair_ungrounded`. The local cause was stale visual-repair
+provider-cache identity: stricter section-closure semantics still used the v1
+repair contract. The repair contract is now v2, the prompt is v3, and
+`repair_cache_key` accepts an explicit contract version so old responses cannot
+be reused. No gate or evidence rule was relaxed.
+
+The RED cache-bump regression failed on the old signature; GREEN is 149/149
+focused cloud/visual-repair tests (136 + 13), with Ruff, compileall, and
+diff-check clean. This checkpoint is source/test/docs only; no MP4, TTS,
+audio, subtitle, FFprobe, blackdetect, contact-sheet, or QC completion is
+claimed. After publication, resume the cached review boundary once; do not
+repeat the valid 701-panel visual/story stages.
+
 ## Visual-repair analyzer diagnostics - 2026-08-23
 
 Rollback parent: `ac70d9903587f86627272542a9260b1188ec51a0`.

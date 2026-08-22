@@ -1,5 +1,25 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## Visual-repair cache identity correction - 2026-08-23
+
+Rollback parent: `28ca2e37914a37f389210afe1aa333a923e48077`.
+
+The latest cached review reused the accepted 701-observation narration
+(122 words, 53.04 seconds; analysis/script identities persisted) but still
+produced no preview. Its strict feasible ledger had 36 panels and 71 ROIs,
+with two missing visual sections; zero new provider/TTS requests were made,
+and the run ended `visual.narrative_repair_ungrounded`. The local defect was
+stale repair-cache identity after the section-closure contract had become
+stricter. The versioned repair contract is now v2, the prompt is v3, and the
+cache-key boundary accepts an explicit contract version. Existing grounding,
+lineage, visual, duration, anti-copy, audio, and publish gates remain strict.
+
+RED reproduced the old cache-key signature; GREEN is 149/149 focused tests
+(136 cloud, 13 visual-repair), Ruff, compileall, and diff-check. No MP4, TTS,
+audio, subtitle, FFprobe, blackdetect, contact-sheet, or QC result is claimed.
+The next action after publication is one cached review resume with the new
+repair identity, without repeating visual/story analysis.
+
 ## Visual-repair analyzer diagnostics - 2026-08-23
 
 Rollback parent: `ac70d9903587f86627272542a9260b1188ec51a0`.

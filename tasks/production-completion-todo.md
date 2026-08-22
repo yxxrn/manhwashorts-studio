@@ -1,5 +1,16 @@
 # ManhwaShorts production-completion todo
 
+## Latest verified checkpoint - 2026-08-23: versioned visual repair
+
+- [x] Reproduce the stale visual-repair cache identity after the strict
+      section-closure failure (`visual.narrative_repair_ungrounded`).
+- [x] Bump the repair contract/prompt to v2/v3 and include explicit contract
+      version in `repair_cache_key`; do not invalidate visual/story caches.
+- [x] Verify 149/149 focused cloud/visual-repair tests, Ruff, compileall, and
+      `git diff --check`; new request count in this diagnostic slice: zero.
+- [ ] Publish this checkpoint, issue only the newly versioned repair request,
+      and produce the first accepted silent MP4/QC bundle.
+
 ## Latest verified checkpoint - 2026-08-23
 
 - [x] Record the first post-payload-fix strict repair outcome: 36 feasible
