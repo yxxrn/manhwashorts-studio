@@ -2156,6 +2156,39 @@ def test_metadata_only_visual_repair_materializes_only_invalid_rows(monkeypatch)
     assert materialized[2].metadata_only is True
 
 
+def test_resume_discovers_exact_cached_visual_subset_without_provider_call():
+    module = _module()
+    panels = _panels(module, "subset-cache")
+    identity = _identity(module)
+    seed_runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+        cache=module.MemoryStageCache(),
+    )
+    valid = seed_runner.run_visual_evidence(panels)
+    subset = replace(
+        valid,
+        panels=tuple(valid.panels[:2]),
+        source_hash="subset-source",
+    )
+    cache = module.MemoryStageCache()
+    cache.put("durable-subset", subset.as_dict())
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+        cache=cache,
+    )
+
+    found = module._find_cached_visual_subset(
+        runner,
+        panels,
+        expected_source_hash="subset-source",
+    )
+
+    assert found is not None
+    assert found.panel_ids == tuple(panel.panel_id for panel in panels[:2])
+
+
 def test_file_stage_cache_round_trips_durable_values(tmp_path):
     module = _module()
     cache = module.FileStageCache(tmp_path / "stage-cache")

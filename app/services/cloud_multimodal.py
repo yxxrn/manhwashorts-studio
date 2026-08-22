@@ -8085,6 +8085,81 @@ def _visual_panel_ids_requiring_materialization(
     )
 
 
+def _find_cached_visual_subset(
+    runner: CloudStageRunner,
+    panels: Sequence[CloudPanelInput],
+    *,
+    expected_source_hash: str,
+) -> VisualStageResult | None:
+    """Restore the largest exact visual cache subset after a resume gap."""
+
+    iter_records = getattr(runner.cache, "iter_records", None)
+    if not callable(iter_records):
+        return None
+    ordered = tuple(panels)
+    panel_by_id = {panel.panel_id: panel for panel in ordered}
+    ordered_index = {panel.panel_id: index for index, panel in enumerate(ordered)}
+    prompt = runner.prompts["visual"]
+    candidates: list[VisualStageResult] = []
+    try:
+        records = iter_records()
+        for raw in records:
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                result = VisualStageResult.from_dict(raw)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (
+                result.model_identity_hash != runner.model_identity.identity_hash
+                or result.prompt_version != prompt[0]
+                or result.prompt_sha256 != prompt[1]
+                or result.source_hash != expected_source_hash
+                or not result.panels
+            ):
+                continue
+            row_ids: list[str] = []
+            row_indexes: list[int] = []
+            valid = True
+            for row in result.panels:
+                if not isinstance(row, Mapping):
+                    valid = False
+                    break
+                panel_id = str(row.get("panel_id", ""))
+                panel = panel_by_id.get(panel_id)
+                if panel is None or panel_id in row_ids:
+                    valid = False
+                    break
+                try:
+                    if (
+                        str(row.get("source_asset_id", "")) != panel.source_asset_id
+                        or int(row.get("source_order", -1)) != panel.source_order
+                        or str(row.get("source_checksum", "")) != panel.source_checksum
+                    ):
+                        valid = False
+                        break
+                except (TypeError, ValueError):
+                    valid = False
+                    break
+                row_ids.append(panel_id)
+                row_indexes.append(ordered_index[panel_id])
+            if valid and row_indexes == sorted(row_indexes):
+                candidates.append(result)
+    except (OSError, TypeError, ValueError):
+        return None
+    if not candidates:
+        return None
+    candidates.sort(key=lambda result: (len(result.panels), result.visual_evidence_hash), reverse=True)
+    largest = candidates[0]
+    if (
+        len(candidates) > 1
+        and len(candidates[1].panels) == len(largest.panels)
+        and candidates[1].panel_ids != largest.panel_ids
+    ):
+        return None
+    return largest
+
+
 def _materialize_metadata_only_panels(
     db: Any,
     project_id: str,
@@ -8595,12 +8670,41 @@ class CloudBatchService:
                     ),
                 )
             panels, segmentation_state = prepared
+            restored_visual_subset: VisualStageResult | None = None
+            if manifest_loaded and not isinstance(record.stage_results.get("visual"), Mapping):
+                expected_source_hash = str(
+                    manifest_raw.get("source_identity_hash", "")
+                    if isinstance(manifest_raw, Mapping)
+                    else ""
+                )
+                if expected_source_hash:
+                    restored_visual_subset = _find_cached_visual_subset(
+                        self.runner,
+                        panels,
+                        expected_source_hash=expected_source_hash,
+                    )
+                    if restored_visual_subset is not None:
+                        record.stage_results["visual"] = restored_visual_subset.as_dict()
+                        self.store.save(record)
             panels = _panels_for_cached_visual_stage(
                 panels,
                 record.stage_results.get("visual"),
             )
             if max_cloud_panels is not None and len(panels) > max_cloud_panels:
                 panels = _subsample_panels(panels, max_cloud_panels)
+            if (
+                restored_visual_subset is not None
+                and restored_visual_subset.panel_ids == tuple(panel.panel_id for panel in panels)
+            ):
+                self.runner.cache.put(
+                    _cache_key(
+                        "visual",
+                        list(_visual_panel_identities(panels)),
+                        self.runner.model_identity,
+                        self.runner.prompts["visual"],
+                    ),
+                    restored_visual_subset.as_dict(),
+                )
             targeted_materialization_ids: tuple[str, ...] = ()
             if manifest_loaded:
                 targeted_materialization_ids = _visual_panel_ids_requiring_materialization(
