@@ -1,5 +1,22 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## Cached visual-stage metadata reuse - 2026-08-23
+
+Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.
+
+The warm review retry correctly restored a durable prepared manifest, but its
+metadata-only panel inputs were rejected before the visual cache was queried.
+The RED regression reproduced that ordering defect. The GREEN fix computes the
+ordered source/prompt cache key and returns a valid cached visual result before
+the materialization guard; cache misses still fail closed with
+`cloud.prepared_manifest_requires_materialization`, so no metadata-only input
+can reach a provider.
+
+Focused proof is 162/162 (137 cloud, 13 visual-repair, 12 prepared-manifest),
+plus Ruff, compileall, and `git diff --check`. No provider, TTS, encoder, MP4,
+or QC artifact was produced in this slice. Next action after publication is to
+resume the existing project job and reuse valid visual/story caches.
+
 ## Warm review-manifest reuse - 2026-08-23
 
 Rollback parent: `ecd8a67cca65dd5f6c5ce117f0096d552111c46c`.

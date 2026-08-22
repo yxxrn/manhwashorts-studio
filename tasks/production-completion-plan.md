@@ -1,5 +1,22 @@
 # ManhwaShorts production-completion plan
 
+## Latest verified checkpoint - 2026-08-23: cached visual metadata reuse
+
+Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.
+
+The warm review retry restored the prepared manifest but failed before visual
+cache lookup because the runner treated every metadata-only input as an
+immediate materialization error. The RED regression captured the exact
+ordering. GREEN moves the guard after canonical ordered source/prompt cache
+lookup: valid cached visual evidence is reused without a provider call, while
+cache misses still fail closed with
+`cloud.prepared_manifest_requires_materialization`.
+
+Verification: 162/162 focused tests (137 cloud, 13 visual-repair, 12
+prepared-manifest), Ruff, compileall, and diff-check. No provider/TTS/render
+request or MP4/QC artifact is claimed. Publish this checkpoint, then resume
+the existing cached project job without repeating visual/story stages.
+
 ## Latest verified checkpoint - 2026-08-23: warm prepared manifest
 
 Rollback parent: `ecd8a67cca65dd5f6c5ce117f0096d552111c46c`.

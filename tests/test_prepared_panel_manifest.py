@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -187,6 +188,64 @@ def test_metadata_only_panel_cannot_reach_provider_observe():
         runner.run_visual_evidence(restored)
     assert error.value.code == "cloud.prepared_manifest_requires_materialization"
     assert provider.calls == 0
+
+
+def test_cached_visual_stage_accepts_metadata_only_manifest_without_provider_call():
+    _manifest_module, cloud = _modules()
+    panels = _panels(cloud)
+    identity = cloud.CloudModelIdentity(
+        provider="openai_compatible",
+        model="manifest-test",
+        model_version="v1",
+        endpoint="http://manifest.invalid/v1",
+        prompt_versions={
+            "visual": "balloon-free-visual-evidence-v1",
+            "story_map": "cloud-causal-map-v2",
+            "narration": "vision-first-story-analyzer-v3",
+        },
+    )
+    cached = cloud.VisualStageResult(
+        panels=(
+            {
+                "panel_id": "panel-0",
+                "source_asset_id": "asset-0",
+                "source_order": 0,
+            },
+        ),
+        source_hash="v" * 64,
+        model_identity_hash=identity.identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="p" * 64,
+    )
+
+    class Cache:
+        def get(self, _key):
+            return cached.as_dict()
+
+        def put(self, _key, _value):
+            raise AssertionError("a valid cached visual stage must not be rewritten")
+
+    class Provider:
+        model_id = "manifest-test"
+
+        def observe(self, _request):
+            raise AssertionError("a valid cached visual stage must not call the provider")
+
+    runner = cloud.CloudStageRunner(
+        provider=Provider(),
+        model_identity=identity,
+        cache=Cache(),
+    )
+    metadata_only = replace(
+        panels[0],
+        metadata_only=True,
+        identity_payload_checksum="a" * 64,
+    )
+
+    result = runner.run_visual_evidence((metadata_only,))
+
+    assert result.source_hash == cached.source_hash
+    assert result.model_identity_hash == cached.model_identity_hash
 
 
 def test_cached_manifest_restores_precomputed_identity_without_image_bytes():

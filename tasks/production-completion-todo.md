@@ -1,5 +1,16 @@
 # ManhwaShorts production-completion todo
 
+## Latest verified checkpoint - 2026-08-23: cached visual metadata reuse
+
+- [x] Reproduce metadata-only prepared-manifest rejection before visual cache
+      lookup.
+- [x] Move the materialization guard after canonical cache lookup; cache misses
+      remain fail-closed.
+- [x] Verify 162/162 focused tests (137 cloud, 13 visual-repair, 12
+      prepared-manifest), Ruff, compileall, and `git diff --check`.
+- [ ] Publish, resume the existing cached job, and produce/QC the first real
+      silent MP4 before starting TTS.
+
 ## Latest verified checkpoint - 2026-08-23: warm prepared manifest
 
 - [x] Restore `prepared_panel_manifest` before review-only cold preparation.

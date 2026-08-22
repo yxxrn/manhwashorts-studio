@@ -1921,14 +1921,14 @@ class CloudStageRunner:
             return
 
     def run_visual_evidence(self, panels: Sequence[CloudPanelInput]) -> VisualStageResult:
-        if any(getattr(panel, "metadata_only", False) for panel in panels):
-            raise CloudStageError("cloud.prepared_manifest_requires_materialization")
         ordered = self._ordered_panels(panels)
         prompt = self.prompts["visual"]
         source = list(_visual_panel_identities(ordered))
         key = _cache_key("visual", source, self.model_identity, prompt)
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
             return VisualStageResult.from_dict(cached)
+        if any(getattr(panel, "metadata_only", False) for panel in ordered):
+            raise CloudStageError("cloud.prepared_manifest_requires_materialization")
         instruction_version, instruction_sha256, _ = analyzer_contract.load_analyzer_instruction()
         from concurrent.futures import ThreadPoolExecutor
 

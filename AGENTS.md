@@ -1,5 +1,23 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## Cached visual-stage metadata reuse - 2026-08-23
+
+Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.
+
+The first warm review retry restored a valid prepared manifest as
+metadata-only panel inputs, but `CloudStageRunner.run_visual_evidence` rejected
+those inputs before checking the content-addressed visual cache. The RED
+regression reproduced the exact failure. GREEN moves the materialization guard
+after ordered source/prompt cache lookup: a valid cached visual result is reused
+without provider calls; a cache miss still fails closed with
+`cloud.prepared_manifest_requires_materialization` and cannot send metadata-only
+inputs to vision.
+
+The focused matrix is 162/162 (137 cloud, 13 visual-repair, 12 prepared-manifest),
+with Ruff, compileall, and `git diff --check` clean. This checkpoint consumed no
+provider, TTS, or encoder request and claims no preview/QC artifact. Publish it,
+then resume the existing job without repeating valid visual/story stages.
+
 ## Warm review-manifest reuse - 2026-08-23
 
 Rollback parent: `ecd8a67cca65dd5f6c5ce117f0096d552111c46c`.

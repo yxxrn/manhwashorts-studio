@@ -1,5 +1,21 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Cached visual-stage metadata reuse - 2026-08-23
+
+The review resume boundary may load a prepared manifest without panel pixels.
+`CloudStageRunner.run_visual_evidence` must therefore derive its canonical
+ordered source/prompt cache key and query the durable visual cache before
+enforcing materialization. A cache hit is safe because the cached result is
+already keyed by panel identity, model, and prompt; a miss remains a strict
+`cloud.prepared_manifest_requires_materialization` failure rather than a
+provider call with incomplete input.
+
+RED reproduced the warm-run failure; GREEN is 162/162 focused tests (137 cloud,
+13 visual-repair, 12 prepared-manifest), Ruff, compileall, and diff-check. No
+provider/TTS/render request was consumed. The existing 701-panel visual/story
+cache and prepared manifest remain reusable; the next job resume is the first
+runtime proof of this boundary.
+
 ## Warm prepared-manifest reuse - 2026-08-23
 
 The review DAG now follows the same durable prepared-manifest boundary as

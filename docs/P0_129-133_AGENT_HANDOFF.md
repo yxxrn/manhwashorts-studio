@@ -1,5 +1,21 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Cached visual-stage metadata reuse - 2026-08-23
+
+Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.
+
+The warm review path restored the prepared manifest correctly, but the visual
+runner rejected metadata-only inputs before looking up the existing visual
+cache. A new RED test reproduced this exact failure. The fix now performs the
+same ordered source/prompt cache lookup first and only enforces materialization
+on a cache miss. This preserves the fail-closed provider boundary and does not
+repeat cached visual work.
+
+The focused matrix is 162/162 (137 cloud, 13 visual-repair, 12 prepared-
+manifest); Ruff, compileall, and `git diff --check` pass. No provider/TTS/
+encoder request or MP4/QC artifact exists from this slice. After publication,
+resume the existing job; do not rerun the 701-panel visual/story stages.
+
 ## Warm review-manifest reuse - 2026-08-23
 
 Rollback parent: `ecd8a67cca65dd5f6c5ce117f0096d552111c46c`.
