@@ -2852,8 +2852,9 @@ def test_targeted_repair_prompt_requires_concise_position_drafting():
 def test_targeted_repair_prompt_targets_compact_eight_position_vector():
     module = _module()
     instruction = module.NARRATION_REPAIR_INSTRUCTION
-    assert "about 14-15 words per position when natural" in instruction
-    assert "never pad or truncate to meet an allocation" in instruction
+    assert "write 13-15 words per position" in instruction
+    assert "never exceed 15 words in any single rewrite" in instruction
+    assert "trim redundant words rather than padding any position" in instruction
 
 
 def test_targeted_repair_prompt_targets_safe_in_range_total():
@@ -4268,13 +4269,17 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-position-repair-v6"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v7"
     )
     assert len(repair_prompt_sha256) == 64
     assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text
     assert "revise it until the total is 115-125 words" in repair_prompt_text
     assert "never return a vector above 125 words" in repair_prompt_text
     assert "cannot repair larger responses" in repair_prompt_text
+    assert "never exceed 15 words in any single rewrite" in repair_prompt_text
+    assert "delete whole words whenever a position exceeds its 15-word cap" in (
+        repair_prompt_text
+    )
     assert repair_prompt_text != runner.prompts["narration"][2]
     assert provider.repair_payloads[0]["targeted_repair"]["failure_codes"] == [
         "cloud.narrative_duration_out_of_range",

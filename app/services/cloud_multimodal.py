@@ -238,13 +238,16 @@ NARRATION_REPAIR_INSTRUCTION = (
     "enforces the exact vector shape and order, non-empty strings, trusted "
     "lineage, causal order, total 115-125 words, and 50-60 seconds; it rejects "
     "only a pathological single-position share. Target approximately 120 total "
-    "words; exactly 120 is guidance. For the eight-position vector, aim for "
-    "about 14-15 words per position when natural, but never pad or truncate to "
-    "meet an allocation. Count every rewrite before returning. Aim for 118 "
+    "words; exactly 120 is guidance. For the eight-position vector, write 13-15 "
+    "words per position and never exceed 15 words in any single rewrite; trim "
+    "redundant words rather than padding any position. Count every rewrite "
+    "before returning. Aim for 118 "
     "total words so natural variation stays inside the accepted range; exactly "
     "120 is guidance only. Before returning JSON, recount the complete vector "
-    "and revise it until the total is 115-125 words; never return a vector above "
-    "125 words. The local compactor is only a narrow safety net for 126-130 and "
+    "word by word and revise it until the total is 115-125 words; never return "
+    "a vector above 125 words and delete whole words whenever a position "
+    "exceeds its 15-word cap. The local compactor is only a narrow safety net "
+    "for 126-130 and "
     "cannot repair larger responses. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
     "metadata, or alternate key. Every rewrite must paraphrase any dialogue into "
@@ -5818,7 +5821,7 @@ class CloudStageRunner:
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v6"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v7"
         repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
         repair_prompt = (
             repair_prompt_version,
