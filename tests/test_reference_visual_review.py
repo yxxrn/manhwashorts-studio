@@ -678,6 +678,45 @@ def test_silent_sidecar_contains_mask_identity_not_full_grids():
     }
 
 
+def test_silent_sidecar_is_json_safe_for_in_memory_ledger_values():
+    import json
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class InMemoryTelemetry:
+        mask_sha256: str = "mask"
+
+    telemetry = InMemoryTelemetry()
+    scene = render.SceneInput(
+        image_path=Path("panel.png"),
+        start_time=0.0,
+        end_time=1.0,
+        source_asset_id="asset-a",
+        source_order=3,
+        panel_region_id="region-a",
+        panel_id="panel-a",
+        panel_size=(100, 200),
+        evidence_hash="evidence",
+        border_mask={"mask_sha256": "mask"},
+        selected_roi={"kind": "primary", "crop_box": [0, 0, 100, 200]},
+        fallback_attempts=[{"accepted": False, "telemetry": telemetry}],
+        framing_telemetry=telemetry,
+        review_source_upscale_manifest=telemetry,
+        publish_allowed=False,
+    )
+    request = SimpleNamespace(
+        project_id="project",
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        scenes=[scene],
+    )
+
+    sidecar = render._reference_review_sidecar(
+        request, {"has_audio": False, "duration": 1.0, "width": 1080, "height": 1920}
+    )
+
+    json.dumps(sidecar, ensure_ascii=False, sort_keys=True)
+
+
 def test_reference_ledger_rejects_tampered_mask_and_nonfinite_telemetry():
     import copy
     from dataclasses import asdict

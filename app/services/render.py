@@ -23,7 +23,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
 from random import Random
 from typing import TYPE_CHECKING, Any
@@ -1910,6 +1910,34 @@ def _compact_border_mask_identity(value: object) -> dict[str, Any]:
     }
 
 
+def _reference_json_safe(value: object) -> object:
+    """Normalize in-memory review identities before writing canonical JSON."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise RenderError(
+                "visual.panel_lineage_unavailable: review sidecar contains non-finite telemetry",
+                code="visual.panel_lineage_unavailable",
+            )
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value):
+        return _reference_json_safe(asdict(value))
+    if isinstance(value, Mapping):
+        return {
+            str(key): _reference_json_safe(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_reference_json_safe(item) for item in value]
+    raise RenderError(
+        "visual.panel_lineage_unavailable: review sidecar contains a non-JSON identity",
+        code="visual.panel_lineage_unavailable",
+    )
+
+
 def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -> dict[str, Any]:
     if request.profile is None:
         raise RenderError(
@@ -1961,7 +1989,7 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
             profile=request.profile,
             timing_source=getattr(request, "subtitle_timing_source", "review_provisional_display_pacing_v1"),
         )
-    return {
+    return _reference_json_safe({
         "schema_version": "reference_visual_review_v1",
         "project_id": request.project_id,
         "profile_id": request.profile.profile_id,
@@ -1984,7 +2012,7 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
             }
         ),
         "shots": shots,
-    }
+    })
 
 
 def _escape_filter_path(path: Path) -> str:
@@ -2424,10 +2452,20 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         sidecar_path = request.sidecar_path or output.with_suffix(".review.json")
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
         sidecar = _reference_review_sidecar(request, info)
-        sidecar_path.write_text(
-            json.dumps(sidecar, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
-            encoding="utf-8",
-        )
+        try:
+            sidecar_text = json.dumps(
+                sidecar,
+                allow_nan=False,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise RenderError(
+                "visual.panel_lineage_unavailable: review sidecar is not JSON-safe",
+                code="visual.panel_lineage_unavailable",
+            ) from exc
+        sidecar_path.write_text(sidecar_text + "\n", encoding="utf-8")
     elif request.profile is not None and request.persisted_reference_framing:
         manifest_path = request.sidecar_path or output.with_suffix(".render.json")
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
