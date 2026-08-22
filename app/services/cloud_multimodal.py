@@ -7657,6 +7657,17 @@ class CloudBatchService:
             self.store.save(record)
             narration = NarrationResult.from_dict(record.stage_results["narration"])
             narration = self._reconcile_cached_narration(narration, visual, panels)
+            if self.runner._narration_contract_failures(narration):
+                # A structurally usable narration can still violate the strict
+                # narration contract (word window, duration, dialogue copy).
+                # Repair it through the targeted boundary before admission so
+                # persistence never receives a contract-failing narration.
+                narration = self.runner.run_narration_repair_candidate(
+                    narration,
+                    visual,
+                    story_map,
+                    panels=panels,
+                )
             current_narration_prompt = self.runner.prompts["narration"]
             if (
                 narration.model_identity_hash != self.runner.model_identity.identity_hash

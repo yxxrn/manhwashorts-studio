@@ -4334,6 +4334,181 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
 
 
+def test_run_job_repairs_structurally_usable_dialogue_copy_narration(tmp_path):
+    module = _module()
+    panels = _panels(module)
+    panel_ids = [panel.panel_id for panel in panels]
+    copied_dialogue = "the crown must not leave this hall tonight"
+    setup_runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        max_attempts=1,
+    )
+    visual = setup_runner.run_visual_evidence(panels)
+    mutated_rows = [dict(row) for row in visual.panels]
+    first_row = dict(mutated_rows[0])
+    first_observation = dict(first_row["observation"])
+    first_observation["dialogue_or_ocr"] = [copied_dialogue]
+    first_row["observation"] = first_observation
+    mutated_rows[0] = first_row
+    visual = replace(visual, panels=tuple(mutated_rows))
+
+    class DialogueCopyResumeProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.repair_payloads = []
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "narration_repair":
+                self.calls.append((stage, prompt_version, prompt_sha256))
+                self.repair_payloads.append(dict(payload))
+                return _provider_position_vector(payload)
+            return super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+
+    provider = DialogueCopyResumeProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "dialogue-copy-resume-cache"),
+        max_attempts=1,
+    )
+    runner_prompts = runner.prompts
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel_ids),
+        beats=(
+            {
+                "beat_id": "beat-all",
+                "panel_ids": panel_ids,
+                "summary": "the visible sequence develops",
+            },
+        ),
+        causal_chain=(),
+        claims=tuple(
+            {
+                "claim_id": f"claim-{index}",
+                "claim_type": "fact",
+                "text": f"The visible sequence develops claim {index}.",
+                "panel_ids": panel_ids,
+                "evidence_panel_ids": panel_ids,
+                "qualification": "The ordered panels support this reading.",
+            }
+            for index in range(8)
+        ),
+        story_map_hash="s" * 64,
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version=runner_prompts["story_map"][0],
+        prompt_sha256=runner_prompts["story_map"][1],
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+
+    output = _narrative_output("dialogue-copy-resume", panel_ids)
+    output["evidence_graph"] = {"claims": [dict(claim) for claim in story_map.claims]}
+    output["observations"][0]["dialogue_or_ocr"] = [copied_dialogue]
+    filler = "the pressure keeps building here while the sequence turns"
+
+    def sized_text(base: str, target: int) -> str:
+        words = base.split()
+        while len(words) < target:
+            words.extend(filler.split())
+        return " ".join(words[:target]) + "."
+
+    passage_texts = [
+        sized_text(
+            "The opening beat keeps the pressure rising without stalling "
+            "while the first visible choice narrows the route",
+            30,
+        ),
+        sized_text(
+            "The middle beats widen the stakes as the witness weighs the "
+            "safer path against the cost of waiting",
+            30,
+        ),
+        sized_text(
+            "Each turn narrows the field so the claim stays tied to what "
+            "the sequence shows",
+            30,
+        ),
+        sized_text(
+            "The closing beat shows that the crown must not leave this hall "
+            "tonight so the guarded choice shifts the outcome",
+            30,
+        ),
+    ]
+    for passage, text, passage_index in zip(
+        output["script_passages"], passage_texts, range(len(passage_texts)), strict=True
+    ):
+        passage["text"] = text
+        passage["claim_ids"] = [
+            f"claim-{passage_index * 2}",
+            f"claim-{passage_index * 2 + 1}",
+        ]
+        passage["evidence_panel_ids"] = list(panel_ids)
+    spoken = "\n\n".join(passage_texts)
+    duration_metrics = module.script.narration_duration_metrics(spoken, "dramatic")
+    candidate = module.NarrationResult(
+        spoken_text=spoken,
+        display_words=module.derive_display_words(spoken),
+        passages=tuple(dict(item) for item in output["script_passages"]),
+        ending_kind=str(output["narrative_outline"]["ending_kind"]),
+        word_count=int(duration_metrics["word_count"]),
+        estimated_duration_s=float(duration_metrics["estimated_duration_s"]),
+        qc_report={
+            "duration_contract": module.script.narration_duration_contract("dramatic"),
+        },
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version=runner_prompts["narration"][0],
+        prompt_sha256=runner_prompts["narration"][1],
+        observations=tuple(dict(item) for item in output["observations"]),
+        continuity_ledger=dict(output["continuity_ledger"]),
+        evidence_graph=dict(output["evidence_graph"]),
+        story_spine=dict(output["narrative_outline"]["story_spine"]),
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+
+    store = module.JsonJobStore(tmp_path / "dialogue-copy-resume-jobs")
+    record = module.ChapterJobRecord(
+        job_id="dialogue-copy-resume",
+        stage_results={
+            "visual": visual.as_dict(),
+            "story_map": story_map.as_dict(),
+            "narration": candidate.as_dict(),
+        },
+    )
+    store.save(record)
+
+    analyzer_contract = importlib.import_module("app.services.analyzer_contract")
+    assert module.CloudStageRunner._narration_contract_failures(candidate) == (
+        "cloud.narrative_source_dialogue_copy",
+    )
+    assert 115 <= int(duration_metrics["word_count"]) <= 125
+    assert 50.0 <= float(duration_metrics["estimated_duration_s"]) <= 60.0
+
+    resumed = module.CloudBatchService(runner=runner, store=store).run_job(
+        "dialogue-copy-resume",
+        panels,
+    )
+
+    assert resumed.state == module.ChapterState.READY_TO_RENDER
+    assert [call[0] for call in provider.calls] == ["narration_repair"]
+    assert len(provider.repair_payloads) == 1
+    persisted = store.load("dialogue-copy-resume")
+    assert persisted is not None
+    repaired = module.NarrationResult.from_dict(
+        persisted.stage_results["narration"]
+    )
+    assert 115 <= repaired.word_count <= 125
+    assert not analyzer_contract.contains_source_dialogue_copy(
+        repaired.observations,
+        repaired.passages,
+    )
+
+
 def test_narration_contract_failures_trigger_repair_for_source_dialogue_copy():
     module = _module()
     spoken = (
