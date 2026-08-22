@@ -19,6 +19,7 @@ import json
 import secrets
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from copy import copy as shallow_copy
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -474,6 +475,66 @@ def _review_reference_source_path(
             "visual.panel_lineage_unavailable: original source cannot be decoded"
         ) from None
     return path
+
+
+def _load_review_panel_source(
+    asset: SourceAsset,
+    region: PanelRegion,
+    *,
+    source_root: Path | None,
+    allow_persisted_panel_crop_fallback: bool,
+    resolved_source_path: Path | None = None,
+) -> tuple[
+    Image.Image,
+    tuple[int, int],
+    tuple[int, int, int, int],
+    str,
+    Path | None,
+]:
+    """Load an exact review source, with an explicit crop-only fallback.
+
+    The fallback is limited to silent review. It is admitted only when the
+    full original resolver reports missing bytes and the stored asset bytes
+    match their own checksum and the persisted panel geometry exactly. It
+    never rewrites the original source checksum and is recorded in the
+    source-upscale manifest for downstream QC.
+    """
+    bounds = _panel_region_bounds(region)
+    try:
+        source_path = resolved_source_path or _review_reference_source_path(
+            asset, source_root=source_root
+        )
+        with Image.open(source_path) as source:
+            source.load()
+            image = source.convert("RGB")
+        return (
+            image,
+            tuple(int(value) for value in image.size),
+            bounds,
+            review_source_upscale.ORIGINAL_SOURCE_MATERIALIZATION,
+            source_path,
+        )
+    except PipelineError as exc:
+        if not allow_persisted_panel_crop_fallback or not str(exc).startswith(
+            "review.upscale_source_missing:"
+        ):
+            raise
+    raw = storage.read_bytes(asset.storage_key)
+    try:
+        image, local_bounds = review_source_upscale.resolve_persisted_panel_crop(
+            raw,
+            asset_checksum=str(getattr(asset, "checksum", "") or ""),
+            panel_bounds=bounds,
+        )
+    except review_source_upscale.ReviewSourceUpscaleError:
+        raise
+    return (
+        image,
+        tuple(int(value) for value in image.size),
+        local_bounds,
+        review_source_upscale.PERSISTED_PANEL_CROP_MATERIALIZATION,
+        None,
+    )
 
 
 def _build_source_inputs(
@@ -2319,6 +2380,7 @@ def _load_reference_panel_fallback_candidates(
     section_citations: Mapping[str, Sequence[int]] | None = None,
     beats_by_section: Mapping[str, Sequence[str]] | None = None,
     review_source_root: Path | None = None,
+    allow_persisted_panel_crop_fallback: bool = False,
 ) -> tuple[object, ...]:
     """Read each exact persisted panel crop before planner selection."""
     analysis = latest_analysis(db, project_id)
@@ -2372,18 +2434,29 @@ def _load_reference_panel_fallback_candidates(
             if review_source_upscale_policy is None:
                 source = Image.open(io.BytesIO(storage.read_bytes(asset.storage_key)))
                 source.load()
+                source_dimensions = tuple(int(value) for value in source.size)
+                bounds = _panel_region_bounds(region)
+                source_materialization = (
+                    review_source_upscale.ORIGINAL_SOURCE_MATERIALIZATION
+                )
             else:
-                source_path = resolved_source_paths.get(str(asset.id))
-                if source_path is None:
-                    source_path = _review_reference_source_path(
-                        asset,
-                        source_root=review_source_root,
-                    )
+                (
+                    source,
+                    source_dimensions,
+                    bounds,
+                    source_materialization,
+                    source_path,
+                ) = _load_review_panel_source(
+                    asset,
+                    region,
+                    source_root=review_source_root,
+                    allow_persisted_panel_crop_fallback=(
+                        allow_persisted_panel_crop_fallback
+                    ),
+                    resolved_source_path=resolved_source_paths.get(str(asset.id)),
+                )
+                if source_path is not None:
                     resolved_source_paths[str(asset.id)] = source_path
-                source = Image.open(source_path)
-                source.load()
-            source_dimensions = tuple(int(value) for value in source.size)
-            bounds = _panel_region_bounds(region)
             # Clamp stale/legacy panel bounds to the source asset. Regions whose
             # bounds lie completely outside the asset are corrupt and cannot be
             # framed meaningfully; skip them instead of cropping garbage text.
@@ -2418,6 +2491,7 @@ def _load_reference_panel_fallback_candidates(
                     source_asset_checksum=current_checksum,
                     source_panel_bounds=clamped,
                     source_dimensions=source_dimensions,
+                    source_materialization=source_materialization,
                 )
                 builder_region = shallow_copy(region)
                 builder_region.bounds_json = _panel_bounds_json(
@@ -2438,6 +2512,11 @@ def _load_reference_panel_fallback_candidates(
             if prepared_crop is not crop:
                 prepared_crop.close()
         except review_source_upscale.ReviewSourceUpscaleError as exc:
+            if (
+                allow_persisted_panel_crop_fallback
+                and exc.code == "review.panel_crop_fallback_geometry_invalid"
+            ):
+                continue
             raise PipelineError(f"{exc.code}: {exc}") from exc
         except (OSError, UnidentifiedImageError, ValueError, storage.StorageError):
             # An empty exact registry still routes through the explicit planner
@@ -2794,6 +2873,7 @@ def build_timeline(
                 section_citations=reference_section_citations,
                 beats_by_section=reference_beats_by_section,
                 review_source_root=review_source_root,
+                allow_persisted_panel_crop_fallback=silent_reference_review,
             )
         else:
             reference_candidates = _load_reference_panel_fallback_candidates(
@@ -3024,6 +3104,7 @@ def _materialize_reference_panel_crop(
         )
     source_bounds = _panel_region_bounds(region)
     accepted_manifest = None
+    source_materialization = review_source_upscale.ORIGINAL_SOURCE_MATERIALIZATION
     if review_source_upscale_policy is not None:
         ledger = list(getattr(scene, "rejected_candidates", []) or [])
         accepted = [
@@ -3038,6 +3119,12 @@ def _materialize_reference_panel_crop(
                 "review.upscale_manifest_invalid: accepted source-upscale manifest is missing"
             )
         accepted_manifest = dict(accepted[0]["source_upscale_manifest"])
+        source_materialization = str(
+            accepted_manifest.get(
+                "source_materialization",
+                review_source_upscale.ORIGINAL_SOURCE_MATERIALIZATION,
+            )
+        )
         try:
             review_source_upscale.validate_review_manifest_dimensions(
                 accepted_manifest,
@@ -3045,8 +3132,19 @@ def _materialize_reference_panel_crop(
             )
         except review_source_upscale.ReviewSourceUpscaleError as exc:
             raise PipelineError(f"{exc.code}: {exc}") from exc
+        accepted_source_bounds = tuple(
+            int(value) for value in accepted_manifest.get("source_panel_bounds", ())
+        )
+        expected_source_bounds = source_bounds
+        if source_materialization == review_source_upscale.PERSISTED_PANEL_CROP_MATERIALIZATION:
+            if len(accepted_source_bounds) != 4 or accepted_source_bounds[:2] != (0, 0):
+                raise PipelineError(
+                    "visual.panel_lineage_unavailable: persisted crop source bounds are stale"
+                )
+            expected_source_bounds = accepted_source_bounds
+            source_bounds = accepted_source_bounds
         if (
-            tuple(accepted_manifest.get("source_panel_bounds", ())) != source_bounds
+            accepted_source_bounds != expected_source_bounds
             or tuple(accepted_manifest.get("prepared_panel_bounds", ())) != bounds
             or accepted_manifest.get("source_asset_id") != str(asset.id)
             or accepted_manifest.get("panel_region_id") != str(region.id)
@@ -3073,18 +3171,40 @@ def _materialize_reference_panel_crop(
         raise PipelineError(
             "visual.panel_lineage_unavailable: visual evidence snapshot is stale"
         )
-    source_path = (
-        _review_reference_source_path(asset, source_root=review_source_root)
-        if review_source_upscale_policy is not None
-        else storage.path_for(asset.storage_key)
-    )
-    if not source_path.is_file():
-        raise PipelineError(
-            "visual.panel_lineage_unavailable: source asset file is unavailable"
+    if (
+        review_source_upscale_policy is not None
+        and source_materialization
+        == review_source_upscale.PERSISTED_PANEL_CROP_MATERIALIZATION
+    ):
+        try:
+            raw = storage.read_bytes(asset.storage_key)
+            source_image, local_bounds = review_source_upscale.resolve_persisted_panel_crop(
+                raw,
+                asset_checksum=str(getattr(asset, "checksum", "") or ""),
+                panel_bounds=source_bounds,
+            )
+        except review_source_upscale.ReviewSourceUpscaleError as exc:
+            raise PipelineError(f"{exc.code}: {exc}") from exc
+        if local_bounds != source_bounds:
+            source_image.close()
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: persisted crop source bounds changed"
+            )
+        source_context = nullcontext(source_image)
+    else:
+        source_path = (
+            _review_reference_source_path(asset, source_root=review_source_root)
+            if review_source_upscale_policy is not None
+            else storage.path_for(asset.storage_key)
         )
+        if not source_path.is_file():
+            raise PipelineError(
+                "visual.panel_lineage_unavailable: source asset file is unavailable"
+            )
+        source_context = Image.open(source_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with Image.open(source_path) as source:
+        with source_context as source:
             source.load()
             source_width, source_height = source.size
             if source_bounds[2] > source_width or source_bounds[3] > source_height:
@@ -3101,6 +3221,7 @@ def _materialize_reference_panel_crop(
                     source_asset_checksum=asset_checksum,
                     source_panel_bounds=source_bounds,
                     source_dimensions=(source_width, source_height),
+                    source_materialization=source_materialization,
                 )
                 if _canonical_json(generated_manifest) != _canonical_json(accepted_manifest):
                     raise PipelineError(

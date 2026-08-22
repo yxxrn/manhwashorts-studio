@@ -61,6 +61,45 @@ def test_review_policy_prepares_900px_panel_and_transforms_bounds():
     )
 
 
+def test_review_panel_crop_fallback_requires_exact_asset_bytes_and_localizes_bounds():
+    module = _upscale_module()
+    image = Image.new("RGB", (900, 1600), (30, 60, 90))
+    payload = __import__("io").BytesIO()
+    image.save(payload, format="PNG")
+    raw = payload.getvalue()
+
+    resolved, bounds = module.resolve_persisted_panel_crop(
+        raw,
+        asset_checksum=hashlib.sha256(raw).hexdigest(),
+        panel_bounds=(0, 3200, 900, 4800),
+    )
+
+    assert resolved.size == (900, 1600)
+    assert bounds == (0, 0, 900, 1600)
+
+
+def test_review_panel_crop_fallback_rejects_tampered_bytes_or_geometry():
+    module = _upscale_module()
+    image = Image.new("RGB", (900, 1600), (30, 60, 90))
+    payload = __import__("io").BytesIO()
+    image.save(payload, format="PNG")
+    raw = payload.getvalue()
+    checksum = hashlib.sha256(raw).hexdigest()
+
+    with pytest.raises(module.ReviewSourceUpscaleError, match="review.panel_crop_fallback_checksum_invalid"):
+        module.resolve_persisted_panel_crop(
+            raw + b"tampered",
+            asset_checksum=checksum,
+            panel_bounds=(0, 3200, 900, 4800),
+        )
+    with pytest.raises(module.ReviewSourceUpscaleError, match="review.panel_crop_fallback_geometry_invalid"):
+        module.resolve_persisted_panel_crop(
+            raw,
+            asset_checksum=checksum,
+            panel_bounds=(0, 3200, 899, 4800),
+        )
+
+
 def test_default_review_policy_uses_approved_mass_production_cap():
     module = _upscale_module()
 

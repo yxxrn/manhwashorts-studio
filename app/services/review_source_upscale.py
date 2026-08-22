@@ -14,6 +14,8 @@ from typing import Any
 from PIL import Image, UnidentifiedImageError
 
 REVIEW_SOURCE_UPSCALE_POLICY_ID = "review_silent_source_upscale_v1"
+ORIGINAL_SOURCE_MATERIALIZATION = "original_source_v1"
+PERSISTED_PANEL_CROP_MATERIALIZATION = "persisted_panel_crop_v1"
 
 
 class ReviewSourceUpscaleError(ValueError):
@@ -103,6 +105,67 @@ def resolve_original_source_path(
         "the original source bytes are unavailable",
         "review.upscale_source_missing",
     )
+
+
+def resolve_persisted_panel_crop(
+    data: bytes,
+    *,
+    asset_checksum: str,
+    panel_bounds: tuple[int, int, int, int],
+) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    """Resolve an exact stored panel crop when the full strip is unavailable.
+
+    This is an explicit silent-review-only data boundary.  It accepts a crop
+    only when the stored asset bytes match the persisted asset checksum and
+    the decoded dimensions exactly match the persisted panel box dimensions.
+    The original source checksum is never rewritten or treated as the crop
+    checksum; callers record the separate materialization mode in the review
+    manifest and keep publish/voiced rendering on the full-source path.
+    """
+    if (
+        not isinstance(data, (bytes, bytearray))
+        or not isinstance(asset_checksum, str)
+        or len(asset_checksum) != 64
+        or any(character not in "0123456789abcdef" for character in asset_checksum.lower())
+    ):
+        raise ReviewSourceUpscaleError(
+            "persisted panel crop checksum is invalid",
+            "review.panel_crop_fallback_checksum_invalid",
+        )
+    if (
+        not isinstance(panel_bounds, tuple)
+        or len(panel_bounds) != 4
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in panel_bounds)
+        or panel_bounds[2] <= panel_bounds[0]
+        or panel_bounds[3] <= panel_bounds[1]
+    ):
+        raise ReviewSourceUpscaleError(
+            "persisted panel crop bounds are invalid",
+            "review.panel_crop_fallback_geometry_invalid",
+        )
+    raw = bytes(data)
+    if hashlib.sha256(raw).hexdigest() != asset_checksum.lower():
+        raise ReviewSourceUpscaleError(
+            "persisted panel crop bytes do not match the asset checksum",
+            "review.panel_crop_fallback_checksum_invalid",
+        )
+    expected_size = (panel_bounds[2] - panel_bounds[0], panel_bounds[3] - panel_bounds[1])
+    try:
+        with Image.open(io.BytesIO(raw)) as decoded:
+            decoded.load()
+            crop = decoded.convert("RGB")
+    except (OSError, UnidentifiedImageError, ValueError):
+        raise ReviewSourceUpscaleError(
+            "persisted panel crop cannot be decoded",
+            "review.panel_crop_fallback_decode_invalid",
+        ) from None
+    if crop.size != expected_size:
+        crop.close()
+        raise ReviewSourceUpscaleError(
+            "persisted panel crop dimensions do not match its panel bounds",
+            "review.panel_crop_fallback_geometry_invalid",
+        )
+    return crop, (0, 0, crop.width, crop.height)
 
 
 def resolve_review_source_upscale_policy(
@@ -221,6 +284,7 @@ def prepare_review_panel(
     source_asset_checksum: str,
     source_panel_bounds: tuple[int, int, int, int] | None = None,
     source_dimensions: tuple[int, int] | None = None,
+    source_materialization: str = ORIGINAL_SOURCE_MATERIALIZATION,
 ) -> tuple[Image.Image, dict[str, Any]]:
     if not isinstance(policy, ReviewSourceUpscalePolicy):
         raise ReviewSourceUpscaleError(
@@ -230,6 +294,14 @@ def prepare_review_panel(
     if not source_asset_id or not panel_region_id or not source_asset_checksum:
         raise ReviewSourceUpscaleError(
             "source lineage is incomplete", "review.upscale_lineage_invalid"
+        )
+    if source_materialization not in {
+        ORIGINAL_SOURCE_MATERIALIZATION,
+        PERSISTED_PANEL_CROP_MATERIALIZATION,
+    }:
+        raise ReviewSourceUpscaleError(
+            "source materialization is unsupported",
+            "review.upscale_lineage_invalid",
         )
     original = image.convert("RGB")
     if original.width <= 0 or original.height <= 0:
@@ -272,6 +344,7 @@ def prepare_review_panel(
         "source_asset_id": source_asset_id,
         "panel_region_id": panel_region_id,
         "source_asset_checksum": source_asset_checksum,
+        "source_materialization": source_materialization,
         "original_dimensions": [original.width, original.height],
         "source_dimensions": list(full_source_dimensions),
         "prepared_dimensions": [prepared.width, prepared.height],
@@ -338,6 +411,14 @@ def validate_review_manifest_dimensions(
     if policy is None or manifest.get("manifest_sha256") != _manifest_hash(manifest):
         raise ReviewSourceUpscaleError(
             "review manifest identity does not match",
+            "review.upscale_manifest_invalid",
+        )
+    if manifest.get("source_materialization", ORIGINAL_SOURCE_MATERIALIZATION) not in {
+        ORIGINAL_SOURCE_MATERIALIZATION,
+        PERSISTED_PANEL_CROP_MATERIALIZATION,
+    }:
+        raise ReviewSourceUpscaleError(
+            "review manifest source materialization is unsupported",
             "review.upscale_manifest_invalid",
         )
     prepared_dimensions = manifest.get("prepared_dimensions")
