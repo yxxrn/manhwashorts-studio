@@ -1438,3 +1438,11 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - The corrected boundary persists only sanitized metadata for every early positional contract failure: container/key shape, rewrite count/types, per-position word counts, total words, duration estimate, expected ranges, slot-order identity, hard accepted ranges, and the exact failed predicate. It never stores provider text.
 - Hard admission remains unchanged: trusted positional order/lineage, grounding, causal coherence, display derivation, 115-125 words, and 50-60 seconds remain fail-closed. No narration, MP4, TTS, or final QC artifact is claimed yet.
 - Next resume point: inspect only the sanitized report from `2cd528e`, then issue a bounded same-model repair call as authorized. If strict admission succeeds, persist the narration through the normal entrypoint, render/QC silent video first, then proceed to configured TTS/alignment and voiced QC. Keep runtime data, caches, media, database files, and `ms_env.sh` untracked.
+
+
+## 2026-08-22 - bounded repair shape report
+
+- From published checkpoint `a3fa443151d4b84864dcab56186adb141e0e602a`, the next authorized same-scope repair used exactly 1 provider request and 0 retries, with no visual/story repeat.
+- Sanitized response metrics: positional container `dict`, 8 rewrite items, all 8 items strings, total 140 words, estimated duration 60.87 seconds, and one top-level key. The stored metadata contains no provider prose.
+- Local admission correctly failed closed with `cloud.narrative_repair_micro_compaction_unavailable`, predicate `micro_compaction_window`. The conservative local compactor accepts only 126-130 word candidates; it must not truncate or weaken the hard 115-125 word and 50-60 second gates. No source/test change is justified by this result.
+- No narration, MP4, TTS, or final QC artifact is claimed. The next retry remains bounded and must be admitted only after positional shape, trusted lineage, grounding, causal order, display derivation, total words, and duration all pass.
