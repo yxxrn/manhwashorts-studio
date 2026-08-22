@@ -198,3 +198,9 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - The first real review resume reached the regular render boundary with zero provider requests and failed closed on `review.upscale_manifest_invalid`: existing accepted timeline entries encoded `source_materialization: null`. This is legacy metadata for the original-source path, not permission to reinterpret a crop or bypass lineage.
 - RED/GREEN evidence: `test_legacy_null_or_missing_materialization_defaults_to_original` failed on the published validator, then passed after a narrow normalizer/validator update. The focused review/cloud/lineage/reference matrix is 213 passed; Ruff, compileall, `git diff --check`, and secret-shape scan are clean.
 - Only missing/null materialization is normalized to `original_source_v1`; explicit unknown values remain rejected. The render retry must use the persisted timeline and exact DB/storage overrides, with no visual/story/provider repeat; the previous render attempt consumed zero provider/TTS requests and left the job in `NEEDS_REVIEW` with `review.preview_failed`.
+
+## 2026-08-22 - Conservative balloon geometry admission correction
+
+- First silent render was generated but rejected during visual review: frame 36 retained a source speech balloon. Root cause was a trusted balloon record whose normalized bbox and polygon envelopes disagreed; bbox-only overlap returned zero for the selected ROI at source order 225.
+- RED/GREEN: added `test_candidate_rejects_balloon_when_bbox_and_polygon_disagree`; conservative bbox+polygon evaluation passes the 76-test framing/review/upscale collection (75 passed, 1 existing skip). No provider/TTS call was made. The stale pre-fix MP4 cannot be used as Video 1 evidence.
+- Next task is publish this strict correction, rerender only the silent review from persisted state, inspect actual frames/contact sheet, and continue to TTS only after corrected visual QC.

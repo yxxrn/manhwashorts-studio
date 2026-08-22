@@ -129,6 +129,27 @@ def _region_bounds(region: Any) -> tuple[float, float, float, float] | None:
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def _region_geometry_boxes(region: Any) -> tuple[tuple[float, float, float, float], ...]:
+    """Return every persisted geometry envelope, conservatively.
+
+    Balloon evidence may carry both a bbox and a polygon.  They are both
+    authoritative geometry, so a disagreement must not turn a visible
+    balloon into an apparently empty crop by trusting only one representation.
+    """
+    boxes: list[tuple[float, float, float, float]] = []
+    bbox = getattr(region, "normalized_bbox", None)
+    if bbox is not None:
+        boxes.append(tuple(float(value) for value in bbox))  # type: ignore[arg-type]
+    polygon = tuple(getattr(region, "normalized_polygon", ()) or ())
+    if polygon:
+        xs = [float(point[0]) for point in polygon]
+        ys = [float(point[1]) for point in polygon]
+        polygon_box = (min(xs), min(ys), max(xs), max(ys))
+        if polygon_box not in boxes:
+            boxes.append(polygon_box)
+    return tuple(boxes)
+
+
 def _overlaps(
     cell: tuple[tuple[int, int], tuple[int, int]],
     region_box: tuple[float, float, float, float],
@@ -490,7 +511,7 @@ def _balloon_intersection_ratio(
     overlap = sum(
         _intersection_area(region_box, crop)
         for region in evidence.balloon_regions
-        if (region_box := _region_bounds(region)) is not None
+        for region_box in _region_geometry_boxes(region)
     )
     return min(1.0, overlap / crop_area) if crop_area else 1.0
 

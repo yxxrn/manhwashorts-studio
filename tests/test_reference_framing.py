@@ -199,6 +199,50 @@ def test_candidate_rejects_any_nonzero_balloon_overlap():
     assert telemetry.rejection_code == "visual.balloon_mask_overlap"
 
 
+def test_candidate_rejects_balloon_when_bbox_and_polygon_disagree():
+    from app.services import framing_analysis, visual_scoring
+
+    image = Image.new("RGB", (1657, 1670), (40, 50, 60))
+    evidence = _visual_evidence(
+        balloon_regions=(
+            visual_scoring.BalloonRegionEvidence(
+                region_id="balloon-observed-mismatch",
+                kind="speech_balloon",
+                normalized_bbox=(0.0, 0.5, 0.44, 0.92),
+                normalized_polygon=(
+                    (0.5, 0.2),
+                    (0.71, 0.0),
+                    (0.92, 0.2),
+                    (0.85, 0.38),
+                    (0.64, 0.44),
+                    (0.66, 0.38),
+                    (0.5, 0.2),
+                ),
+                confidence=0.72,
+                evidence_source="visual_direct_inspection",
+                mask_status="known_nonempty",
+            ),
+        ),
+        status="known_nonempty",
+    )
+    mask = framing_analysis.build_color_agnostic_border_mask(
+        image, evidence, grid_long_edge=64
+    )
+
+    feasible, telemetry = framing_analysis.candidate_is_feasible(
+        (830, 0, 1657, 1470),
+        evidence,
+        mask,
+        image.size,
+        (1080, 1920),
+        review_aggressive_crop=True,
+    )
+
+    assert feasible is False
+    assert telemetry.balloon_mask_intersection_ratio > 0.0
+    assert telemetry.rejection_code == "visual.balloon_mask_overlap"
+
+
 @pytest.mark.parametrize(
     ("kind", "telemetry_field", "minimum"),
     (

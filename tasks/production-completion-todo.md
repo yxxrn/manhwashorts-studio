@@ -140,3 +140,9 @@ complete from unit tests alone.
 - The first real review resume reached the regular render boundary with zero provider requests and failed closed on `review.upscale_manifest_invalid`: existing accepted timeline entries encoded `source_materialization: null`. This is legacy metadata for the original-source path, not permission to reinterpret a crop or bypass lineage.
 - RED/GREEN evidence: `test_legacy_null_or_missing_materialization_defaults_to_original` failed on the published validator, then passed after a narrow normalizer/validator update. The focused review/cloud/lineage/reference matrix is 213 passed; Ruff, compileall, `git diff --check`, and secret-shape scan are clean.
 - Only missing/null materialization is normalized to `original_source_v1`; explicit unknown values remain rejected. The render retry must use the persisted timeline and exact DB/storage overrides, with no visual/story/provider repeat; the previous render attempt consumed zero provider/TTS requests and left the job in `NEEDS_REVIEW` with `review.preview_failed`.
+
+## 2026-08-22 - Conservative balloon geometry admission correction
+
+- [x] Diagnose the visual false admission at source order 225: bbox and polygon balloon geometry disagree, and bbox-only overlap falsely returned zero.
+- [x] Add and pass the strict regression `test_candidate_rejects_balloon_when_bbox_and_polygon_disagree`; focused framing/review/upscale matrix is 75 passed / 1 existing skip.
+- [ ] Publish the narrow source/test/docs checkpoint, rerender the silent review from cached 701-panel state, inspect actual frames, and only then enter the configured TTS stage.
