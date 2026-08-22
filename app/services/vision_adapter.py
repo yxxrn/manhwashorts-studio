@@ -303,6 +303,22 @@ def _decode_json_content(content: str) -> Any:
     return json.loads(text)
 
 
+def _raise_http_failure(response: httpx.Response) -> None:
+    """Map known provider request errors without retaining provider payloads."""
+
+    try:
+        body = response.json()
+    except Exception:
+        body = None
+    if (
+        response.status_code == 400
+        and isinstance(body, Mapping)
+        and body.get("code") == "invalid_image"
+    ):
+        raise VisionRequestInvalid() from None
+    raise VisionProviderRequestFailed() from None
+
+
 class OpenAICompatibleVisionProvider:
     """Minimal OpenAI-compatible multimodal adapter with fail-closed parsing."""
 
@@ -364,6 +380,8 @@ class OpenAICompatibleVisionProvider:
                 timeout=VISION_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _raise_http_failure(exc.response)
         except Exception:
             raise VisionProviderRequestFailed() from None
 
@@ -417,6 +435,8 @@ class OpenAICompatibleVisionProvider:
                 timeout=VISION_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _raise_http_failure(exc.response)
         except Exception:
             raise VisionProviderRequestFailed() from None
 
@@ -503,6 +523,8 @@ class OpenAICompatibleVisionProvider:
             response.raise_for_status()
             content = _chat_completion_content(response)
             value = _decode_json_content(content)
+        except httpx.HTTPStatusError as exc:
+            _raise_http_failure(exc.response)
         except Exception:
             raise VisionProviderRequestFailed() from None
         if not isinstance(value, Mapping):

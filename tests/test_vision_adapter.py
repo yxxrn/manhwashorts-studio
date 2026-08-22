@@ -232,6 +232,28 @@ def test_sse_chat_completion_is_assembled_for_observations(monkeypatch):
     ]
 
 
+def test_invalid_image_http_error_is_classified_as_request_invalid(monkeypatch):
+    module = _vision_module()
+    import httpx
+
+    response = httpx.Response(
+        400,
+        headers={"content-type": "application/json"},
+        json={"code": "invalid_image", "error": "redacted"},
+        request=httpx.Request("POST", "http://provider.test/v1/chat/completions"),
+    )
+    monkeypatch.setattr(module.httpx, "post", lambda *args, **kwargs: response)
+
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url="http://provider.test/v1",
+        model="mock-large",
+        api_key="test-key",
+    )
+
+    with pytest.raises(module.VisionRequestInvalid):
+        provider.observe(_request(module))
+
+
 def test_observation_accepts_a_whole_json_code_fence(monkeypatch):
     module = _vision_module()
     import httpx
