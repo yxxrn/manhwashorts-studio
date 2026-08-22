@@ -57,4 +57,5 @@ complete from unit tests alone.
 - [x] Record one newly authorized bounded repair attempt: 8 strings, 126 words, 54.78 seconds, one request, zero retries, no visual/story repeat, failed micro_compaction_no_safe_operation.
 - [x] Add RED/GREEN regression for deterministic 126-to-125 auxiliary contraction and bump the policy identity to v3 without changing hard bounds.
 - [x] Verify compaction-focused 6/6, cloud/related 336/336, Ruff, compileall, diff/no-churn, allowlist, and secret scans.
-- [ ] Commit and publish the v3 source/test checkpoint, then make the next bounded repair request only from the published SHA.
+- [x] Commit and publish the v3 source/test/docs checkpoint at `95965721b253468258483aeda9b64eb998153565`.
+- [ ] Make the next bounded repair request only from the published SHA.
