@@ -2158,7 +2158,11 @@ class CloudStageRunner:
                     return cached_result
         if cached is None and (migrated := self._migrate_legacy_visual_cache(ordered, key=key, prompt=prompt)) is not None:
             return VisualStageResult.from_dict(migrated)
-        if any(getattr(panel, "metadata_only", False) for panel in ordered):
+        if any(
+            getattr(panel, "metadata_only", False)
+            and panel.panel_id not in cached_reusable
+            for panel in ordered
+        ):
             raise CloudStageError("cloud.prepared_manifest_requires_materialization")
         instruction_version, instruction_sha256, _ = analyzer_contract.load_analyzer_instruction()
         from concurrent.futures import ThreadPoolExecutor
@@ -8037,6 +8041,137 @@ def _panels_for_cached_visual_stage(
     return filtered if filtered else ordered
 
 
+def _visual_panel_ids_requiring_materialization(
+    runner: CloudStageRunner,
+    panels: Sequence[CloudPanelInput],
+) -> tuple[str, ...]:
+    """Return only metadata-only panels absent from the exact visual cache."""
+
+    ordered = tuple(panels)
+    metadata_ids = {
+        panel.panel_id for panel in ordered if getattr(panel, "metadata_only", False)
+    }
+    if not metadata_ids or runner.cache is None:
+        return tuple(panel.panel_id for panel in ordered if panel.panel_id in metadata_ids)
+    ordered = runner._ordered_panels(ordered)
+    prompt = runner.prompts["visual"]
+    key = _cache_key(
+        "visual",
+        list(_visual_panel_identities(ordered)),
+        runner.model_identity,
+        prompt,
+    )
+    cached = runner.cache.get(key)
+    if not isinstance(cached, Mapping):
+        return tuple(panel.panel_id for panel in ordered if panel.panel_id in metadata_ids)
+    try:
+        cached_result = VisualStageResult.from_dict(cached)
+    except (KeyError, TypeError, ValueError):
+        return tuple(panel.panel_id for panel in ordered if panel.panel_id in metadata_ids)
+    panels_by_id = {panel.panel_id: panel for panel in ordered}
+    reusable_ids = {
+        str(row.get("panel_id", ""))
+        for row in cached_result.panels
+        if isinstance(row, Mapping)
+        and _visual_cached_row_is_reusable(
+            row,
+            panels_by_id.get(str(row.get("panel_id", ""))),
+        )
+    }
+    return tuple(
+        panel.panel_id
+        for panel in ordered
+        if panel.panel_id in metadata_ids and panel.panel_id not in reusable_ids
+    )
+
+
+def _materialize_metadata_only_panels(
+    db: Any,
+    project_id: str,
+    panels: Sequence[CloudPanelInput],
+    *,
+    required_panel_ids: Sequence[str],
+) -> tuple[CloudPanelInput, ...]:
+    """Decode exact source crops only for cache rows that need provider input."""
+
+    required = {str(panel_id) for panel_id in required_panel_ids if str(panel_id).strip()}
+    ordered = tuple(panels)
+    if not required:
+        return ordered
+    from app.models import PanelRegion
+    from app.services import pipeline
+
+    assets = tuple(pipeline.image_assets(pipeline.project_assets(db, project_id)))
+    assets_by_id = {str(asset.id): asset for asset in assets}
+    target_panels = tuple(
+        panel
+        for panel in ordered
+        if panel.panel_id in required and getattr(panel, "metadata_only", False)
+    )
+    if len(target_panels) != len(required):
+        raise CloudStageError("cloud.prepared_manifest_invalid")
+    target_asset_ids = {panel.source_asset_id for panel in target_panels}
+    selected_assets = tuple(
+        assets_by_id[asset_id]
+        for asset_id in sorted(target_asset_ids)
+        if asset_id in assets_by_id
+    )
+    if len(selected_assets) != len(target_asset_ids):
+        raise CloudStageError("cloud.panel_lineage_invalid")
+    try:
+        source_inputs, _ = pipeline._build_source_inputs(selected_assets)
+    except Exception:
+        raise CloudStageError("cloud.panel_payload_invalid") from None
+    source_by_id = {str(item.source_asset_id): item for item in source_inputs}
+    materialized: list[CloudPanelInput] = []
+    for panel in ordered:
+        if panel.panel_id not in required or not getattr(panel, "metadata_only", False):
+            materialized.append(panel)
+            continue
+        source_input = source_by_id.get(panel.source_asset_id)
+        bounds = panel.panel_bounds
+        dimensions = panel.source_dimensions
+        if source_input is None or bounds is None or dimensions is None:
+            raise CloudStageError("cloud.panel_lineage_invalid")
+        if (
+            source_input.original_checksum != panel.source_checksum
+            or int(source_input.original_width) != int(dimensions[0])
+            or int(source_input.original_height) != int(dimensions[1])
+        ):
+            raise CloudStageError("cloud.panel_lineage_invalid")
+        transient = PanelRegion(
+            id=panel.panel_id,
+            story_analysis_id="cloud-preview",
+            source_asset_id=panel.source_asset_id,
+            source_asset_checksum=panel.source_checksum,
+            original_width=dimensions[0],
+            original_height=dimensions[1],
+            strip_region_id=panel.strip_region_id or panel.panel_id,
+            panel_id=panel.panel_id,
+            source_order=panel.source_order,
+            bounds_json={
+                "x": bounds[0],
+                "y": bounds[1],
+                "width": bounds[2] - bounds[0],
+                "height": bounds[3] - bounds[1],
+            },
+        )
+        try:
+            payload = pipeline._encode_panel_payload(transient, source_input)
+        except Exception:
+            raise CloudStageError("cloud.panel_payload_invalid") from None
+        materialized.append(
+            replace(
+                panel,
+                mime_type="image/png",
+                payload=payload,
+                payload_checksum="",
+                metadata_only=False,
+            )
+        )
+    return tuple(materialized)
+
+
 class CloudBatchService:
     def __init__(
         self,
@@ -8466,15 +8601,40 @@ class CloudBatchService:
             )
             if max_cloud_panels is not None and len(panels) > max_cloud_panels:
                 panels = _subsample_panels(panels, max_cloud_panels)
+            targeted_materialization_ids: tuple[str, ...] = ()
+            if manifest_loaded:
+                targeted_materialization_ids = _visual_panel_ids_requiring_materialization(
+                    self.runner,
+                    panels,
+                )
+                if targeted_materialization_ids:
+                    try:
+                        panels = _materialize_metadata_only_panels(
+                            db,
+                            project_id,
+                            panels,
+                            required_panel_ids=targeted_materialization_ids,
+                        )
+                    except CloudStageError as exc:
+                        return self._record_failure(record, exc)
             record.stage_results["segmentation"] = segmentation_state
             record.stage_results["preparation_metrics"] = {
                 "contract_version": "prepared-panel-preparation-v1",
-                "mode": "manifest_metadata_only" if manifest_loaded else "cold_materialization",
+                "mode": (
+                    "manifest_targeted_materialization"
+                    if targeted_materialization_ids
+                    else "manifest_metadata_only"
+                    if manifest_loaded
+                    else "cold_materialization"
+                ),
                 "panel_count": len(panels),
                 "payload_bytes": sum(len(panel.payload) for panel in panels),
+                "targeted_materialized_panel_count": len(targeted_materialization_ids),
                 "elapsed_s": round(time.monotonic() - preparation_started, 3),
                 "peak_rss_kb": _peak_rss_kb(),
-                "source_decode_required": not manifest_loaded,
+                "source_decode_required": bool(
+                    not manifest_loaded or targeted_materialization_ids
+                ),
             }
             if not manifest_loaded:
                 record.stage_results["prepared_panel_manifest"] = _build_project_prepared_manifest(

@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -2092,6 +2093,67 @@ def test_cached_visual_reanalyzes_only_rows_without_visible_facts():
     assert result.panels[1]["observation"]["visible_facts"] == [
         f"visible fact {panels[1].source_order}"
     ]
+
+
+def test_metadata_only_visual_repair_materializes_only_invalid_rows(monkeypatch):
+    module = _module()
+    pipeline = importlib.import_module("app.services.pipeline")
+    panels = _panels(module, "metadata-repair")
+    metadata_panels = tuple(
+        replace(
+            panel,
+            payload=b"prepared-panel-manifest-v2:" + ("a" * 64).encode(),
+            payload_checksum="",
+            identity_payload_checksum="a" * 64,
+            identity_descriptor_hash="b" * 64,
+            source_identity_hash="c" * 64,
+            metadata_only=True,
+        )
+        for panel in panels
+    )
+    target = metadata_panels[1]
+    asset = SimpleNamespace(id=target.source_asset_id)
+    source_input = SimpleNamespace(
+        source_asset_id=target.source_asset_id,
+        original_checksum=target.source_checksum,
+        original_width=100,
+        original_height=100,
+        source_bounds=(0, 0, 100, 100),
+        decoded_width=100,
+        decoded_height=100,
+        payload=b"source-bytes",
+    )
+    encoded_panel_ids = []
+    monkeypatch.setattr(
+        pipeline,
+        "project_assets",
+        lambda db, project_id: (asset,),
+    )
+    monkeypatch.setattr(pipeline, "image_assets", lambda assets: tuple(assets))
+    monkeypatch.setattr(
+        pipeline,
+        "_build_source_inputs",
+        lambda assets: ((source_input,), {target.source_asset_id: asset}),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_encode_panel_payload",
+        lambda panel, source: encoded_panel_ids.append(panel.panel_id) or b"real-png",
+    )
+
+    materialized = module._materialize_metadata_only_panels(
+        object(),
+        "project-1",
+        metadata_panels,
+        required_panel_ids=(target.panel_id,),
+    )
+
+    assert encoded_panel_ids == [target.panel_id]
+    assert materialized[0].metadata_only is True
+    assert materialized[1].metadata_only is False
+    assert materialized[1].payload == b"real-png"
+    assert materialized[1].identity_descriptor_hash == "b" * 64
+    assert materialized[2].metadata_only is True
 
 
 def test_file_stage_cache_round_trips_durable_values(tmp_path):
