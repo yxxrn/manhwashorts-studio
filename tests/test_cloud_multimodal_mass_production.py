@@ -1472,7 +1472,41 @@ def test_unknown_visual_geometry_blocks_before_story_mapping():
         "chunk_index": 0,
         "panel_count": 3,
     }
-    assert [call[0] for call in provider.calls] == ["visual", "visual"]
+    assert len([call for call in provider.calls if call[0] == "visual"]) >= 2
+
+
+def test_unknown_visual_geometry_isolated_to_poison_panel():
+    module = _module()
+
+    class _OneUnknownProvider(_FakeProvider):
+        def observe(self, request):
+            rows = super().observe(request)
+            for row, panel in zip(rows, request.panels, strict=True):
+                if panel["panel_id"] == "chapter-a-panel-1":
+                    visual = dict(row["visual_evidence"])
+                    visual.update(
+                        {
+                            "balloon_mask_status": "unknown",
+                            "mask_confidence": 0.0,
+                            "evidence_source": "vision_geometry_unavailable",
+                            "mask_reason": "geometry is unavailable",
+                        }
+                    )
+                    row["visual_evidence"] = visual
+            return rows
+
+    provider = _OneUnknownProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        max_attempts=1,
+    )
+
+    result = runner.run_visual_evidence(_panels(module))
+
+    assert result.reconciled is True
+    assert result.panel_ids == ("chapter-a-panel-0", "chapter-a-panel-2")
+    assert len([call for call in provider.calls if call[0] == "visual"]) == 5
 
 
 def test_transient_unknown_visual_response_is_retried_atomically():

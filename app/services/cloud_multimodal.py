@@ -2145,6 +2145,7 @@ class CloudStageRunner:
         chunks = list(_visual_panel_chunks(ordered))
         reconciled_by_id: dict[str, dict[str, Any]] = {}
         skipped_codes: list[str] = []
+        unknown_failure_metadata: dict[str, Any] | None = None
         reconcile_lock = threading.Lock()
         VISUAL_PARALLEL_WORKERS = 8  # preview-only: real observe 27s/call, 16x triggers rate-limit
         checkpoint_scope = self._checkpoint_scope(source, prompt)
@@ -2160,7 +2161,7 @@ class CloudStageRunner:
 
         def observe_chunk(chunk_index: int, chunk: Sequence[CloudPanelInput]) -> None:
             # every error path reports + skips the chunk; never raises
-            nonlocal reconciled_by_id
+            nonlocal reconciled_by_id, unknown_failure_metadata
             chunk_cache_key = _visual_chunk_cache_key(
                 chunk,
                 chunk_index=chunk_index,
@@ -2317,15 +2318,26 @@ class CloudStageRunner:
                         exc.code == "visual.balloon_mask_unknown"
                         and not self.allow_balloon_unknown
                     ):
-                        raise CloudStageError(
-                            exc.code,
-                            reviewable=True,
-                            safe_metadata={
-                                "stage": "visual",
-                                "chunk_index": chunk_index,
-                                "panel_count": len(chunk),
-                            },
-                        ) from None
+                        with reconcile_lock:
+                            if unknown_failure_metadata is None:
+                                unknown_failure_metadata = {
+                                    "stage": "visual",
+                                    "chunk_index": chunk_index,
+                                    "panel_count": len(chunk),
+                                }
+                        if len(chunk) > 1:
+                            half = len(chunk) // 2
+                            for subchunk in (chunk[:half], chunk[half:]):
+                                observe_chunk(chunk_index, subchunk)
+                        else:
+                            with reconcile_lock:
+                                skipped_codes.append(exc.code)
+                            print(
+                                f"VISUAL_SKIP_PANEL panel={chunk[0].panel_id} code={exc.code}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                        return
                     if exc.code == "cloud.provider_request_failed":
                         raise
                     # binary reduction: subdivide the failing chunk and retry the
@@ -2367,6 +2379,12 @@ class CloudStageRunner:
             )
         if not reconciled_by_id:
             code = skipped_codes[0] if skipped_codes else "cloud.panel_coverage_incomplete"
+            if code == "visual.balloon_mask_unknown" and unknown_failure_metadata is not None:
+                raise CloudStageError(
+                    code,
+                    reviewable=True,
+                    safe_metadata=unknown_failure_metadata,
+                )
             raise CloudStageError(
                 code,
                 reviewable=code.startswith(("visual.", "segmentation.")),
