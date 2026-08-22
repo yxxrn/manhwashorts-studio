@@ -1,5 +1,18 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## Hard production wall-clock gate - 2026-08-23
+
+Production readiness now requires one complete run from chapter ingestion
+through upload-ready MP4 and all strict QC in `<=60` minutes wall-clock.
+Anything slower is not production-ready, even when every quality gate passes.
+This is an acceptance criterion, not a reason to relax grounding, lineage,
+visual, subtitle, audio, or rights gates. Each run must record stage timings,
+critical-path duration, provider/cache hits, and render/QC timing. Durable
+prepared manifests, feasibility/ROI inputs, timeline inputs, and versioned
+provider results must be reused before paying the 20-30 minute reconstruction
+cost again. The current project has not yet demonstrated this gate and still
+has no accepted MP4/QC artifact.
+
 ## Cached visual-stage metadata reuse - 2026-08-23
 
 Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.

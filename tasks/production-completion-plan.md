@@ -1,5 +1,17 @@
 # ManhwaShorts production-completion plan
 
+## Mandatory production-time acceptance - 2026-08-23
+
+One valid production run must complete from chapter/input ingestion through
+upload-ready MP4 and all strict QC in `<=60` minutes wall-clock. A run over 60
+minutes is not production-ready; quality, grounding, lineage, visual, subtitle,
+audio, and rights gates remain unchanged. Instrument every stage and the
+critical path, including provider requests/retries/concurrency/cache hits and
+resource peaks. Persist/reuse prepared manifests, feasibility/ROI/crop data,
+timeline inputs, provider responses, and deterministic artifacts with explicit
+versioned invalidation. Direct preflights must pass before another expensive
+full run. This timing gate is currently unproven.
+
 ## Latest verified checkpoint - 2026-08-23: cached visual metadata reuse
 
 Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.

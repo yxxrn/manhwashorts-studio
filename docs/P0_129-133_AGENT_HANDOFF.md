@@ -1,5 +1,16 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Hard production wall-clock gate - 2026-08-23
+
+The production acceptance gate is a complete ingestion-to-upload-ready-MP4
+run, including strict QC, in `<=60` minutes wall-clock. A slower run remains
+not production-ready; no quality, grounding, lineage, visual, subtitle, audio,
+or rights gate may be weakened to meet time. Record each stage's wall time,
+critical path, provider requests/retries/concurrency, cache hits, and render/QC
+time. Before a full rerun, direct preflights must prove prepared manifests,
+feasibility/ROI, timeline inputs, and versioned provider artifacts are reusable.
+This threshold is not yet proven for the project.
+
 ## Cached visual-stage metadata reuse - 2026-08-23
 
 Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.

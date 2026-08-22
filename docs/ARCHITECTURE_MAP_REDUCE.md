@@ -1,5 +1,16 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Hard production wall-clock gate - 2026-08-23
+
+The acceptance target is `<=60` minutes wall-clock from ingestion through an
+upload-ready MP4 and all strict QC. A run over 60 minutes is not production
+ready even when its quality checks pass. Instrument preparation, visual/story
+map, narration/repair, timeline, TTS, render, and parallel QC with wall time,
+critical-path time, request/retry/concurrency, cache hits, and peak resource
+metrics. The invalidation DAG must persist and reuse prepared manifests,
+feasibility/ROI/timeline inputs, and versioned provider results; direct
+preflights precede expensive full runs. No gate may be weakened for speed.
+
 ## Cached visual-stage metadata reuse - 2026-08-23
 
 The review resume boundary may load a prepared manifest without panel pixels.

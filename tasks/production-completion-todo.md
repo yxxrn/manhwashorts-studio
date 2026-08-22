@@ -1,5 +1,16 @@
 # ManhwaShorts production-completion todo
 
+## Mandatory production-time acceptance - 2026-08-23
+
+- [ ] Prove one complete ingestion-to-upload-ready-MP4 run, including strict
+      QC, in `<=60` minutes wall-clock; `>60` remains not production-ready.
+- [ ] Instrument per-stage and critical-path timings, provider requests,
+      retries/concurrency, cache hits, and peak resource use.
+- [ ] Preflight and reuse prepared manifests, feasibility/ROI/timeline inputs,
+      provider results, and deterministic artifacts before full reruns.
+- [ ] Keep all grounding, lineage, visual, subtitle, audio, quality, and rights
+      gates strict while optimizing repeated reconstruction.
+
 ## Latest verified checkpoint - 2026-08-23: cached visual metadata reuse
 
 - [x] Reproduce metadata-only prepared-manifest rejection before visual cache
