@@ -159,3 +159,10 @@ complete from unit tests alone.
 - [x] Verify the 41-scene replay diagnosis, 30-scene drift regression, subtitle failure-code preservation, `197 passed / 20 warnings` affected matrix, Ruff, compileall, diff-check, and secret scan.
 - [ ] Rerun cached review without visual/story calls; accept no MP4 until sidecar, FFprobe, blackdetect, strict QC, contact sheet, and frame inspection pass.
 - [ ] Only after `REVIEW_PREVIEW_READY` and visual QC, cross to configured TTS and then prove warm resume.
+
+## 2026-08-22 - Strict blank-space checkpoint `ff2484b`
+
+- [x] Reproduce the 41-shot/34-over-target blank-space failure from the cached review sidecar.
+- [x] Publish profile-aware `candidate_is_feasible` blank admission and propagate the target through planner, repair, render, and bundle QC; affected matrix green.
+- [ ] Rerun the cached review without visual/story calls; require a newly generated sidecar, strict blank target, FFprobe, blackdetect, contact sheet, and frame inspection.
+- [ ] Keep TTS blocked until the regenerated preview is `REVIEW_PREVIEW_READY` and all visual gates pass.

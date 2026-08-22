@@ -1519,3 +1519,10 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - The review-only helper `_silent_review_media_duration(scenes)` now uses the renderer's rounded duration contract. A 30-scene `1.0004s` regression proves the old absolute-end calculation fails while the new helper passes; the review failure classifier retains `subtitle.*` for future diagnostics.
 - Source commit `46132146979ca66021b5674acc6ea954bd0c462b` is published after parent `c1acd37`. Focused affected result: `197 passed, 20 warnings`; Ruff/compileall/diff-check/secret scan clean. Do not repeat valid visual/story stages or enter TTS yet.
 - Fresh resume command: run the existing cached normal review driver with `/data/data/p0-aws-acceptance/sample.db`, `/data/data/p0-aws-acceptance/storage`, and `/data/data/p0-aws-acceptance`; accept only a newly generated sidecar plus FFprobe, blackdetect, strict QC, contact-sheet/frame review, and `REVIEW_PREVIEW_READY`.
+
+## 2026-08-22 - Resume checkpoint `ff2484b`: blank-space admission aligned with profile
+
+- After the timing fix, the cached run reached a 41-shot encoded technical preview but failed closed at `review.blank_space_exceeds_target`. Sidecar-only metrics were 34/41 shots above `0.03`, maximum `0.536224`; no cloud/TTS request was made.
+- The old candidate boundary recorded blank telemetry without enforcing the profile target. The new optional `blank_target_fraction` is supplied from the resolved profile to planner, repair ledger, persisted render feasibility, and final bundle QC; rejection is `visual.blank_infeasible` with `fallback_reason`.
+- Source/test checkpoint `ff2484b0b81acc2b67b756d5ae84c0c3088e89af` is published after `b132b6f`. Affected offline matrix is `197 passed` plus one existing missing-real-panel skip; static/diff/secret gates are clean. No TTS until a regenerated `REVIEW_PREVIEW_READY` bundle passes actual frame inspection.
+- Resume command remains the cached normal review driver with the existing DB/storage and no visual/story reanalysis; the next expected failure, if any, must be recorded from the new strict blank contract rather than bypassed.

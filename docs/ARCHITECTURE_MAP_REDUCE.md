@@ -769,3 +769,9 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - The review DAG now has one local provisional-duration boundary: `_silent_review_media_duration(scenes)` sums the exact rounded `SceneInput.duration` values used by `render.render_video` and `join_scene_clips`. It is intentionally separate from authoritative voice timing and cannot alter default/voiced render behavior.
 - The prior replay built 41 scenes but used absolute `scene.end_time` for subtitle groups; accumulated sub-millisecond drift triggered `subtitle.timing_out_of_bounds`. The 30-scene `1.0004s` regression covers this boundary. Review failure serialization also retains `subtitle.*` codes for resumable diagnosis.
 - Published source checkpoint: parent `c1acd37`, child `46132146979ca66021b5674acc6ea954bd0c462b`; affected offline matrix `197 passed, 20 warnings`, Ruff/compileall/diff-check/secret scan clean. No provider/TTS request or accepted MP4 resulted from this slice.
+
+## 2026-08-22 - Profile-aware blank-space admission `ff2484b`
+
+- `framing_analysis.candidate_is_feasible` now accepts the resolved profile's `blank_target_fraction` and returns stable `visual.blank_infeasible` telemetry when the edge-connected blank fraction exceeds it. The parameter is optional only for legacy direct callers; every profile-aware production caller supplies it.
+- Propagation covers editorial planner ROI phases, visual feasible-ledger construction, normal reference preparation, exact persisted-ROI silent preparation, and `write_review_preview_bundle`. Review-only aggressive crop may relax protected coverage/resolution as explicitly designed, never blank-space admission.
+- The observed 34/41 sidecar shots above `0.03` exposed the previous mismatch; final bundle QC had been stricter than candidate admission. The regression and affected offline matrix are green; no provider/TTS or accepted MP4 resulted from the correction.

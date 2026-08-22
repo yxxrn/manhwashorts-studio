@@ -217,3 +217,10 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - [x] Keep the change narrow: `_silent_review_media_duration` mirrors renderer scene-duration rounding; default/voiced timing remains unchanged; durable review failures preserve `subtitle.*`.
 - [x] Record RED/GREEN evidence: 30-scene `1.0004s` drift regression, subtitle-code regression, affected matrix `197 passed, 20 warnings`, Ruff/compileall/diff-check/secret scan clean; no provider/TTS request.
 - [ ] Resume the cached normal review path, then require sidecar, FFprobe, blackdetect, strict QC, contact sheet, actual frame review, and `REVIEW_PREVIEW_READY` before TTS.
+
+## 2026-08-22 - Strict blank-space checkpoint `ff2484b`
+
+- [x] Diagnose the cached 41-shot technical preview: 34 shots exceeded profile blank target `0.03`, max `0.536224`, and final bundle correctly raised `review.blank_space_exceeds_target`.
+- [x] Add the explicit profile-aware feasibility target and propagate it through planner, repair ledger, both reference render paths, and final review QC; retain strict `visual.blank_infeasible` rejection and telemetry.
+- [x] GREEN affected matrix/static gates; no provider/TTS request and no accepted MP4. The timing fix remains published at `4613214`; this source/test correction is `ff2484b`.
+- [ ] Rerun cached review, inspect the regenerated contact sheet/frames, and cross to TTS only after strict blank/balloon/protected/lineage/QC gates pass.
