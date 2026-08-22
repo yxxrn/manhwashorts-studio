@@ -210,3 +210,10 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - [x] Publish `0cc17f536202a28ab09bce18b5952fe457e3d4d0` with the JSON-safe review sidecar boundary and its RED/GREEN regression (`52 passed` focused).
 - [ ] Rerun the cached normal review path, verify sidecar/FFprobe/blackdetect/QC/contact sheet and inspect actual frames; only then cross the TTS boundary.
 - [ ] Preserve the no-provider/no-TTS request count for this checkpoint and do not repeat valid visual/story stages.
+
+## 2026-08-22 - Silent-review timing contract checkpoint `4613214`
+
+- [x] Publish the review-only duration fix after the cached replay built 41 scenes and failed at `subtitle.timing_out_of_bounds` from absolute-end versus rounded-render-duration drift.
+- [x] Keep the change narrow: `_silent_review_media_duration` mirrors renderer scene-duration rounding; default/voiced timing remains unchanged; durable review failures preserve `subtitle.*`.
+- [x] Record RED/GREEN evidence: 30-scene `1.0004s` drift regression, subtitle-code regression, affected matrix `197 passed, 20 warnings`, Ruff/compileall/diff-check/secret scan clean; no provider/TTS request.
+- [ ] Resume the cached normal review path, then require sidecar, FFprobe, blackdetect, strict QC, contact sheet, actual frame review, and `REVIEW_PREVIEW_READY` before TTS.

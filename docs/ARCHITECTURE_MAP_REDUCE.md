@@ -763,3 +763,9 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - The post-encode review DAG now treats sidecar serialization as a typed boundary: `_reference_review_sidecar` passes values through `_reference_json_safe` before `json.dumps(..., allow_nan=False)`. This covers dataclasses, mappings, paths, tuples, and finite scalars while rejecting unknown/non-finite values as `visual.panel_lineage_unavailable`.
 - The RED regression used an in-memory dataclass telemetry/manifest value; the focused GREEN silent-review/upscale matrix is `52 passed`. The fix is source/test-only and does not change the persisted panel/mask/evidence contract or include full mask grids in the compact sidecar.
 - The next DAG edge is a cached normal review rerun. Acceptance still requires sidecar, FFprobe, blackdetect, strict QC, contact-sheet/frame inspection, and `REVIEW_PREVIEW_READY` before TTS.
+
+## 2026-08-22 - Review-only provisional duration contract `4613214`
+
+- The review DAG now has one local provisional-duration boundary: `_silent_review_media_duration(scenes)` sums the exact rounded `SceneInput.duration` values used by `render.render_video` and `join_scene_clips`. It is intentionally separate from authoritative voice timing and cannot alter default/voiced render behavior.
+- The prior replay built 41 scenes but used absolute `scene.end_time` for subtitle groups; accumulated sub-millisecond drift triggered `subtitle.timing_out_of_bounds`. The 30-scene `1.0004s` regression covers this boundary. Review failure serialization also retains `subtitle.*` codes for resumable diagnosis.
+- Published source checkpoint: parent `c1acd37`, child `46132146979ca66021b5674acc6ea954bd0c462b`; affected offline matrix `197 passed, 20 warnings`, Ruff/compileall/diff-check/secret scan clean. No provider/TTS request or accepted MP4 resulted from this slice.

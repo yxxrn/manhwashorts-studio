@@ -152,3 +152,10 @@ complete from unit tests alone.
 - [x] Publish source/test fix `0cc17f536202a28ab09bce18b5952fe457e3d4d0`; focused silent-review/upscale matrix is `52 passed` and static checks are clean.
 - [ ] Resume the cached normal review driver with no visual/story repeat.
 - [ ] Require sidecar, FFprobe, blackdetect, strict QC, contact sheet, and actual frame inspection before TTS; keep the technical temp MP4 unaccepted until then.
+
+## 2026-08-22 - Silent-review timing contract checkpoint `4613214`
+
+- [x] Publish `46132146979ca66021b5674acc6ea954bd0c462b` after fixing review-only provisional duration to the renderer's rounded scene-duration sum.
+- [x] Verify the 41-scene replay diagnosis, 30-scene drift regression, subtitle failure-code preservation, `197 passed / 20 warnings` affected matrix, Ruff, compileall, diff-check, and secret scan.
+- [ ] Rerun cached review without visual/story calls; accept no MP4 until sidecar, FFprobe, blackdetect, strict QC, contact sheet, and frame inspection pass.
+- [ ] Only after `REVIEW_PREVIEW_READY` and visual QC, cross to configured TTS and then prove warm resume.
