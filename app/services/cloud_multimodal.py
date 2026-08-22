@@ -1920,6 +1920,198 @@ class CloudStageRunner:
         except OSError:
             return
 
+    def _migrate_legacy_visual_cache(
+        self,
+        ordered: Sequence[CloudPanelInput],
+        *,
+        key: str,
+        prompt: tuple[str, str, str],
+    ) -> dict[str, Any] | None:
+        """Materialize one exact legacy visual record under the current key.
+
+        The scan is deliberately read-only over old records and accepts only
+        one candidate whose ordered IDs, source lineage, payload descriptor,
+        model identity, and visual prompt all reconcile.  Ambiguous matches
+        fail closed instead of choosing an arbitrary cache file.
+        """
+
+        if self.cache is None:
+            return None
+        iter_records = getattr(self.cache, "iter_records", None)
+        legacy_identity = _legacy_visual_model_identity(self.model_identity)
+        if not callable(iter_records) or legacy_identity is None:
+            return None
+        candidates: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
+        try:
+            records = iter_records()
+            for record in records:
+                migrated = _migrate_visual_cache_identity(
+                    record,
+                    ordered,
+                    model_identity=legacy_identity,
+                    prompt=prompt,
+                )
+                if migrated is not None:
+                    candidates.append((record, migrated))
+        except (OSError, TypeError, ValueError):
+            return None
+        if len(candidates) != 1:
+            return None
+        legacy_record, migrated = candidates[0]
+        try:
+            legacy_result = VisualStageResult.from_dict(legacy_record)
+        except (KeyError, TypeError, ValueError):
+            return None
+        migrated["model_identity_hash"] = self.model_identity.identity_hash
+        migrated["legacy_model_identity_hash"] = str(
+            legacy_record.get("model_identity_hash", "")
+        )
+        migrated["legacy_visual_evidence_hash"] = legacy_result.visual_evidence_hash
+        migrated["cache_identity_migration_proof"] = (
+            "legacy_model_identity_and_descriptor_hash"
+        )
+        self.cache.put(key, migrated)
+        return migrated
+
+    def _legacy_visual_evidence_hashes(
+        self,
+        visual: VisualStageResult,
+    ) -> set[str]:
+        """Find old visual evidence identities that exactly match this visual set."""
+
+        if self.cache is None:
+            return set()
+        iter_records = getattr(self.cache, "iter_records", None)
+        legacy_identity = _legacy_visual_model_identity(self.model_identity)
+        if not callable(iter_records) or legacy_identity is None:
+            return set()
+        current_rows = tuple(visual.panels)
+        hashes: set[str] = set()
+        try:
+            records = iter_records()
+            for record in records:
+                if not isinstance(record, Mapping):
+                    continue
+                if (
+                    str(record.get("model_identity_hash", ""))
+                    != legacy_identity.identity_hash
+                    or str(record.get("prompt_version", ""))
+                    != self.prompts["visual"][0]
+                    or str(record.get("prompt_sha256", ""))
+                    != self.prompts["visual"][1]
+                ):
+                    continue
+                try:
+                    old_result = VisualStageResult.from_dict(record)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if old_result.panel_ids != visual.panel_ids:
+                    continue
+                old_rows = tuple(old_result.panels)
+                if len(old_rows) != len(current_rows):
+                    continue
+                if any(
+                    any(old_row.get(field) != current_row.get(field) for field in (
+                        "panel_id",
+                        "source_asset_id",
+                        "source_order",
+                        "source_checksum",
+                        "mime_type",
+                        "payload_checksum",
+                        "panel_bounds",
+                        "source_dimensions",
+                        "strip_region_id",
+                        "coverage_map_version",
+                        "coverage_map_hash",
+                        "segmentation_version",
+                    ))
+                    for old_row, current_row in zip(old_rows, current_rows, strict=True)
+                ):
+                    continue
+                legacy_descriptors = [
+                    _legacy_visual_descriptor_from_row(row) for row in old_rows
+                ]
+                if any(descriptor is None for descriptor in legacy_descriptors):
+                    continue
+                if str(record.get("source_hash", "")) != _hash(legacy_descriptors):
+                    continue
+                hashes.add(old_result.visual_evidence_hash)
+        except (OSError, TypeError, ValueError):
+            return set()
+        return hashes
+
+    def _migrate_legacy_story_map_cache(
+        self,
+        visual: VisualStageResult,
+        *,
+        key: str,
+        prompt: tuple[str, str, str],
+    ) -> dict[str, Any] | None:
+        """Materialize one exact story map after a visual-only identity bump."""
+
+        if self.cache is None:
+            return None
+        iter_records = getattr(self.cache, "iter_records", None)
+        legacy_identity = _legacy_visual_model_identity(self.model_identity)
+        old_visual_hashes = self._legacy_visual_evidence_hashes(visual)
+        if (
+            not callable(iter_records)
+            or legacy_identity is None
+            or not old_visual_hashes
+        ):
+            return None
+        candidates: list[dict[str, Any]] = []
+        panel_ids = visual.panel_ids
+        panel_set = set(panel_ids)
+        try:
+            for record in iter_records():
+                if not isinstance(record, Mapping):
+                    continue
+                if (
+                    str(record.get("model_identity_hash", ""))
+                    != legacy_identity.identity_hash
+                    or str(record.get("prompt_version", "")) != prompt[0]
+                    or str(record.get("prompt_sha256", "")) != prompt[1]
+                    or str(record.get("visual_evidence_hash", ""))
+                    not in old_visual_hashes
+                ):
+                    continue
+                try:
+                    result = StoryMapResult.from_dict(record)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if result.panel_ids != panel_ids:
+                    continue
+                if result.story_map_hash != _hash(
+                    {
+                        "beats": list(result.beats),
+                        "claims": list(result.claims),
+                        "chain": list(result.causal_chain),
+                    }
+                ):
+                    continue
+                if any(
+                    str(panel_id) not in panel_set
+                    for row in (*result.beats, *result.claims)
+                    for panel_id in row.get("panel_ids", row.get("evidence_panel_ids", ()))
+                    if isinstance(row, Mapping)
+                ):
+                    continue
+                migrated = result.as_dict()
+                migrated["model_identity_hash"] = self.model_identity.identity_hash
+                migrated["visual_evidence_hash"] = visual.visual_evidence_hash
+                migrated["cache_identity_migration_proof"] = (
+                    "legacy_model_identity_and_visual_evidence_hash"
+                )
+                candidates.append(migrated)
+        except (OSError, TypeError, ValueError):
+            return None
+        if len(candidates) != 1:
+            return None
+        migrated = candidates[0]
+        self.cache.put(key, migrated)
+        return migrated
+
     def run_visual_evidence(self, panels: Sequence[CloudPanelInput]) -> VisualStageResult:
         ordered = self._ordered_panels(panels)
         prompt = self.prompts["visual"]
@@ -1927,6 +2119,8 @@ class CloudStageRunner:
         key = _cache_key("visual", source, self.model_identity, prompt)
         if self.cache is not None and (cached := self.cache.get(key)) is not None:
             return VisualStageResult.from_dict(cached)
+        if (migrated := self._migrate_legacy_visual_cache(ordered, key=key, prompt=prompt)) is not None:
+            return VisualStageResult.from_dict(migrated)
         if any(getattr(panel, "metadata_only", False) for panel in ordered):
             raise CloudStageError("cloud.prepared_manifest_requires_materialization")
         instruction_version, instruction_sha256, _ = analyzer_contract.load_analyzer_instruction()
@@ -2720,6 +2914,8 @@ class CloudStageRunner:
             cached_result = StoryMapResult.from_dict(cached)
             if cached_result.visual_evidence_hash == visual.visual_evidence_hash:
                 return cached_result
+        if (migrated := self._migrate_legacy_story_map_cache(visual, key=key, prompt=prompt)) is not None:
+            return StoryMapResult.from_dict(migrated)
 
         chunk_step = STORY_MAP_CHUNK_STEP
         chunks = [
@@ -8157,6 +8353,58 @@ class CloudBatchService:
                 )
             self.store.save(record)
             record = self.run_job(project_id, panels)
+            if (
+                manifest_loaded
+                and record.error_code == "cloud.prepared_manifest_requires_materialization"
+            ):
+                # A metadata-only manifest is usable only when its exact
+                # content-addressed visual cache reconciles.  If the cache
+                # is stale, materialize the current prepared panels and
+                # rerun the affected visual/story stages; never mix old
+                # evidence merely because panel IDs happen to match.
+                fallback_started = time.monotonic()
+                try:
+                    prepared = prepare_project_panels(
+                        db,
+                        project_id,
+                        boundary_assessor=self.runner.assess_strip_boundaries,
+                        review_root=self.review_root,
+                        return_segmentation=True,
+                        review_only_auto_override=review_only_preview,
+                        cached_segmentation=(
+                            cached_segmentation
+                            if isinstance(cached_segmentation, Mapping)
+                            else None
+                        ),
+                    )
+                    panels, segmentation_state = prepared
+                    panels = _panels_for_cached_visual_stage(
+                        panels,
+                        record.stage_results.get("visual"),
+                    )
+                    manifest_loaded = False
+                    record.stage_results["segmentation"] = segmentation_state
+                    record.stage_results["preparation_metrics"] = {
+                        "contract_version": "prepared-panel-preparation-v1",
+                        "mode": "cold_materialization_after_metadata_cache_miss",
+                        "panel_count": len(panels),
+                        "payload_bytes": sum(len(panel.payload) for panel in panels),
+                        "elapsed_s": round(time.monotonic() - fallback_started, 3),
+                        "peak_rss_kb": _peak_rss_kb(),
+                        "source_decode_required": True,
+                    }
+                    record.stage_results["prepared_panel_manifest"] = (
+                        _build_project_prepared_manifest(
+                            db,
+                            project_id,
+                            panels,
+                            segmentation_state,
+                        )
+                    )
+                    self.store.save(record)
+                    record = self.run_job(project_id, panels)
+                except CloudStageError as exc:
+                    return self._record_failure(record, exc)
             visual_stage = record.stage_results.get("visual")
             if isinstance(visual_stage, Mapping):
                 visual_panel_ids = {
@@ -8545,6 +8793,11 @@ __all__ = [
 
 VISUAL_CACHE_IDENTITY_VERSION = "visual-cache-identity-v2"
 LEGACY_VISUAL_CACHE_IDENTITY_VERSION = "legacy-descriptor-v1"
+# The visual payload/cache contract is independent of the targeted narrative
+# repair prompt.  This explicit migration pair preserves a valid visual cache
+# when that downstream prompt version changes.
+LEGACY_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v2"
+CURRENT_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v3"
 VISUAL_RENDER_PAYLOAD_VERSION = (
     "visual-provider-payload-v1:max-bytes=180000:max-size=384x576:"
     "jpeg-quality=68:subsampling=2:lanczos"
@@ -8634,6 +8887,81 @@ def _visual_source_hash(panels: Sequence[CloudPanelInput]) -> str:
     if len(prepared_hashes) == 1 and all(panel.identity_descriptor_hash for panel in panels):
         return next(iter(prepared_hashes))
     return _hash(list(_visual_panel_identities(tuple(panels))))
+
+
+def _legacy_visual_descriptor(
+    panel: CloudPanelInput,
+    *,
+    source_order: int | None = None,
+) -> dict[str, Any]:
+    """Recreate the descriptor used before metadata-only identity fields.
+
+    ``CloudPanelInput.descriptor`` now includes prepared-manifest metadata.
+    Those fields are intentionally excluded here because they did not affect
+    the legacy provider payload or its cache identity.
+    """
+
+    descriptor: dict[str, Any] = {
+        "panel_id": panel.panel_id,
+        "source_asset_id": panel.source_asset_id,
+        "source_order": panel.source_order if source_order is None else int(source_order),
+        "mime_type": panel.mime_type,
+        "source_checksum": panel.source_checksum,
+        "payload_checksum": panel.payload_checksum,
+    }
+    if panel.panel_bounds is not None:
+        descriptor["panel_bounds"] = list(panel.panel_bounds)
+    if panel.source_dimensions is not None:
+        descriptor["source_dimensions"] = list(panel.source_dimensions)
+    if panel.strip_region_id:
+        descriptor["strip_region_id"] = panel.strip_region_id
+    if panel.coverage_map_version:
+        descriptor["coverage_map_version"] = panel.coverage_map_version
+    if panel.coverage_map_hash:
+        descriptor["coverage_map_hash"] = panel.coverage_map_hash
+    if panel.segmentation_version:
+        descriptor["segmentation_version"] = panel.segmentation_version
+    return descriptor
+
+
+def _legacy_visual_descriptor_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Build the old descriptor from a persisted visual row, fail-closed."""
+
+    required = (
+        "panel_id",
+        "source_asset_id",
+        "source_order",
+        "mime_type",
+        "source_checksum",
+        "payload_checksum",
+    )
+    if any(key not in row for key in required):
+        return None
+    descriptor = {key: row[key] for key in required}
+    for key in (
+        "panel_bounds",
+        "source_dimensions",
+        "strip_region_id",
+        "coverage_map_version",
+        "coverage_map_hash",
+        "segmentation_version",
+    ):
+        value = row.get(key)
+        if value is not None and value != "":
+            descriptor[key] = value
+    return descriptor
+
+
+def _legacy_visual_model_identity(
+    identity: CloudModelIdentity,
+) -> CloudModelIdentity | None:
+    """Return the one audited pre-repair identity eligible for visual reuse."""
+
+    prompt_versions = dict(identity.prompt_versions)
+    if prompt_versions.get("visual_narrative_repair") != CURRENT_VISUAL_REPAIR_PROMPT_VERSION:
+        return None
+    prompt_versions["visual_narrative_repair"] = LEGACY_VISUAL_REPAIR_PROMPT_VERSION
+    return replace(identity, prompt_versions=prompt_versions)
 
 
 def _visual_chunk_cache_key(
@@ -8757,11 +9085,10 @@ def _migrate_visual_cache_identity(
 
     if identity_version not in {"", LEGACY_VISUAL_CACHE_IDENTITY_VERSION}:
         return None
-    legacy_descriptors: list[dict[str, Any]] = []
-    for panel, row in zip(ordered, raw_rows, strict=True):
-        descriptor = panel.descriptor()
-        descriptor["source_order"] = int(row["source_order"])
-        legacy_descriptors.append(descriptor)
+    legacy_descriptors = [
+        _legacy_visual_descriptor(panel, source_order=int(row["source_order"]))
+        for panel, row in zip(ordered, raw_rows, strict=True)
+    ]
     legacy_source_hash = _hash(legacy_descriptors)
     migration_proof = "legacy_descriptor_hash"
     if str(cached.get("source_hash", "")) != legacy_source_hash:

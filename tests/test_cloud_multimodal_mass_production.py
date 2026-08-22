@@ -804,6 +804,76 @@ def test_review_project_restores_prepared_manifest_before_cold_prepare(monkeypat
     assert restored["manifest"] == {"manifest": "durable"}
 
 
+def test_review_project_falls_back_to_current_materialization_on_stale_metadata_cache(
+    monkeypatch,
+):
+    module = _module()
+    from types import SimpleNamespace
+
+    panels = _panels(module, "stale-metadata")
+    first_failure = module.ChapterJobRecord(
+        job_id="project-a",
+        state=module.ChapterState.NEEDS_REVIEW,
+        error_code="cloud.prepared_manifest_requires_materialization",
+        stage_results={
+            "prepared_panel_manifest": {"manifest": "durable"},
+            "segmentation": {"status": "RECONCILED"},
+        },
+    )
+    second_failure = module.ChapterJobRecord(
+        job_id="project-a",
+        state=module.ChapterState.NEEDS_REVIEW,
+        error_code="cloud.narrative_not_grounded",
+        stage_results={},
+    )
+
+    class Store:
+        def load(self, _project_id):
+            return first_failure
+
+        def save(self, _record):
+            return None
+
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.runner = SimpleNamespace(
+        model_identity=SimpleNamespace(identity_hash="m" * 64),
+        assess_strip_boundaries=lambda _request: {},
+    )
+    service.store = Store()
+    service.review_root = None
+    prepared = {}
+    monkeypatch.setattr(
+        module,
+        "_restore_project_prepared_manifest",
+        lambda _db, _project_id, _manifest: (panels, {"status": "RECONCILED"}),
+    )
+    monkeypatch.setattr(
+        module,
+        "_build_project_prepared_manifest",
+        lambda *_args, **_kwargs: {"manifest": "rebuilt"},
+    )
+
+    def fake_prepare(_db, _project_id, **kwargs):
+        prepared.update(kwargs)
+        return panels, {"status": "RECONCILED"}
+
+    monkeypatch.setattr(module, "prepare_project_panels", fake_prepare)
+    calls = []
+
+    def fake_run_job(_job_id, passed_panels):
+        calls.append(tuple(passed_panels))
+        return first_failure if len(calls) == 1 else second_failure
+
+    monkeypatch.setattr(service, "run_job", fake_run_job)
+
+    result = service.run_project(object(), "project-a", review_only_preview=True)
+
+    assert result is second_failure
+    assert calls == [panels, panels]
+    assert prepared["review_only_auto_override"] is True
+    assert prepared["cached_segmentation"] == {"status": "RECONCILED"}
+
+
 def test_review_preview_failure_code_keeps_nested_stable_code():
     module = _module()
 
@@ -4465,6 +4535,156 @@ def test_equivalent_preparation_migrates_legacy_visual_cache_without_provider_ca
             prompt=prompt,
         )
         is None
+    )
+
+
+def test_metadata_only_manifest_migrates_exact_legacy_descriptor_without_provider_call():
+    module = _module()
+    base_panels = _panels(module, "metadata-migration")
+    panels = tuple(
+        replace(
+            panel,
+            metadata_only=True,
+            prepared_order=index,
+            identity_payload_checksum="a" * 64,
+            identity_descriptor_hash="b" * 64,
+            source_identity_hash="c" * 64,
+        )
+        for index, panel in enumerate(base_panels)
+    )
+    identity = _identity(module)
+    prompt = module.CloudStageRunner(
+        provider=_FakeProvider(), model_identity=identity
+    ).prompts["visual"]
+
+    def legacy_descriptor(panel):
+        descriptor = {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": panel.mime_type,
+            "source_checksum": panel.source_checksum,
+            "payload_checksum": panel.payload_checksum,
+        }
+        if panel.panel_bounds is not None:
+            descriptor["panel_bounds"] = list(panel.panel_bounds)
+        if panel.source_dimensions is not None:
+            descriptor["source_dimensions"] = list(panel.source_dimensions)
+        if panel.strip_region_id:
+            descriptor["strip_region_id"] = panel.strip_region_id
+        if panel.coverage_map_version:
+            descriptor["coverage_map_version"] = panel.coverage_map_version
+        if panel.coverage_map_hash:
+            descriptor["coverage_map_hash"] = panel.coverage_map_hash
+        if panel.segmentation_version:
+            descriptor["segmentation_version"] = panel.segmentation_version
+        return descriptor
+
+    legacy_descriptors = [legacy_descriptor(panel) for panel in panels]
+    legacy = module.VisualStageResult(
+        panels=tuple(
+            _visual_row(legacy_descriptor(panel))
+            | {
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+            }
+            for panel in panels
+        ),
+        source_hash=module._hash(legacy_descriptors),
+        model_identity_hash=identity.identity_hash,
+        prompt_version=prompt[0],
+        prompt_sha256=prompt[1],
+    ).as_dict()
+
+    migrated = module._migrate_visual_cache_identity(
+        legacy,
+        panels,
+        model_identity=identity,
+        prompt=prompt,
+    )
+
+    assert migrated is not None
+    assert migrated["cache_identity_migration_proof"] == "legacy_descriptor_hash"
+
+
+def test_visual_runner_reuses_metadata_only_legacy_cache_without_provider_call():
+    module = _module()
+    base_panels = _panels(module, "runner-migration")
+    panels = tuple(
+        replace(
+            panel,
+            metadata_only=True,
+            prepared_order=index,
+            identity_payload_checksum="a" * 64,
+            identity_descriptor_hash="b" * 64,
+            source_identity_hash="c" * 64,
+        )
+        for index, panel in enumerate(base_panels)
+    )
+    base_identity = _identity(module)
+    current_identity = replace(
+        base_identity,
+        prompt_versions=dict(base_identity.prompt_versions)
+        | {"visual_narrative_repair": module.CURRENT_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    legacy_identity = replace(
+        current_identity,
+        prompt_versions=dict(current_identity.prompt_versions)
+        | {"visual_narrative_repair": module.LEGACY_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    provider = _FakeProvider()
+
+    def fail_observe(_request):
+        raise AssertionError("legacy visual cache must be reused before provider call")
+
+    provider.observe = fail_observe
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=current_identity,
+    )
+    prompt = runner.prompts["visual"]
+    legacy_descriptors = [module._legacy_visual_descriptor(panel) for panel in panels]
+    legacy = module.VisualStageResult(
+        panels=tuple(
+            _visual_row(descriptor)
+            | {
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+            }
+            for panel, descriptor in zip(panels, legacy_descriptors, strict=True)
+        ),
+        source_hash=module._hash(legacy_descriptors),
+        model_identity_hash=legacy_identity.identity_hash,
+        prompt_version=prompt[0],
+        prompt_sha256=prompt[1],
+    ).as_dict()
+
+    class Cache:
+        def __init__(self):
+            self.put_values = {}
+
+        def get(self, _key):
+            return None
+
+        def put(self, key, value):
+            self.put_values[key] = dict(value)
+
+        def iter_records(self):
+            yield legacy
+
+    cache = Cache()
+    runner.cache = cache
+    result = runner.run_visual_evidence(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert provider.calls == []
+    assert len(cache.put_values) == 1
+    migrated = next(iter(cache.put_values.values()))
+    assert migrated["model_identity_hash"] == current_identity.identity_hash
+    assert migrated["cache_identity_migration_proof"] == (
+        "legacy_model_identity_and_descriptor_hash"
     )
 
 def test_batch_resume_migrates_legacy_visual_without_visual_provider_call(tmp_path):
