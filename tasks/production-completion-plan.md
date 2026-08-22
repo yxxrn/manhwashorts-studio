@@ -204,3 +204,9 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - First silent render was generated but rejected during visual review: frame 36 retained a source speech balloon. Root cause was a trusted balloon record whose normalized bbox and polygon envelopes disagreed; bbox-only overlap returned zero for the selected ROI at source order 225.
 - RED/GREEN: added `test_candidate_rejects_balloon_when_bbox_and_polygon_disagree`; conservative bbox+polygon evaluation passes the 76-test framing/review/upscale collection (75 passed, 1 existing skip). No provider/TTS call was made. The stale pre-fix MP4 cannot be used as Video 1 evidence.
 - Next task is publish this strict correction, rerender only the silent review from persisted state, inspect actual frames/contact sheet, and continue to TTS only after corrected visual QC.
+
+## 2026-08-22 - Sidecar serialization checkpoint
+
+- [x] Publish `0cc17f536202a28ab09bce18b5952fe457e3d4d0` with the JSON-safe review sidecar boundary and its RED/GREEN regression (`52 passed` focused).
+- [ ] Rerun the cached normal review path, verify sidecar/FFprobe/blackdetect/QC/contact sheet and inspect actual frames; only then cross the TTS boundary.
+- [ ] Preserve the no-provider/no-TTS request count for this checkpoint and do not repeat valid visual/story stages.

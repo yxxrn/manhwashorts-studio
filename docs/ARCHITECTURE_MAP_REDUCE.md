@@ -757,3 +757,9 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 
 - Framing admission now consumes the union of all persisted balloon geometry representations (normalized bbox plus polygon-derived envelope). This closes a fail-open representation mismatch where the old bbox-only calculation returned zero overlap for a crop intersecting the polygon. It preserves canonical evidence/hash identity and leaves `candidate_is_feasible`'s zero-overlap requirement unchanged.
 - The exact regression is source order 225, region `a436184a3ee14d04a055dacb0a005daf`; the focused framing/review/upscale matrix is 75 passed and 1 existing skip. A pre-fix silent artifact is rejected runtime evidence and must be regenerated before the TTS DAG edge.
+
+## 2026-08-22 - Review sidecar serialization boundary
+
+- The post-encode review DAG now treats sidecar serialization as a typed boundary: `_reference_review_sidecar` passes values through `_reference_json_safe` before `json.dumps(..., allow_nan=False)`. This covers dataclasses, mappings, paths, tuples, and finite scalars while rejecting unknown/non-finite values as `visual.panel_lineage_unavailable`.
+- The RED regression used an in-memory dataclass telemetry/manifest value; the focused GREEN silent-review/upscale matrix is `52 passed`. The fix is source/test-only and does not change the persisted panel/mask/evidence contract or include full mask grids in the compact sidecar.
+- The next DAG edge is a cached normal review rerun. Acceptance still requires sidecar, FFprobe, blackdetect, strict QC, contact-sheet/frame inspection, and `REVIEW_PREVIEW_READY` before TTS.

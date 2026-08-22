@@ -146,3 +146,9 @@ complete from unit tests alone.
 - [x] Diagnose the visual false admission at source order 225: bbox and polygon balloon geometry disagree, and bbox-only overlap falsely returned zero.
 - [x] Add and pass the strict regression `test_candidate_rejects_balloon_when_bbox_and_polygon_disagree`; focused framing/review/upscale matrix is 75 passed / 1 existing skip.
 - [ ] Publish the narrow source/test/docs checkpoint, rerender the silent review from cached 701-panel state, inspect actual frames, and only then enter the configured TTS stage.
+
+## 2026-08-22 - Sidecar serialization checkpoint
+
+- [x] Publish source/test fix `0cc17f536202a28ab09bce18b5952fe457e3d4d0`; focused silent-review/upscale matrix is `52 passed` and static checks are clean.
+- [ ] Resume the cached normal review driver with no visual/story repeat.
+- [ ] Require sidecar, FFprobe, blackdetect, strict QC, contact sheet, and actual frame inspection before TTS; keep the technical temp MP4 unaccepted until then.

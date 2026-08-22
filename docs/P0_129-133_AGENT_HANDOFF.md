@@ -1506,3 +1506,9 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - Resume diagnosis: the first silent review output was playable but visually rejected because audit frame 36 showed a source speech balloon. The persisted row is source order 225 / region `a436184a3ee14d04a055dacb0a005daf`; the balloon record has a bbox and polygon whose envelopes disagree, so the old overlap calculation selected the non-overlapping bbox only.
 - Code/test checkpoint: framing now treats every balloon bbox and polygon envelope as authoritative and rejects any crop intersecting either. `test_candidate_rejects_balloon_when_bbox_and_polygon_disagree` is GREEN; focused matrix is 75 passed / 1 existing skip. This is strict evidence closure, not a gate relaxation.
 - Do not reuse the pre-fix MP4 as accepted output. Resume after publication with the exact DB/storage overrides, reuse cached visual/story/narration, rerender silently, and inspect actual frames before TTS.
+
+## 2026-08-22 - Resume after sidecar serialization checkpoint `0cc17f5`
+
+- Published source/test SHA: `0cc17f536202a28ab09bce18b5952fe457e3d4d0`; GitHub `main` was verified at that object. The RED case was an in-memory dataclass-valued telemetry/manifest field that failed raw `json.dumps` after FFmpeg; GREEN focused silent-review/upscale matrix is `52 passed`, with Ruff, compileall, and `git diff --check` clean.
+- `_reference_json_safe` now canonicalizes the sidecar boundary and rejects unknown/non-finite values with `visual.panel_lineage_unavailable`; it does not serialize full mask grids. No provider/TTS request was consumed.
+- The 53.033333s technical temp MP4 is not an accepted review artifact because bundle, blackdetect, strict QC, contact sheet, and frame inspection are incomplete. Resume with the cached normal review driver, without repeating 701-panel visual/story stages; do not enter TTS until `REVIEW_PREVIEW_READY` and all media/QC evidence are present.
