@@ -690,3 +690,11 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - Sanitized response metrics: positional container `dict`, 8 rewrite items, all 8 items strings, total 140 words, estimated duration 60.87 seconds, and one top-level key. The stored metadata contains no provider prose.
 - Local admission correctly failed closed with `cloud.narrative_repair_micro_compaction_unavailable`, predicate `micro_compaction_window`. The conservative local compactor accepts only 126-130 word candidates; it must not truncate or weaken the hard 115-125 word and 50-60 second gates. No source/test change is justified by this result.
 - No narration, MP4, TTS, or final QC artifact is claimed. The next retry remains bounded and must be admitted only after positional shape, trusted lineage, grounding, causal order, display derivation, total words, and duration all pass.
+
+
+## 2026-08-22 - bounded repair attempt with over-window candidate
+
+- From published checkpoint `6e54fa2982e2754e4a4cd997f47922d8c675a313`, the next authorized same-scope repair used exactly 1 provider request and 0 retries, with no visual/story repeat.
+- Sanitized response metrics: 8 rewrite strings, 135 total words, estimated duration 58.7 seconds, all items typed as strings, and no retained provider prose.
+- Local admission correctly failed closed with `cloud.narrative_repair_micro_compaction_unavailable`, predicate `micro_compaction_window`. Duration is inside 50-60 seconds, but 135 words is outside both the conservative 126-130 compaction window and the hard 115-125 final bound. No truncation, padding, or gate relaxation is allowed.
+- The next repair request remains the smallest path to a strict-valid candidate; visual/story caches remain reusable and no narration or media artifact is claimed yet.
