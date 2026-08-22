@@ -1517,6 +1517,26 @@ def _safe_narration_contract_diagnostic(
     return f"field={field};count={count}"
 
 
+def _visual_narrative_repair_analyzer_metadata(
+    message: str,
+    output: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Classify a repair analyzer failure without retaining provider text."""
+
+    diagnostic = _safe_narration_contract_diagnostic(message, output)
+    field_part, separator, count_part = diagnostic.partition(";count=")
+    field = field_part.removeprefix("field=") or "narrative_contract"
+    try:
+        count = max(0, int(count_part)) if separator else 1
+    except ValueError:
+        count = 1
+    return {
+        "failed_predicate": "analyzer_contract_invalid",
+        "failed_field": field,
+        "failed_count": count,
+    }
+
+
 def _narrative_grounding_error(field: str, count: int) -> CloudStageError:
     return CloudStageError(
         "cloud.narrative_not_grounded",
@@ -1525,10 +1545,30 @@ def _narrative_grounding_error(field: str, count: int) -> CloudStageError:
     )
 
 
-def _visual_narrative_repair_retry_feedback(code: str) -> str:
+def _visual_narrative_repair_retry_feedback(
+    code: str,
+    *,
+    failed_field: str | None = None,
+) -> str:
     """Return bounded, non-content guidance for one rejected repair attempt."""
 
     value = str(code)
+    if value == "cloud.narrative_not_grounded" and failed_field == "passage_evidence":
+        return (
+            "for every returned passage, include each referenced claim ID's complete "
+            "feasible evidence_panel_ids in that same passage; use only existing claim "
+            "IDs and feasible panel IDs"
+        )
+    if value == "cloud.narrative_not_grounded" and failed_field == "claim_evidence":
+        return (
+            "every returned claim must have non-empty feasible evidence_panel_ids, and "
+            "each passage using that claim must cite those same panels"
+        )
+    if value == "cloud.narrative_not_grounded" and failed_field == "script_passages":
+        return (
+            "return four to six complete passages with exact passage keys, unique IDs, "
+            "existing claim IDs, and non-empty feasible evidence_panel_ids"
+        )
     if value in {
         "visual.narrative_repair_ungrounded",
         "cloud.narrative_not_grounded",
@@ -6712,7 +6752,15 @@ class CloudStageRunner:
                 return result
             except analyzer_contract.AnalyzerContractError as aexc:
                 print("ANALYZER_CONTRACT_FAIL:", repr(aexc), file=sys.stderr, flush=True)
-                error = CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+                error = CloudStageError(
+                    "cloud.narrative_not_grounded",
+                    "analyzer contract rejected",
+                    reviewable=True,
+                    safe_metadata=_visual_narrative_repair_analyzer_metadata(
+                        str(aexc),
+                        output if isinstance(output, Mapping) else None,
+                    ),
+                )
             except visual_narrative_repair.VisualNarrativeRepairError as exc:
                 error = CloudStageError(exc.code, reviewable=exc.reviewable)
             except CloudStageError as exc:
@@ -6732,7 +6780,10 @@ class CloudStageRunner:
                     reviewable=error.reviewable,
                     safe_metadata=safe_metadata,
                 )
-            retry_feedback = _visual_narrative_repair_retry_feedback(error.code)
+            retry_feedback = _visual_narrative_repair_retry_feedback(
+                error.code,
+                failed_field=str(error.safe_metadata.get("failed_field", "")) or None,
+            )
         raise CloudStageError("visual.narrative_repair_bounded", reviewable=True)
 
     def run_chapter(self, panels: Sequence[CloudPanelInput]) -> ChapterResult:

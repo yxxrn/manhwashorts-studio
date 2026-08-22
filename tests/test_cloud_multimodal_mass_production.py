@@ -121,6 +121,27 @@ def test_visual_repair_failure_metadata_is_sanitized_and_counts_feasible_scope()
     }
 
 
+def test_visual_repair_analyzer_failure_keeps_only_field_count_and_guides_retry():
+    module = _module()
+
+    metadata = module._visual_narrative_repair_analyzer_metadata(
+        "script passage evidence does not cover its claims",
+        {"script_passages": [{}, {}, {}]},
+    )
+
+    assert metadata == {
+        "failed_predicate": "analyzer_contract_invalid",
+        "failed_field": "passage_evidence",
+        "failed_count": 3,
+    }
+    assert "message" not in metadata
+    assert "prose" not in metadata
+    assert "feasible evidence_panel_ids" in module._visual_narrative_repair_retry_feedback(
+        "cloud.narrative_not_grounded",
+        failed_field="passage_evidence",
+    )
+
+
 def test_invalid_visual_repair_cache_does_not_bypass_bounded_provider_path(monkeypatch):
     module = _module()
     repair = importlib.import_module("app.services.visual_narrative_repair")

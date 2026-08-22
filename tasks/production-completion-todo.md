@@ -1,5 +1,16 @@
 # ManhwaShorts production-completion todo
 
+## Latest verified checkpoint - 2026-08-23
+
+- [x] Record the first post-payload-fix strict repair outcome: 36 feasible
+      panels, 71 feasible ROIs, three bounded `other` attempts, and
+      `cloud.narrative_not_grounded`.
+- [x] Add sanitized analyzer field/count diagnostics and field-specific retry
+      guidance without storing provider prose or relaxing gates.
+- [x] Verify 148/148 focused tests, Ruff, compileall, and diff-check.
+- [ ] Publish this checkpoint, resume the cached repair boundary, and produce
+      the first accepted silent MP4/QC bundle.
+
 ## Latest verified checkpoint - 2026-08-22
 
 - [x] Reproduce the persisted-script `visual.visual_unavailable` boundary

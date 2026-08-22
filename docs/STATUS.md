@@ -1,5 +1,24 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## Visual-repair analyzer diagnostics - 2026-08-23
+
+Rollback parent: `ac70d9903587f86627272542a9260b1188ec51a0`.
+
+After the persisted-payload boundary fix, the cached review reached a
+non-empty feasible ledger: 36 panels and 71 ROIs. It then consumed exactly
+three bounded requests in the visual-repair `other` bucket and failed closed
+as `cloud.narrative_not_grounded`; visual/story remained 701-panel state,
+narration-stage and TTS request counts were zero, and no MP4/QC artifact was
+accepted. This is the next strict provider-response boundary, not permission
+to relax a gate.
+
+RED reproduced the missing repair-specific predicate metadata. GREEN adds a
+sanitized field/count classifier and field-specific retry guidance; it stores
+no response text. Focused verification is 148/148 (135 cloud,
+13 visual-repair), Ruff, compileall, and diff-check. The next bounded resume
+must reuse the valid visual/story caches and inspect only the sanitized repair
+predicate before any broader stage is considered.
+
 ## Persisted prepared-payload review boundary - 2026-08-22
 
 Rollback parent: `1a3c5102cc60f8676b7de3cdca1f16661e4a66aa`.

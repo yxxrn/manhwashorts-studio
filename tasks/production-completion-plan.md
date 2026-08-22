@@ -1,5 +1,18 @@
 # ManhwaShorts production-completion plan
 
+## Latest verified checkpoint - 2026-08-23
+
+Rollback parent: `ac70d9903587f86627272542a9260b1188ec51a0`.
+
+The first post-fix cached review reached 36 feasible panels and 71 feasible
+ROIs, then failed the strict visual repair after three bounded `other`
+requests as `cloud.narrative_not_grounded`. The new local diagnostic keeps
+only analyzer field/count metadata and supplies field-specific retry guidance;
+it does not weaken admission or retain provider prose. GREEN is 148/148
+focused cloud/visual-repair tests, Ruff, compileall, and diff-check. No MP4,
+TTS, or QC result is claimed. Next: publish, reuse visual/story caches, and
+resume the bounded repair boundary.
+
 ## Latest verified checkpoint - 2026-08-22
 
 Rollback parent: `1a3c5102cc60f8676b7de3cdca1f16661e4a66aa`.

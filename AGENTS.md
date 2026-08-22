@@ -1,5 +1,29 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## Visual-repair analyzer diagnostics - 2026-08-23
+
+Rollback parent: `ac70d9903587f86627272542a9260b1188ec51a0`.
+
+The first cached review after the prepared-payload fix reached the strict
+visual-aware repair boundary: the durable job retained 701 visual/story
+panels, the local feasible ledger had 36 panels and 71 feasible ROIs, and the
+same pinned repair path made three bounded `other` requests before failing
+closed as `cloud.narrative_not_grounded`. No TTS request or narration-stage
+request was recorded, and no MP4/QC artifact was accepted.
+
+The prior code discarded the analyzer predicate and retried with only generic
+guidance. The diagnostic correction records only
+`failed_predicate=analyzer_contract_invalid`, a stable `failed_field`, and a
+numeric `failed_count`; it never stores provider prose. The next retry uses
+field-specific non-content guidance for passage evidence, claim evidence, or
+passage shape while preserving all grounding, lineage, duration, visual, and
+publish gates. RED was collection-clean; GREEN is 148/148 focused cloud and
+visual-repair tests (135 + 13), with Ruff, compileall, and diff-check clean.
+
+No narration, MP4, audio, subtitle, FFprobe, blackdetect, contact sheet, or QC
+completion is claimed. After publication, resume from the existing visual and
+story identities; do not repeat the 701-panel visual/story stages.
+
 ## Persisted prepared-payload review boundary - 2026-08-22
 
 Rollback parent: `1a3c5102cc60f8676b7de3cdca1f16661e4a66aa`.

@@ -1,5 +1,21 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Visual-repair analyzer diagnostics - 2026-08-23
+
+The repair DAG now keeps strict analyzer failures actionable without retaining
+provider content. A failed repair response is classified locally as
+`analyzer_contract_invalid` plus a stable field and count, and the next
+bounded attempt receives field-specific structural guidance. The three real
+attempts after the prepared-payload fix reached a 36-panel/71-ROI feasible
+ledger and failed closed as `cloud.narrative_not_grounded`; the valid
+701-panel visual/story identities were not recomputed and no TTS call ran.
+
+Focused RED/GREEN verification is 148/148 (135 cloud, 13 visual-repair), with
+Ruff, compileall, and diff-check clean. The change affects observability and
+retry precision only; all evidence, chronology, grounding, anti-copy,
+feasibility, resolution, audio, and publish gates remain strict. No media/QC
+completion is claimed.
+
 ## Persisted prepared-payload review boundary - 2026-08-22
 
 The review DAG now preserves the prepared-panel materialization across the

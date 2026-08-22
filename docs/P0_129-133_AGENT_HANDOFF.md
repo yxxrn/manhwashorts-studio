@@ -1,5 +1,23 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Visual-repair analyzer diagnostics - 2026-08-23
+
+Rollback parent: `ac70d9903587f86627272542a9260b1188ec51a0`.
+
+The cached review now reaches the visual-aware repair boundary with
+36 feasible panels and 71 feasible ROIs from the exact prepared payloads.
+Three bounded repair attempts (request bucket `other`) ended
+`cloud.narrative_not_grounded`; no narration-stage/TTS request and no accepted
+media artifact exists. The strict 701-panel visual/story identities remain
+durable.
+
+The new diagnostic boundary preserves only stable analyzer field/count
+metadata and sends field-specific retry guidance. It does not echo provider
+text or change any quality, grounding, lineage, duration, visual, audio, or
+publish gate. RED→GREEN focused proof is 148/148, plus Ruff, compileall, and
+diff-check. Publish this checkpoint, then resume the repair boundary without
+repeating visual/story analysis.
+
 ## Persisted prepared-payload review boundary - 2026-08-22
 
 Rollback parent: `1a3c5102cc60f8676b7de3cdca1f16661e4a66aa`.
