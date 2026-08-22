@@ -1,9 +1,23 @@
 # ManhwaShorts production-completion plan
 
+## Frozen release-candidate acceptance - 2026-08-23
+
+The corrected wall-clock limit is `<=90` minutes from ingestion through an
+upload-ready MP4 and all strict QC. After Video 1 is accepted, freeze the
+release-candidate SHA and production configuration. The fresh `The Novel’s
+Extra` run must use that exact pair and the normal entrypoint with zero code,
+threshold/configuration, manual DB/artifact, or editorial intervention. Record
+the start/finish SHA and configuration fingerprint, exact command, stage
+timings, provider/cache counts, and complete QC. Failure rejects the candidate:
+fix only a generic invariant with RED/GREEN regression proof, publish a new
+SHA, recreate fresh state, and restart the proof from the beginning.
+
+Historical narration admission remains 115-125 words and 50-60 seconds.
+
 ## Mandatory production-time acceptance - 2026-08-23
 
 One valid production run must complete from chapter/input ingestion through
-upload-ready MP4 and all strict QC in `<=60` minutes wall-clock. A run over 60
+upload-ready MP4 and all strict QC in `<=90` minutes wall-clock. A run over 90
 minutes is not production-ready; quality, grounding, lineage, visual, subtitle,
 audio, and rights gates remain unchanged. Instrument every stage and the
 critical path, including provider requests/retries/concurrency/cache hits and

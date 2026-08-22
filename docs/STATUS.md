@@ -1,9 +1,23 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## Frozen release-candidate gate - 2026-08-23
+
+The production wall-clock limit is corrected to `<=90` minutes from chapter
+ingestion through upload-ready MP4 and strict QC; `>90` is not production
+ready. The more important gate is immutability: after Video 1 is accepted,
+freeze the release candidate SHA and fixed production configuration, then run
+the fresh `The Novel’s Extra` proof unchanged through the normal entrypoint.
+That proof permits no code, threshold/configuration, manual DB/artifact, or
+editorial intervention. Record start/finish SHA and configuration fingerprint,
+exact command, stage timings, provider/cache counts, and QC. A failed proof
+rejects the candidate; diagnose generically with regression tests, publish a
+new SHA, recreate the fresh-run state, and restart the proof from its beginning.
+Historical 50-60-second narration limits remain unchanged.
+
 ## Hard production wall-clock gate - 2026-08-23
 
 Production readiness now requires one complete run from chapter ingestion
-through upload-ready MP4 and all strict QC in `<=60` minutes wall-clock.
+through upload-ready MP4 and all strict QC in `<=90` minutes wall-clock.
 Anything slower is not production-ready, even when every quality gate passes.
 This is an acceptance criterion, not a reason to relax grounding, lineage,
 visual, subtitle, audio, or rights gates. Each run must record stage timings,

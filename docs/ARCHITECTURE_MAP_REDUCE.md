@@ -1,8 +1,21 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Frozen release-candidate gate - 2026-08-23
+
+The corrected production wall-clock gate is `<=90` minutes from ingestion
+through upload-ready MP4 and strict QC. After Video 1 is accepted, the
+release-candidate commit and fixed production configuration are immutable for
+the fresh `The Novel’s Extra` run. No code, gate/config threshold, manual
+DB/artifact, or editorial changes are allowed during that proof. Persist start
+and finish SHA/config fingerprints, exact command, per-stage/critical-path
+timings, provider/cache behavior, and full QC. A failure rejects the release
+candidate; fixes must be generic, regression-tested, newly published, and
+followed by a fresh proof from zero state. Historical narration duration
+contracts remain 50-60 seconds.
+
 ## Hard production wall-clock gate - 2026-08-23
 
-The acceptance target is `<=60` minutes wall-clock from ingestion through an
+The acceptance target is `<=90` minutes wall-clock from ingestion through an
 upload-ready MP4 and all strict QC. A run over 60 minutes is not production
 ready even when its quality checks pass. Instrument preparation, visual/story
 map, narration/repair, timeline, TTS, render, and parallel QC with wall time,

@@ -1,9 +1,21 @@
 # ManhwaShorts production-completion todo
 
+## Frozen release-candidate gate - 2026-08-23
+
+- [ ] Freeze Video 1's accepted release SHA and fixed production config.
+- [ ] Run `The Novel’s Extra` from a fresh state on that exact immutable pair
+      through the normal entrypoint with no code/config/threshold/manual
+      DB-artifact/editorial intervention.
+- [ ] Record start/finish SHA/config fingerprints, exact command, timings,
+      provider/cache behavior, and complete strict QC; restart from zero after
+      any failure on a newly published generic fix.
+- [ ] Enforce `<=90` minutes ingestion-to-upload-ready-MP4 plus strict QC;
+      `>90` is not production-ready. Keep narration at 115-125 words/50-60s.
+
 ## Mandatory production-time acceptance - 2026-08-23
 
 - [ ] Prove one complete ingestion-to-upload-ready-MP4 run, including strict
-      QC, in `<=60` minutes wall-clock; `>60` remains not production-ready.
+      QC, in `<=90` minutes wall-clock; `>90` remains not production-ready.
 - [ ] Instrument per-stage and critical-path timings, provider requests,
       retries/concurrency, cache hits, and peak resource use.
 - [ ] Preflight and reuse prepared manifests, feasibility/ROI/timeline inputs,

@@ -1,9 +1,22 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Frozen release-candidate gate - 2026-08-23
+
+The corrected end-to-end wall-clock limit is `<=90` minutes from ingestion to
+upload-ready MP4 plus strict QC; over 90 minutes is not production-ready. Once
+Video 1 is accepted, freeze its release-candidate SHA and production
+configuration. The fresh `The Novel’s Extra` proof must run on that exact
+immutable pair through the normal entrypoint with zero code/config/threshold
+changes, manual DB/artifact edits, or editorial intervention. Capture start
+and finish SHA/config fingerprints, the exact command, timings, provider/cache
+counts, and complete QC. Any failure rejects the candidate and requires a
+generic regression fix, a new published SHA, a fresh state, and a full restart
+of the proof. Historical 50-60-second narration gates remain strict.
+
 ## Hard production wall-clock gate - 2026-08-23
 
 The production acceptance gate is a complete ingestion-to-upload-ready-MP4
-run, including strict QC, in `<=60` minutes wall-clock. A slower run remains
+run, including strict QC, in `<=90` minutes wall-clock. A slower run remains
 not production-ready; no quality, grounding, lineage, visual, subtitle, audio,
 or rights gate may be weakened to meet time. Record each stage's wall time,
 critical path, provider requests/retries/concurrency, cache hits, and render/QC
