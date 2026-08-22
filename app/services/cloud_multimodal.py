@@ -7403,7 +7403,11 @@ def _visual_panel_chunks(
 def _visual_provider_payload(panel: CloudPanelInput) -> tuple[bytes, str]:
     """Bound provider image size while leaving persisted panel bytes untouched."""
 
-    if len(panel.payload) <= 180_000:
+    needs_resize = len(panel.payload) > 180_000
+    if (
+        not needs_resize
+        and panel.mime_type.lower() in {"image/jpeg", "image/jpg"}
+    ):
         return panel.payload, panel.mime_type
     try:
         import io
@@ -7413,13 +7417,25 @@ def _visual_provider_payload(panel: CloudPanelInput) -> tuple[bytes, str]:
         with Image.open(io.BytesIO(panel.payload)) as source:
             source.load()
             image = source.convert("RGB")
-        image.thumbnail((384, 576), Image.Resampling.LANCZOS)
+        if needs_resize:
+            image.thumbnail((384, 576), Image.Resampling.LANCZOS)
         output = io.BytesIO()
         image.save(output, format="JPEG", quality=68, optimize=True, progressive=False, subsampling=2)
         encoded = output.getvalue()
     except (OSError, ValueError, UnidentifiedImageError):
         return panel.payload, panel.mime_type
-    return (encoded, "image/jpeg") if len(encoded) < len(panel.payload) else (panel.payload, panel.mime_type)
+    return encoded, "image/jpeg"
+
+
+def _visual_render_policy_version(panel: CloudPanelInput) -> str:
+    """Version only identities whose provider bytes can change."""
+
+    if (
+        len(panel.payload) <= 180_000
+        and panel.mime_type.lower() not in {"image/jpeg", "image/jpg"}
+    ):
+        return f"{VISUAL_RENDER_PAYLOAD_VERSION}:{VISUAL_CANONICAL_JPEG_VERSION}"
+    return VISUAL_RENDER_PAYLOAD_VERSION
 
 
 def persist_cloud_chapter(
@@ -8802,6 +8818,7 @@ VISUAL_RENDER_PAYLOAD_VERSION = (
     "visual-provider-payload-v1:max-bytes=180000:max-size=384x576:"
     "jpeg-quality=68:subsampling=2:lanczos"
 )
+VISUAL_CANONICAL_JPEG_VERSION = "canonical-jpeg-v1"
 VISUAL_CHECKPOINT_VERSION = "visual-checkpoint-v2"
 
 
@@ -8844,7 +8861,7 @@ def _visual_panel_identity(panel: CloudPanelInput, ordered_index: int) -> dict[s
         "source_asset_checksum": panel.source_checksum,
         "crop_transform": crop_transform,
         "rendered_payload": {
-            "policy_version": VISUAL_RENDER_PAYLOAD_VERSION,
+            "policy_version": _visual_render_policy_version(panel),
             "mime_type": rendered_mime,
             "sha256": rendered_payload_hash,
         },

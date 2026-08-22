@@ -1431,6 +1431,33 @@ def test_large_visual_provider_payload_is_downsampled_without_mutating_panel():
     assert panel.payload == output.getvalue()
 
 
+def test_small_non_jpeg_visual_provider_payload_is_normalized_for_endpoint():
+    module = _module()
+    import io
+
+    from PIL import Image
+
+    output = io.BytesIO()
+    Image.new("RGB", (16, 16), (128, 128, 128)).save(output, format="PNG")
+    panel = module.CloudPanelInput(
+        panel_id="small-png-panel",
+        source_asset_id="small-png-asset",
+        source_order=0,
+        mime_type="image/png",
+        payload=output.getvalue(),
+    )
+
+    payload, mime_type = module._visual_provider_payload(panel)
+
+    assert mime_type == "image/jpeg"
+    assert payload != panel.payload
+    with Image.open(io.BytesIO(payload)) as prepared:
+        assert prepared.format == "JPEG"
+        assert prepared.size == (16, 16)
+    assert panel.mime_type == "image/png"
+    assert panel.payload == output.getvalue()
+
+
 def test_unknown_visual_geometry_blocks_before_story_mapping():
     module = _module()
     provider = _FakeProvider(unknown_visual=True)
