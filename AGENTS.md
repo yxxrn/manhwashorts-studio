@@ -1,5 +1,37 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## Persisted prepared-payload review boundary - 2026-08-22
+
+Rollback parent: `1a3c5102cc60f8676b7de3cdca1f16661e4a66aa`.
+
+The post-persistence review rerun reached `visual.visual_unavailable` with
+zero provider/TTS requests because `_repair_review_narrative` sent a durable
+`ScriptVersion` through `_load_reference_panel_fallback_candidates`. The
+segmented `SourceAsset` rows do not necessarily contain the original-strip
+geometry needed by that DB crop loader. A sanitized offline probe found 701
+prepared panels and 701 visual rows; 588 persisted source rows reached the
+candidate-builder boundary and 113 crop fallbacks were rejected as
+`review.panel_crop_fallback_geometry_invalid`. The earlier prepared-payload
+diagnostic had already shown the exact materialized bytes produce the normal
+candidate/feasibility path.
+
+The narrow fix reuses `_build_ephemeral_review_candidates` whenever the
+normal entrypoint supplies non-empty `CloudPanelInput` payloads restored from
+the durable prepared manifest. Those bytes retain panel ID, source asset,
+source order, checksum, bounds, visual evidence, and the existing strict
+candidate/feasibility validators. The DB loader remains the compatibility
+path only when no prepared payloads are available; no balloon, protected,
+blank-space, lineage, resolution, or publish gate changed.
+
+Collection-clean RED was the new
+`test_persisted_review_reuses_exact_prepared_panel_payloads` failure at
+`visual.visual_unavailable`; GREEN is 147/147 focused cloud plus visual-repair
+tests (134 + 13), with Ruff, compileall, and `git diff --check` clean. This
+source/test/docs checkpoint consumes no provider/TTS request. Stage 3 remains
+unproven: no accepted MP4, audio, subtitle, FFprobe, blackdetect, contact
+sheet, or QC PASS exists. After publication, rerun the existing cached review
+driver without repeating valid 701-panel visual/story work.
+
 ## Narration anti-copy repair checkpoint - 2026-08-21
 
 Rollback parent for this contract/repair slice is

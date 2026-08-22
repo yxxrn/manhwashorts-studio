@@ -916,6 +916,91 @@ def test_review_repair_forwards_persisted_panel_crop_fallback(monkeypatch):
     assert observed["allow_persisted_panel_crop_fallback"] is True
 
 
+def test_persisted_review_reuses_exact_prepared_panel_payloads(monkeypatch):
+    """A durable script must not force review back through segmented DB bytes."""
+    module = _module()
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    pipeline = importlib.import_module("app.services.pipeline")
+    reference_profile = importlib.import_module("app.services.reference_profile")
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    panels = _panels(module)
+    observed = {}
+
+    class Database:
+        def get(self, *_args):
+            return SimpleNamespace(template="reference_matched_shorts_v2")
+
+    monkeypatch.setattr(
+        reference_profile,
+        "resolve_reference_profile",
+        lambda _template: SimpleNamespace(),
+    )
+    monkeypatch.setattr(pipeline, "project_assets", lambda *_args: ())
+    monkeypatch.setattr(pipeline, "image_assets", lambda *_args: ())
+    monkeypatch.setattr(
+        pipeline,
+        "latest_analysis",
+        lambda *_args: SimpleNamespace(panel_regions=()),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_load_reference_panel_fallback_candidates",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        module,
+        "_build_ephemeral_review_candidates",
+        lambda received_panels, *_args, **_kwargs: (
+            observed.update({"panels": received_panels}) or ("candidate",),
+            {"hook": ("beat-1",)},
+        ),
+    )
+    monkeypatch.setattr(
+        repair,
+        "default_section_to_beats",
+        lambda *_args: {"hook": ("beat-1",)},
+    )
+
+    def fake_ledger(candidates, *_args, **_kwargs):
+        return SimpleNamespace(entries=("entry",) if tuple(candidates) else ())
+
+    monkeypatch.setattr(repair, "build_feasible_visual_ledger", fake_ledger)
+    monkeypatch.setattr(
+        repair,
+        "missing_visual_sections",
+        lambda ledger, *_args: () if ledger.entries else ("hook",),
+    )
+
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.runner = SimpleNamespace(
+        model_identity=SimpleNamespace(identity_hash="m" * 64),
+    )
+    result = SimpleNamespace(
+        visual=SimpleNamespace(),
+        story_map=SimpleNamespace(
+            beats=({"beat_id": "beat-1", "panel_ids": [panel.panel_id for panel in panels]},),
+        ),
+        narration=SimpleNamespace(),
+    )
+
+    outcome = service._repair_review_narrative(
+        Database(),
+        "project-a",
+        SimpleNamespace(sections=({"section": "hook"},)),
+        panels,
+        result,
+        review_source_upscale_policy="review_silent_source_upscale_v1",
+        review_source_root=Path("/review"),
+    )
+
+    assert observed["panels"] is panels
+    assert outcome[0] is result
+    assert outcome[1].entries == ("entry",)
+    assert outcome[2] == ()
+
+
 def test_ephemeral_review_registry_allows_title_visual_row_without_story_candidate():
     module = _module()
     import io

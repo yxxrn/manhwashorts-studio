@@ -1,5 +1,19 @@
 # ManhwaShorts production-completion todo
 
+## Latest verified checkpoint - 2026-08-22
+
+- [x] Reproduce the persisted-script `visual.visual_unavailable` boundary
+      with non-empty prepared panel payloads.
+- [x] Reuse exact manifest-restored payloads after persistence; retain the
+      segmented DB crop loader only for empty-payload legacy callers.
+- [x] Verify 147/147 focused cloud/visual-repair tests, Ruff, compileall, and
+      `git diff --check`; provider/TTS requests consumed: zero.
+- [ ] Publish this checkpoint, rerun cached review without visual/story
+      repetition, and produce the first accepted silent MP4/QC bundle.
+
+The runtime remains protected and untracked. No narration, MP4, TTS, audio,
+or QC completion is claimed until actual artifacts pass measured checks.
+
 This checklist is maintained with the production-completion plan. A checked
 item requires durable command output and artifact/hash evidence.
 

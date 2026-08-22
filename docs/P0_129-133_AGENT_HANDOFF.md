@@ -1,5 +1,26 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Persisted prepared-payload review boundary - 2026-08-22
+
+Rollback parent: `1a3c5102cc60f8676b7de3cdca1f16661e4a66aa`.
+
+The normal cached review path is now corrected at the source-materialization
+boundary. After persistence, non-empty prepared `CloudPanelInput` payloads
+are reused to build the exact panel-keyed review registry; segmented DB asset
+bytes are used only by the legacy empty-payload fallback. This is required
+because the DB crop fallback rejects global panel geometry for 113 rows
+(`review.panel_crop_fallback_geometry_invalid`) even though 701 prepared and
+701 visual rows are durable. The offline probe recorded 588 rows reaching the
+candidate boundary; no provider/TTS request was made.
+
+RED was the collection-clean persisted-script regression ending in
+`visual.visual_unavailable`; GREEN is 147/147 focused cloud and visual-repair
+tests, Ruff, compileall, and diff-check. All existing visual evidence,
+lineage, feasibility, balloon/protected, blank-space, resolution, chronology,
+and publish gates remain strict. Stage 3 is still unproven: no MP4/audio/QC
+artifact is accepted. Resume from the published checkpoint with the existing
+cached review driver and do not repeat the valid 701-panel visual/story stages.
+
 ## Narration anti-copy repair checkpoint
 
 Rollback parent: `a2d9e85eb5caa05abf792294b7265eed0300c67b`.

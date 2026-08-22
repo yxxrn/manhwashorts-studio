@@ -1,5 +1,32 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## Persisted prepared-payload review boundary - 2026-08-22
+
+Rollback parent: `1a3c5102cc60f8676b7de3cdca1f16661e4a66aa`.
+
+The cached review rerun made zero provider/TTS requests but ended
+`NEEDS_REVIEW` as `visual.visual_unavailable`. The local cause was the
+post-persistence branch rebuilding candidates from segmented DB assets rather
+than the exact prepared panel payloads already restored from the durable
+manifest. The sanitized loader probe saw 701 prepared/visual panels, 646 DB
+assets, 588 rows reaching candidate construction, and 113
+`review.panel_crop_fallback_geometry_invalid` skips.
+
+RED reproduced the contradiction with a persisted script and non-empty exact
+prepared panels: the old branch never called the prepared-payload builder and
+raised `visual.visual_unavailable`. GREEN reuses
+`_build_ephemeral_review_candidates` when those payloads are present and keeps
+the DB crop loader only for empty-payload legacy callers. The candidate
+builder, feasible ledger, visual evidence, balloon/protected, blank-space,
+lineage, resolution, chronology, and publish gates are unchanged.
+
+Verification is 147/147 focused tests (134 cloud mass-production and 13
+visual-repair), Ruff, compileall, and `git diff --check`; no provider/TTS
+request was consumed. No narration, MP4, audio, FFprobe, blackdetect,
+contact-sheet, or QC completion is claimed. Publish this source/test/docs
+checkpoint, then rerun the cached review driver without repeating valid visual
+or story calls.
+
 ## Narration anti-copy repair checkpoint - 2026-08-21
 
 Rollback parent: `a2d9e85eb5caa05abf792294b7265eed0300c67b`.

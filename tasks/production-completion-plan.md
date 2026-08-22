@@ -1,5 +1,19 @@
 # ManhwaShorts production-completion plan
 
+## Latest verified checkpoint - 2026-08-22
+
+Rollback parent: `1a3c5102cc60f8676b7de3cdca1f16661e4a66aa`.
+
+The persisted review-source discrepancy is fixed offline. The post-script
+review path now reuses non-empty prepared `CloudPanelInput` payloads and the
+existing exact candidate builder; the segmented-asset DB loader remains only
+for empty-payload legacy callers. RED reproduced `visual.visual_unavailable`;
+GREEN is 147/147 focused cloud/visual-repair tests, Ruff, compileall, and
+diff-check. The cached runtime has 701 prepared/visual rows, and this slice
+spent zero provider/TTS requests. No MP4 or QC result is claimed. Next: push
+this checkpoint, rerun the cached review driver without visual/story repeat,
+then stop at and diagnose the next strict render/QC boundary.
+
 Status: active persistent goal, last verified 2026-08-22. This plan is an
 operational handoff, not permission to weaken a quality gate.
 

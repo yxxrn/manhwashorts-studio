@@ -7898,7 +7898,13 @@ class CloudBatchService:
             raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
 
         images = pipeline.image_assets(pipeline.project_assets(db, project_id))
-        if script_row is None:
+        # The normal review entrypoint restores the exact prepared panel
+        # payloads from the durable manifest before this method runs. Reuse
+        # those bytes after persistence too: segmented SourceAsset rows may
+        # not contain the original-strip geometry needed by the DB crop
+        # loader. Keep the DB loader only for legacy callers that provide no
+        # prepared payloads at all.
+        if script_row is None or panels:
             candidates, section_to_beats = _build_ephemeral_review_candidates(
                 panels,
                 current_visual,

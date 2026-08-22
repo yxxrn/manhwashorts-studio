@@ -1,5 +1,25 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Persisted prepared-payload review boundary - 2026-08-22
+
+The review DAG now preserves the prepared-panel materialization across the
+persistence boundary. If `CloudBatchService._repair_review_narrative` has
+non-empty manifest-restored `CloudPanelInput` rows, it calls the existing
+panel-keyed prepared-payload builder; only callers with no prepared payloads
+use `_load_reference_panel_fallback_candidates`. This avoids treating a
+segmented `SourceAsset` crop as an original-strip coordinate space. The
+offline probe recorded 701 prepared/visual rows, 588 rows reaching candidate
+construction, and 113 geometry-invalid crop-fallback rows; it made no cloud
+or TTS request.
+
+The change is a source-materialization correction, not a gate relaxation:
+the same visual evidence hash, source checksum/bounds, border-mask,
+candidate-is-feasible, lineage, chronology, and publish checks run afterward.
+The RED/GREEN regression and focused matrix are 147/147 passed (134 cloud,
+13 visual-repair), with Ruff, compileall, and diff-check clean. The current
+job still has no accepted MP4/audio/QC artifact; the next step is a cached
+review rerun with no visual/story reanalysis.
+
 ## Strict narration anti-copy boundary - 2026-08-21
 
 Rollback parent: `a2d9e85eb5caa05abf792294b7265eed0300c67b`.
