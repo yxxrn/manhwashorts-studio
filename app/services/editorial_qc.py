@@ -383,10 +383,13 @@ def _caption_contract_invalid(cues: list[object], duration: float) -> bool:
 def _reference_qc_failures(scenes: list[object], duration: float, profile) -> list[str]:
     failures: list[str] = []
     if not profile.duration_min_s <= duration <= profile.duration_max_s:
-        failures.append("reference.duration_outside_38_50s")
+        failures.append("reference.duration_outside_50_60s")
     if not profile.shot_min <= len(scenes) <= profile.shot_max:
-        failures.append("reference.shot_count_outside_28_36")
-    durations = [max(0.0, float(scene.end_time) - float(scene.start_time)) for scene in scenes]
+        failures.append("reference.shot_count_outside_36_52")
+    durations = [
+        round(max(0.0, float(scene.end_time) - float(scene.start_time)), 3)
+        for scene in scenes
+    ]
     normal = [value for value in durations if profile.hold_min_s <= value <= profile.hold_max_s]
     emphasis = [value for value in durations if profile.emphasis_min_s <= value <= profile.emphasis_max_s]
     if len(normal) + len(emphasis) != len(durations):

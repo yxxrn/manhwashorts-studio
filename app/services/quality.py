@@ -664,15 +664,15 @@ def check_reference_profile(scenes: list, duration: float, profile) -> list[Chec
     results: list[CheckResult] = []
     if not profile.duration_min_s <= duration <= profile.duration_max_s:
         results.append(_fail(
-            "reference.duration_outside_38_50s",
+            "reference.duration_outside_50_60s",
             CheckSeverity.ERROR,
-            "Reference output duration must be between 38 and 50 seconds.",
+            "Reference output duration must be between 50 and 60 seconds.",
         ))
     if not profile.shot_min <= len(scenes) <= profile.shot_max:
         results.append(_fail(
-            "reference.shot_count_outside_28_36",
+            "reference.shot_count_outside_36_52",
             CheckSeverity.ERROR,
-            "Reference output must contain 28 to 36 shots.",
+            "Reference output must contain 36 to 52 shots.",
         ))
     durations = [
         max(0.0, float(scene.end_time) - float(scene.start_time))
@@ -742,7 +742,10 @@ def check_repetition_and_motion(scenes: list, profile=None) -> list[CheckResult]
     """Block dominant backgrounds, A-B-A-B loops, and unexplained static runs."""
     if not scenes:
         return []
-    durations = [max(0.0, float(scene.end_time) - float(scene.start_time)) for scene in scenes]
+    durations = [
+        round(max(0.0, float(scene.end_time) - float(scene.start_time)), 3)
+        for scene in scenes
+    ]
     total = sum(durations)
     signatures = [getattr(scene, "visual_signature", "") or getattr(scene, "asset_id", "") for scene in scenes]
     results: list[CheckResult] = []

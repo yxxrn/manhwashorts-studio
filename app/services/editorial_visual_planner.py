@@ -304,10 +304,16 @@ def _reference_section_shot_durations(
             emphasis_duration if index in positions else normal_duration
             for index in range(shot_count)
         ]
+    if not allow_review_cadence_adaptation and values:
+        # The mixed emphasis/normal values must sum back to the exact section
+        # duration: unabsorbed drift accumulates across sections and drives
+        # the clamped final shot of the chapter to a negative duration.
+        values = list(values)
+        values[-1] = values[-1] + (section_duration - sum(values))
     if not allow_review_cadence_adaptation and any(
         not (
-            profile.hold_min_s <= value <= profile.hold_max_s
-            or profile.emphasis_min_s <= value <= profile.emphasis_max_s
+            profile.hold_min_s <= round(value, 3) <= profile.hold_max_s
+            or profile.emphasis_min_s <= round(value, 3) <= profile.emphasis_max_s
         )
         for value in values
     ):
@@ -1476,11 +1482,13 @@ def _plan_reference(
         )
         for shot_index, shot in enumerate(section_shots):
             start = round(timeline_cursor, 3)
-            end_time = (
-                end
-                if shot_cursor + shot_index == len(shots) - 1
-                else round(timeline_cursor + durations[shot_index], 3)
-            )
+            if shot_cursor + shot_index == len(shots) - 1:
+                end_time = end
+            else:
+                # Store the exact in-band section duration: deriving the end
+                # from an unrounded cursor can land a stored delta in the
+                # rounding dead zone between the hold and emphasis bands.
+                end_time = round(start + round(durations[shot_index], 3), 3)
             shot["start_time"] = start
             shot["end_time"] = end_time
             shot["transition"] = "none" if shot_cursor + shot_index == 0 else "cut"
@@ -1509,7 +1517,10 @@ def _plan_reference(
                     reasons.extend(citation_alignment_reasons_by_section.get(section, ()) if citation_alignment_reasons_by_section else ())
                     reasons.append("evidence_fallback:unavailable")
             shot["alignment_reasons"] = sorted(set(reasons))
-            timeline_cursor = end_time
+            # Advance by the exact planned duration, not the rounded stored
+            # end time: per-shot rounding accumulates and can push the final
+            # clamped shot of the chapter to a negative duration.
+            timeline_cursor += durations[shot_index]
         shot_cursor += len(section_shots)
 
     if cited_asset_ids_by_section is not None:
@@ -1567,7 +1578,9 @@ def _plan_reference(
             )
             second["alignment_reasons"] = sorted(set(second_reasons))
 
-    durations = [shot["end_time"] - shot["start_time"] for shot in shots]
+    durations = [
+        round(shot["end_time"] - shot["start_time"], 3) for shot in shots
+    ]
     if cadence_adapted:
         if any(duration <= 0 for duration in durations):
             raise ReferencePlanningError(

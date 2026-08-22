@@ -30,7 +30,7 @@ from app.services import (
 )
 
 
-def _spans(total: float = 40.901) -> list[SimpleNamespace]:
+def _spans(total: float = 52.2) -> list[SimpleNamespace]:
     sections = ("hook", "setup", "conflict", "twist", "cta")
     width = total / len(sections)
     return [
@@ -83,12 +83,14 @@ def _profile_shots() -> tuple[object, list[dict]]:
 
 
 def _assert_reference_pacing(profile, shots: list[dict]) -> None:
-    assert len(shots) == 32
+    assert len(shots) == 41
     assert shots[0]["start_time"] == pytest.approx(0.0)
-    assert shots[-1]["end_time"] == pytest.approx(40.901, abs=0.002)
+    assert shots[-1]["end_time"] == pytest.approx(52.2, abs=0.002)
     for left, right in zip(shots, shots[1:], strict=False):
         assert left["end_time"] == pytest.approx(right["start_time"], abs=0.002)
-    durations = [shot["end_time"] - shot["start_time"] for shot in shots]
+    durations = [
+        round(shot["end_time"] - shot["start_time"], 3) for shot in shots
+    ]
     normal = [duration for duration in durations if profile.hold_min_s <= duration <= profile.hold_max_s]
     emphasis = [duration for duration in durations if profile.emphasis_min_s <= duration <= profile.emphasis_max_s]
     assert len(normal) + len(emphasis) == len(durations)
@@ -175,7 +177,7 @@ def test_reference_emphasis_slots_prioritize_camera_intent_deterministically():
 
 def test_reference_emphasis_skips_a_one_shot_section():
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
-    widths = (0.65, 10.00, 10.00, 10.00, 10.00)
+    widths = (0.65, 12.89, 12.89, 12.89, 12.88)
     sections = ("hook", "setup", "conflict", "twist", "cta")
     spans: list[SimpleNamespace] = []
     cursor = 0.0
@@ -221,54 +223,69 @@ def test_reference_planner_fails_closed_when_reuse_constraints_are_impossible():
         )
 
 
-def test_reference_planner_satisfies_sixteen_panel_twice_reuse_contract():
+def test_reference_planner_satisfies_twenty_one_panel_twice_reuse_contract():
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
-    shots = editorial_visual_planner.plan(_spans(), _candidates(16), profile=profile)
-    assert len(shots) == 32
+    shots = editorial_visual_planner.plan(_spans(), _candidates(21), profile=profile)
+    assert len(shots) == 41
     positions: dict[str, list[int]] = {}
     for index, shot in enumerate(shots):
         positions.setdefault(shot["asset_id"], []).append(index)
-    assert set(positions) == {f"asset-{index}" for index in range(16)}
-    assert all(len(indexes) == 2 for indexes in positions.values())
+    assert set(positions) == {f"asset-{index}" for index in range(21)}
+    assert sum(len(indexes) for indexes in positions.values()) == 41
+    assert all(len(indexes) <= 2 for indexes in positions.values())
     for indexes in positions.values():
-        assert indexes[1] != indexes[0] + 1
-        first, second = (shots[indexes[0]], shots[indexes[1]])
-        assert (first["roi_label"], first["focus_x"], first["focus_y"]) != (
-            second["roi_label"], second["focus_x"], second["focus_y"]
+        if len(indexes) == 2:
+            assert indexes[1] != indexes[0] + 1
+            first, second = (shots[indexes[0]], shots[indexes[1]])
+            assert (first["roi_label"], first["focus_x"], first["focus_y"]) != (
+                second["roi_label"], second["focus_x"], second["focus_y"]
+            )
+            assert any("reuse_purpose:" in reason for reason in second["alignment_reasons"])
+
+
+def test_reference_section_shot_durations_absorb_rounding_drift():
+    profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    values = editorial_visual_planner._reference_section_shot_durations(
+        10.44, 8, 2, profile
+    )
+    assert round(sum(values), 6) == 10.44
+    for value in values:
+        assert (
+            profile.hold_min_s <= value <= profile.hold_max_s
+            or profile.emphasis_min_s <= value <= profile.emphasis_max_s
         )
-        assert any("reuse_purpose:" in reason for reason in second["alignment_reasons"])
 
 
 def test_reference_editorial_qc_rejects_reuse_and_low_hard_cut_ratio():
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
-    consecutive = _qc_scenes(32, 40.901)
+    consecutive = _qc_scenes(41, 52.2)
     consecutive[1].asset_id = consecutive[0].asset_id
     consecutive[1].visual_signature = consecutive[0].visual_signature
     consecutive[1].roi_label = consecutive[0].roi_label
     consecutive[1].focus_x = consecutive[0].focus_x
     consecutive[1].focus_y = consecutive[0].focus_y
     consecutive_report = editorial_qc.build_report(
-        scenes=consecutive, cues=[], duration=40.901, profile=profile, preview=True
+        scenes=consecutive, cues=[], duration=52.2, profile=profile, preview=True
     )
     assert "reference.panel_reuse_consecutive" in consecutive_report.failures
     assert "reference.panel_reuse_same_roi" in consecutive_report.failures
 
-    same_roi = _qc_scenes(32, 40.901)
+    same_roi = _qc_scenes(41, 52.2)
     same_roi[2].asset_id = same_roi[0].asset_id
     same_roi[2].visual_signature = same_roi[0].visual_signature
     same_roi[2].roi_label = same_roi[0].roi_label
     same_roi[2].focus_x = same_roi[0].focus_x
     same_roi[2].focus_y = same_roi[0].focus_y
     same_roi_report = editorial_qc.build_report(
-        scenes=same_roi, cues=[], duration=40.901, profile=profile, preview=True
+        scenes=same_roi, cues=[], duration=52.2, profile=profile, preview=True
     )
     assert "reference.panel_reuse_same_roi" in same_roi_report.failures
 
-    low_cuts = _qc_scenes(32, 40.901)
+    low_cuts = _qc_scenes(41, 52.2)
     for scene in low_cuts:
         scene.transition = "fade"
     low_cut_report = editorial_qc.build_report(
-        scenes=low_cuts, cues=[], duration=40.901, profile=profile, preview=True
+        scenes=low_cuts, cues=[], duration=52.2, profile=profile, preview=True
     )
     assert "reference.hard_cut_ratio_below_85pct" in low_cut_report.failures
 
@@ -277,7 +294,7 @@ def test_reference_planner_uses_sparse_citations_then_contextual_fallback():
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
     shots = editorial_visual_planner.plan(
         _spans(),
-        _candidates(16),
+        _candidates(24),
         profile=profile,
         cited_asset_ids_by_section={"hook": ("asset-0", "asset-1")},
     )
@@ -321,7 +338,7 @@ def test_reference_planner_marks_missing_evidence_as_deterministic_fallback():
 def _qc_scenes(
     count: int, duration: float, cadence: bool = True
 ) -> list[SimpleNamespace]:
-    emphasis_count = round(count * 0.25) if cadence and count == 32 else 0
+    emphasis_count = round(count * 0.25) if cadence and count == 41 else 0
     emphasis_duration = 1.70
     normal_count = count - emphasis_count
     normal_duration = (
@@ -363,9 +380,9 @@ def _qc_scenes(
 def test_reference_qc_uses_corrected_duration_bands_and_ratios():
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
     report = editorial_qc.build_report(
-        scenes=_qc_scenes(32, 40.901),
+        scenes=_qc_scenes(41, 52.2),
         cues=[],
-        duration=40.901,
+        duration=52.2,
         profile=profile,
         preview=True,
     )
@@ -378,15 +395,15 @@ def test_reference_qc_uses_corrected_duration_bands_and_ratios():
         profile=profile,
         preview=True,
     )
-    assert "reference.shot_count_outside_28_36" in invalid.failures
+    assert "reference.shot_count_outside_36_52" in invalid.failures
     assert "reference.hold_ratio_below_70pct" in invalid.failures
     assert "reference.emphasis_ratio_over_30pct" in invalid.failures
 
-    too_uniform = _qc_scenes(32, 40.901, cadence=False)
+    too_uniform = _qc_scenes(41, 52.2, cadence=False)
     uniform_report = editorial_qc.build_report(
         scenes=too_uniform,
         cues=[],
-        duration=40.901,
+        duration=52.2,
         profile=profile,
         preview=True,
     )
@@ -396,7 +413,7 @@ def test_reference_qc_uses_corrected_duration_bands_and_ratios():
 
 
 def test_quality_repetition_check_applies_reference_reuse_cap():
-    scenes = _qc_scenes(32, 40.901)
+    scenes = _qc_scenes(41, 52.2)
     scenes[2].asset_id = scenes[0].asset_id
     scenes[2].visual_signature = scenes[0].visual_signature
     scenes[4].asset_id = scenes[0].asset_id
@@ -553,7 +570,7 @@ def _add_reference_project(
 
 
 def test_reference_timeline_rejects_bad_audio_before_deleting_existing_rows(db):
-    project, _script = _add_reference_project(db, 37.0)
+    project, _script = _add_reference_project(db, 40.901)
     old_scene = TimelineScene(
         project_id=project.id,
         order_index=0,
@@ -565,14 +582,14 @@ def test_reference_timeline_rejects_bad_audio_before_deleting_existing_rows(db):
     db.add_all([old_scene, old_cue])
     db.flush()
 
-    with pytest.raises(pipeline.PipelineError, match="reference_matched_shorts_v1.*38.*50"):
+    with pytest.raises(pipeline.PipelineError, match="reference_matched_shorts_v1.*50.*60"):
         pipeline.build_timeline(db, project.id)
     assert db.get(TimelineScene, old_scene.id) is not None
     assert db.get(SubtitleCue, old_cue.id) is not None
 
 
 def test_reference_timeline_preserves_rows_when_panel_pool_is_impossible(db):
-    project, _script = _add_reference_project(db, 40.901)
+    project, _script = _add_reference_project(db, 52.2)
     old_scene = TimelineScene(
         project_id=project.id,
         order_index=0,
@@ -597,7 +614,7 @@ def test_reference_timeline_preserves_rows_when_panel_pool_is_impossible(db):
 
 
 def test_reference_timeline_passes_profile_and_section_citations_to_planner(db, monkeypatch):
-    project, script = _add_reference_project(db, 40.901, with_asset=True)
+    project, script = _add_reference_project(db, 52.2, with_asset=True)
     captured: dict[str, object] = {}
 
     def fake_score(_images, _reader):
@@ -768,7 +785,7 @@ def _task6_telemetry(framing, evidence, mask, crop_box=(0, 0, 100, 200)):
     )
 
 
-def _task6_wrappers(count=16, *, framing, shared=False, first_alternatives=None):
+def _task6_wrappers(count=21, *, framing, shared=False, first_alternatives=None):
     wrappers = []
     if shared:
         wrappers.append(
@@ -906,7 +923,7 @@ def test_task6_explicit_panel_path_calls_exact_feasibility_and_returns_lineage_l
         profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
         reference_panel_candidates=wrappers,
     )
-    assert len(shots) == 32
+    assert len(shots) == 41
     assert calls
     assert all(call[-1] == (1080, 1920) for call in calls)
     assert all(call[1] in {wrapper.panel_id for wrapper in wrappers} for call in calls)
@@ -923,7 +940,7 @@ def test_task6_same_asset_panels_keep_evidence_and_masks_distinct(monkeypatch):
     framing = importlib.import_module("app.services.framing_analysis")
     candidate_type = getattr(planner, "ReferencePanelFallbackCandidate", None)
     assert candidate_type is not None
-    wrappers = _task6_wrappers(17, framing=framing, shared=True)
+    wrappers = _task6_wrappers(22, framing=framing, shared=True)
     seen = []
 
     def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size):
@@ -1097,23 +1114,23 @@ def test_task6_no_feasible_panel_fails_with_stable_visual_unavailable(monkeypatc
 
 def test_task6_same_asset_panels_fill_exact_capacity(monkeypatch):
     framing = __import__("app.services.framing_analysis", fromlist=["x"])
-    wrappers = _task6_wrappers(count=16, framing=framing, shared=True)
+    wrappers = _task6_wrappers(count=20, framing=framing, shared=True)
 
     def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
         return True, _task6_telemetry(framing, evidence, mask, crop_box)
 
     monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
     shots = editorial_visual_planner.plan(
-        _spans(),
+        _spans(51.84),
         [wrapper.panel_candidate for wrapper in wrappers],
         profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
         reference_panel_candidates=wrappers,
     )
-    assert len(shots) == 32
+    assert len(shots) == 40
     counts: dict[str, int] = {}
     for shot in shots:
         counts[shot["panel_id"]] = counts.get(shot["panel_id"], 0) + 1
-    assert len(counts) == 16
+    assert len(counts) == 20
     assert set(counts) == {wrapper.panel_id for wrapper in wrappers}
     assert set(counts.values()) == {2}
     assert sum(shot["asset_id"] == "asset-shared" for shot in shots) == 4
@@ -1142,7 +1159,7 @@ def test_task6_contract_mismatch_has_dedicated_failure_code():
     from dataclasses import replace
 
     framing = __import__("app.services.framing_analysis", fromlist=["x"])
-    wrappers = _task6_wrappers(count=16, framing=framing)
+    wrappers = _task6_wrappers(count=21, framing=framing)
     mismatched_profile = replace(
         reference_profile.REFERENCE_MATCHED_SHORTS_V1,
         framing_contract_version="UNSUPPORTED_REFERENCE_CONTRACT",
@@ -1185,7 +1202,7 @@ def test_task6_enforces_same_panel_phase_order_and_reason(monkeypatch):
 
     framing = __import__("app.services.framing_analysis", fromlist=["x"])
     wrappers = _task6_wrappers(
-        count=16,
+        count=21,
         framing=framing,
         first_alternatives=_task6_out_of_order_rois(editorial_visual_planner),
     )
@@ -1221,7 +1238,7 @@ def test_task6_enforces_same_panel_phase_order_and_reason(monkeypatch):
 def test_task6_enforces_alternate_panel_phase_after_same_panel_attempts(monkeypatch):
     framing = __import__("app.services.framing_analysis", fromlist=["x"])
     wrappers = _task6_wrappers(
-        count=16,
+        count=21,
         framing=framing,
         first_alternatives=_task6_out_of_order_rois(editorial_visual_planner),
     )
@@ -1257,7 +1274,7 @@ def test_task6_enforces_alternate_panel_phase_after_same_panel_attempts(monkeypa
 
 def test_task6_shot_contains_accepted_telemetry_and_selection_context(monkeypatch):
     framing = __import__("app.services.framing_analysis", fromlist=["x"])
-    wrappers = _task6_wrappers(count=16, framing=framing)
+    wrappers = _task6_wrappers(count=21, framing=framing)
 
     def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
         return True, _task6_telemetry(framing, evidence, mask, crop_box)
@@ -1466,7 +1483,7 @@ def test_task6_alternate_panel_runs_all_roi_phases(monkeypatch):
 
     framing = __import__("app.services.framing_analysis", fromlist=["x"])
     wrappers = _task6_wrappers(
-        count=16,
+        count=21,
         framing=framing,
         first_alternatives=_task6_out_of_order_rois(editorial_visual_planner),
     )

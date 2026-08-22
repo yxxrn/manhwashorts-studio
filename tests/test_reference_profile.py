@@ -81,10 +81,10 @@ def test_reference_profile_has_the_complete_approved_contract():
     assert profile.profile_id == "reference_matched_shorts_v1"
     assert profile.version == "1.0.0"
     expected_values = {
-        "duration_min_s": 38.0,
-        "duration_max_s": 50.0,
-        "shot_min": 28,
-        "shot_max": 36,
+        "duration_min_s": 50.0,
+        "duration_max_s": 60.0,
+        "shot_min": 36,
+        "shot_max": 52,
         "hold_min_s": 0.65,
         "hold_max_s": 1.59,
         "emphasis_min_s": 1.6,
@@ -245,3 +245,25 @@ def test_reference_profile_resolution_is_explicit_and_legacy_safe():
         assert first == second
         if first[0] == "value":
             assert first[1] is None
+
+
+def test_reference_duration_window_matches_narration_contract():
+    """The render window must admit every narration the script contract accepts.
+
+    The narration pipeline enforces 115-125 spoken words and 50-60 second
+    candidates; a render profile that rejects durations above 50 seconds makes
+    every strict-valid narration unrenderable. The shot window must keep the
+    mean-shot band reachable across the whole duration window.
+    """
+    import math
+
+    module = _profile_module()
+    profile = module.REFERENCE_MATCHED_SHORTS_V1
+
+    assert (profile.duration_min_s, profile.duration_max_s) == (50.0, 60.0)
+    assert profile.shot_min >= math.ceil(
+        profile.duration_min_s / profile.mean_shot_max_s
+    )
+    assert profile.shot_max <= math.floor(
+        profile.duration_max_s / profile.mean_shot_min_s
+    )
