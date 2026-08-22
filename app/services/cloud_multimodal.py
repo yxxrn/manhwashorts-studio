@@ -5475,6 +5475,13 @@ class CloudStageRunner:
             candidate,
             result,
             removable_passage_ids,
+            trusted_lineage={
+                str(row["passage_id"]): row
+                for row in self._reconstruct_narration_repair_passage_lineage(
+                    candidate,
+                    targeted_repair.get("position_registry"),
+                )["passages"]
+            },
         )
         if result is None:
             return None
@@ -5548,6 +5555,7 @@ class CloudStageRunner:
         candidate: NarrationResult,
         repaired: NarrationResult,
         removable_passage_ids: Sequence[str],
+        trusted_lineage: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> NarrationResult | None:
         if (
             candidate.ending_kind != repaired.ending_kind
@@ -5576,25 +5584,68 @@ class CloudStageRunner:
         for passage_id in set(repaired_passages) & set(candidate_passages):
             before = candidate_passages[passage_id]
             after = repaired_passages[passage_id]
+            if trusted_lineage is None:
+                for key in ("claim_ids", "evidence_panel_ids"):
+                    before_values = before.get(key)
+                    after_values = after.get(key)
+                    if not isinstance(before_values, (list, tuple)) or not isinstance(
+                        after_values, (list, tuple)
+                    ):
+                        return None
+                    before_values = tuple(str(value) for value in before_values)
+                    after_values = tuple(str(value) for value in after_values)
+                    if (
+                        not after_values
+                        or len(set(after_values)) != len(after_values)
+                        or any(value not in before_values for value in after_values)
+                        or tuple(
+                            value for value in before_values if value in set(after_values)
+                        )
+                        != after_values
+                    ):
+                        return None
+                continue
+            # The trusted claim-evidence closure, not the candidate's stale
+            # passage evidence, is the position repair's evidence reference:
+            # the registry rebuilds each passage's evidence union from the
+            # trusted story map, so a repaired vector carries that closure
+            # even when the durable candidate cited fewer or different
+            # panels. Claims must still match the candidate exactly.
+            reference_row = trusted_lineage.get(passage_id)
+            if not isinstance(reference_row, Mapping):
+                return None
             for key in ("claim_ids", "evidence_panel_ids"):
-                before_values = before.get(key)
+                reference_values = reference_row.get(key)
                 after_values = after.get(key)
-                if not isinstance(before_values, (list, tuple)) or not isinstance(
+                if not isinstance(reference_values, (list, tuple)) or not isinstance(
                     after_values, (list, tuple)
                 ):
                     return None
-                before_values = tuple(str(value) for value in before_values)
+                reference_tuple = tuple(str(value) for value in reference_values)
                 after_values = tuple(str(value) for value in after_values)
                 if (
                     not after_values
                     or len(set(after_values)) != len(after_values)
-                    or any(value not in before_values for value in after_values)
+                    or set(after_values) != set(reference_tuple)
                     or tuple(
-                        value for value in before_values if value in set(after_values)
+                        value
+                        for value in reference_tuple
+                        if value in set(after_values)
                     )
                     != after_values
                 ):
                     return None
+            candidate_claims = before.get("claim_ids")
+            repaired_claims = after.get("claim_ids")
+            if not isinstance(candidate_claims, (list, tuple)) or not isinstance(
+                repaired_claims,
+                (list, tuple),
+            ):
+                return None
+            if not {str(value) for value in repaired_claims} <= {
+                str(value) for value in candidate_claims
+            }:
+                return None
         candidate_claims = {
             str(item.get("claim_id", "")): item
             for item in candidate.evidence_graph.get("claims", ())
@@ -5875,6 +5926,13 @@ class CloudStageRunner:
                     candidate,
                     repaired,
                     removable_passage_ids,
+                    trusted_lineage={
+                        str(row["passage_id"]): row
+                        for row in self._reconstruct_narration_repair_passage_lineage(
+                            candidate,
+                            position_registry,
+                        )["passages"]
+                    },
                 )
                 if reconciled is None:
                     self.last_response_shape_metrics.update(

@@ -4673,6 +4673,153 @@ def test_targeted_position_repair_validates_full_scope_in_one_request(tmp_path):
     assert result.estimated_duration_s >= 50.0
 
 
+def test_position_repair_admits_trusted_evidence_closure_scope(tmp_path):
+    module = _module()
+    panels = _panels(module)
+    panel_ids = [panel.panel_id for panel in panels]
+    visual_rows = []
+    for panel in panels:
+        observation = _visual_row(panel.descriptor())
+        visual_rows.append(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "source_checksum": panel.source_checksum,
+                "observation": observation,
+                "visual_evidence": observation["visual_evidence"],
+                "evidence_hash": "",
+            }
+        )
+    visual = module.VisualStageResult(
+        panels=tuple(visual_rows),
+        source_hash="closure-scope-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+    claims = tuple(
+        {
+            "claim_id": f"claim-{index}",
+            "claim_type": "fact",
+            "text": f"The ordered closure develops claim {index}.",
+            "panel_ids": panel_ids,
+            "evidence_panel_ids": panel_ids,
+            "qualification": "The ordered panels support this reading.",
+        }
+        for index in range(8)
+    )
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel_ids),
+        beats=(
+            {
+                "beat_id": "beat-all",
+                "panel_ids": panel_ids,
+                "summary": "the visible sequence develops",
+            },
+        ),
+        causal_chain=(),
+        claims=claims,
+        story_map_hash="s" * 64,
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version=module._prompt_specs()["story_map"][0],
+        prompt_sha256=module._prompt_specs()["story_map"][1],
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    passages = []
+    for passage_index in range(4):
+        passages.append(
+            {
+                "passage_id": f"p{passage_index}",
+                "editorial_role": "role",
+                "text": (
+                    f"Closure passage {passage_index} keeps the ordered "
+                    "evidence tied to the trusted claim union."
+                ),
+                "claim_ids": [
+                    f"claim-{passage_index * 2}",
+                    f"claim-{passage_index * 2 + 1}",
+                ],
+                # Narrower than the trusted claim closure: the registry must
+                # rebuild this union from the story map during repair.
+                "evidence_panel_ids": [panel_ids[0]],
+            }
+        )
+    candidate = module.NarrationResult(
+        spoken_text=" ".join(str(item["text"]) for item in passages),
+        display_words=("CLOSURE",),
+        passages=tuple(passages),
+        ending_kind="consequence",
+        word_count=172,
+        estimated_duration_s=69.57,
+        qc_report={},
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version=module._prompt_specs()["narration"][0],
+        prompt_sha256=module._prompt_specs()["narration"][1],
+        observations=(),
+        continuity_ledger={},
+        evidence_graph={"claims": [dict(claim) for claim in claims]},
+        story_spine={
+            "who_wants_what": "the witness wants the guarded route",
+            "obstacle": "the closing path blocks the witness",
+            "decision": "the witness chooses the visible opening",
+            "consequence": "the guarded choice shifts the outcome",
+            "changed_stakes": "the sequence raises the visible cost",
+            "unresolved_question": "What changes next?",
+        },
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+
+    class ClosureScopeRepairProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.repair_payloads = []
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "narration_repair":
+                self.calls.append((stage, prompt_version, prompt_sha256))
+                self.repair_payloads.append(dict(payload))
+                return _provider_position_vector(payload)
+            return super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+
+    provider = ClosureScopeRepairProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "closure-scope-repair-cache"),
+        max_attempts=1,
+    )
+    local_observations, local_structural = runner._narration_observations(
+        visual,
+        panels,
+    )
+    candidate = replace(
+        candidate,
+        observations=tuple(local_observations),
+        continuity_ledger=dict(local_structural["continuity_ledger"]),
+    )
+
+    result = runner.run_narration_repair_candidate(
+        candidate,
+        visual,
+        story_map,
+        panels=panels,
+    )
+
+    assert len(provider.repair_payloads) == 1
+    assert 115 <= result.word_count <= 125
+    for passage in result.passages:
+        assert {str(value) for value in passage["evidence_panel_ids"]} == set(
+            panel_ids
+        )
+
+
 def test_narration_contract_failures_trigger_repair_for_source_dialogue_copy():
     module = _module()
     spoken = (
