@@ -847,7 +847,7 @@ def test_reference_planner_tries_all_roi_phases_on_alternate_panel(monkeypatch):
     )
     real_feasible = framing_analysis.candidate_is_feasible
 
-    def fake_feasible(box, evidence, mask, panel_size, target_size):
+    def fake_feasible(box, evidence, mask, panel_size, target_size, **_kwargs):
         _accepted, telemetry = real_feasible(box, evidence, mask, panel_size, target_size)
         return box == alternate_box, replace(telemetry, rejection_code=None if box == alternate_box else "visual.visual_unavailable")
 

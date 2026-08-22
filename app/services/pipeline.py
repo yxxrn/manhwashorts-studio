@@ -3897,6 +3897,7 @@ def render_silent_review_preview(
             output_dir=root,
             subtitle_contract=request.subtitle_contract,
             subtitle_timing_source=request.subtitle_timing_source,
+            blank_target_fraction=float(request.profile.framing_blank_target_fraction),
         )
     except (render_svc.RenderError, PipelineError, review_preview.ReviewPreviewError) as exc:
         job.status = JobStatus.FAILED

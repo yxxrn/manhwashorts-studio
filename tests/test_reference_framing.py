@@ -682,7 +682,9 @@ def test_reference_ranking_prefers_protected_retention_before_blank_and_zoom(
 
     monkeypatch.setattr(render, '_reference_scales', lambda _max_zoom: (1.0, 1.2))
 
-    def fake_candidate(crop_box, candidate_evidence, candidate_mask, source_size, target_size):
+    def fake_candidate(
+        crop_box, candidate_evidence, candidate_mask, source_size, target_size, **_kwargs
+    ):
         zoom = 1.0 if crop_box[2] - crop_box[0] > 800 else 1.2
         return True, _ranking_telemetry(
             crop_box,
@@ -726,7 +728,9 @@ def test_reference_ranking_prefers_larger_tie_break_box_and_is_deterministic(
 
     monkeypatch.setattr(render, '_reference_scales', lambda _max_zoom: (1.0, 1.2))
 
-    def fake_candidate(crop_box, candidate_evidence, candidate_mask, source_size, target_size):
+    def fake_candidate(
+        crop_box, candidate_evidence, candidate_mask, source_size, target_size, **_kwargs
+    ):
         return True, _ranking_telemetry(
             crop_box,
             candidate_evidence,
@@ -802,6 +806,28 @@ def test_candidate_tightens_protected_zoom_cap_for_edge_region():
     assert edge_telemetry.protected_region_zoom_cap < edge_telemetry.source_resolution_zoom_cap
     assert edge_telemetry.protected_region_zoom_cap <= 1.03
     assert edge_telemetry.protected_region_zoom_cap <= plain_telemetry.protected_region_zoom_cap
+
+
+def test_candidate_rejects_edge_blank_against_explicit_profile_target():
+    from app.services import framing_analysis
+
+    image = Image.new("RGB", (TARGET_WIDTH, TARGET_HEIGHT), "white")
+    evidence = _visual_evidence()
+    border_mask = framing_analysis.build_color_agnostic_border_mask(
+        image, evidence, grid_long_edge=64
+    )
+
+    accepted, telemetry = framing_analysis.candidate_is_feasible(
+        (0, 0, TARGET_WIDTH, TARGET_HEIGHT),
+        evidence,
+        border_mask,
+        (TARGET_WIDTH, TARGET_HEIGHT),
+        (TARGET_WIDTH, TARGET_HEIGHT),
+        blank_target_fraction=0.03,
+    )
+
+    assert accepted is False
+    assert telemetry.rejection_code == "visual.blank_infeasible"
 
 
 def test_reference_rejects_incompatible_detector_contract(tmp_path):

@@ -555,6 +555,7 @@ def candidate_is_feasible(
     *,
     allow_source_resolution_warning: bool = False,
     review_aggressive_crop: bool = False,
+    blank_target_fraction: float | None = None,
 ) -> tuple[bool, FramingTelemetry]:
     """Evaluate one static crop against the hard reference framing contract.
 
@@ -633,6 +634,20 @@ def candidate_is_feasible(
         return False, replace(telemetry, rejection_code="visual.source_resolution_insufficient")
     if source_resolution_insufficient:
         telemetry = replace(telemetry, fallback_reason="review.low_source_resolution")
+    if blank_target_fraction is not None:
+        if not math.isfinite(float(blank_target_fraction)) or not 0.0 <= float(
+            blank_target_fraction
+        ) <= 1.0:
+            raise VisualEvidenceError(
+                "visual.framing_contract_incompatible",
+                "blank-space target is outside the profile contract",
+            )
+        if telemetry.edge_connected_blank_fraction > float(blank_target_fraction) + 1e-9:
+            return False, replace(
+                telemetry,
+                fallback_reason="visual.blank_infeasible",
+                rejection_code="visual.blank_infeasible",
+            )
     coverage_minima = (
         ("subject", 0.98),
         ("face", 0.98),

@@ -650,6 +650,7 @@ def prepare_reference_frame(
                     border_mask,
                     (src_w, src_h),
                     (width, height),
+                    blank_target_fraction=profile.framing_blank_target_fraction,
                 )
                 last_telemetry = telemetry
                 if feasible:
@@ -1853,6 +1854,7 @@ def _prepare_exact_reference_frame(
             mask,
             panel_size,
             (width, height),
+            blank_target_fraction=profile.framing_blank_target_fraction,
             **feasibility_kwargs,
         )
     except visual_scoring.VisualEvidenceError as exc:

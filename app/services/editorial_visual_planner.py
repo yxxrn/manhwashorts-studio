@@ -822,6 +822,7 @@ def _reference_panel_attempt(
             candidate.border_mask,
             candidate.panel_size,
             (profile.final_width, profile.final_height),
+            blank_target_fraction=profile.framing_blank_target_fraction,
             **feasibility_kwargs,
         )
     except framing_analysis.VisualEvidenceError as exc:
@@ -926,6 +927,7 @@ def _feasible_roi_capacity(
             candidate.border_mask,
             candidate.panel_size,
             (profile.final_width, profile.final_height),
+            blank_target_fraction=profile.framing_blank_target_fraction,
             **feasibility_kwargs,
         )
         if accepted:

@@ -182,6 +182,7 @@ def build_feasible_visual_ledger(
                     target_size,
                     allow_source_resolution_warning=allow_source_resolution_warning,
                     review_aggressive_crop=allow_source_resolution_warning,
+                    blank_target_fraction=getattr(profile, "framing_blank_target_fraction", None),
                 )
             except Exception:
                 continue
