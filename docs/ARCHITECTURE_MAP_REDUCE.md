@@ -775,3 +775,9 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - `framing_analysis.candidate_is_feasible` now accepts the resolved profile's `blank_target_fraction` and returns stable `visual.blank_infeasible` telemetry when the edge-connected blank fraction exceeds it. The parameter is optional only for legacy direct callers; every profile-aware production caller supplies it.
 - Propagation covers editorial planner ROI phases, visual feasible-ledger construction, normal reference preparation, exact persisted-ROI silent preparation, and `write_review_preview_bundle`. Review-only aggressive crop may relax protected coverage/resolution as explicitly designed, never blank-space admission.
 - The observed 34/41 sidecar shots above `0.03` exposed the previous mismatch; final bundle QC had been stricter than candidate admission. The regression and affected offline matrix are green; no provider/TTS or accepted MP4 resulted from the correction.
+
+## 2026-08-22 - Visual-repair diagnostic/observability boundary
+
+- The feasible-ledger reduce is authoritative after framing: 701 cached panels reduced to 277 eligible candidates, 1,734 ROI evaluations, 71 feasible ROIs, and 36 panel identities. The strict reduction preserves blank, balloon, protected, resolution, and lineage rejection codes.
+- Visual narrative repair remains a bounded provider stage over that ledger. Its final safe error now carries only contract version, attempt count, failure code, feasible panel/ROI counts, missing-section count, and ledger hash, allowing the job state to resume without provider prose or payload retention.
+- The latest run used 3 visual-repair requests and no TTS; no accepted media artifact exists. Cached visual/story stages are immutable inputs to the next repair attempt, and no cache invalidation is permitted unless their identities change.

@@ -1562,6 +1562,28 @@ def _cache_key(stage: str, source: object, identity: CloudModelIdentity, prompt:
     )
 
 
+def _visual_narrative_repair_failure_metadata(
+    *,
+    ledger: visual_narrative_repair.FeasibleVisualLedger,
+    section_to_beats: Mapping[str, Sequence[str]],
+    attempt_count: int,
+    failure_code: str,
+) -> dict[str, Any]:
+    """Return non-prose diagnostics for a bounded visual-repair rejection."""
+
+    return {
+        "contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
+        "attempt_count": int(attempt_count),
+        "failure_code": str(failure_code),
+        "feasible_panel_count": len(ledger.feasible_panel_ids),
+        "feasible_roi_count": sum(len(entry.feasible_rois) for entry in ledger.entries),
+        "missing_section_count": len(
+            visual_narrative_repair.missing_visual_sections(ledger, section_to_beats)
+        ),
+        "ledger_hash": ledger.ledger_hash,
+    }
+
+
 class CloudStageRunner:
     """Run visual, causal-map, and narration calls with one pinned model."""
 
@@ -6684,7 +6706,20 @@ class CloudStageRunner:
             except CloudStageError as exc:
                 error = exc
             if error.code not in retryable_codes or attempt + 1 >= visual_narrative_repair.MAX_REPAIR_ATTEMPTS:
-                raise error
+                safe_metadata = dict(getattr(error, "safe_metadata", {}) or {})
+                safe_metadata.update(
+                    _visual_narrative_repair_failure_metadata(
+                        ledger=ledger,
+                        section_to_beats=section_to_beats,
+                        attempt_count=attempt + 1,
+                        failure_code=error.code,
+                    )
+                )
+                raise CloudStageError(
+                    error.code,
+                    reviewable=error.reviewable,
+                    safe_metadata=safe_metadata,
+                )
             retry_feedback = _visual_narrative_repair_retry_feedback(error.code)
         raise CloudStageError("visual.narrative_repair_bounded", reviewable=True)
 

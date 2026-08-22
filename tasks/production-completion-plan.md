@@ -224,3 +224,10 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - [x] Add the explicit profile-aware feasibility target and propagate it through planner, repair ledger, both reference render paths, and final review QC; retain strict `visual.blank_infeasible` rejection and telemetry.
 - [x] GREEN affected matrix/static gates; no provider/TTS request and no accepted MP4. The timing fix remains published at `4613214`; this source/test correction is `ff2484b`.
 - [ ] Rerun cached review, inspect the regenerated contact sheet/frames, and cross to TTS only after strict blank/balloon/protected/lineage/QC gates pass.
+
+## 2026-08-22 - Visual-repair observability checkpoint
+
+- [x] Offline-audit the 701-panel ledger: 277 candidates, 1,734 ROIs, 71 feasible ROIs, 36 panels; preserve all hard framing gates.
+- [x] Add sanitized final visual-repair failure metrics and RED/GREEN regression; 145 focused visual/cloud tests pass with static/diff/secret gates.
+- [ ] Publish the source/test checkpoint, then rerun only the bounded visual-repair stage from cached visual/story evidence; do not repeat 701-panel analysis.
+- [ ] Accept no narration/render/TTS result until visual repair, strict silent QC, and `REVIEW_PREVIEW_READY` are proven.

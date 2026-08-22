@@ -78,6 +78,49 @@ def _boundary_request(module):
     )
 
 
+def test_visual_repair_failure_metadata_is_sanitized_and_counts_feasible_scope():
+    module = _module()
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    entry = repair.FeasibleVisualRecord(
+        panel_region_id="region-safe",
+        panel_id="panel-safe",
+        source_asset_id="asset-safe",
+        source_order=10,
+        eligible_sections=("setup",),
+        eligible_beats=("beat-safe",),
+        resolution_state="UPSCALED",
+        feasible_rois=(
+            {"kind": "primary", "roi_label": "primary", "crop_box": [0, 0, 100, 100], "telemetry": {}},
+            {"kind": "tighter_crop", "roi_label": "tight", "crop_box": [2, 2, 98, 98], "telemetry": {}},
+        ),
+        visual_strengths={"edge_connected_blank_fraction": 0.0},
+        evidence_hash="e" * 64,
+        detector_version="detector-v1",
+        mask_sha256="m" * 64,
+        panel_size=(100, 100),
+    )
+    ledger = repair.FeasibleVisualLedger(
+        entries=(entry,), model_identity_hash="model-hash"
+    )
+
+    metadata = module._visual_narrative_repair_failure_metadata(
+        ledger=ledger,
+        section_to_beats={"hook": ("beat-missing",), "setup": ("beat-safe",)},
+        attempt_count=3,
+        failure_code="visual.narrative_repair_ungrounded",
+    )
+
+    assert metadata == {
+        "contract_version": repair.REPAIR_CONTRACT_VERSION,
+        "attempt_count": 3,
+        "failure_code": "visual.narrative_repair_ungrounded",
+        "feasible_panel_count": 1,
+        "feasible_roi_count": 2,
+        "missing_section_count": 1,
+        "ledger_hash": ledger.ledger_hash,
+    }
+
+
 def _visual_row(panel, *, unknown: bool = False, provider_hash: bool = False):
     sidecar = {
         "contract_version": "COLOR_AGNOSTIC_BALLOON_FREE_V1",

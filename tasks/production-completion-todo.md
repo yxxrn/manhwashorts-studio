@@ -166,3 +166,10 @@ complete from unit tests alone.
 - [x] Publish profile-aware `candidate_is_feasible` blank admission and propagate the target through planner, repair, render, and bundle QC; affected matrix green.
 - [ ] Rerun the cached review without visual/story calls; require a newly generated sidecar, strict blank target, FFprobe, blackdetect, contact sheet, and frame inspection.
 - [ ] Keep TTS blocked until the regenerated preview is `REVIEW_PREVIEW_READY` and all visual gates pass.
+
+## 2026-08-22 - Visual-repair observability checkpoint
+
+- [x] Confirm feasible visual ledger is non-empty: 36 panels / 71 ROIs from the exact 701-panel cache; no gate relaxation.
+- [x] Record the latest 3-request visual-repair failure as `visual.narrative_repair_ungrounded` with sanitized counts/hash only.
+- [ ] Publish source/test checkpoint and issue the next bounded same-model repair from cached evidence; no visual/story repeat.
+- [ ] Keep TTS and final voice blocked until silent review sidecar/QC/frame inspection is green.
