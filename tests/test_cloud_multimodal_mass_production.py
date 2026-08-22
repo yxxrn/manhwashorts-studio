@@ -1491,6 +1491,29 @@ def test_transient_unknown_visual_response_is_retried_atomically():
     assert provider.analysis_run_ids[0] != provider.analysis_run_ids[1]
 
 
+def test_call_preserves_known_provider_response_error_category():
+    module = _module()
+    from app.services import vision_adapter
+
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        max_attempts=2,
+    )
+
+    def invalid_response():
+        raise vision_adapter.VisionResponseInvalid()
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._call(invalid_response, request_stage="other")
+
+    assert caught.value.code == "cloud.provider_response_invalid"
+    assert caught.value.safe_metadata == {
+        "provider_error_code": "vision_response_invalid",
+        "request_stage": "other",
+    }
+
+
 def test_transient_invalid_story_map_is_retried_atomically():
     module = _module()
     provider = _FakeProvider(transient_story_map_invalid_count=1)

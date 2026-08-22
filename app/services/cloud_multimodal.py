@@ -1817,7 +1817,23 @@ class CloudStageRunner:
                 raise
             except Exception as exc:
                 last_error = exc
-        del last_error
+        provider_error_code = str(getattr(last_error, "code", "") or "")
+        provider_error_mapping = {
+            "vision_response_invalid": "cloud.provider_response_invalid",
+            "vision_provider_request_failed": "cloud.provider_request_failed",
+            "vision_request_invalid": "cloud.provider_request_invalid",
+            "vision_capability_missing": "cloud.capability_missing",
+        }
+        mapped_code = provider_error_mapping.get(provider_error_code)
+        if mapped_code is not None:
+            raise CloudStageError(
+                mapped_code,
+                reviewable=mapped_code == "cloud.provider_response_invalid",
+                safe_metadata={
+                    "provider_error_code": provider_error_code,
+                    "request_stage": stage,
+                },
+            ) from None
         raise CloudStageError("cloud.provider_request_failed") from None
 
     def assess_strip_boundaries(self, request: strip_segmentation.BoundaryRequest) -> Mapping[str, Any]:
