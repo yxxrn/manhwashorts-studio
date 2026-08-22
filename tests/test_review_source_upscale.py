@@ -61,6 +61,35 @@ def test_review_policy_prepares_900px_panel_and_transforms_bounds():
     )
 
 
+def test_legacy_null_or_missing_materialization_defaults_to_original():
+    module = _upscale_module()
+    policy = module.resolve_review_source_upscale_policy(
+        "review_silent_source_upscale_v1"
+    )
+    prepared, manifest = module.prepare_review_panel(
+        Image.new("RGB", (900, 1600), (30, 60, 90)),
+        policy=policy,
+        source_asset_id="asset-a",
+        panel_region_id="region-a",
+        source_asset_checksum="a" * 64,
+        source_panel_bounds=(0, 0, 900, 1600),
+        source_dimensions=(900, 1600),
+    )
+
+    for legacy in (
+        dict(
+            manifest,
+            source_materialization=None,
+        ),
+        {key: value for key, value in manifest.items() if key != "source_materialization"},
+    ):
+        legacy["manifest_sha256"] = module._manifest_hash(legacy)
+        assert module.validate_review_manifest_dimensions(legacy, prepared.size).policy_id == policy.policy_id
+        normalized = module.normalize_review_manifest_materialization(legacy)
+        assert normalized["source_materialization"] == module.ORIGINAL_SOURCE_MATERIALIZATION
+        assert normalized["manifest_sha256"] == module._manifest_hash(normalized)
+
+
 def test_review_panel_crop_fallback_requires_exact_asset_bytes_and_localizes_bounds():
     module = _upscale_module()
     image = Image.new("RGB", (900, 1600), (30, 60, 90))

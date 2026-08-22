@@ -3118,7 +3118,9 @@ def _materialize_reference_panel_crop(
             raise PipelineError(
                 "review.upscale_manifest_invalid: accepted source-upscale manifest is missing"
             )
-        accepted_manifest = dict(accepted[0]["source_upscale_manifest"])
+        accepted_manifest = review_source_upscale.normalize_review_manifest_materialization(
+            dict(accepted[0]["source_upscale_manifest"])
+        )
         source_materialization = str(
             accepted_manifest.get(
                 "source_materialization",

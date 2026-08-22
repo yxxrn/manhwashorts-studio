@@ -226,6 +226,22 @@ def _manifest_hash(manifest: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
+def normalize_review_manifest_materialization(
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Normalize legacy manifests whose materialization field was absent/null."""
+    if not isinstance(manifest, Mapping):
+        raise ReviewSourceUpscaleError(
+            "review manifest is not an object", "review.upscale_manifest_invalid"
+        )
+    normalized = dict(manifest)
+    if "source_materialization" not in normalized or normalized["source_materialization"] is None:
+        normalized["source_materialization"] = ORIGINAL_SOURCE_MATERIALIZATION
+        if "manifest_sha256" in normalized:
+            normalized["manifest_sha256"] = _manifest_hash(normalized)
+    return normalized
+
+
 def _scaled_dimension(value: int, scale: float) -> int:
     return max(1, round(value * scale))
 
@@ -408,12 +424,16 @@ def validate_review_manifest_dimensions(
             "review manifest is not an object", "review.upscale_manifest_invalid"
         )
     policy = resolve_review_source_upscale_policy(str(manifest.get("policy_id", "")))
-    if policy is None or manifest.get("manifest_sha256") != _manifest_hash(manifest):
+    normalized = normalize_review_manifest_materialization(manifest)
+    if policy is None or manifest.get("manifest_sha256") not in {
+        _manifest_hash(manifest),
+        _manifest_hash(normalized),
+    }:
         raise ReviewSourceUpscaleError(
             "review manifest identity does not match",
             "review.upscale_manifest_invalid",
         )
-    if manifest.get("source_materialization", ORIGINAL_SOURCE_MATERIALIZATION) not in {
+    if normalized["source_materialization"] not in {
         ORIGINAL_SOURCE_MATERIALIZATION,
         PERSISTED_PANEL_CROP_MATERIALIZATION,
     }:
