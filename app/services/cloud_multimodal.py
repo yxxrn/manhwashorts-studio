@@ -2301,7 +2301,15 @@ class CloudStageRunner:
                         exc.code == "visual.balloon_mask_unknown"
                         and not self.allow_balloon_unknown
                     ):
-                        raise
+                        raise CloudStageError(
+                            exc.code,
+                            reviewable=True,
+                            safe_metadata={
+                                "stage": "visual",
+                                "chunk_index": chunk_index,
+                                "panel_count": len(chunk),
+                            },
+                        ) from None
                     if exc.code == "cloud.provider_request_failed":
                         raise
                     # binary reduction: subdivide the failing chunk and retry the

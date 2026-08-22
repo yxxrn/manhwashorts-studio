@@ -1467,6 +1467,11 @@ def test_unknown_visual_geometry_blocks_before_story_mapping():
         runner.run_chapter(_panels(module))
 
     assert caught.value.code == "visual.balloon_mask_unknown"
+    assert caught.value.safe_metadata == {
+        "stage": "visual",
+        "chunk_index": 0,
+        "panel_count": 3,
+    }
     assert [call[0] for call in provider.calls] == ["visual", "visual"]
 
 
