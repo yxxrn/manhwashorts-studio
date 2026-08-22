@@ -694,6 +694,80 @@ def test_review_project_repairs_after_initial_narration_failure(monkeypatch, fai
     assert result.state == module.ChapterState.REVIEW_PREVIEW_READY, (result.error_code, result.error_message)
 
 
+def test_review_repair_forwards_persisted_panel_crop_fallback(monkeypatch):
+    module = _module()
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    pipeline = importlib.import_module("app.services.pipeline")
+    reference_profile = importlib.import_module("app.services.reference_profile")
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+
+    class Database:
+        def get(self, *_args):
+            return SimpleNamespace(template="reference_matched_shorts_v2")
+
+    monkeypatch.setattr(
+        reference_profile,
+        "resolve_reference_profile",
+        lambda _template: SimpleNamespace(),
+    )
+    monkeypatch.setattr(pipeline, "project_assets", lambda *_args: ())
+    monkeypatch.setattr(pipeline, "image_assets", lambda *_args: ())
+    monkeypatch.setattr(
+        pipeline,
+        "latest_analysis",
+        lambda *_args: SimpleNamespace(panel_regions=()),
+    )
+    observed = {}
+
+    def fake_load(*_args, **kwargs):
+        observed.update(kwargs)
+        return (SimpleNamespace(panel_id="panel-1"),)
+
+    monkeypatch.setattr(
+        pipeline,
+        "_load_reference_panel_fallback_candidates",
+        fake_load,
+    )
+    monkeypatch.setattr(
+        repair,
+        "default_section_to_beats",
+        lambda *_args: {"hook": ("beat-1",)},
+    )
+    monkeypatch.setattr(
+        repair,
+        "build_feasible_visual_ledger",
+        lambda *_args, **_kwargs: SimpleNamespace(entries=("entry",)),
+    )
+    monkeypatch.setattr(repair, "missing_visual_sections", lambda *_args: ())
+
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.runner = SimpleNamespace(
+        model_identity=SimpleNamespace(identity_hash="m" * 64),
+    )
+    result = SimpleNamespace(
+        visual=SimpleNamespace(),
+        story_map=SimpleNamespace(
+            beats=({"beat_id": "beat-1", "panel_ids": ["panel-1"]},),
+        ),
+        narration=SimpleNamespace(),
+    )
+
+    outcome = service._repair_review_narrative(
+        Database(),
+        "project-a",
+        SimpleNamespace(sections=({"section": "hook"},)),
+        (),
+        result,
+        review_source_upscale_policy="review_silent_source_upscale_v1",
+        review_source_root=Path("/review"),
+    )
+
+    assert outcome[0] is result
+    assert observed["allow_persisted_panel_crop_fallback"] is True
+
+
 def test_ephemeral_review_registry_allows_title_visual_row_without_story_candidate():
     module = _module()
     import io

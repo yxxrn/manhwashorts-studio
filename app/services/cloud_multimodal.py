@@ -7893,6 +7893,7 @@ class CloudBatchService:
                 section_evidence_panel_ids=beat_panel_ids,
                 section_citations=dict.fromkeys(beat_panel_ids, ()),
                 beats_by_section={beat_id: (beat_id,) for beat_id in beat_panel_ids},
+                allow_persisted_panel_crop_fallback=policy is not None,
                 review_source_root=review_source_root,
             )
         ledger = visual_narrative_repair.build_feasible_visual_ledger(
