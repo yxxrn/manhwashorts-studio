@@ -4268,10 +4268,13 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-position-repair-v5"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v6"
     )
     assert len(repair_prompt_sha256) == 64
     assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text
+    assert "revise it until the total is 115-125 words" in repair_prompt_text
+    assert "never return a vector above 125 words" in repair_prompt_text
+    assert "cannot repair larger responses" in repair_prompt_text
     assert repair_prompt_text != runner.prompts["narration"][2]
     assert provider.repair_payloads[0]["targeted_repair"]["failure_codes"] == [
         "cloud.narrative_duration_out_of_range",
