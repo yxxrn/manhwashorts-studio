@@ -3685,6 +3685,24 @@ def _reference_scene_inputs(
     return inputs
 
 
+def _silent_review_media_duration(scenes: Sequence[object]) -> float:
+    """Match the renderer's rounded per-scene duration contract for review."""
+
+    return round(
+        sum(
+            max(
+                0.1,
+                round(
+                    float(scene.end_time) - float(scene.start_time),
+                    3,
+                ),
+            )
+            for scene in scenes
+        ),
+        3,
+    )
+
+
 def _build_silent_reference_request(
     db: Session,
     job: RenderJob,
@@ -3709,7 +3727,10 @@ def _build_silent_reference_request(
         review_source_upscale_policy=review_source_upscale_policy,
         review_source_root=review_source_root,
     )
-    media_duration = max(float(scene.end_time) for scene in scenes)
+    # The regular renderer encodes the sum of SceneInput.duration values. Use
+    # that same rounded duration to build provisional word groups; absolute
+    # timeline end times can differ by accumulated sub-millisecond rounding.
+    media_duration = _silent_review_media_duration(scenes)
     if any(scene.publish_allowed is not False for scene in scene_inputs):
         raise PipelineError(
             "reference.publish_not_allowed: publish_allowed must be false for silent review scenes"

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image, ImageDraw
 
-from app.services import pipeline, reference_profile, render, visual_scoring
+from app.services import pipeline, reference_profile, render, subtitle_karaoke, visual_scoring
 
 
 def _evidence(panel_id: str, asset_id: str, source_order: int):
@@ -384,7 +384,7 @@ def test_silent_reference_build_never_reads_script_or_calls_tts(monkeypatch, tmp
     )
     job = SimpleNamespace(project_id="project", render_profile="Auto", encoder_requested="")
     db = SimpleNamespace(flush=lambda: None)
-    scene = SimpleNamespace(end_time=40.901)
+    scene = SimpleNamespace(start_time=0.0, end_time=40.901)
     scene_input = render.SceneInput(
         image_path=tmp_path / "panel.png",
         start_time=0.0,
@@ -603,7 +603,11 @@ def test_silent_request_rejects_invalid_cue_without_mutating_persistence(monkeyp
     )
     persisted = SimpleNamespace(order_index=0, text="TWO WORDS", start_time=-1.0, end_time=5.0)
     db = SimpleNamespace(flush=lambda: pytest.fail("silent review mutated persistence"))
-    monkeypatch.setattr(pipeline, "project_scenes", lambda *_args: [SimpleNamespace(end_time=1.0)])
+    monkeypatch.setattr(
+        pipeline,
+        "project_scenes",
+        lambda *_args: [SimpleNamespace(start_time=0.0, end_time=1.0)],
+    )
     monkeypatch.setattr(pipeline, "_reference_scene_inputs", lambda *_args, **_kwargs: [scene])
     monkeypatch.setattr(pipeline, "project_cues", lambda *_args: [persisted])
     with pytest.raises(pipeline.PipelineError, match="reference.subtitle_invalid"):
@@ -628,7 +632,11 @@ def test_silent_request_requires_publish_false(monkeypatch):
     )
     persisted = SimpleNamespace(order_index=0, text="WORD", start_time=0.0, end_time=1.0)
     db = SimpleNamespace(flush=lambda: None)
-    monkeypatch.setattr(pipeline, "project_scenes", lambda *_args: [SimpleNamespace(end_time=1.0)])
+    monkeypatch.setattr(
+        pipeline,
+        "project_scenes",
+        lambda *_args: [SimpleNamespace(start_time=0.0, end_time=1.0)],
+    )
     monkeypatch.setattr(pipeline, "_reference_scene_inputs", lambda *_args, **_kwargs: [scene])
     monkeypatch.setattr(pipeline, "project_cues", lambda *_args: [persisted])
     with pytest.raises(pipeline.PipelineError, match="publish_allowed"):
@@ -1010,6 +1018,34 @@ def test_silent_reference_duration_uses_review_window_without_relaxing_voice_pro
         profile.duration_min_s,
         profile.duration_max_s,
     )
+
+
+def test_silent_review_duration_matches_rounded_rendered_scene_sum():
+    scenes = [
+        render.SceneInput(
+            image_path=None,
+            start_time=index * 1.0004,
+            end_time=(index + 1) * 1.0004,
+            publish_allowed=False,
+        )
+        for index in range(30)
+    ]
+    rendered_duration = pipeline._silent_review_media_duration(scenes)
+    absolute_end = max(scene.end_time for scene in scenes)
+    assert rendered_duration == sum(scene.duration for scene in scenes) == 30.0
+    assert absolute_end > rendered_duration
+
+    late_word = render.KaraokeWord("LATE", 29.5, absolute_end)
+    group = render.KaraokeSentenceGroup(
+        group_id="rounding-regression",
+        words=(render.KaraokeWord("ON", 29.0, 29.5), late_word),
+        start_time=29.0,
+        end_time=absolute_end,
+    )
+    assert subtitle_karaoke.validate_sentence_groups((group,), duration=rendered_duration) == (
+        "subtitle.timing_out_of_bounds",
+    )
+    assert subtitle_karaoke.validate_sentence_groups((group,), duration=absolute_end) == ()
 
 
 def test_silent_reference_planner_receives_explicit_review_duration_flag(monkeypatch):

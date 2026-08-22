@@ -582,6 +582,14 @@ def test_review_preview_failure_code_keeps_nested_stable_code():
     assert module._review_failure_code("unstructured local failure") == "review.preview_failed"
 
 
+def test_review_preview_failure_code_keeps_subtitle_stable_code():
+    module = _module()
+
+    assert module._review_failure_code(
+        "subtitle.timing_out_of_bounds: sentence karaoke contract is invalid"
+    ) == "subtitle.timing_out_of_bounds"
+
+
 @pytest.mark.parametrize(
     "failure_code",
     ("cloud.narrative_not_grounded", "cloud.narrative_duration_out_of_range"),
