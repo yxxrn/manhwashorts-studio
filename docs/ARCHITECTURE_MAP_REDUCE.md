@@ -781,3 +781,9 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - The feasible-ledger reduce is authoritative after framing: 701 cached panels reduced to 277 eligible candidates, 1,734 ROI evaluations, 71 feasible ROIs, and 36 panel identities. The strict reduction preserves blank, balloon, protected, resolution, and lineage rejection codes.
 - Visual narrative repair remains a bounded provider stage over that ledger. Its final safe error now carries only contract version, attempt count, failure code, feasible panel/ROI counts, missing-section count, and ledger hash, allowing the job state to resume without provider prose or payload retention.
 - The latest run used 3 visual-repair requests and no TTS; no accepted media artifact exists. Cached visual/story stages are immutable inputs to the next repair attempt, and no cache invalidation is permitted unless their identities change.
+
+## 2026-08-22 - Visual-repair cache validation boundary
+
+- `CloudStageRunner.run_visual_narrative_repair` now treats a cache hit as untrusted persisted state: deserialization, visual-evidence identity, feasible-ledger lineage, and section-coverage validation occur inside a narrow typed boundary. Invalid entries become cache misses and enter the existing bounded repair loop; valid matching entries remain reusable.
+- This closes the local state discrepancy observed after the cached replay: `visual.narrative_repair_ungrounded` had been emitted before the repair loop because cache validation was outside it. No grounding, duration, visual, lineage, or provider-response gate was relaxed.
+- Regression and focused matrix are green (`146 passed`); the next request may reuse cached visual/story inputs but must not repeat those stages.

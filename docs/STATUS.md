@@ -2817,9 +2817,16 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - Fix `ff2484b0b81acc2b67b756d5ae84c0c3088e89af` adds an explicit profile-aware blank target and stable `visual.blank_infeasible` telemetry, propagates it through all profile-aware callers, and passes it into review bundle QC. No blank/protected/balloon/lineage gate was relaxed; review aggressive cropping still cannot bypass blank space.
 - RED/GREEN: new explicit profile-target regression was RED on the missing keyword and GREEN after the fix; affected offline matrix is `197 passed` with one existing missing-real-panel skip; Ruff, compileall, `git diff --check`, and secret scan clean. Stage 3 remains unproven; next action is the cached no-cloud rerun before TTS.
 
-## 2026-08-22 - Visual-repair failure observability checkpoint (source pending publication)
+## 2026-08-22 - Visual-repair failure observability checkpoint (published `22a0339`)
 
 - Offline reconstruction of the exact 701-panel cache produced 277 eligible candidates, 1,734 ROI attempts, 71 feasible ROIs, and 36 feasible panels. The strict blank/balloon/protected gates remain active; the dominant rejections were 850 blank and 702 balloon overlaps.
 - The latest normal cached replay used 3 visual-repair requests (`other=3`) and failed closed with `visual.narrative_repair_ungrounded`; no TTS or accepted MP4 resulted. A fake-provider offline boundary using feasible panel lineage passed 5 passages and 122 words, isolating the remaining rejection to provider result/repair selection rather than the basic local validator.
 - RED/GREEN: new sanitized failure-metadata regression is GREEN; visual-repair plus cloud suite collected 145 tests (`132` cloud, `13` visual repair), all passed with existing Pillow warnings only. Ruff, compileall, diff-check, and exact-key scan are clean. Metadata excludes provider prose/payloads and stores only counts, code, and ledger hash.
 - Source/test publication is pending from parent `0649a71`; next action is publish, then one bounded same-model repair using cached 701-panel visual/story state. Do not repeat valid visual/story calls or cross to TTS before strict silent review/QC.
+
+## 2026-08-22 - Cached visual-repair admission boundary fix (publication checkpoint)
+
+- The published `22a0339` checkpoint records sanitized failure metadata. Offline replay then isolated a stale/stricter-invalid visual-repair cache entry: cache-hit reconciliation ran outside the bounded repair loop and surfaced `visual.narrative_repair_ungrounded` before a repair request.
+- RED/GREEN: `test_invalid_visual_repair_cache_does_not_bypass_bounded_provider_path` reproduced the early cache rejection and now proves invalid cache state is treated as a miss and reaches the bounded provider boundary. The focused cloud/visual-repair matrix is `146 passed`; this fix consumed no real provider or TTS request.
+- The fix catches only cache deserialization, lineage, and visual-section coverage validation failures. It preserves valid cache reuse and strict grounding, visual, lineage, duration, and protected-region gates; it does not accept or rewrite cached provider prose.
+- Next action: rerun the existing cached review driver without repeating the valid 701-panel visual/story stages. TTS remains blocked until sidecar, FFprobe, blackdetect, strict QC, contact-sheet/frame inspection, and `REVIEW_PREVIEW_READY` pass.

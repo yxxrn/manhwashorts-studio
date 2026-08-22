@@ -6545,36 +6545,48 @@ class CloudStageRunner:
             )
             return claims, passages, remaps
 
-        if (
-            self.cache is not None
-            and (cached := self.cache.get(key)) is not None
-            and (cached_result := NarrationResult.from_dict(cached)).visual_evidence_hash
-            == visual.visual_evidence_hash
-        ):
-            claims, passages, remaps = reconcile_repaired_references(
-                cached_result.evidence_graph.get("claims"),
-                list(cached_result.passages),
-            )
-            visual_narrative_repair.validate_repaired_section_visual_coverage(
-                passages,
-                ledger=ledger,
-                section_to_beats=section_to_beats,
-                missing_sections=visual_narrative_repair.missing_visual_sections(
-                    ledger, section_to_beats
-                ),
-            )
-            if not remaps:
-                return cached_result
-            evidence_graph = dict(cached_result.evidence_graph)
-            evidence_graph["claims"] = claims
-            qc_report = dict(cached_result.qc_report)
-            qc_report["visual_section_remap_v1"] = list(remaps)
-            return replace(
-                cached_result,
-                passages=tuple(passages),
-                evidence_graph=evidence_graph,
-                qc_report=qc_report,
-            )
+        if self.cache is not None and (cached := self.cache.get(key)) is not None:
+            try:
+                cached_result = NarrationResult.from_dict(cached)
+                if cached_result.visual_evidence_hash != visual.visual_evidence_hash:
+                    cached_result = None
+                if cached_result is not None:
+                    claims, passages, remaps = reconcile_repaired_references(
+                        cached_result.evidence_graph.get("claims"),
+                        list(cached_result.passages),
+                    )
+                    visual_narrative_repair.validate_repaired_section_visual_coverage(
+                        passages,
+                        ledger=ledger,
+                        section_to_beats=section_to_beats,
+                        missing_sections=visual_narrative_repair.missing_visual_sections(
+                            ledger, section_to_beats
+                        ),
+                    )
+                    if not remaps:
+                        return cached_result
+                    evidence_graph = dict(cached_result.evidence_graph)
+                    evidence_graph["claims"] = claims
+                    qc_report = dict(cached_result.qc_report)
+                    qc_report["visual_section_remap_v1"] = list(remaps)
+                    return replace(
+                        cached_result,
+                        passages=tuple(passages),
+                        evidence_graph=evidence_graph,
+                        qc_report=qc_report,
+                    )
+            except (
+                analyzer_contract.AnalyzerContractError,
+                CloudStageError,
+                KeyError,
+                TypeError,
+                ValueError,
+                visual_narrative_repair.VisualNarrativeRepairError,
+            ):
+                # A cache entry is untrusted persisted state.  A stricter
+                # lineage/visual ledger can invalidate an older entry; treat
+                # that entry as a miss and use the bounded repair contract.
+                pass
 
         retryable_codes = {
             "cloud.provider_request_failed",

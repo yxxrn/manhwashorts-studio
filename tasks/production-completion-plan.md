@@ -225,6 +225,13 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - [x] GREEN affected matrix/static gates; no provider/TTS request and no accepted MP4. The timing fix remains published at `4613214`; this source/test correction is `ff2484b`.
 - [ ] Rerun cached review, inspect the regenerated contact sheet/frames, and cross to TTS only after strict blank/balloon/protected/lineage/QC gates pass.
 
+## 2026-08-22 - Cached visual-repair admission fix (pending publication)
+
+- [x] Reproduce the local discrepancy: invalid repair-cache reconciliation raised `visual.narrative_repair_ungrounded` before the bounded repair provider path.
+- [x] Fix only the cache boundary: typed cache validation failures are cache misses; valid matching entries still reuse; strict grounding/lineage/visual/duration gates remain unchanged.
+- [x] RED/GREEN focused cloud/visual-repair matrix: `146 passed`; no real provider/TTS request consumed by this slice.
+- [x] Record this source/test/docs checkpoint; next rerun the cached normal review path without repeating valid 701-panel visual/story stages. Require strict silent QC and `REVIEW_PREVIEW_READY` before TTS.
+
 ## 2026-08-22 - Visual-repair observability checkpoint
 
 - [x] Offline-audit the 701-panel ledger: 277 candidates, 1,734 ROIs, 71 feasible ROIs, 36 panels; preserve all hard framing gates.

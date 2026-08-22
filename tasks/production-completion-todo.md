@@ -173,3 +173,9 @@ complete from unit tests alone.
 - [x] Record the latest 3-request visual-repair failure as `visual.narrative_repair_ungrounded` with sanitized counts/hash only.
 - [ ] Publish source/test checkpoint and issue the next bounded same-model repair from cached evidence; no visual/story repeat.
 - [ ] Keep TTS and final voice blocked until silent review sidecar/QC/frame inspection is green.
+
+## 2026-08-22 - Cache-boundary checkpoint (pending publication)
+
+- [x] Add and pass the invalid visual-repair cache regression; focused cloud/visual-repair result is `146 passed`.
+- [x] Preserve valid cache reuse and route only typed invalid-cache state to the existing bounded repair path; no gate relaxation and no real provider/TTS request.
+- [ ] Rerun the cached review driver and verify a new silent bundle (sidecar, FFprobe, blackdetect, strict QC, contact sheet, and actual frame inspection) before TTS.

@@ -121,6 +121,103 @@ def test_visual_repair_failure_metadata_is_sanitized_and_counts_feasible_scope()
     }
 
 
+def test_invalid_visual_repair_cache_does_not_bypass_bounded_provider_path(monkeypatch):
+    module = _module()
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    from types import SimpleNamespace
+
+    entry = repair.FeasibleVisualRecord(
+        panel_region_id="region-safe",
+        panel_id="panel-safe",
+        source_asset_id="asset-safe",
+        source_order=10,
+        eligible_sections=(),
+        eligible_beats=("beat-safe",),
+        resolution_state="UPSCALED",
+        feasible_rois=(
+            {
+                "kind": "primary",
+                "roi_label": "primary",
+                "crop_box": [0, 0, 1080, 1920],
+                "telemetry": {},
+            },
+        ),
+        visual_strengths={"edge_connected_blank_fraction": 0.0},
+        evidence_hash="e" * 64,
+        detector_version="detector-v1",
+        mask_sha256="m" * 64,
+        panel_size=(1080, 1920),
+    )
+    ledger = repair.FeasibleVisualLedger(
+        entries=(entry,), model_identity_hash="model-hash"
+    )
+    visual = SimpleNamespace(
+        panels=(
+            {
+                "panel_id": "panel-safe",
+                "source_asset_id": "asset-safe",
+                "source_order": 10,
+            },
+        ),
+        source_hash="v" * 64,
+        visual_evidence_hash="visual-hash",
+    )
+    story_map = SimpleNamespace(
+        claims=({"claim_id": "claim-safe"},),
+        as_dict=lambda: {
+            "beats": [{"beat_id": "beat-safe", "panel_ids": ["panel-safe"]}],
+            "claims": [{"claim_id": "claim-safe", "panel_ids": ["panel-safe"]}],
+        },
+        story_map_hash="s" * 64,
+    )
+
+    class Cache:
+        def get(self, _key):
+            return {"cached": True}
+
+        def put(self, _key, _value):
+            raise AssertionError("the failed provider path must not cache a result")
+
+    cached = SimpleNamespace(
+        visual_evidence_hash=visual.visual_evidence_hash,
+        evidence_graph={"claims": []},
+        passages=(),
+    )
+    monkeypatch.setattr(
+        module.NarrationResult,
+        "from_dict",
+        staticmethod(lambda _value: cached),
+    )
+    calls = {"count": 0}
+
+    def fail_provider(*_args, **_kwargs):
+        calls["count"] += 1
+        raise module.CloudStageError("cloud.provider_request_failed")
+
+    runner = module.CloudStageRunner(
+        provider=SimpleNamespace(model_id=_identity(module).model),
+        model_identity=_identity(module),
+        cache=Cache(),
+    )
+    runner._narration_observations = lambda *_args: (
+        [{"panel_id": "panel-safe"}],
+        {"continuity_ledger": {}, "coverage_manifest": {}},
+    )
+    runner._call = fail_provider
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner.run_visual_narrative_repair(
+            visual,
+            story_map,
+            None,
+            ledger,
+            {"hook": ("beat-missing",)},
+        )
+
+    assert caught.value.code == "cloud.provider_request_failed"
+    assert calls["count"] == repair.MAX_REPAIR_ATTEMPTS
+
+
 def _visual_row(panel, *, unknown: bool = False, provider_hash: bool = False):
     sidecar = {
         "contract_version": "COLOR_AGNOSTIC_BALLOON_FREE_V1",
