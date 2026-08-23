@@ -908,3 +908,9 @@ Admission invariants:
 The strict stream session separately requires every submitted panel to reach accepted or terminal missing state, persists sanitized failure counts/IDs, and rolls adaptive workers back at the first unstable wave. This is a correctness boundary, not a gate relaxation.
 
 Current limitation: `prepare_project_panels` still completes the existing reconciliation/coverage map before its final funnel pass, so normal cold-path first-dispatch overlap is not yet proven by this slice. The next subset must use a fresh namespace and emit the funnel table, especially the prepared=703 versus filtered=701 reason ledger, before any story/narration/TTS/render stage.
+
+## 2026-08-23 - Incremental panel admission dispatch
+
+The panel materialization loop now maintains a prefix admission ledger and invokes the single stream sink immediately for each panel that is locally admitted. The global ledger still runs after all canonical regions are materialized and is the authoritative count/coverage/reason record. This removes the local “encode all panels before first sink” barrier and preserves single-writer/backpressure behavior, but it does not yet make `reconcile_sources` or `build_complete_coverage_map` source-level streaming; that remaining limitation is explicit.
+
+Measured subset evidence: v3 admission raw=40, ingest=37, candidate=40, canonical=40, admitted=40, reject=0, dedup=0, merge=0, needs-review=0; first dispatch 0.609s; preparation 9.363s; 98 requests/8 retries; peak in-flight 8; selected level 8; 37/40 accepted and 3 terminal missing. Missing-only retry recovered 1/3 with 13 requests; two remained unknown balloon geometry. Replacement source orders 40-42 accepted 3/3 in 32.025s with 4 requests and no retries. These metrics are a subset performance/contract checkpoint only; story reduce, narration, TTS, render, and QC are not started.

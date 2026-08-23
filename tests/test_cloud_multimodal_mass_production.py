@@ -1412,6 +1412,97 @@ def test_prepare_project_panels_admission_funnel_precedes_panel_sink(monkeypatch
     }
 
 
+def test_prepare_project_panels_streams_each_admitted_panel_before_next_payload(monkeypatch):
+    module = _module()
+    segmentation = importlib.import_module("app.services.segmentation")
+    pipeline = importlib.import_module("app.services.pipeline")
+    from types import SimpleNamespace
+
+    input_row = segmentation.SourceAssetInput(
+        source_asset_id="asset-stream-order",
+        original_checksum="a" * 64,
+        original_width=100,
+        original_height=300,
+        source_bounds=(0, 0, 100, 300),
+        strip_order=0,
+        region_order=0,
+        payload=b"stream-order-payload",
+        decoded_width=100,
+        decoded_height=300,
+    )
+    coverage = segmentation.CoverageMap(
+        version="coverage-v1",
+        map_sha256="b" * 64,
+        source_asset_ids=("asset-stream-order",),
+        tiles=(),
+        regions=tuple(
+            segmentation.CoverageRegion(
+                region_id=panel_id,
+                source_asset_id="asset-stream-order",
+                source_order=index,
+                bounds=(0, index * 100, 100, (index + 1) * 100),
+                region_class="canonical_panel",
+                area=10_000,
+                confidence=0.99,
+                evidence="provider-confirmed panel",
+            )
+            for index, panel_id in enumerate(("stream-panel-0", "stream-panel-1"))
+        )
+        + (
+            segmentation.CoverageRegion(
+                region_id="stream-gutter",
+                source_asset_id="asset-stream-order",
+                source_order=2,
+                bounds=(0, 200, 100, 300),
+                region_class="verified_gutter",
+                area=10_000,
+                confidence=0.99,
+                evidence="local-flat-separator",
+            ),
+        ),
+        source_content_coverage_ratio=1.0,
+        canonical_panel_area=20_000,
+        verified_gutter_area=10_000,
+        unresolved_material_area=0,
+        panel_count=2,
+        reconciliation_errors=(),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "project_assets",
+        lambda _db, _project_id: (SimpleNamespace(id="asset-stream-order", type="image"),),
+    )
+    monkeypatch.setattr(pipeline, "image_assets", lambda assets: list(assets))
+    monkeypatch.setattr(
+        pipeline,
+        "_build_source_inputs",
+        lambda _assets: ((input_row,), {"asset-stream-order": SimpleNamespace(id="asset-stream-order")}),
+    )
+    monkeypatch.setattr(
+        module.strip_segmentation,
+        "reconcile_sources",
+        lambda *_args, **_kwargs: SimpleNamespace(status="RECONCILED"),
+    )
+    monkeypatch.setattr(segmentation, "build_complete_coverage_map", lambda *_args, **_kwargs: coverage)
+    monkeypatch.setattr(segmentation, "verify_segmentation_completeness", lambda *_args, **_kwargs: ())
+    events = []
+
+    def encode(transient, _source_input):
+        events.append(f"encode:{transient.panel_id}")
+        return f"payload:{transient.panel_id}".encode()
+
+    monkeypatch.setattr(pipeline, "_encode_panel_payload", encode)
+
+    panels = module.prepare_project_panels(
+        object(),
+        "project-stream-order",
+        panel_sink=lambda panel: events.append(f"sink:{panel.panel_id}"),
+    )
+
+    assert [panel.panel_id for panel in panels] == ["stream-panel-0", "stream-panel-1"]
+    assert events.index("sink:stream-panel-0") < events.index("encode:stream-panel-1")
+
+
 def test_stage_runner_reconciles_all_panels_with_local_hashes_and_pinned_identity():
     module = _module()
     provider = _FakeProvider()

@@ -1663,3 +1663,13 @@ Scoped verification is GREEN: 167 `tests/test_cloud_multimodal_mass_production.p
 The real subset v2 was completed before this funnel was installed and is rejected preflight evidence, not acceptance: 80 submitted, 73 accepted, 7 missing; 170 provider requests, 12 retries, one serialized writer, peak in-flight 16, selected worker level 16, first dispatch 14.371s, preparation 378.938s. The strict terminal result is `cloud.panel_coverage_incomplete`; sanitized terminal classes are `cloud.provider_response_invalid`, `cloud.visual_evidence_invalid`, and `visual.balloon_mask_unknown`. No story map, narration, TTS, render, or QC stage ran.
 
 The old v6 namespace remains read-only. Its 679 checkpoint rows and one row outside the old 701 canonical set are an identity/lineage discrepancy, not proof of exactly 22 semantic missing panels. Do not rerun unchanged v2 or seed from legacy cache. After publication, create a new 40-80 panel namespace, enable the funnel ledger, admit only the resulting safe panel set, and report the funnel table before downstream work. No Video 1 artifact is claimed.
+
+## 2026-08-23 - Funnel-enabled subset and incremental sink handoff
+
+The follow-up RED/GREEN patch dispatches each panel to `panel_sink` immediately after its local prefix admission and payload encoding; the final complete admission pass remains mandatory. It does not yet remove the upstream reconciliation/coverage barrier, so do not describe the normal cold path as fully source-streaming.
+
+Focused evidence: the new ordering regression and full cloud/admission file are GREEN at 168 passed; five Pillow deprecation warnings are unchanged; Ruff, compileall, and diff-check pass. Parent `tests/test_pipeline.py` remains 13 fixture failures with the same `run vision analysis before generating a draft` error.
+
+Subset evidence is diagnostic only. v3 funnel counts are raw 40, ingest 37, candidates 40, canonical 40, admitted 40, rejected 0, deduped 0, merged 0, needs-review 0. First dispatch 0.609s, preparation 9.363s, 98 requests, 8 retries, peak in-flight 8, selected worker level 8, elapsed 454.22s; terminal stream coverage 37/40 with three missing. Missing-only retry: 1/3 recovered, 13 requests, 2 retries; two remain `visual.balloon_mask_unknown`. Distinct source orders 40-42: 3/3 accepted, 4 requests, 0 retries, elapsed 32.025s. No story map, narration, TTS, render, or QC ran.
+
+Resume rule: preserve the three subset namespaces and old v6 read-only. Before a full project run, either prove a single clean N/N subset through the supported production boundary or record the exact unresolved visual panels as `NEEDS_REVIEW`; never convert unknown balloon geometry into known-empty evidence and never bypass the admission or terminal-coverage gates.

@@ -8428,6 +8428,9 @@ def prepare_project_panels(
         raise CloudStageError("cloud.panel_coverage_incomplete")
 
     panels: list[CloudPanelInput] = []
+    stream_candidate_regions: list[dict[str, Any]] = []
+    panel_hints: dict[str, dict[str, Any]] = {}
+    stream_submitted_ids: set[str] = set()
     for panel_order, region in enumerate(regions):
         source_input = input_by_asset.get(region.source_asset_id)
         asset = asset_by_id.get(region.source_asset_id)
@@ -8454,26 +8457,23 @@ def prepare_project_panels(
             payload = pipeline._encode_panel_payload(transient, source_input)
         except Exception:
             raise CloudStageError("cloud.panel_payload_invalid") from None
-        panels.append(
-            CloudPanelInput(
-                panel_id=region.region_id,
-                source_asset_id=asset.id,
-                source_order=panel_order,
-                mime_type="image/png",
-                payload=payload,
-                source_checksum=source_input.original_checksum,
-                source_family=str(getattr(asset, "source_family", "") or ""),
-                panel_bounds=region.bounds,
-                source_dimensions=(source_input.original_width, source_input.original_height),
-                strip_region_id=region.region_id,
-                coverage_map_version=coverage.version,
-                coverage_map_hash=coverage.map_sha256,
-                segmentation_version=strip_segmentation.SEGMENTATION_VERSION,
-                prepared_order=panel_order,
-            )
+        panel = CloudPanelInput(
+            panel_id=region.region_id,
+            source_asset_id=asset.id,
+            source_order=panel_order,
+            mime_type="image/png",
+            payload=payload,
+            source_checksum=source_input.original_checksum,
+            source_family=str(getattr(asset, "source_family", "") or ""),
+            panel_bounds=region.bounds,
+            source_dimensions=(source_input.original_width, source_input.original_height),
+            strip_region_id=region.region_id,
+            coverage_map_version=coverage.version,
+            coverage_map_hash=coverage.map_sha256,
+            segmentation_version=strip_segmentation.SEGMENTATION_VERSION,
+            prepared_order=panel_order,
         )
-    panel_hints: dict[str, dict[str, Any]] = {}
-    for panel in panels:
+        panels.append(panel)
         asset = asset_by_id[panel.source_asset_id]
         quality = getattr(asset, "panel_quality", {}) or {}
         trim_classification = str(getattr(asset, "trim_classification", "") or "")
@@ -8493,6 +8493,39 @@ def prepare_project_panels(
             "story_evidence": story_evidence,
             "metrics": dict(quality) if isinstance(quality, Mapping) else {},
         }
+        stream_candidate_regions.append(
+            {
+                "region_id": region.region_id,
+                "source_asset_id": asset.id,
+                "source_checksum": source_input.original_checksum,
+                "source_order": panel_order,
+                "bounds": list(region.bounds),
+                "region_class": region.region_class,
+                "confidence": float(region.confidence),
+                "evidence": region.evidence,
+            }
+        )
+        if panel_sink is not None:
+            prefix_admission = admit_panel_inputs(
+                tuple(panels),
+                raw_image_count=len(assets),
+                ingest_asset_count=len(inputs),
+                candidate_regions=tuple(stream_candidate_regions),
+                panel_hints=panel_hints,
+                detector_version=PANEL_ADMISSION_DETECTOR_VERSION,
+            )
+            if prefix_admission.needs_review:
+                raise CloudStageError(
+                    "segmentation.panel_admission_needs_review",
+                    reviewable=True,
+                    safe_metadata={
+                        "ledger_hash": prefix_admission.ledger["ledger_hash"],
+                        "needs_review": prefix_admission.ledger["counts"]["needs_review"],
+                    },
+                )
+            if panel.panel_id in {item.panel_id for item in prefix_admission.admitted}:
+                panel_sink(panel)
+                stream_submitted_ids.add(panel.panel_id)
     admission = admit_panel_inputs(
         panels,
         raw_image_count=len(assets),
@@ -8520,7 +8553,8 @@ def prepare_project_panels(
     result = tuple(admission.admitted)
     if panel_sink is not None:
         for panel in result:
-            panel_sink(panel)
+            if panel.panel_id not in stream_submitted_ids:
+                panel_sink(panel)
     if return_segmentation:
         return result, segmentation_state
     return result
