@@ -8107,10 +8107,17 @@ def _find_cached_visual_subset(
             if not isinstance(row, Mapping):
                 continue
             try:
-                reusable = _visual_cached_row_is_reusable(row, panel)
+                lineage_valid = (
+                    str(row.get("panel_id", "")) == panel.panel_id
+                    and str(row.get("source_asset_id", ""))
+                    == panel.source_asset_id
+                    and int(row.get("source_order", -1)) == int(panel.source_order)
+                    and str(row.get("source_checksum", ""))
+                    == panel.source_checksum
+                )
             except (TypeError, ValueError):
-                reusable = False
-            if not reusable:
+                lineage_valid = False
+            if not lineage_valid:
                 continue
             row_identity_hash = str(row.get("cache_identity_hash", ""))
             if (

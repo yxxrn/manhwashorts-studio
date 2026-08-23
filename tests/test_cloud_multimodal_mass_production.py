@@ -2219,6 +2219,10 @@ def test_resume_discovers_checkpoint_visual_subset_without_scanning_stage_json(t
         }
         for row in valid.panels[:2]
     ]
+    rows[0]["observation"] = {
+        **rows[0]["observation"],
+        "visible_facts": [],
+    }
     checkpoint_path.write_text(
         "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
         encoding="utf-8",
