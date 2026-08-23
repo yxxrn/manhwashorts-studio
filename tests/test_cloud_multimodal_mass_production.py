@@ -2318,6 +2318,16 @@ def test_incomplete_visual_stage_requires_checkpoint_subset_restore():
         valid.as_dict(),
         panels,
     ) is False
+    stale_identity = replace(
+        valid,
+        source_hash="stale-source",
+        panel_identity_hashes=tuple("f" * 64 for _ in panels),
+    )
+    assert module._visual_cache_requires_subset_restore(
+        runner,
+        stale_identity.as_dict(),
+        panels,
+    ) is True
 
 
 def test_file_stage_cache_round_trips_durable_values(tmp_path):

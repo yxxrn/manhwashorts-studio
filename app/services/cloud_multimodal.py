@@ -8121,6 +8121,10 @@ def _visual_cache_requires_subset_restore(
         return True
     if visual.panel_ids != tuple(panel.panel_id for panel in ordered):
         return True
+    if visual.source_hash != _visual_source_hash(ordered):
+        return True
+    if tuple(visual.panel_identity_hashes) != _visual_panel_identity_hashes(ordered):
+        return True
     for row, panel in zip(visual.panels, ordered, strict=True):
         try:
             if not _visual_cached_row_is_reusable(row, panel):
