@@ -7411,7 +7411,10 @@ def test_panel_admission_failure_preserves_funnel_before_vision(monkeypatch):
     assert ledger["transitions"][-1]["reason_code"] == "segmentation.ambiguous_boundary"
 
 
-def test_prepare_project_panels_attaches_funnel_to_segmentation_failure(monkeypatch):
+@pytest.mark.parametrize("failure_mode", ("raise", "status"))
+def test_prepare_project_panels_attaches_funnel_to_segmentation_failure(
+    monkeypatch, failure_mode
+):
     module = _module()
     segmentation = importlib.import_module("app.services.segmentation")
     pipeline = importlib.import_module("app.services.pipeline")
@@ -7481,9 +7484,14 @@ def test_prepare_project_panels_attaches_funnel_to_segmentation_failure(monkeypa
     monkeypatch.setattr(segmentation, "verify_segmentation_completeness", lambda *_args, **_kwargs: ())
 
     def fail_reconciliation(*_args, **_kwargs):
-        raise module.strip_segmentation.StripSegmentationError(
-            "segmentation.ambiguous_boundary",
-            reviewable=True,
+        if failure_mode == "raise":
+            raise module.strip_segmentation.StripSegmentationError(
+                "segmentation.ambiguous_boundary",
+                reviewable=True,
+            )
+        return SimpleNamespace(
+            status="NEEDS_REVIEW",
+            reports=(SimpleNamespace(review_code="segmentation.ambiguous_boundary"),),
         )
 
     monkeypatch.setattr(module.strip_segmentation, "reconcile_sources", fail_reconciliation)

@@ -1800,3 +1800,12 @@ Scoped GREEN evidence: 172 cloud tests and 49 segmentation/reconciliation
 tests passed; Ruff, compileall, and diff-check passed. Video 1 remains
 unproven and all runtime namespaces, input data, DB/WAL, caches, media, and
 `ms_env.sh` remain protected/untracked.
+
+The v5 retry identified the returned-status variant: reconciliation returned
+`NEEDS_REVIEW` with `segmentation.ambiguous_boundary`, so the old code emitted
+no `panel_admission` metadata even after 36 provisional submissions. The
+status branch is now covered by the same parameterized regression as the
+raised-error branch. V5 is not acceptance evidence: 41 regions / 37 assets /
+24 groups, 13 requests, first dispatch 32.515s, preparation 170.591s, total
+581.553s, and no terminal visual N/N. Start a fresh namespace after the new
+published SHA and inspect the actual blocked ledger; do not backfill v5.

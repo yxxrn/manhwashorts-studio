@@ -3036,3 +3036,13 @@ The 13 known `tests/test_pipeline.py` fixture failures remain outside this
 scoped GREEN claim. Next action is one fresh bounded subset using the new
 failure ledger; downstream stages remain closed until admitted and terminal
 panel counts are exact.
+
+The v5 run showed that `reconcile_sources` may return `NEEDS_REVIEW` rather
+than raise. Before this correction that branch raised the review code without
+the funnel, producing `error_metadata_keys=[]` despite 36 provisional
+submissions. The returned-status branch now uses the same blocked ledger; the
+v5 namespace remains diagnostic only: 41 canonical / 37 assets / 24 groups,
+36 provisional submissions, 13 provider requests, first dispatch 32.515s,
+preparation 170.591s, total 581.553s, and
+`segmentation.ambiguous_boundary`. No funnel is inferred from its old summary.
+The next fresh run must verify the corrected metadata directly.

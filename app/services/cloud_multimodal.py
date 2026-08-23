@@ -8680,9 +8680,11 @@ def prepare_project_panels(
             raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
     if reconciliation.status != "RECONCILED":
         review_codes = [report.review_code for report in reconciliation.reports if report.review_code]
+        code = review_codes[0] if review_codes else "segmentation.coverage_incomplete"
         raise CloudStageError(
-            review_codes[0] if review_codes else "segmentation.coverage_incomplete",
+            code,
             reviewable=True,
+            safe_metadata=admission_failure_metadata(code),
         )
     panels: list[CloudPanelInput] = []
     for region in regions:

@@ -1805,3 +1805,10 @@ zero-confidence geometry candidates in `130__005`/`130__019` and
 artwork-connected cuts in `131__017`/`131__019`. The next subset must use the
 published failure ledger and report the full funnel before any downstream
 stage. Video 1 remains unproven.
+
+The v5 diagnostic exposed a second branch of the same accounting boundary:
+`reconcile_sources` can return `NEEDS_REVIEW` with a review code instead of
+raising `StripSegmentationError`. That returned-status path now attaches the
+same blocked admission ledger. V5 remains read-only diagnostic evidence
+(41 regions, 37 assets, 36 provisional submissions, 13 requests,
+`segmentation.ambiguous_boundary`); its empty pre-fix funnel is not backfilled.

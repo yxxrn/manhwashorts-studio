@@ -1022,3 +1022,11 @@ ledger, so no funnel counts are inferred from it. Persisted reports identify
 zero-confidence geometry-only candidates (`130__005`, `130__019`) and
 artwork-connected cuts (`131__017`, `131__019`). The next fresh subset must
 produce a complete funnel table before story/narration or media stages.
+
+The v5 run also exercised the non-exception path: `reconcile_sources` returned
+`NEEDS_REVIEW` with `segmentation.ambiguous_boundary` after 36 provisional
+submissions, but the pre-correction status branch discarded the funnel. The
+branch now attaches the same `BLOCKED` ledger as the exception path. V5 used
+41 canonical regions / 37 assets / 24 groups, 13 requests, first dispatch
+32.515s, preparation 170.591s, total 581.553s, and remains rejected
+diagnostic evidence; its empty old funnel is not semantically reconstructed.
