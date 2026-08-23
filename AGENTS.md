@@ -1783,3 +1783,25 @@ provisional submissions, 37 requests, first dispatch 14.653s, preparation
 227.594s, `segmentation.ambiguous_boundary`); its final panel-admission funnel
 was not emitted and it must not be reused as evidence. Publish this source/test
 fix before a new subset run.
+## 2026-08-23 — fail-closed admission ledger on segmentation errors
+
+`panel-admission-v1` now has a `panel_admission_failure_ledger(...)` boundary for
+streaming preparation failures. If segmentation stops after provisional source
+groups have been submitted, the `CloudStageError.safe_metadata` carries the
+local raw/ingest/candidate/canonical counts, transition elapsed/reason fields,
+coverage decisions, ledger hash, `status=BLOCKED`, and the exact terminal
+reason. Its admitted count is forced to zero, so partial vision work can never
+be presented as an accepted panel set. This is metadata only and does not
+relax segmentation, balloon/protected-region, lineage, or terminal-coverage
+gates.
+
+The fresh v4 short-group diagnostic namespace
+`/data/data/p0-aws-acceptance/video1-stream-source-callback-short-v4` ended
+closed with 40 selected canonical regions, 37 source assets, 23 source groups,
+33 provisional submissions, 27 provider requests, and
+`segmentation.ambiguous_boundary`; its pre-fix summary had no final admission
+ledger and is not acceptance evidence. Persisted reports identify
+zero-confidence geometry candidates in `130__005`/`130__019` and
+artwork-connected cuts in `131__017`/`131__019`. The next subset must use the
+published failure ledger and report the full funnel before any downstream
+stage. Video 1 remains unproven.

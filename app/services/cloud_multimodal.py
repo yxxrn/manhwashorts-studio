@@ -1014,6 +1014,49 @@ def admit_panel_inputs(
     return PanelAdmissionResult(tuple(final_panels) if not needs_review else (), ledger)
 
 
+def panel_admission_failure_ledger(
+    panels: Sequence[CloudPanelInput],
+    *,
+    raw_image_count: int,
+    ingest_asset_count: int,
+    candidate_regions: Sequence[Any],
+    panel_hints: Mapping[str, Mapping[str, Any]] | None = None,
+    detector_version: str = PANEL_ADMISSION_DETECTOR_VERSION,
+    reason_code: str,
+) -> dict[str, Any]:
+    """Return a local funnel ledger when a pre-vision boundary blocks.
+
+    Segmentation can fail after some source groups have already streamed to
+    vision.  Preserve the deterministic admission counts and transition
+    timings in that case, but force the terminal admission count to zero so a
+    partial stream can never be mistaken for an accepted vision set.
+    """
+
+    result = admit_panel_inputs(
+        panels,
+        raw_image_count=raw_image_count,
+        ingest_asset_count=ingest_asset_count,
+        candidate_regions=candidate_regions,
+        panel_hints=panel_hints,
+        detector_version=detector_version,
+    )
+    ledger = dict(result.ledger)
+    counts = dict(ledger["counts"])
+    counts["admitted_vision_panels"] = 0
+    ledger["counts"] = counts
+    transitions = [dict(item) for item in ledger["transitions"]]
+    if transitions:
+        terminal = transitions[-1]
+        terminal["output_count"] = 0
+        terminal["reason_code"] = reason_code
+    ledger["transitions"] = transitions
+    ledger["status"] = "BLOCKED"
+    ledger["terminal_reason_code"] = reason_code
+    ledger["blocked_before_provider_vision"] = True
+    ledger["ledger_hash"] = _hash({key: value for key, value in ledger.items() if key != "ledger_hash"})
+    return ledger
+
+
 class CloudMultimodalProvider(Protocol):
     model_id: str
 
@@ -8468,6 +8511,7 @@ def prepare_project_panels(
 
     panel_by_id: dict[str, CloudPanelInput] = {}
     stream_submitted_ids: set[str] = set()
+    last_panel_admission: PanelAdmissionResult | None = None
     region_order = {region.region_id: order for order, region in enumerate(regions)}
 
     def materialize_panel(region: Any) -> CloudPanelInput:
@@ -8520,6 +8564,7 @@ def prepare_project_panels(
         return panel
 
     def admit_and_sink(prefix_panels: Sequence[CloudPanelInput]) -> None:
+        nonlocal last_panel_admission
         if panel_sink is None:
             return
         prefix_admission = admit_panel_inputs(
@@ -8530,6 +8575,7 @@ def prepare_project_panels(
             panel_hints=panel_hints,
             detector_version=PANEL_ADMISSION_DETECTOR_VERSION,
         )
+        last_panel_admission = prefix_admission
         if prefix_admission.needs_review:
             raise CloudStageError(
                 "segmentation.panel_admission_needs_review",
@@ -8544,6 +8590,27 @@ def prepare_project_panels(
             if panel.panel_id in admitted_ids and panel.panel_id not in stream_submitted_ids:
                 panel_sink(panel)
                 stream_submitted_ids.add(panel.panel_id)
+
+    def admission_failure_metadata(reason_code: str) -> dict[str, Any]:
+        if last_panel_admission is not None:
+            ledger = panel_admission_failure_ledger(
+                tuple(panel_by_id.values()),
+                raw_image_count=len(assets),
+                ingest_asset_count=len(inputs),
+                candidate_regions=tuple(stream_candidate_regions),
+                panel_hints=panel_hints,
+                reason_code=reason_code,
+            )
+        else:
+            ledger = panel_admission_failure_ledger(
+                (),
+                raw_image_count=len(assets),
+                ingest_asset_count=len(inputs),
+                candidate_regions=tuple(stream_candidate_regions),
+                panel_hints=panel_hints,
+                reason_code=reason_code,
+            )
+        return {"panel_admission": ledger}
 
     def on_reconciled(group: tuple[Any, ...], _result: Any) -> None:
         if panel_sink is None:
@@ -8586,11 +8653,22 @@ def prepare_project_panels(
                     on_reconciled=stream_callback,
                 )
         except strip_segmentation.StripSegmentationError as exc:
-            raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
-        except CloudStageError:
-            raise
+            raise CloudStageError(
+                exc.code,
+                reviewable=exc.reviewable,
+                safe_metadata=admission_failure_metadata(exc.code),
+            ) from None
+        except CloudStageError as exc:
+            metadata = dict(exc.safe_metadata)
+            metadata.setdefault("panel_admission", admission_failure_metadata(exc.code)["panel_admission"])
+            raise CloudStageError(
+                exc.code,
+                reviewable=exc.reviewable,
+                safe_metadata=metadata,
+            ) from None
         except Exception:
-            raise CloudStageError("cloud.panel_coverage_incomplete") from None
+            code = "cloud.panel_coverage_incomplete"
+            raise CloudStageError(code, safe_metadata=admission_failure_metadata(code)) from None
     if reconciliation.status != "RECONCILED" and review_only_auto_override:
         try:
             reconciliation = strip_segmentation.apply_review_only_overrides(
@@ -10758,6 +10836,7 @@ __all__ = [
     "FileStageCache",
     "NarrationResult",
     "persist_cloud_chapter",
+    "panel_admission_failure_ledger",
     "prepare_project_panels",
     "ReviewOnlyRenderGate",
     "StoryMapResult",

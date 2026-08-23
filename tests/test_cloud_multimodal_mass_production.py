@@ -7361,6 +7361,150 @@ def test_panel_admission_funnel_records_counts_transitions_and_non_panel_reason_
     assert result.admitted == panels
 
 
+def test_panel_admission_failure_preserves_funnel_before_vision(monkeypatch):
+    module = _module()
+    panels = (_admission_panel(module, "story-1", order=0),)
+    regions = (
+        {
+            "region_id": "story-1",
+            "source_asset_id": "admission-asset",
+            "source_order": 0,
+            "bounds": [0, 0, 32, 32],
+            "region_class": "canonical_panel",
+            "confidence": 0.99,
+            "evidence": "local-panel",
+        },
+        {
+            "region_id": "ambiguous-1",
+            "source_asset_id": "admission-asset",
+            "source_order": 1,
+            "bounds": [0, 32, 32, 64],
+            "region_class": "unresolved_material",
+            "confidence": 0.0,
+            "evidence": "artwork-connected-boundary",
+        },
+    )
+
+    ledger = module.panel_admission_failure_ledger(
+        panels,
+        raw_image_count=2,
+        ingest_asset_count=1,
+        candidate_regions=regions,
+        reason_code="segmentation.ambiguous_boundary",
+    )
+
+    assert ledger["status"] == "BLOCKED"
+    assert ledger["terminal_reason_code"] == "segmentation.ambiguous_boundary"
+    assert ledger["counts"] == {
+        "raw_input_images": 2,
+        "ingest_assets": 1,
+        "candidate_regions": 2,
+        "canonical_regions": 1,
+        "admitted_vision_panels": 0,
+        "rejected_non_panel": 0,
+        "deduped": 0,
+        "merged": 0,
+        "needs_review": 1,
+    }
+    assert ledger["transitions"][-1]["to"] == "admitted_vision_panels"
+    assert ledger["transitions"][-1]["output_count"] == 0
+    assert ledger["transitions"][-1]["reason_code"] == "segmentation.ambiguous_boundary"
+
+
+def test_prepare_project_panels_attaches_funnel_to_segmentation_failure(monkeypatch):
+    module = _module()
+    segmentation = importlib.import_module("app.services.segmentation")
+    pipeline = importlib.import_module("app.services.pipeline")
+    from types import SimpleNamespace
+
+    input_row = segmentation.SourceAssetInput(
+        source_asset_id="asset-funnel-error",
+        original_checksum="a" * 64,
+        original_width=100,
+        original_height=200,
+        source_bounds=(0, 0, 100, 200),
+        strip_order=0,
+        region_order=0,
+        payload=b"funnel-error-payload",
+        decoded_width=100,
+        decoded_height=200,
+    )
+    coverage = segmentation.CoverageMap(
+        version="coverage-v1",
+        map_sha256="b" * 64,
+        source_asset_ids=("asset-funnel-error",),
+        tiles=(),
+        regions=(
+            segmentation.CoverageRegion(
+                region_id="error-panel",
+                source_asset_id="asset-funnel-error",
+                source_order=0,
+                bounds=(0, 0, 100, 100),
+                region_class="canonical_panel",
+                area=10_000,
+                confidence=0.99,
+                evidence="local-panel",
+            ),
+            segmentation.CoverageRegion(
+                region_id="error-gutter",
+                source_asset_id="asset-funnel-error",
+                source_order=1,
+                bounds=(0, 100, 100, 200),
+                region_class="verified_gutter",
+                area=10_000,
+                confidence=0.99,
+                evidence="local-separator",
+            ),
+        ),
+        source_content_coverage_ratio=1.0,
+        canonical_panel_area=10_000,
+        verified_gutter_area=10_000,
+        unresolved_material_area=0,
+        panel_count=1,
+        reconciliation_errors=(),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "project_assets",
+        lambda _db, _project_id: (SimpleNamespace(id="asset-funnel-error", type="image"),),
+    )
+    monkeypatch.setattr(pipeline, "image_assets", lambda assets: list(assets))
+    monkeypatch.setattr(
+        pipeline,
+        "_build_source_inputs",
+        lambda _assets: (
+            (input_row,),
+            {"asset-funnel-error": SimpleNamespace(id="asset-funnel-error")},
+        ),
+    )
+    monkeypatch.setattr(segmentation, "build_complete_coverage_map", lambda *_args, **_kwargs: coverage)
+    monkeypatch.setattr(segmentation, "verify_segmentation_completeness", lambda *_args, **_kwargs: ())
+
+    def fail_reconciliation(*_args, **_kwargs):
+        raise module.strip_segmentation.StripSegmentationError(
+            "segmentation.ambiguous_boundary",
+            reviewable=True,
+        )
+
+    monkeypatch.setattr(module.strip_segmentation, "reconcile_sources", fail_reconciliation)
+
+    with pytest.raises(module.CloudStageError) as caught:
+        module.prepare_project_panels(
+            object(),
+            "project-funnel-error",
+            panel_sink=lambda _panel: None,
+        )
+
+    assert caught.value.code == "segmentation.ambiguous_boundary"
+    ledger = caught.value.safe_metadata["panel_admission"]
+    assert ledger["status"] == "BLOCKED"
+    assert ledger["counts"]["candidate_regions"] == 2
+    assert ledger["counts"]["canonical_regions"] == 1
+    assert ledger["counts"]["admitted_vision_panels"] == 0
+    assert ledger["counts"]["rejected_non_panel"] == 1
+    assert ledger["terminal_reason_code"] == "segmentation.ambiguous_boundary"
+
+
 def test_panel_admission_rejects_explicit_blank_title_without_story_evidence():
     module = _module()
     blank = _admission_panel(module, "title-0", order=0, payload=_admission_png((255, 255, 255)))

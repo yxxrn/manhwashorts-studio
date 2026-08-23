@@ -1772,3 +1772,31 @@ provisional submissions, 37 requests, first dispatch 14.653s, preparation
 terminal visual evidence exists. After this checkpoint is published, start a
 new namespace and require the funnel table and exact terminal N/N before any
 story/narration/TTS/render work.
+## 2026-08-23 — Admission ledger survives a blocked source boundary
+
+The source/test checkpoint adds `panel_admission_failure_ledger(...)` to the
+streaming preparation boundary. When reconciliation fails after provisional
+source callbacks, the raised `CloudStageError` now contains a sanitized
+`panel_admission` ledger with raw images, ingest assets, candidate regions,
+canonical regions, rejected/deduped/merged/review counts, transition timing and
+stable reason codes, coverage decisions, and a ledger hash. The terminal
+admitted count is always zero and the ledger is marked `BLOCKED`; this prevents
+partial provider work from being mistaken for a valid visual set.
+
+The v4 short-group run at
+`/data/data/p0-aws-acceptance/video1-stream-source-callback-short-v4` is not
+accepted evidence: 40 canonical / 37 assets / 23 groups, 33 provisional
+submissions, 27 provider requests, first visual dispatch 30.393s,
+preparation 170.760s, total 594.381s, then
+`segmentation.ambiguous_boundary`. Its old summary had an empty funnel, so it
+must not be backfilled or treated as a semantic 703-to-701 explanation.
+Saved reports classify `130__005` and `130__019` as zero-confidence
+geometry-only candidates and `131__017` and `131__019` as artwork-connected
+cuts. Run the next fresh subset after publication to obtain the complete
+funnel table from the corrected boundary; do not start story/narration/TTS or
+render from v4.
+
+Scoped GREEN evidence: 172 cloud tests and 49 segmentation/reconciliation
+tests passed; Ruff, compileall, and diff-check passed. Video 1 remains
+unproven and all runtime namespaces, input data, DB/WAL, caches, media, and
+`ms_env.sh` remain protected/untracked.

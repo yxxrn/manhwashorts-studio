@@ -3008,3 +3008,31 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - TDD: the 900x3565 nonuniform-safe partition is RED before the fix and GREEN after it; a sparse 8000px source with an oversized terminal span remains rejected. The focused strip/segmentation/reconciliation matrix and full cloud multimodal matrix are GREEN; exact counts are recorded at the publish checkpoint. No provider/TTS request was consumed by the code/test slice.
 - Pre-fix short-group runtime remains read-only diagnostic evidence: 41 target canonical regions, 38 assets, 22 source groups, 19 provisional submissions, 37 boundary/visual requests, first visual dispatch 14.653s, preparation 227.594s, final `segmentation.ambiguous_boundary`. The final admission funnel was not emitted; no admitted count, story, narration, TTS, render, or QC is claimed.
 - Next gate after publication: rerun one new short-group subset through the v2 segmentation contract and report the complete funnel table (`raw | ingest | candidate | canonical | admitted | rejected non-panel | deduped | merged | needs-review`) plus terminal N/N. Do not reuse the pre-fix runtime.
+## 2026-08-23 - Admission funnel failure evidence (source/test checkpoint)
+
+The local `panel-admission-v1` funnel now survives a fail-closed segmentation
+boundary. `panel_admission_failure_ledger(...)` reconstructs sanitized local
+counts and per-transition elapsed/reason fields from the already validated
+candidate-region manifest, forces `admitted_vision_panels=0`, adds
+`status=BLOCKED`, `terminal_reason_code`, `blocked_before_provider_vision`,
+and recomputes the ledger hash. `prepare_project_panels` attaches that ledger
+under `CloudStageError.safe_metadata["panel_admission"]` for streaming
+segmentation/coverage failures. No provider result is promoted and no gate is
+weakened.
+
+The v4 diagnostic namespace
+`/data/data/p0-aws-acceptance/video1-stream-source-callback-short-v4` ended
+with `segmentation.ambiguous_boundary`: 40 selected canonical regions, 37
+assets, 23 source groups, 33 provisional submissions, 27 provider requests,
+first visual dispatch at 30.393s, preparation 170.760s, total 594.381s. Its
+pre-fix `panel_admission={}` is explicitly not a funnel result. Existing
+reports show no validated gutter for `130__005`/`130__019` and
+artwork-connected candidate cuts for `131__017`/`131__019`; no final N/N visual
+set, story, narration, TTS, render, or QC exists.
+
+Verification after the fix: 172 cloud tests passed, 49 segmentation/
+reconciliation tests passed, Ruff, compileall, and `git diff --check` passed.
+The 13 known `tests/test_pipeline.py` fixture failures remain outside this
+scoped GREEN claim. Next action is one fresh bounded subset using the new
+failure ledger; downstream stages remain closed until admitted and terminal
+panel counts are exact.

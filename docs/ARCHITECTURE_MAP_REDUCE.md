@@ -1001,3 +1001,24 @@ subset is not proof: 41 target regions, 38 assets, 19 provisional submissions,
 37 requests, first dispatch 14.653s, preparation 227.594s, and no final funnel
 because a later source group remained ambiguous. Publish the source/test fix,
 then run a fresh namespace and require a complete funnel plus terminal N/N.
+## 2026-08-23 — Blocked admission ledger and v4 diagnosis
+
+The streaming preparation boundary now emits a deterministic local admission
+ledger even when source reconciliation fails after provisional callbacks.
+`panel_admission_failure_ledger(...)` reuses the candidate-region coverage
+manifest, records all funnel counts/transitions/reason codes and the ledger
+hash, sets `status=BLOCKED`, and forces terminal admitted count to zero.
+`prepare_project_panels` attaches it as sanitized error metadata. This is an
+observability and fail-closed accounting correction; provider validation,
+protected-region, lineage, and terminal N/N gates are unchanged.
+
+The v4 diagnostic run at
+`/data/data/p0-aws-acceptance/video1-stream-source-callback-short-v4` selected
+40 canonical regions from 37 assets/23 groups, submitted 33 provisional
+panels, made 27 requests, dispatched first vision at 30.393s, spent 170.760s
+in preparation, and ended after 594.381s with
+`segmentation.ambiguous_boundary`. Its pre-fix summary had no admission
+ledger, so no funnel counts are inferred from it. Persisted reports identify
+zero-confidence geometry-only candidates (`130__005`, `130__019`) and
+artwork-connected cuts (`131__017`, `131__019`). The next fresh subset must
+produce a complete funnel table before story/narration or media stages.
