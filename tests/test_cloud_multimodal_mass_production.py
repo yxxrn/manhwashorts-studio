@@ -2239,6 +2239,63 @@ def test_resume_discovers_checkpoint_visual_subset_without_scanning_stage_json(t
     assert found.source_hash == "checkpoint-source"
 
 
+def test_materialized_visual_subset_reseeds_post_materialization_cache_key():
+    module = _module()
+    panels = _panels(module, "materialized-key")
+    identity = _identity(module)
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+        cache=module.MemoryStageCache(),
+    )
+    valid = runner.run_visual_evidence(panels)
+    metadata_panels = tuple(
+        replace(
+            panel,
+            mime_type="image/jpeg",
+            metadata_only=True,
+            identity_payload_checksum=f"{index + 1:064x}",
+            identity_descriptor_hash=f"{index + 101:064x}",
+        )
+        for index, panel in enumerate(panels)
+    )
+    materialized_panels = tuple(
+        replace(panel, mime_type="image/png", metadata_only=False)
+        for panel in metadata_panels
+    )
+
+    module._seed_visual_subset_cache(runner, metadata_panels, valid)
+    assert runner.cache.get(
+        module._cache_key(
+            "visual",
+            list(module._visual_panel_identities(metadata_panels)),
+            identity,
+            runner.prompts["visual"],
+        )
+    ) is not None
+    assert runner.cache.get(
+        module._cache_key(
+            "visual",
+            list(module._visual_panel_identities(materialized_panels)),
+            identity,
+            runner.prompts["visual"],
+        )
+    ) is None
+
+    module._seed_visual_subset_cache(runner, materialized_panels, valid)
+
+    cached_materialized = runner.cache.get(
+        module._cache_key(
+            "visual",
+            list(module._visual_panel_identities(materialized_panels)),
+            identity,
+            runner.prompts["visual"],
+        )
+    )
+    assert cached_materialized is not None
+    assert module.VisualStageResult.from_dict(cached_materialized) == valid
+
+
 def test_file_stage_cache_round_trips_durable_values(tmp_path):
     module = _module()
     cache = module.FileStageCache(tmp_path / "stage-cache")

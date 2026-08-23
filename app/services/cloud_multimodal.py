@@ -8085,6 +8085,26 @@ def _visual_panel_ids_requiring_materialization(
     )
 
 
+def _seed_visual_subset_cache(
+    runner: CloudStageRunner,
+    panels: Sequence[CloudPanelInput],
+    visual: VisualStageResult,
+) -> None:
+    """Expose one restored visual result under the current input identity."""
+
+    if runner.cache is None:
+        return
+    runner.cache.put(
+        _cache_key(
+            "visual",
+            list(_visual_panel_identities(tuple(panels))),
+            runner.model_identity,
+            runner.prompts["visual"],
+        ),
+        visual.as_dict(),
+    )
+
+
 def _find_cached_visual_subset(
     runner: CloudStageRunner,
     panels: Sequence[CloudPanelInput],
@@ -8741,14 +8761,10 @@ class CloudBatchService:
                 restored_visual_subset is not None
                 and restored_visual_subset.panel_ids == tuple(panel.panel_id for panel in panels)
             ):
-                self.runner.cache.put(
-                    _cache_key(
-                        "visual",
-                        list(_visual_panel_identities(panels)),
-                        self.runner.model_identity,
-                        self.runner.prompts["visual"],
-                    ),
-                    restored_visual_subset.as_dict(),
+                _seed_visual_subset_cache(
+                    self.runner,
+                    panels,
+                    restored_visual_subset,
                 )
             targeted_materialization_ids: tuple[str, ...] = ()
             if manifest_loaded:
@@ -8766,6 +8782,15 @@ class CloudBatchService:
                         )
                     except CloudStageError as exc:
                         return self._record_failure(record, exc)
+                if (
+                    restored_visual_subset is not None
+                    and restored_visual_subset.panel_ids == tuple(panel.panel_id for panel in panels)
+                ):
+                    _seed_visual_subset_cache(
+                        self.runner,
+                        panels,
+                        restored_visual_subset,
+                    )
             record.stage_results["segmentation"] = segmentation_state
             record.stage_results["preparation_metrics"] = {
                 "contract_version": "prepared-panel-preparation-v1",
