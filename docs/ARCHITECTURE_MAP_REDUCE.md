@@ -890,3 +890,21 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - `CloudStageRunner.run_visual_narrative_repair` now treats a cache hit as untrusted persisted state: deserialization, visual-evidence identity, feasible-ledger lineage, and section-coverage validation occur inside a narrow typed boundary. Invalid entries become cache misses and enter the existing bounded repair loop; valid matching entries remain reusable.
 - This closes the local state discrepancy observed after the cached replay: `visual.narrative_repair_ungrounded` had been emitted before the repair loop because cache validation was outside it. No grounding, duration, visual, lineage, or provider-response gate was relaxed.
 - Regression and focused matrix are green (`146 passed`); the next request may reuse cached visual/story inputs but must not repeat those stages.
+## 2026-08-23 - Panel-admission funnel contract (unpublished)
+
+The visual DAG now has an explicit local admission boundary before provider dispatch:
+
+`raw_input_images -> ingest_outputs -> candidate_regions -> canonical_regions -> admitted_vision_panels -> visual evidence`.
+
+`admit_panel_inputs()` owns the deterministic decision ledger. Each transition stores input/output count, monotonic elapsed seconds, and a stable reason code. Every candidate decision stores source asset ID/checksum, original bounds, source order, candidate panel IDs, detector/contract version, and reproducible metrics. The ledger also stores the complete candidate coverage manifest, reduction percentages, reason-code set, and `ledger_hash`.
+
+Admission invariants:
+
+- `verified_gutter`/transition regions and explicit ingest decisions proving no story evidence may be rejected locally; unresolved material, protected/dialogue-bearing content, and ambiguous blank/title/cover classifications become `NEEDS_REVIEW`, never silent loss.
+- Exact duplicate identity requires source checksum, payload checksum, dimensions, and bounds. Near-duplicate identity requires the same source checksum/dimensions and at least 98% smaller-region overlap. Adjacent true panels have no qualifying overlap and remain separate.
+- An over-segment merge is admitted only when the caller supplies an auditable merged payload, all parts share source lineage, bounds are contiguous with no gap/overlap, and protected-region retention is explicitly verified. Otherwise the boundary remains review-blocked.
+- `panel_sink` is called only with the resulting admitted panels. The segmentation state persists the funnel ledger; downstream provider code cannot observe rejected/ambiguous rows as vision inputs.
+
+The strict stream session separately requires every submitted panel to reach accepted or terminal missing state, persists sanitized failure counts/IDs, and rolls adaptive workers back at the first unstable wave. This is a correctness boundary, not a gate relaxation.
+
+Current limitation: `prepare_project_panels` still completes the existing reconciliation/coverage map before its final funnel pass, so normal cold-path first-dispatch overlap is not yet proven by this slice. The next subset must use a fresh namespace and emit the funnel table, especially the prepared=703 versus filtered=701 reason ledger, before any story/narration/TTS/render stage.

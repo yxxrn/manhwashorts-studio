@@ -476,6 +476,544 @@ class CloudPanelInput:
         return descriptor
 
 
+PANEL_ADMISSION_VERSION = "panel-admission-v1"
+PANEL_ADMISSION_DETECTOR_VERSION = "panel-admission-local-v1"
+
+
+@dataclass(frozen=True)
+class PanelAdmissionResult:
+    """Deterministic, local-only admission result before any vision request."""
+
+    admitted: tuple[CloudPanelInput, ...]
+    ledger: dict[str, Any]
+
+    @property
+    def needs_review(self) -> bool:
+        return bool(self.ledger.get("counts", {}).get("needs_review", 0))
+
+    def as_dict(self) -> dict[str, Any]:
+        return dict(self.ledger)
+
+
+def _admission_value(value: Any, key: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _admission_bounds(value: Any) -> tuple[int, int, int, int] | None:
+    if not isinstance(value, (tuple, list)) or len(value) != 4:
+        return None
+    if not all(isinstance(item, int) and not isinstance(item, bool) for item in value):
+        return None
+    bounds = tuple(value)
+    if bounds[0] < 0 or bounds[1] < 0 or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        return None
+    return bounds
+
+
+def _admission_area(bounds: tuple[int, int, int, int]) -> int:
+    return (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
+
+
+def _admission_intersection_area(
+    left: tuple[int, int, int, int], right: tuple[int, int, int, int]
+) -> int:
+    x0 = max(left[0], right[0])
+    y0 = max(left[1], right[1])
+    x1 = min(left[2], right[2])
+    y1 = min(left[3], right[3])
+    return max(0, x1 - x0) * max(0, y1 - y0)
+
+
+def _admission_decision(
+    *,
+    panel: CloudPanelInput | None,
+    reason_code: str,
+    action: str,
+    candidate_panel_ids: Sequence[str] = (),
+    metrics: Mapping[str, Any] | None = None,
+    region: Any = None,
+) -> dict[str, Any]:
+    bounds = panel.panel_bounds if panel is not None else _admission_bounds(
+        _admission_value(region, "bounds")
+    )
+    source_asset_id = (
+        panel.source_asset_id
+        if panel is not None
+        else str(_admission_value(region, "source_asset_id", "") or "")
+    )
+    source_checksum = (
+        panel.source_checksum
+        if panel is not None
+        else str(_admission_value(region, "source_checksum", "") or "")
+    )
+    panel_id = panel.panel_id if panel is not None else str(
+        _admission_value(region, "region_id", "") or ""
+    )
+    source_order = (
+        panel.source_order
+        if panel is not None
+        else _admission_value(region, "source_order")
+    )
+    return {
+        "action": action,
+        "candidate_panel_ids": list(candidate_panel_ids),
+        "metrics": dict(metrics or {}),
+        "original_bounds": list(bounds) if bounds is not None else None,
+        "panel_id": panel_id,
+        "reason_code": reason_code,
+        "source_asset_id": source_asset_id,
+        "source_asset_checksum": source_checksum,
+        "source_order": source_order,
+    }
+
+
+def _admission_region_key(region: Any) -> tuple[str, tuple[int, int, int, int]] | None:
+    source_asset_id = str(_admission_value(region, "source_asset_id", "") or "")
+    bounds = _admission_bounds(_admission_value(region, "bounds"))
+    return (source_asset_id, bounds) if source_asset_id and bounds is not None else None
+
+
+def _admission_panel_key(panel: CloudPanelInput) -> tuple[Any, ...]:
+    return (
+        panel.source_checksum,
+        panel.payload_checksum,
+        panel.panel_bounds,
+        panel.source_dimensions,
+    )
+
+
+def _admission_order(panel: CloudPanelInput) -> tuple[int, str]:
+    return (panel.prepared_order if panel.prepared_order is not None else panel.source_order, panel.panel_id)
+
+
+def _admission_transition(
+    source: str,
+    target: str,
+    input_count: int,
+    output_count: int,
+    reason_code: str,
+    started: float,
+) -> dict[str, Any]:
+    return {
+        "from": source,
+        "to": target,
+        "input_count": input_count,
+        "output_count": output_count,
+        "elapsed_s": round(max(0.0, time.monotonic() - started), 6),
+        "reason_code": reason_code,
+    }
+
+
+def admit_panel_inputs(
+    panels: Sequence[CloudPanelInput],
+    *,
+    raw_image_count: int | None = None,
+    ingest_asset_count: int | None = None,
+    candidate_regions: Sequence[Any] = (),
+    panel_hints: Mapping[str, Mapping[str, Any]] | None = None,
+    merge_candidates: Sequence[Mapping[str, Any]] = (),
+    detector_version: str = PANEL_ADMISSION_DETECTOR_VERSION,
+) -> PanelAdmissionResult:
+    """Run the local panel-admission funnel before provider vision.
+
+    The funnel never asks a model to classify basic source geometry. It keeps
+    a complete candidate-region ledger, rejects only deterministic non-panel
+    evidence, deduplicates only identical/near-identical source lineage, and
+    turns protected or ambiguous material into a review blocker.
+    """
+
+    started = time.monotonic()
+    ordered = tuple(sorted(panels, key=_admission_order))
+    panel_ids = [panel.panel_id for panel in ordered]
+    if len(panel_ids) != len(set(panel_ids)):
+        raise CloudStageError(
+            "cloud.panel_admission_invalid",
+            safe_metadata={
+                "reason_code": "admission.duplicate_panel_id",
+                "panel_count": len(panel_ids),
+            },
+        )
+    prepared_orders = [panel.prepared_order for panel in ordered if panel.prepared_order is not None]
+    if len(prepared_orders) != len(set(prepared_orders)):
+        raise CloudStageError(
+            "cloud.panel_admission_invalid",
+            safe_metadata={
+                "reason_code": "admission.duplicate_prepared_order",
+                "panel_count": len(panel_ids),
+            },
+        )
+
+    hints = panel_hints or {}
+    regions = tuple(candidate_regions)
+    region_by_key: dict[tuple[str, tuple[int, int, int, int]], Any] = {}
+    decisions: list[dict[str, Any]] = []
+    coverage_manifest: list[dict[str, Any]] = []
+    for region in regions:
+        region_key = _admission_region_key(region)
+        region_id = str(_admission_value(region, "region_id", "") or "")
+        region_class = str(_admission_value(region, "region_class", "") or "")
+        bounds = _admission_bounds(_admission_value(region, "bounds"))
+        coverage_manifest.append(
+            {
+                "bounds": list(bounds) if bounds is not None else None,
+                "confidence": _admission_value(region, "confidence"),
+                "evidence": str(_admission_value(region, "evidence", "") or ""),
+                "region_class": region_class,
+                "region_id": region_id,
+                "source_asset_checksum": str(
+                    _admission_value(region, "source_checksum", "") or ""
+                ),
+                "source_asset_id": str(_admission_value(region, "source_asset_id", "") or ""),
+                "source_order": _admission_value(region, "source_order"),
+            }
+        )
+        if region_key is None:
+            raise CloudStageError(
+                "cloud.panel_admission_invalid",
+                safe_metadata={
+                    "reason_code": "admission.invalid_candidate_region",
+                    "region_id": region_id,
+                },
+            )
+        if region_key in region_by_key:
+            raise CloudStageError(
+                "cloud.panel_admission_invalid",
+                safe_metadata={
+                    "reason_code": "admission.duplicate_candidate_region",
+                    "region_id": region_id,
+                },
+            )
+        region_by_key[region_key] = region
+
+    rejected_non_panel = 0
+    deduped = 0
+    needs_review = 0
+    active: list[CloudPanelInput] = []
+
+    for region in regions:
+        region_class = str(_admission_value(region, "region_class", "") or "")
+        if region_class == "canonical_panel":
+            continue
+        if region_class != "unresolved_material":
+            rejected_non_panel += 1
+        decisions.append(
+            _admission_decision(
+                panel=None,
+                region=region,
+                reason_code=(
+                    "admission.non_panel_transition"
+                    if region_class == "verified_gutter"
+                    else "admission.unresolved_material"
+                ),
+                action="needs_review" if region_class == "unresolved_material" else "reject",
+                candidate_panel_ids=(),
+                metrics={"region_class": region_class},
+            )
+        )
+        if region_class == "unresolved_material":
+            needs_review += 1
+
+    for panel in ordered:
+        hint = dict(hints.get(panel.panel_id, {}))
+        region = region_by_key.get((panel.source_asset_id, panel.panel_bounds))
+        region_class = str(_admission_value(region, "region_class", "") or "")
+        classification = str(
+            hint.get("classification") or hint.get("trim_classification") or ""
+        ).lower()
+        panel_decision = str(hint.get("panel_decision", "") or "").lower()
+        if panel_decision == "reject" and not classification:
+            classification = "blank"
+        protected = bool(hint.get("protected_regions") or hint.get("protected"))
+        dialogue = bool(hint.get("dialogue_or_ocr") or hint.get("dialogue"))
+        ambiguous = bool(hint.get("ambiguous") or region_class == "unresolved_material")
+        story_evidence = hint.get("story_evidence", True)
+        if panel_decision == "reject" and "story_evidence" not in hint:
+            story_evidence = False
+        if region_class == "verified_gutter" or classification in {"gutter", "transition"}:
+            rejected_non_panel += 1
+            decisions.append(
+                _admission_decision(
+                    panel=panel,
+                    reason_code="admission.non_panel_transition",
+                    action="reject",
+                    metrics=dict(hint.get("metrics", {})),
+                )
+            )
+            continue
+        if ambiguous or (
+            classification in {"blank", "near_blank", "title", "cover"}
+            and story_evidence is False
+        ):
+            if protected or dialogue:
+                needs_review += 1
+                decisions.append(
+                    _admission_decision(
+                        panel=panel,
+                        reason_code="admission.protected_or_dialogue_ambiguous",
+                        action="needs_review",
+                        metrics=dict(hint.get("metrics", {})),
+                    )
+                )
+                continue
+            rejected_non_panel += 1
+            reason_code = {
+                "title": "admission.title_no_story_evidence",
+                "cover": "admission.cover_no_story_evidence",
+                "blank": "admission.blank_no_story_evidence",
+                "near_blank": "admission.near_blank_no_story_evidence",
+            }.get(classification, "admission.unresolved_material")
+            if panel_decision == "reject":
+                reason_code = "admission.ingest_rejected_asset"
+            decisions.append(
+                _admission_decision(
+                    panel=panel,
+                    reason_code=reason_code,
+                    action="reject",
+                    metrics=dict(hint.get("metrics", {})),
+                )
+            )
+            continue
+        active.append(panel)
+
+    kept: list[CloudPanelInput] = []
+    exact_seen: dict[tuple[Any, ...], CloudPanelInput] = {}
+    for panel in active:
+        exact_key = _admission_panel_key(panel)
+        prior = exact_seen.get(exact_key)
+        if prior is not None:
+            deduped += 1
+            decisions.append(
+                _admission_decision(
+                    panel=panel,
+                    reason_code="admission.exact_duplicate",
+                    action="dedupe",
+                    candidate_panel_ids=(prior.panel_id,),
+                    metrics={"duplicate_of": prior.panel_id},
+                )
+            )
+            continue
+        near_prior = None
+        if panel.panel_bounds is not None and panel.source_dimensions is not None:
+            panel_area = _admission_area(panel.panel_bounds)
+            for candidate in kept:
+                if (
+                    candidate.source_checksum != panel.source_checksum
+                    or candidate.source_dimensions != panel.source_dimensions
+                    or candidate.panel_bounds is None
+                    or panel_area <= 0
+                ):
+                    continue
+                overlap = _admission_intersection_area(panel.panel_bounds, candidate.panel_bounds)
+                smaller_area = min(panel_area, _admission_area(candidate.panel_bounds))
+                if smaller_area and overlap / smaller_area >= 0.98:
+                    near_prior = candidate
+                    break
+        if near_prior is not None:
+            deduped += 1
+            decisions.append(
+                _admission_decision(
+                    panel=panel,
+                    reason_code="admission.near_duplicate_crop",
+                    action="dedupe",
+                    candidate_panel_ids=(near_prior.panel_id,),
+                    metrics={"overlap_of_smaller_area": 1.0},
+                )
+            )
+            continue
+        exact_seen[exact_key] = panel
+        kept.append(panel)
+        decisions.append(
+            _admission_decision(
+                panel=panel,
+                reason_code="admission.admitted",
+                action="admit",
+            )
+        )
+
+    by_id = {panel.panel_id: panel for panel in kept}
+    consumed: set[str] = set()
+    merged_panels: list[CloudPanelInput] = []
+    merged_count = 0
+    for candidate in sorted(merge_candidates, key=lambda item: tuple(item.get("panel_ids", ()))):
+        raw_ids = candidate.get("panel_ids", ())
+        ids = tuple(str(item) for item in raw_ids) if isinstance(raw_ids, (tuple, list)) else ()
+        merged_panel = candidate.get("merged_panel")
+        source_panels = [by_id.get(panel_id) for panel_id in ids]
+        if (
+            len(ids) < 2
+            or len(set(ids)) != len(ids)
+            or any(panel is None for panel in source_panels)
+            or not isinstance(merged_panel, CloudPanelInput)
+            or not candidate.get("geometry_verified")
+            or not candidate.get("protected_regions_preserved")
+        ):
+            if ids and all(panel_id in by_id for panel_id in ids):
+                needs_review += 1
+                decisions.append(
+                    _admission_decision(
+                        panel=by_id[ids[0]],
+                        reason_code="admission.oversegmentation_ambiguous",
+                        action="needs_review",
+                        candidate_panel_ids=ids,
+                    )
+                )
+            continue
+        ordered_group = sorted(
+            (panel for panel in source_panels if panel is not None), key=_admission_order
+        )
+        if any(
+            panel.source_asset_id != ordered_group[0].source_asset_id
+            or panel.source_checksum != ordered_group[0].source_checksum
+            or panel.source_dimensions != ordered_group[0].source_dimensions
+            or panel.panel_bounds is None
+            for panel in ordered_group
+        ):
+            needs_review += 1
+            decisions.append(
+                _admission_decision(
+                    panel=ordered_group[0],
+                    reason_code="admission.oversegmentation_ambiguous",
+                    action="needs_review",
+                    candidate_panel_ids=ids,
+                )
+            )
+            continue
+        bounds = [panel.panel_bounds for panel in ordered_group]
+        assert all(item is not None for item in bounds)
+        sorted_bounds = sorted(bounds, key=lambda item: (item[1], item[0]))
+        if any(
+            left[0] != right[0]
+            or left[2] != right[2]
+            or left[3] != right[1]
+            for left, right in zip(sorted_bounds, sorted_bounds[1:], strict=False)
+        ):
+            needs_review += 1
+            decisions.append(
+                _admission_decision(
+                    panel=ordered_group[0],
+                    reason_code="admission.oversegmentation_ambiguous",
+                    action="needs_review",
+                    candidate_panel_ids=ids,
+                )
+            )
+            continue
+        union_bounds = (
+            sorted_bounds[0][0],
+            sorted_bounds[0][1],
+            sorted_bounds[0][2],
+            sorted_bounds[-1][3],
+        )
+        if merged_panel.panel_bounds != union_bounds:
+            needs_review += 1
+            decisions.append(
+                _admission_decision(
+                    panel=ordered_group[0],
+                    reason_code="admission.oversegmentation_ambiguous",
+                    action="needs_review",
+                    candidate_panel_ids=ids,
+                )
+            )
+            continue
+        consumed.update(ids)
+        merged_panels.append(merged_panel)
+        merged_count += len(ids) - 1
+        decisions.append(
+            _admission_decision(
+                panel=merged_panel,
+                reason_code="admission.oversegmentation_merged",
+                action="merge",
+                candidate_panel_ids=ids,
+                metrics={"merged_bounds": list(union_bounds)},
+            )
+        )
+
+    final_panels = [panel for panel in kept if panel.panel_id not in consumed]
+    final_panels.extend(merged_panels)
+    final_panels = sorted(final_panels, key=_admission_order)
+    raw_count = len(panels) if raw_image_count is None else int(raw_image_count)
+    ingest_count = len({panel.source_asset_id for panel in panels}) if ingest_asset_count is None else int(ingest_asset_count)
+    candidate_count = len(regions) if regions else len(panels)
+    canonical_count = sum(
+        str(_admission_value(region, "region_class", "") or "") == "canonical_panel"
+        for region in regions
+    ) or len(panels)
+    counts = {
+        "raw_input_images": raw_count,
+        "ingest_assets": ingest_count,
+        "candidate_regions": candidate_count,
+        "canonical_regions": canonical_count,
+        "admitted_vision_panels": 0 if needs_review else len(final_panels),
+        "rejected_non_panel": rejected_non_panel,
+        "deduped": deduped,
+        "merged": merged_count,
+        "needs_review": needs_review,
+    }
+    transitions = [
+        _admission_transition(
+            "raw_input_images",
+            "ingest_outputs",
+            raw_count,
+            ingest_count,
+            "admission.ingest_validated",
+            started,
+        ),
+        _admission_transition(
+            "ingest_outputs",
+            "candidate_regions",
+            ingest_count,
+            candidate_count,
+            "admission.candidates_reconciled",
+            started,
+        ),
+        _admission_transition(
+            "candidate_regions",
+            "canonical_regions",
+            candidate_count,
+            canonical_count,
+            "admission.non_panel_transition" if rejected_non_panel else "admission.canonical_regions",
+            started,
+        ),
+        _admission_transition(
+            "canonical_regions",
+            "admitted_vision_panels",
+            canonical_count,
+            counts["admitted_vision_panels"],
+            "admission.needs_review" if needs_review else "admission.vision_admitted",
+            started,
+        ),
+    ]
+    ledger = {
+        "contract_version": PANEL_ADMISSION_VERSION,
+        "detector_version": detector_version,
+        "counts": counts,
+        "coverage_manifest": coverage_manifest,
+        "decisions": sorted(
+            decisions,
+            key=lambda item: (
+                item.get("source_order") is None,
+                item.get("source_order") if item.get("source_order") is not None else 0,
+                str(item.get("panel_id", "")),
+                str(item.get("reason_code", "")),
+            ),
+        ),
+        "transitions": transitions,
+        "reduction_percentages": {
+            key: round((raw_count - value) / raw_count * 100, 3) if raw_count else 0.0
+            for key, value in {
+                "admitted_vision_panels": counts["admitted_vision_panels"],
+                "rejected_non_panel": counts["rejected_non_panel"],
+            }.items()
+        },
+        "reason_codes": sorted(
+            {str(item.get("reason_code")) for item in decisions if item.get("reason_code")}
+        ),
+    }
+    ledger["ledger_hash"] = _hash(ledger)
+    return PanelAdmissionResult(tuple(final_panels) if not needs_review else (), ledger)
+
+
 class CloudMultimodalProvider(Protocol):
     model_id: str
 
@@ -7220,7 +7758,20 @@ def _merge_stream_visual_rows(
         raise
     except (TypeError, ValueError):
         raise CloudStageError("cloud.visual_stream_row_invalid") from None
-    return tuple(merged[panel.panel_id] for panel in ordered if panel.panel_id in merged)
+    missing = tuple(
+        panel.panel_id for panel in ordered if panel.panel_id not in merged
+    )
+    if missing:
+        raise CloudStageError(
+            "cloud.panel_coverage_incomplete",
+            reviewable=True,
+            safe_metadata={
+                "expected_panel_count": len(ordered),
+                "accepted_panel_count": len(merged),
+                "missing_panel_count": len(missing),
+            },
+        )
+    return tuple(merged[panel.panel_id] for panel in ordered)
 
 
 def _stream_percentile(values: Sequence[float], percentile: float) -> float | None:
@@ -7335,6 +7886,8 @@ class _AdaptiveVisualConcurrency:
                     self.previous_p95 = p95
                 if not unstable and self.level_index + 1 < len(self.worker_levels):
                     self.level_index += 1
+                elif unstable and self.level_index > 0:
+                    self.level_index -= 1
                 self._wave_started = time.monotonic()
                 self._wave_panels = 0
                 self._wave_requests = 0
@@ -7708,6 +8261,36 @@ class _StreamingVisualEvidenceSession:
         ordered = CloudStageRunner._ordered_panels(tuple(panels))
         if tuple(item.panel_id for item in ordered) != tuple(item.panel_id for item in self._submitted):
             raise CloudStageError("cloud.panel_lineage_invalid")
+        submitted_ids = {item.panel_id for item in ordered}
+        terminal_ids = set(self._accepted) | self._missing
+        self._missing.update(submitted_ids - terminal_ids)
+        if self._missing:
+            metrics = self._controller.snapshot()
+            metrics.update(
+                {
+                    "contract_version": VISUAL_STREAM_VERSION,
+                    "writer_count": self.writer_thread_count,
+                    "submitted_panel_count": len(ordered),
+                    "accepted_panel_count": len(self._accepted),
+                    "missing_panel_count": len(self._missing),
+                    "missing_panel_ids": sorted(self._missing),
+                    "request_count": self.runner.request_count,
+                    "request_counts": dict(self.runner.request_counts),
+                    "retry_count": self._retry_count_total,
+                    "max_queue_depth": self._max_queue_depth,
+                    "terminal_failure_codes": sorted(set(self._failure_codes)),
+                }
+            )
+            self.runner.last_visual_stream_metrics = metrics
+            raise CloudStageError(
+                "cloud.panel_coverage_incomplete",
+                reviewable=True,
+                safe_metadata={
+                    "submitted_panel_count": len(ordered),
+                    "accepted_panel_count": len(self._accepted),
+                    "missing_panel_count": len(self._missing),
+                },
+            )
         rows = _merge_stream_visual_rows(
             ({"rows": list(self._accepted.values())},),
             ordered,
@@ -7889,11 +8472,57 @@ def prepare_project_panels(
                 prepared_order=panel_order,
             )
         )
-        if panel_sink is not None:
-            panel_sink(panels[-1])
-    result = tuple(panels)
+    panel_hints: dict[str, dict[str, Any]] = {}
+    for panel in panels:
+        asset = asset_by_id[panel.source_asset_id]
+        quality = getattr(asset, "panel_quality", {}) or {}
+        trim_classification = str(getattr(asset, "trim_classification", "") or "")
+        story_evidence = trim_classification.lower() not in {
+            "blank",
+            "near_blank",
+            "title",
+            "cover",
+            "gutter",
+            "transition",
+        }
+        if str(getattr(asset, "panel_decision", "") or "").lower() == "reject":
+            story_evidence = False
+        panel_hints[panel.panel_id] = {
+            "panel_decision": str(getattr(asset, "panel_decision", "") or ""),
+            "trim_classification": trim_classification,
+            "story_evidence": story_evidence,
+            "metrics": dict(quality) if isinstance(quality, Mapping) else {},
+        }
+    admission = admit_panel_inputs(
+        panels,
+        raw_image_count=len(assets),
+        ingest_asset_count=len(inputs),
+        candidate_regions=coverage.regions,
+        panel_hints=panel_hints,
+        detector_version=PANEL_ADMISSION_DETECTOR_VERSION,
+    )
+    as_dict = getattr(reconciliation, "as_dict", None)
+    segmentation_state = (
+        dict(as_dict())
+        if callable(as_dict)
+        else dict(getattr(reconciliation, "__dict__", {}))
+    )
+    segmentation_state["panel_admission"] = admission.ledger
+    if admission.needs_review:
+        raise CloudStageError(
+            "segmentation.panel_admission_needs_review",
+            reviewable=True,
+            safe_metadata={
+                "ledger_hash": admission.ledger["ledger_hash"],
+                "needs_review": admission.ledger["counts"]["needs_review"],
+            },
+        )
+    result = tuple(admission.admitted)
+    if panel_sink is not None:
+        for panel in result:
+            panel_sink(panel)
     if return_segmentation:
-        return result, reconciliation.as_dict()
+        return result, segmentation_state
     return result
 
 
@@ -9481,7 +10110,14 @@ class CloudBatchService:
             panels, segmentation_state = prepared
             streamed_visual: VisualStageResult | None = None
             if visual_stream is not None:
-                streamed_visual = visual_stream.finish(panels)
+                try:
+                    streamed_visual = visual_stream.finish(panels)
+                except CloudStageError:
+                    metrics = dict(self.runner.last_visual_stream_metrics)
+                    if metrics:
+                        record.stage_results["visual_stream_metrics"] = metrics
+                        self.store.save(record)
+                    raise
                 record.stage_results["visual"] = streamed_visual.as_dict()
                 record.stage_results["visual_stream_metrics"] = dict(
                     self.runner.last_visual_stream_metrics

@@ -1317,6 +1317,101 @@ def test_prepare_project_panels_reindexes_canonical_story_orders_after_gutters(m
     assert [panel.source_order for panel in panels] == [0, 1]
 
 
+def test_prepare_project_panels_admission_funnel_precedes_panel_sink(monkeypatch):
+    module = _module()
+    segmentation = importlib.import_module("app.services.segmentation")
+    pipeline = importlib.import_module("app.services.pipeline")
+    from types import SimpleNamespace
+
+    input_row = segmentation.SourceAssetInput(
+        source_asset_id="asset-funnel",
+        original_checksum="a" * 64,
+        original_width=100,
+        original_height=200,
+        source_bounds=(0, 0, 100, 200),
+        strip_order=0,
+        region_order=0,
+        payload=b"funnel-payload",
+        decoded_width=100,
+        decoded_height=200,
+    )
+    coverage = segmentation.CoverageMap(
+        version="coverage-v1",
+        map_sha256="b" * 64,
+        source_asset_ids=("asset-funnel",),
+        tiles=(),
+        regions=(
+            segmentation.CoverageRegion(
+                region_id="funnel-panel",
+                source_asset_id="asset-funnel",
+                source_order=0,
+                bounds=(0, 0, 100, 100),
+                region_class="canonical_panel",
+                area=10_000,
+                confidence=0.99,
+                evidence="provider-confirmed panel",
+            ),
+            segmentation.CoverageRegion(
+                region_id="funnel-gutter",
+                source_asset_id="asset-funnel",
+                source_order=1,
+                bounds=(0, 100, 100, 200),
+                region_class="verified_gutter",
+                area=10_000,
+                confidence=0.99,
+                evidence="local-flat-separator",
+            ),
+        ),
+        source_content_coverage_ratio=1.0,
+        canonical_panel_area=10_000,
+        verified_gutter_area=10_000,
+        unresolved_material_area=0,
+        panel_count=1,
+        reconciliation_errors=(),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "project_assets",
+        lambda _db, _project_id: (SimpleNamespace(id="asset-funnel", type="image"),),
+    )
+    monkeypatch.setattr(pipeline, "image_assets", lambda assets: list(assets))
+    monkeypatch.setattr(
+        pipeline,
+        "_build_source_inputs",
+        lambda _assets: ((input_row,), {"asset-funnel": SimpleNamespace(id="asset-funnel")}),
+    )
+    monkeypatch.setattr(
+        module.strip_segmentation,
+        "reconcile_sources",
+        lambda *_args, **_kwargs: SimpleNamespace(status="RECONCILED"),
+    )
+    monkeypatch.setattr(segmentation, "build_complete_coverage_map", lambda *_args, **_kwargs: coverage)
+    monkeypatch.setattr(segmentation, "verify_segmentation_completeness", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(pipeline, "_encode_panel_payload", lambda *_args, **_kwargs: b"funnel-payload")
+    submitted = []
+
+    panels, segmentation_state = module.prepare_project_panels(
+        object(),
+        "project-funnel",
+        panel_sink=submitted.append,
+        return_segmentation=True,
+    )
+
+    assert [panel.panel_id for panel in panels] == ["funnel-panel"]
+    assert [panel.panel_id for panel in submitted] == ["funnel-panel"]
+    assert segmentation_state["panel_admission"]["counts"] == {
+        "raw_input_images": 1,
+        "ingest_assets": 1,
+        "candidate_regions": 2,
+        "canonical_regions": 1,
+        "admitted_vision_panels": 1,
+        "rejected_non_panel": 1,
+        "deduped": 0,
+        "merged": 0,
+        "needs_review": 0,
+    }
+
+
 def test_stage_runner_reconciles_all_panels_with_local_hashes_and_pinned_identity():
     module = _module()
     provider = _FakeProvider()
@@ -6714,6 +6809,77 @@ def test_stream_session_uses_bounded_backpressure_and_one_writer():
     assert runner.last_visual_stream_metrics["request_count"] == len(provider.calls)
 
 
+def test_stream_finish_rejects_partial_final_batch_and_persists_metrics():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-partial"))
+    )
+
+    class _DropOneProvider(_FakeProvider):
+        def observe(self, request):
+            rows = super().observe(request)
+            return [
+                row
+                for row in rows
+                if row.get("panel_id") != "stream-partial-panel-2"
+            ]
+
+    provider = _DropOneProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        stream.submit(panel)
+
+    with pytest.raises(module.CloudStageError) as caught:
+        stream.finish(panels)
+
+    assert caught.value.code == "cloud.panel_coverage_incomplete"
+    assert runner.last_visual_stream_metrics["submitted_panel_count"] == len(panels)
+    assert runner.last_visual_stream_metrics["accepted_panel_count"] == len(panels) - 1
+    assert runner.last_visual_stream_metrics["missing_panel_count"] == 1
+    assert runner.last_visual_stream_metrics["missing_panel_ids"] == [
+        "stream-partial-panel-2"
+    ]
+
+
+def test_stream_abort_drains_workers_and_rejects_late_finish():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-cancel"))
+    )
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=1,
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        stream.submit(panel)
+    stream.abort()
+
+    assert stream._writer_thread.is_alive() is False
+    assert all(worker.is_alive() is False for worker in stream._workers)
+    with pytest.raises(module.CloudStageError) as caught:
+        stream.finish(panels)
+    assert caught.value.code == "cloud.visual_stream_closed"
+
+
 def test_stream_retry_tracks_only_missing_panel_ids():
     module = _module()
 
@@ -6721,6 +6887,36 @@ def test_stream_retry_tracks_only_missing_panel_ids():
         ("panel-a", "panel-b", "panel-c"),
         {"panel-a"},
     ) == ("panel-b", "panel-c")
+
+
+def test_adaptive_stream_concurrency_rolls_back_at_first_instability_knee():
+    module = _module()
+    controller = module._AdaptiveVisualConcurrency((4, 8, 16, 32), wave_panel_target=2)
+
+    controller.acquire()
+    controller.release(panel_count=1, request_count=1, latency_s=1.0, categories={})
+    controller.acquire()
+    controller.release(panel_count=1, request_count=1, latency_s=1.0, categories={})
+    assert controller.snapshot()["selected_worker_level"] == 8
+
+    controller.acquire()
+    controller.release(
+        panel_count=1,
+        request_count=1,
+        latency_s=1.0,
+        categories={"rate_limited": 1},
+    )
+    controller.acquire()
+    controller.release(
+        panel_count=1,
+        request_count=1,
+        latency_s=1.0,
+        categories={"rate_limited": 1},
+    )
+
+    snapshot = controller.snapshot()
+    assert snapshot["selected_worker_level"] == 4
+    assert snapshot["waves"][-1]["stable"] is False
 
 
 def test_stream_merge_rejects_invalid_or_duplicate_rows_fail_closed():
@@ -6753,6 +6949,38 @@ def test_stream_merge_rejects_invalid_or_duplicate_rows_fail_closed():
             panels,
         )
     assert caught.value.code == "cloud.visual_stream_row_invalid"
+
+
+def test_stream_merge_rejects_writer_gap_fail_closed():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-gap"))
+    )
+    row = _visual_row(
+        {
+            "panel_id": panels[0].panel_id,
+            "source_asset_id": panels[0].source_asset_id,
+            "source_order": panels[0].source_order,
+        }
+    )
+    row.update(
+        {
+            "source_checksum": panels[0].source_checksum,
+            "source_asset_id": panels[0].source_asset_id,
+            "source_order": panels[0].source_order,
+            "cache_identity_hash": module._visual_panel_identity_hash(panels[0], 0),
+            "cache_identity_version": module.VISUAL_CACHE_IDENTITY_VERSION,
+        }
+    )
+
+    with pytest.raises(module.CloudStageError) as caught:
+        module._merge_stream_visual_rows(
+            ({"rows": [row], "seeded_ids": (), "missing_ids": ()},),
+            panels,
+        )
+
+    assert caught.value.code == "cloud.panel_coverage_incomplete"
 
 
 def test_run_project_streams_preparation_and_passes_one_precomputed_visual_result(monkeypatch):
@@ -6824,3 +7052,218 @@ def test_run_project_streams_preparation_and_passes_one_precomputed_visual_resul
     assert result.error_code == "test.stop_after_visual"
     assert runner.last_visual_stream_metrics["accepted_panel_count"] == len(panels)
     assert runner.last_visual_stream_metrics["request_count"] == len(provider.calls)
+
+
+def _admission_png(color: tuple[int, int, int], *, size: tuple[int, int] = (32, 32)) -> bytes:
+    import io
+
+    from PIL import Image
+
+    output = io.BytesIO()
+    Image.new("RGB", size, color).save(output, format="PNG")
+    return output.getvalue()
+
+
+def _admission_panel(module, panel_id: str, *, order: int, bounds=(0, 0, 32, 32), payload=None):
+    return module.CloudPanelInput(
+        panel_id=panel_id,
+        source_asset_id="admission-asset",
+        source_order=order,
+        mime_type="image/png",
+        payload=payload or _admission_png((order + 1, 80, 120)),
+        source_checksum="a" * 64,
+        panel_bounds=bounds,
+        source_dimensions=(32, 128),
+        strip_region_id=panel_id,
+        coverage_map_hash="c" * 64,
+    )
+
+
+def test_panel_admission_funnel_records_counts_transitions_and_non_panel_reason_codes():
+    module = _module()
+    panels = (_admission_panel(module, "story-1", order=0),)
+    regions = (
+        {
+            "region_id": "gutter-1",
+            "source_asset_id": "admission-asset",
+            "source_order": 0,
+            "bounds": [0, 32, 32, 48],
+            "region_class": "verified_gutter",
+            "confidence": 0.99,
+            "evidence": "local-flat-separator",
+        },
+        {
+            "region_id": "story-1",
+            "source_asset_id": "admission-asset",
+            "source_order": 1,
+            "bounds": [0, 0, 32, 32],
+            "region_class": "canonical_panel",
+            "confidence": 0.99,
+            "evidence": "local-panel",
+        },
+    )
+
+    result = module.admit_panel_inputs(
+        panels,
+        raw_image_count=1,
+        ingest_asset_count=1,
+        candidate_regions=regions,
+        detector_version="panel-admission-test-v1",
+    )
+
+    ledger = result.ledger
+    assert [step["from"] for step in ledger["transitions"]] == [
+        "raw_input_images",
+        "ingest_outputs",
+        "candidate_regions",
+        "canonical_regions",
+    ]
+    assert [step["to"] for step in ledger["transitions"]] == [
+        "ingest_outputs",
+        "candidate_regions",
+        "canonical_regions",
+        "admitted_vision_panels",
+    ]
+    assert ledger["counts"] == {
+        "raw_input_images": 1,
+        "ingest_assets": 1,
+        "candidate_regions": 2,
+        "canonical_regions": 1,
+        "admitted_vision_panels": 1,
+        "rejected_non_panel": 1,
+        "deduped": 0,
+        "merged": 0,
+        "needs_review": 0,
+    }
+    assert ledger["decisions"][0]["reason_code"] == "admission.non_panel_transition"
+    assert result.admitted == panels
+
+
+def test_panel_admission_rejects_explicit_blank_title_without_story_evidence():
+    module = _module()
+    blank = _admission_panel(module, "title-0", order=0, payload=_admission_png((255, 255, 255)))
+
+    result = module.admit_panel_inputs(
+        (blank,),
+        panel_hints={
+            "title-0": {
+                "classification": "title",
+                "story_evidence": False,
+                "metrics": {"uniform_fraction": 1.0},
+            }
+        },
+    )
+
+    assert result.admitted == ()
+    assert result.ledger["counts"]["rejected_non_panel"] == 1
+    assert result.ledger["decisions"][0]["reason_code"] == "admission.title_no_story_evidence"
+
+
+def test_panel_admission_never_drops_protected_or_dialogue_ambiguous_region():
+    module = _module()
+    panel = _admission_panel(module, "ambiguous-1", order=0, payload=_admission_png((255, 255, 255)))
+
+    result = module.admit_panel_inputs(
+        (panel,),
+        panel_hints={
+            "ambiguous-1": {
+                "classification": "near_blank",
+                "story_evidence": False,
+                "protected_regions": True,
+                "dialogue_or_ocr": True,
+            }
+        },
+    )
+
+    assert result.admitted == ()
+    assert result.ledger["counts"]["rejected_non_panel"] == 0
+    assert result.ledger["counts"]["needs_review"] == 1
+    assert result.ledger["decisions"][0]["reason_code"] == "admission.protected_or_dialogue_ambiguous"
+
+
+def test_panel_admission_exact_and_overlapping_near_duplicate_are_deduped():
+    module = _module()
+    first = _admission_panel(module, "first", order=0, payload=_admission_png((20, 30, 40)))
+    exact = module.CloudPanelInput(
+        panel_id="exact-copy",
+        source_asset_id="admission-asset-copy",
+        source_order=1,
+        mime_type="image/png",
+        payload=first.payload,
+        source_checksum=first.source_checksum,
+        panel_bounds=first.panel_bounds,
+        source_dimensions=first.source_dimensions,
+        strip_region_id="exact-copy",
+    )
+    near = module.CloudPanelInput(
+        panel_id="near-copy",
+        source_asset_id="admission-asset-near",
+        source_order=2,
+        mime_type="image/png",
+        payload=_admission_png((21, 31, 41)),
+        source_checksum=first.source_checksum,
+        panel_bounds=first.panel_bounds,
+        source_dimensions=first.source_dimensions,
+        strip_region_id="near-copy",
+    )
+
+    result = module.admit_panel_inputs((first, exact, near))
+
+    assert result.admitted == (first,)
+    assert result.ledger["counts"]["deduped"] == 2
+    assert [decision["reason_code"] for decision in result.ledger["decisions"]] == [
+        "admission.admitted",
+        "admission.exact_duplicate",
+        "admission.near_duplicate_crop",
+    ]
+
+
+def test_panel_admission_keeps_adjacent_true_panels_distinct():
+    module = _module()
+    upper = _admission_panel(module, "upper", order=0, bounds=(0, 0, 32, 32))
+    lower = _admission_panel(module, "lower", order=1, bounds=(0, 32, 32, 64))
+
+    result = module.admit_panel_inputs((upper, lower))
+
+    assert [panel.panel_id for panel in result.admitted] == ["upper", "lower"]
+    assert result.ledger["counts"]["deduped"] == 0
+
+
+def test_panel_admission_merges_only_geometry_proven_adjacent_oversegmentation():
+    module = _module()
+    upper = _admission_panel(module, "split-upper", order=0, bounds=(0, 0, 32, 32))
+    lower = _admission_panel(module, "split-lower", order=1, bounds=(0, 32, 32, 64))
+    merged = _admission_panel(module, "merged", order=0, bounds=(0, 0, 32, 64))
+
+    result = module.admit_panel_inputs(
+        (upper, lower),
+        merge_candidates=(
+            {
+                "panel_ids": ["split-upper", "split-lower"],
+                "merged_panel": merged,
+                "geometry_verified": True,
+                "protected_regions_preserved": True,
+            },
+        ),
+    )
+
+    assert [panel.panel_id for panel in result.admitted] == ["merged"]
+    assert result.ledger["counts"]["merged"] == 1
+    assert result.ledger["decisions"][0]["reason_code"] == "admission.oversegmentation_merged"
+
+
+def test_panel_admission_rejects_duplicate_ids_and_preserves_deterministic_ledger():
+    module = _module()
+    first = _admission_panel(module, "duplicate", order=0)
+    second = replace(
+        first,
+        source_order=1,
+        payload=_admission_png((50, 60, 70)),
+        payload_checksum="",
+    )
+
+    with pytest.raises(module.CloudStageError) as caught:
+        module.admit_panel_inputs((first, second))
+
+    assert caught.value.code == "cloud.panel_admission_invalid"
+    assert caught.value.safe_metadata["reason_code"] == "admission.duplicate_panel_id"
