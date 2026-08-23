@@ -2978,3 +2978,9 @@ The v3 source/test/docs checkpoint is committed and published as `95965721b25346
 - The stream checkpoint validator now reuses a seeded accepted panel when its immutable panel/source/payload/evidence identity and current stream/model/prompt version match, even if equivalent batching changes the prior `chunk_cache_key` position. The current chunk key is refreshed only on the in-memory resumed row; it is not an admission identity.
 - RED/GREEN: the batch-position-shift regression passes; the complete cloud/admission file is 168 passed with five existing Pillow deprecation warnings; Ruff, compileall, and `git diff --check` are clean. No provider/TTS request was consumed.
 - This is a cache/resume correctness fix only. It preserves strict source, evidence, lineage, model/prompt, terminal-coverage, and single-writer gates. The measured subset remains diagnostic (37/40 first set, 1/3 missing-only recovery, 3/3 distinct replacements); no single 40/40 cold proof or downstream artifact exists.
+
+## 2026-08-23 - Warm subset resume proof (pre-publication)
+
+- Cache-only namespace `/data/data/p0-aws-acceptance/video1-stream-subset-v3-warm-resume-08a503c-v4` restored 37/37 accepted v3 rows in deterministic source order with no missing or duplicate IDs, one writer, 0 provider requests, 0 retries, and 14.703s elapsed. The local observe guard would fail before network on any cache miss.
+- Funnel table: raw input images 37 | ingest assets 35 | candidate regions 37 | canonical regions 37 | admitted vision 37 | rejected non-panel 0 | deduped 0 | merged 0 | needs-review 0. This records a valid warm subset and does not claim a single cold 40/40 proof.
+- No story map, narration, TTS, render, or QC ran. The next release gate remains a clean source run with complete terminal visual coverage; do not bypass the two unresolved balloon/schema failures from the prior cold attempt.

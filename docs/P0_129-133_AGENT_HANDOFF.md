@@ -1677,3 +1677,7 @@ Resume rule: preserve the three subset namespaces and old v6 read-only. Before a
 ## 2026-08-23 - Stable stream checkpoint identity (pre-publication)
 
 Equivalent stream batching no longer invalidates a seeded accepted panel solely because its old batch-position `chunk_cache_key` differs. Reuse still requires the current stream version plus exact per-panel source/payload/evidence identity and ordered panel validation; model/prompt scope and terminal coverage remain unchanged. The current chunk key is written back only as current-run bookkeeping. A focused batch-position-shift RED/GREEN regression and the full 168-test cloud file pass; no provider/TTS call was consumed. Publish this source/test/docs slice before using the warm combined subset resume. The 37/40, 1/3 recovery, and 3/3 replacement attempts remain read-only diagnostics, not a single cold N/N proof.
+
+## 2026-08-23 - Warm subset resume proof (pre-publication)
+
+The cache-only v4 namespace restored the 37 accepted v3 checkpoint rows in source order: funnel raw=37, ingest=35, candidates=37, canonical=37, admitted=37, rejected/deduped/merged/needs-review=0; stream accepted=37/37, missing=0, one writer, provider requests=0, retries=0, elapsed=14.703s. The guard rejected any provider observation before network, so no cloud call was possible. This is a warm-cache proof only; the cold 40-panel attempt remains 37/40 plus a separate 3/3 replacement set, and no downstream stage has started.
