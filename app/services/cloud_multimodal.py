@@ -8035,13 +8035,6 @@ class _StreamingVisualEvidenceSession:
         batch_index: int,
         batch: tuple[CloudPanelInput, ...],
     ) -> dict[str, Any]:
-        prompt = self.runner.prompts["visual"]
-        chunk_key = _stream_visual_chunk_cache_key(
-            batch,
-            chunk_index=batch_index,
-            model_identity=self.runner.model_identity,
-            prompt=prompt,
-        )
         identity_by_id = {
             panel.panel_id: _visual_panel_identity_hash(panel, index)
             for index, panel in enumerate(batch)
@@ -8054,7 +8047,6 @@ class _StreamingVisualEvidenceSession:
                 continue
             if (
                 seeded.get("stream_checkpoint_version") != VISUAL_STREAM_VERSION
-                or seeded.get("chunk_cache_key") != chunk_key
             ):
                 continue
             try:
@@ -8218,11 +8210,9 @@ class _StreamingVisualEvidenceSession:
                     expected_identity_hash=expected_hashes[panel_id],
                 )
                 if panel_id in seeded_ids:
-                    if (
-                        clean.get("stream_checkpoint_version") != VISUAL_STREAM_VERSION
-                        or clean.get("chunk_cache_key") != chunk_key
-                    ):
+                    if clean.get("stream_checkpoint_version") != VISUAL_STREAM_VERSION:
                         raise CloudStageError("cloud.visual_stream_row_invalid")
+                    clean["chunk_cache_key"] = chunk_key
                 else:
                     clean["chunk_cache_key"] = chunk_key
                     clean["stream_checkpoint_version"] = VISUAL_STREAM_VERSION

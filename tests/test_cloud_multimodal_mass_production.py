@@ -6900,6 +6900,50 @@ def test_stream_session_uses_bounded_backpressure_and_one_writer():
     assert runner.last_visual_stream_metrics["request_count"] == len(provider.calls)
 
 
+def test_stream_checkpoint_reuses_panel_identity_when_batch_position_changes(tmp_path):
+    module = _module()
+    base = _panels(module, "stream-reuse")
+    first_panel = replace(base[1], prepared_order=1)
+    earlier_panel = replace(base[0], prepared_order=0)
+    checkpoint = tmp_path / "visual_checkpoints.jsonl"
+    provider = _FakeProvider()
+
+    first_runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+        visual_checkpoint_path=checkpoint,
+    )
+    first_stream = first_runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=1,
+        max_estimated_bytes=10_000_000,
+    )
+    first_stream.submit(first_panel)
+    first_stream.finish((first_panel,))
+    calls_after_first = len(provider.calls)
+
+    resumed_runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+        visual_checkpoint_path=checkpoint,
+    )
+    resumed_stream = resumed_runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=1,
+        max_estimated_bytes=10_000_000,
+    )
+    resumed_stream.submit(earlier_panel)
+    resumed_stream.submit(first_panel)
+    result = resumed_stream.finish((earlier_panel, first_panel))
+
+    assert result.panel_ids == (earlier_panel.panel_id, first_panel.panel_id)
+    assert len(provider.calls) - calls_after_first == 1
+
+
 def test_stream_finish_rejects_partial_final_batch_and_persists_metrics():
     module = _module()
     panels = tuple(
