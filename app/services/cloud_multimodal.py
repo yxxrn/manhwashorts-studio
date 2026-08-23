@@ -13,6 +13,7 @@ import io
 import json
 import math
 import os
+import queue
 import re
 import sys
 import threading
@@ -48,6 +49,10 @@ STRIP_BOUNDARY_PROMPT_VERSION = "strip-boundary-assessment-v1"
 VISUAL_REQUEST_MAX_PANELS = 8  # preview-only: 4-5 worker saturation sweet spot
 VISUAL_REQUEST_MAX_ESTIMATED_BYTES = 3_500_000  # preview-only: larger visual batches
 VISUAL_REQUEST_OVERLAP = 0
+VISUAL_STREAM_VERSION = "visual-stream-v1"
+VISUAL_STREAM_WORKER_LEVELS = (4, 8, 16, 32)
+VISUAL_STREAM_QUEUE_SIZE = 8
+VISUAL_STREAM_WAVE_PANEL_TARGET = 32
 STORY_MAP_CHUNK_STEP = 180
 STORY_MAP_COVERAGE_FALLBACK_STEP = 60
 STORY_MAP_COVERAGE_MIN_STEP = 30
@@ -1641,6 +1646,7 @@ class CloudStageRunner:
         estimated_cost_per_request: float = 0.0,
         allow_balloon_unknown: bool = False,
         visual_checkpoint_path: Path | None = None,
+        visual_parallel_workers: int = 8,
     ) -> None:
         model_id = getattr(provider, "model_id", "")
         if not isinstance(model_id, str) or model_id != model_identity.model:
@@ -1671,6 +1677,7 @@ class CloudStageRunner:
         )
         self.min_request_interval_s = max(0.0, float(min_request_interval_s))
         self.estimated_cost_per_request = max(0.0, float(estimated_cost_per_request))
+        self.visual_parallel_workers = max(1, int(visual_parallel_workers))
         inferred_checkpoint = getattr(cache, "checkpoint_path", None)
         if inferred_checkpoint is None:
             cache_root = getattr(cache, "root", None)
@@ -1689,11 +1696,30 @@ class CloudStageRunner:
         self.request_counts = {"narration": 0, "narration_repair": 0, "other": 0}
         self.estimated_cost_usd = 0.0
         self.last_response_shape_metrics: dict[str, Any] = {}
+        self.last_visual_stream_metrics: dict[str, Any] = {}
         self._last_request_at = 0.0
         self.prompts = _prompt_specs()
         expected = dict(model_identity.prompt_versions)
         if any(stage in expected and expected[stage] != prompt[0] for stage, prompt in self.prompts.items()):
             raise CloudStageError("cloud.prompt_identity_mismatch")
+
+    def start_visual_evidence_stream(
+        self,
+        *,
+        queue_size: int = VISUAL_STREAM_QUEUE_SIZE,
+        max_panels: int = VISUAL_REQUEST_MAX_PANELS,
+        max_estimated_bytes: int = VISUAL_REQUEST_MAX_ESTIMATED_BYTES,
+        worker_levels: Sequence[int] = VISUAL_STREAM_WORKER_LEVELS,
+    ) -> _StreamingVisualEvidenceSession:
+        """Start bounded producer/consumer visual analysis for cold preparation."""
+
+        return _StreamingVisualEvidenceSession(
+            self,
+            queue_size=queue_size,
+            max_panels=max_panels,
+            max_estimated_bytes=max_estimated_bytes,
+            worker_levels=worker_levels,
+        )
 
     def _response_shape_metrics_for_failure(self, code: str) -> dict[str, Any]:
         """Attach only current positional shape metadata to a later safe error."""
@@ -2172,7 +2198,7 @@ class CloudStageRunner:
         skipped_codes: list[str] = []
         unknown_failure_metadata: dict[str, Any] | None = None
         reconcile_lock = threading.Lock()
-        VISUAL_PARALLEL_WORKERS = 8  # preview-only: real observe 27s/call, 16x triggers rate-limit
+        VISUAL_PARALLEL_WORKERS = self.visual_parallel_workers
         checkpoint_scope = self._checkpoint_scope(source, prompt)
         _checkpoint_seed = self._checkpoint_load(checkpoint_scope)
         panel_identity_by_id = {
@@ -7074,6 +7100,659 @@ class CloudStageRunner:
         return result
 
 
+def _stream_visual_batches(
+    panels: Sequence[CloudPanelInput],
+    *,
+    max_panels: int = VISUAL_REQUEST_MAX_PANELS,
+    max_estimated_bytes: int = VISUAL_REQUEST_MAX_ESTIMATED_BYTES,
+) -> tuple[tuple[CloudPanelInput, ...], ...]:
+    """Partition already validated panels without overlap for streaming work."""
+
+    if max_panels < 1 or max_estimated_bytes < 1:
+        raise CloudStageError("cloud.visual_stream_config_invalid")
+    batches: list[tuple[CloudPanelInput, ...]] = []
+    current: list[CloudPanelInput] = []
+    estimated = 0
+    seen_ids: set[str] = set()
+    for panel in panels:
+        if panel.panel_id in seen_ids:
+            raise CloudStageError("cloud.panel_lineage_invalid")
+        seen_ids.add(panel.panel_id)
+        provider_payload, _ = _visual_provider_payload(panel)
+        estimate = (len(provider_payload) * 4 + 2) // 3 + 768
+        if current and (
+            len(current) >= max_panels
+            or estimated + estimate > max_estimated_bytes
+        ):
+            batches.append(tuple(current))
+            current = []
+            estimated = 0
+        current.append(panel)
+        estimated += estimate
+    if current:
+        batches.append(tuple(current))
+    return tuple(batches)
+
+
+def _stream_retry_pending_ids(
+    expected_ids: Sequence[str], accepted_ids: set[str]
+) -> tuple[str, ...]:
+    """Return only missing panel IDs in their original task order."""
+
+    return tuple(panel_id for panel_id in expected_ids if panel_id not in accepted_ids)
+
+
+def _stream_visual_chunk_cache_key(
+    chunk: Sequence[CloudPanelInput],
+    *,
+    chunk_index: int,
+    model_identity: CloudModelIdentity,
+    prompt: tuple[str, str, str],
+) -> str:
+    return _hash(
+        {
+            "version": VISUAL_STREAM_VERSION,
+            "chunk_index": int(chunk_index),
+            "panel_ids": [panel.panel_id for panel in chunk],
+            "panel_identity_hashes": [
+                _visual_panel_identity_hash(panel, index)
+                for index, panel in enumerate(chunk)
+            ],
+            "model_identity_hash": model_identity.identity_hash,
+            "prompt_version": prompt[0],
+            "prompt_sha256": prompt[1],
+        }
+    )
+
+
+def _stream_validate_row(
+    row: Mapping[str, Any],
+    panel: CloudPanelInput,
+    *,
+    expected_identity_hash: str,
+) -> dict[str, Any]:
+    try:
+        reusable = _visual_cached_row_is_reusable(row, panel)
+    except (TypeError, ValueError, OverflowError):
+        reusable = False
+    if not reusable:
+        raise CloudStageError("cloud.visual_stream_row_invalid")
+    if (
+        str(row.get("cache_identity_hash", "")) != expected_identity_hash
+        or str(row.get("cache_identity_version", ""))
+        != VISUAL_CACHE_IDENTITY_VERSION
+    ):
+        raise CloudStageError("cloud.visual_stream_row_invalid")
+    return dict(row)
+
+
+def _merge_stream_visual_rows(
+    events: Sequence[Mapping[str, Any]],
+    panels: Sequence[CloudPanelInput],
+) -> tuple[dict[str, Any], ...]:
+    """Validate worker rows and restore canonical panel order."""
+
+    ordered = CloudStageRunner._ordered_panels(tuple(panels))
+    expected = {panel.panel_id: panel for panel in ordered}
+    expected_hashes = {
+        panel.panel_id: _visual_panel_identity_hash(panel, index)
+        for index, panel in enumerate(ordered)
+    }
+    merged: dict[str, dict[str, Any]] = {}
+    try:
+        for event in events:
+            raw_rows = event.get("rows", ())
+            if not isinstance(raw_rows, (list, tuple)):
+                raise CloudStageError("cloud.visual_stream_row_invalid")
+            for raw_row in raw_rows:
+                if not isinstance(raw_row, Mapping):
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                panel_id = str(raw_row.get("panel_id", ""))
+                panel = expected.get(panel_id)
+                if panel is None or panel_id in merged:
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                merged[panel_id] = _stream_validate_row(
+                    raw_row,
+                    panel,
+                    expected_identity_hash=expected_hashes[panel_id],
+                )
+    except CloudStageError:
+        raise
+    except (TypeError, ValueError):
+        raise CloudStageError("cloud.visual_stream_row_invalid") from None
+    return tuple(merged[panel.panel_id] for panel in ordered if panel.panel_id in merged)
+
+
+def _stream_percentile(values: Sequence[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    index = min(len(ordered) - 1, max(0, math.ceil(percentile * len(ordered)) - 1))
+    return round(ordered[index], 4)
+
+
+def _stream_error_category(code: str) -> str:
+    lowered = str(code).lower()
+    if "429" in lowered or "rate" in lowered:
+        return "rate_limited"
+    if "5xx" in lowered or "server" in lowered:
+        return "server_error"
+    if "timeout" in lowered:
+        return "timeout"
+    if "response_invalid" in lowered or "schema" in lowered:
+        return "schema_reject"
+    if "provider_request_failed" in lowered:
+        return "transient_failure"
+    return "other_failure"
+
+
+class _AdaptiveVisualConcurrency:
+    """Rate-safe worker controller with deterministic 4/8/16/32 waves."""
+
+    def __init__(
+        self,
+        worker_levels: Sequence[int],
+        *,
+        wave_panel_target: int = VISUAL_STREAM_WAVE_PANEL_TARGET,
+    ) -> None:
+        levels = tuple(int(level) for level in worker_levels)
+        if not levels or any(level < 1 for level in levels) or tuple(sorted(set(levels))) != levels:
+            raise CloudStageError("cloud.visual_stream_config_invalid")
+        self.worker_levels = levels
+        self.wave_panel_target = max(1, int(wave_panel_target))
+        self.level_index = 0
+        self.in_flight = 0
+        self.peak_in_flight = 0
+        self.previous_p95: float | None = None
+        self._condition = threading.Condition()
+        self._wave_started = time.monotonic()
+        self._wave_panels = 0
+        self._wave_requests = 0
+        self._wave_latencies: list[float] = []
+        self._wave_categories: dict[str, int] = {}
+        self._waves: list[dict[str, Any]] = []
+
+    @property
+    def current_limit(self) -> int:
+        return self.worker_levels[self.level_index]
+
+    def acquire(self) -> None:
+        with self._condition:
+            while self.in_flight >= self.current_limit:
+                self._condition.wait()
+            self.in_flight += 1
+            self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+
+    def release(
+        self,
+        *,
+        panel_count: int,
+        request_count: int,
+        latency_s: float,
+        categories: Mapping[str, int],
+    ) -> None:
+        with self._condition:
+            self.in_flight = max(0, self.in_flight - 1)
+            self._wave_panels += int(panel_count)
+            self._wave_requests += int(request_count)
+            self._wave_latencies.append(float(latency_s))
+            for key, value in categories.items():
+                self._wave_categories[key] = self._wave_categories.get(key, 0) + int(value)
+            if self._wave_panels >= self.wave_panel_target:
+                p95 = _stream_percentile(self._wave_latencies, 0.95)
+                failures = sum(
+                    self._wave_categories.get(key, 0)
+                    for key in ("transient_failure", "timeout", "server_error")
+                )
+                rate_limited = self._wave_categories.get("rate_limited", 0)
+                failure_rate = failures / max(1, self._wave_requests)
+                unstable = (
+                    rate_limited > 0
+                    or failure_rate > 0.02
+                    or (
+                        p95 is not None
+                        and self.previous_p95 is not None
+                        and p95 > self.previous_p95 * 2
+                    )
+                )
+                self._waves.append(
+                    {
+                        "workers": self.current_limit,
+                        "panel_count": self._wave_panels,
+                        "request_count": self._wave_requests,
+                        "elapsed_s": round(time.monotonic() - self._wave_started, 4),
+                        "throughput_panels_s": round(
+                            self._wave_panels / max(0.001, time.monotonic() - self._wave_started),
+                            4,
+                        ),
+                        "p50_latency_s": _stream_percentile(self._wave_latencies, 0.50),
+                        "p95_latency_s": p95,
+                        "categories": dict(self._wave_categories),
+                        "stable": not unstable,
+                    }
+                )
+                if p95 is not None:
+                    self.previous_p95 = p95
+                if not unstable and self.level_index + 1 < len(self.worker_levels):
+                    self.level_index += 1
+                self._wave_started = time.monotonic()
+                self._wave_panels = 0
+                self._wave_requests = 0
+                self._wave_latencies = []
+                self._wave_categories = {}
+            self._condition.notify_all()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._condition:
+            waves = list(self._waves)
+            if self._wave_panels:
+                elapsed = max(0.001, time.monotonic() - self._wave_started)
+                waves.append(
+                    {
+                        "workers": self.current_limit,
+                        "panel_count": self._wave_panels,
+                        "request_count": self._wave_requests,
+                        "elapsed_s": round(elapsed, 4),
+                        "throughput_panels_s": round(self._wave_panels / elapsed, 4),
+                        "p50_latency_s": _stream_percentile(self._wave_latencies, 0.50),
+                        "p95_latency_s": _stream_percentile(self._wave_latencies, 0.95),
+                        "categories": dict(self._wave_categories),
+                        "stable": None,
+                    }
+                )
+            return {
+                "worker_levels": list(self.worker_levels),
+                "selected_worker_level": self.current_limit,
+                "peak_in_flight": self.peak_in_flight,
+                "waves": waves,
+            }
+
+
+class _StreamingVisualEvidenceSession:
+    """Stream validated panel bytes into one serialized checkpoint writer."""
+
+    def __init__(
+        self,
+        runner: CloudStageRunner,
+        *,
+        queue_size: int,
+        max_panels: int,
+        max_estimated_bytes: int,
+        worker_levels: Sequence[int],
+    ) -> None:
+        if queue_size < 1:
+            raise CloudStageError("cloud.visual_stream_config_invalid")
+        self.runner = runner
+        self.queue_size = int(queue_size)
+        self.max_panels = int(max_panels)
+        self.max_estimated_bytes = int(max_estimated_bytes)
+        self.worker_levels = tuple(int(value) for value in worker_levels)
+        self._controller = _AdaptiveVisualConcurrency(self.worker_levels)
+        self._tasks: queue.Queue[Any] = queue.Queue(maxsize=self.queue_size)
+        self._events: queue.Queue[Any] = queue.Queue(maxsize=max(2, self.queue_size * 2))
+        self._stop = threading.Event()
+        self._closed = False
+        self._aborted = False
+        self._submit_lock = threading.Lock()
+        self._pending: list[CloudPanelInput] = []
+        self._submitted: list[CloudPanelInput] = []
+        self._batches: dict[int, tuple[CloudPanelInput, ...]] = {}
+        self._next_batch_index = 0
+        self._accepted: dict[str, dict[str, Any]] = {}
+        self._missing: set[str] = set()
+        self._failure_codes: list[str] = []
+        self._retry_count_total = 0
+        self._writer_error: CloudStageError | None = None
+        self._max_queue_depth = 0
+        self.writer_thread_count = 1
+        prompt = runner.prompts["visual"]
+        self._checkpoint_scope = _hash(
+            {
+                "version": VISUAL_STREAM_VERSION,
+                "model_identity_hash": runner.model_identity.identity_hash,
+                "prompt_version": prompt[0],
+                "prompt_sha256": prompt[1],
+            }
+        )
+        self._checkpoint_seed = runner._checkpoint_load(self._checkpoint_scope)
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name="visual-stream-writer",
+        )
+        self._writer_thread.start()
+        self._workers = [
+            threading.Thread(
+                target=self._worker_loop,
+                args=(index,),
+                name=f"visual-stream-worker-{index}",
+            )
+            for index in range(max(self.worker_levels))
+        ]
+        for worker in self._workers:
+            worker.start()
+
+    def _worker_runner(self) -> CloudStageRunner:
+        return CloudStageRunner(
+            provider=self.runner.provider,
+            model_identity=self.runner.model_identity,
+            cache=MemoryStageCache(),
+            max_attempts=self.runner.max_attempts,
+            min_request_interval_s=self.runner.min_request_interval_s,
+            estimated_cost_per_request=self.runner.estimated_cost_per_request,
+            allow_balloon_unknown=self.runner.allow_balloon_unknown,
+            visual_checkpoint_path=None,
+            visual_parallel_workers=1,
+        )
+
+    def _flush_pending(self) -> None:
+        if not self._pending:
+            return
+        batch = tuple(self._pending)
+        self._pending = []
+        batch_index = self._next_batch_index
+        self._next_batch_index += 1
+        self._batches[batch_index] = batch
+        self._tasks.put((batch_index, batch))
+        self._max_queue_depth = max(self._max_queue_depth, self._tasks.qsize())
+
+    def submit(self, panel: CloudPanelInput) -> None:
+        with self._submit_lock:
+            if self._closed or self._aborted:
+                raise CloudStageError("cloud.visual_stream_closed")
+            if panel.prepared_order is None:
+                raise CloudStageError("cloud.panel_lineage_invalid")
+            if any(
+                existing.panel_id == panel.panel_id
+                or existing.prepared_order == panel.prepared_order
+                for existing in self._submitted
+            ):
+                raise CloudStageError("cloud.panel_lineage_invalid")
+            self._submitted.append(panel)
+            self._pending.append(panel)
+            pending_size = sum(
+                ((len(_visual_provider_payload(item)[0]) * 4 + 2) // 3 + 768)
+                for item in self._pending
+            )
+            if len(self._pending) >= self.max_panels or pending_size >= self.max_estimated_bytes:
+                self._flush_pending()
+
+    def _process_batch(
+        self,
+        worker_runner: CloudStageRunner,
+        batch_index: int,
+        batch: tuple[CloudPanelInput, ...],
+    ) -> dict[str, Any]:
+        prompt = self.runner.prompts["visual"]
+        chunk_key = _stream_visual_chunk_cache_key(
+            batch,
+            chunk_index=batch_index,
+            model_identity=self.runner.model_identity,
+            prompt=prompt,
+        )
+        identity_by_id = {
+            panel.panel_id: _visual_panel_identity_hash(panel, index)
+            for index, panel in enumerate(batch)
+        }
+        accepted: dict[str, dict[str, Any]] = {}
+        seeded_ids: list[str] = []
+        for panel in batch:
+            seeded = self._checkpoint_seed.get(panel.panel_id)
+            if not isinstance(seeded, Mapping):
+                continue
+            if (
+                seeded.get("stream_checkpoint_version") != VISUAL_STREAM_VERSION
+                or seeded.get("chunk_cache_key") != chunk_key
+            ):
+                continue
+            try:
+                accepted[panel.panel_id] = _stream_validate_row(
+                    seeded,
+                    panel,
+                    expected_identity_hash=identity_by_id[panel.panel_id],
+                )
+            except CloudStageError:
+                continue
+            seeded_ids.append(panel.panel_id)
+        pending = tuple(
+            panel for panel in batch if panel.panel_id not in accepted
+        )
+        error_code = ""
+        categories: dict[str, int] = {}
+        retries = 0
+        for attempt in range(1 + (1 if self.runner.max_attempts > 1 else 0)):
+            if not pending:
+                break
+            try:
+                result = worker_runner.run_visual_evidence(pending)
+                rows = {
+                    str(row.get("panel_id", "")): dict(row)
+                    for row in result.panels
+                    if isinstance(row, Mapping)
+                }
+                before = len(accepted)
+                for panel in pending:
+                    row = rows.get(panel.panel_id)
+                    if row is None:
+                        continue
+                    accepted[panel.panel_id] = row
+                pending = tuple(
+                    panel for panel in pending if panel.panel_id not in accepted
+                )
+                if not pending or len(accepted) == before:
+                    break
+                retries += 1
+            except CloudStageError as exc:
+                error_code = exc.code
+                category = _stream_error_category(exc.code)
+                categories[category] = categories.get(category, 0) + 1
+                if attempt >= (1 if self.runner.max_attempts > 1 else 0):
+                    break
+                retries += 1
+        if pending and not error_code:
+            error_code = "cloud.panel_coverage_incomplete"
+        return {
+            "batch_index": batch_index,
+            "rows": list(accepted.values()),
+            "seeded_ids": tuple(seeded_ids),
+            "missing_ids": tuple(panel.panel_id for panel in pending),
+            "error_code": error_code,
+            "retry_count": retries,
+            "request_count": worker_runner.request_count,
+            "request_counts": dict(worker_runner.request_counts),
+            "estimated_cost_usd": worker_runner.estimated_cost_usd,
+            "categories": categories,
+        }
+
+    def _worker_loop(self, worker_index: int) -> None:
+        worker_runner = self._worker_runner()
+        while True:
+            task = self._tasks.get()
+            try:
+                if task is None:
+                    return
+                if self._stop.is_set():
+                    continue
+                batch_index, batch = task
+                self._controller.acquire()
+                started = time.monotonic()
+                before_request_count = worker_runner.request_count
+                before_request_counts = dict(worker_runner.request_counts)
+                before_cost = worker_runner.estimated_cost_usd
+                try:
+                    event = self._process_batch(worker_runner, batch_index, batch)
+                except Exception:
+                    event = {
+                        "batch_index": batch_index,
+                        "rows": [],
+                        "seeded_ids": (),
+                        "missing_ids": tuple(panel.panel_id for panel in batch),
+                        "error_code": "cloud.provider_request_failed",
+                        "retry_count": 0,
+                        "request_count": worker_runner.request_count,
+                        "request_counts": dict(worker_runner.request_counts),
+                        "estimated_cost_usd": worker_runner.estimated_cost_usd,
+                        "categories": {"other_failure": 1},
+                    }
+                event["request_count"] = worker_runner.request_count - before_request_count
+                event["request_counts"] = {
+                    key: worker_runner.request_counts.get(key, 0) - before_request_counts.get(key, 0)
+                    for key in worker_runner.request_counts
+                }
+                event["estimated_cost_usd"] = worker_runner.estimated_cost_usd - before_cost
+                self._controller.release(
+                    panel_count=len(batch),
+                    request_count=int(event.get("request_count", 0)),
+                    latency_s=time.monotonic() - started,
+                    categories=event.get("categories", {}),
+                )
+                event["worker_index"] = worker_index
+                self._events.put(event)
+            finally:
+                self._tasks.task_done()
+
+    def _writer_loop(self) -> None:
+        while True:
+            event = self._events.get()
+            try:
+                if event is None:
+                    return
+                self._consume_event(event)
+            finally:
+                self._events.task_done()
+
+    def _consume_event(self, event: Mapping[str, Any]) -> None:
+        if self._aborted:
+            return
+        for key, value in dict(event.get("request_counts", {})).items():
+            if key in self.runner.request_counts:
+                self.runner.request_counts[key] += int(value)
+        self.runner.request_count += int(event.get("request_count", 0))
+        self.runner.estimated_cost_usd += float(event.get("estimated_cost_usd", 0.0))
+        self._retry_count_total += int(event.get("retry_count", 0))
+        if self._writer_error is not None:
+            return
+        batch_index = int(event.get("batch_index", -1))
+        batch = self._batches.get(batch_index)
+        if batch is None:
+            self._writer_error = CloudStageError("cloud.visual_stream_row_invalid")
+            return
+        expected = {panel.panel_id: panel for panel in batch}
+        expected_hashes = {
+            panel.panel_id: _visual_panel_identity_hash(panel, index)
+            for index, panel in enumerate(batch)
+        }
+        seeded_ids = {str(panel_id) for panel_id in event.get("seeded_ids", ())}
+        chunk_key = _stream_visual_chunk_cache_key(
+            batch,
+            chunk_index=batch_index,
+            model_identity=self.runner.model_identity,
+            prompt=self.runner.prompts["visual"],
+        )
+        try:
+            rows = event.get("rows", ())
+            if not isinstance(rows, (list, tuple)):
+                raise CloudStageError("cloud.visual_stream_row_invalid")
+            for raw_row in rows:
+                if not isinstance(raw_row, Mapping):
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                panel_id = str(raw_row.get("panel_id", ""))
+                panel = expected.get(panel_id)
+                if panel is None or panel_id in self._accepted:
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                clean = _stream_validate_row(
+                    raw_row,
+                    panel,
+                    expected_identity_hash=expected_hashes[panel_id],
+                )
+                if panel_id in seeded_ids:
+                    if (
+                        clean.get("stream_checkpoint_version") != VISUAL_STREAM_VERSION
+                        or clean.get("chunk_cache_key") != chunk_key
+                    ):
+                        raise CloudStageError("cloud.visual_stream_row_invalid")
+                else:
+                    clean["chunk_cache_key"] = chunk_key
+                    clean["stream_checkpoint_version"] = VISUAL_STREAM_VERSION
+                    self.runner._checkpoint_append(self._checkpoint_scope, clean)
+                self._accepted[panel_id] = clean
+            for panel_id in event.get("missing_ids", ()):
+                self._missing.add(str(panel_id))
+            if event.get("error_code"):
+                self._failure_codes.append(str(event["error_code"]))
+        except CloudStageError as exc:
+            self._writer_error = exc
+
+    def _shutdown(self, *, aborted: bool) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if aborted:
+            self._aborted = True
+            self._stop.set()
+        for _ in self._workers:
+            self._tasks.put(None)
+        self._tasks.join()
+        for worker in self._workers:
+            worker.join()
+        self._events.put(None)
+        self._events.join()
+        self._writer_thread.join()
+
+    def finish(self, panels: Sequence[CloudPanelInput]) -> VisualStageResult:
+        if self._closed or self._aborted:
+            raise CloudStageError("cloud.visual_stream_closed")
+        self._flush_pending()
+        self._shutdown(aborted=False)
+        if self._writer_error is not None:
+            raise self._writer_error
+        ordered = CloudStageRunner._ordered_panels(tuple(panels))
+        if tuple(item.panel_id for item in ordered) != tuple(item.panel_id for item in self._submitted):
+            raise CloudStageError("cloud.panel_lineage_invalid")
+        rows = _merge_stream_visual_rows(
+            ({"rows": list(self._accepted.values())},),
+            ordered,
+        )
+        if not rows:
+            code = self._failure_codes[0] if self._failure_codes else "cloud.panel_coverage_incomplete"
+            raise CloudStageError(code, reviewable=code.startswith("visual."))
+        source = list(_visual_panel_identities(ordered))
+        prompt = self.runner.prompts["visual"]
+        result = VisualStageResult(
+            panels=rows,
+            source_hash=_hash(source),
+            model_identity_hash=self.runner.model_identity.identity_hash,
+            prompt_version=prompt[0],
+            prompt_sha256=prompt[1],
+            cache_identity_version=VISUAL_CACHE_IDENTITY_VERSION,
+            panel_identity_hashes=_visual_panel_identity_hashes(ordered),
+        )
+        key = _cache_key("visual", source, self.runner.model_identity, prompt)
+        if self.runner.cache is not None:
+            self.runner.cache.put(key, result.as_dict())
+        metrics = self._controller.snapshot()
+        metrics.update(
+            {
+                "contract_version": VISUAL_STREAM_VERSION,
+                "writer_count": self.writer_thread_count,
+                "submitted_panel_count": len(ordered),
+                "accepted_panel_count": len(rows),
+                "missing_panel_count": len(self._missing),
+                "missing_panel_ids": sorted(self._missing),
+                "request_count": self.runner.request_count,
+                "request_counts": dict(self.runner.request_counts),
+                "retry_count": self._retry_count_total,
+                "max_queue_depth": self._max_queue_depth,
+            }
+        )
+        self.runner.last_visual_stream_metrics = metrics
+        return result
+
+    def abort(self) -> None:
+        if self._closed:
+            return
+        self._shutdown(aborted=True)
+
+
 def prepare_project_panels(
     db: Any,
     project_id: str,
@@ -7083,6 +7762,7 @@ def prepare_project_panels(
     return_segmentation: bool = False,
     review_only_auto_override: bool = False,
     cached_segmentation: Mapping[str, Any] | None = None,
+    panel_sink: Callable[[CloudPanelInput], None] | None = None,
 ) -> tuple[CloudPanelInput, ...] | tuple[tuple[CloudPanelInput, ...], dict[str, Any]]:
     """Build immutable cloud inputs from the current project panel lineage.
 
@@ -7206,8 +7886,11 @@ def prepare_project_panels(
                 coverage_map_version=coverage.version,
                 coverage_map_hash=coverage.map_sha256,
                 segmentation_version=strip_segmentation.SEGMENTATION_VERSION,
+                prepared_order=panel_order,
             )
         )
+        if panel_sink is not None:
+            panel_sink(panels[-1])
     result = tuple(panels)
     if return_segmentation:
         return result, reconciliation.as_dict()
@@ -8382,34 +9065,52 @@ class CloudBatchService:
             visual_evidence_hash=visual.visual_evidence_hash,
         )
 
-    def run_job(self, job_id: str, panels: Sequence[CloudPanelInput]) -> ChapterJobRecord:
+    def run_job(
+        self,
+        job_id: str,
+        panels: Sequence[CloudPanelInput],
+        *,
+        precomputed_visual: VisualStageResult | None = None,
+    ) -> ChapterJobRecord:
         _validate_job_id(job_id)
         record = self.store.load(job_id) or ChapterJobRecord(job_id=job_id)
         record.model_identity_hash = self.runner.model_identity.identity_hash
         try:
             ordered = self.runner._ordered_panels(tuple(panels))
-            cached_visual = record.stage_results.get("visual")
-            migrated_visual = _migrate_visual_cache_identity(
-                cached_visual,
-                ordered,
-                model_identity=self.runner.model_identity,
-                prompt=self.runner.prompts["visual"],
-                persisted_lineage=record.stage_results.get("narration"),
-            )
-            if migrated_visual is None:
-                raise KeyError("stale_visual_cache")
-            visual = VisualStageResult.from_dict(migrated_visual)
-            ordered_ids = tuple(panel.panel_id for panel in ordered)
-            if visual.panel_ids != ordered_ids or any(
-                not _visual_cached_row_is_reusable(row, panel)
-                for row, panel in zip(visual.panels, ordered, strict=False)
-            ):
-                visual = self.runner.run_visual_evidence(panels)
-            if migrated_visual != cached_visual:
+            if precomputed_visual is not None:
+                merged_rows = _merge_stream_visual_rows(
+                    ({"rows": list(precomputed_visual.panels)},),
+                    ordered,
+                )
+                merged_ids = tuple(str(row["panel_id"]) for row in merged_rows)
+                if merged_ids != precomputed_visual.panel_ids:
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                visual = replace(precomputed_visual, panels=merged_rows)
                 record.stage_results["visual"] = visual.as_dict()
                 self.store.save(record)
-            if "visual" not in record.stage_results:
-                raise KeyError("visual_missing")
+            else:
+                cached_visual = record.stage_results.get("visual")
+                migrated_visual = _migrate_visual_cache_identity(
+                    cached_visual,
+                    ordered,
+                    model_identity=self.runner.model_identity,
+                    prompt=self.runner.prompts["visual"],
+                    persisted_lineage=record.stage_results.get("narration"),
+                )
+                if migrated_visual is None:
+                    raise KeyError("stale_visual_cache")
+                visual = VisualStageResult.from_dict(migrated_visual)
+                ordered_ids = tuple(panel.panel_id for panel in ordered)
+                if visual.panel_ids != ordered_ids or any(
+                    not _visual_cached_row_is_reusable(row, panel)
+                    for row, panel in zip(visual.panels, ordered, strict=False)
+                ):
+                    visual = self.runner.run_visual_evidence(panels)
+                if migrated_visual != cached_visual:
+                    record.stage_results["visual"] = visual.as_dict()
+                    self.store.save(record)
+                if "visual" not in record.stage_results:
+                    raise KeyError("visual_missing")
         except (KeyError, TypeError, ValueError):
             record.stage_results.pop("visual", None)
             record.stage_results.pop("story_map", None)
@@ -8723,6 +9424,7 @@ class CloudBatchService:
             record = self.store.load(project_id) or ChapterJobRecord(project_id)
             cached_segmentation = record.stage_results.get("segmentation")
             prepared: tuple[tuple[CloudPanelInput, ...], dict[str, Any]] | None = None
+            visual_stream: _StreamingVisualEvidenceSession | None = None
             manifest_loaded = False
             preparation_started = time.monotonic()
             manifest_raw = record.stage_results.get("prepared_panel_manifest")
@@ -8750,20 +9452,40 @@ class CloudBatchService:
             except prepared_panel_manifest.PreparedPanelManifestError:
                 prepared = None
             if prepared is None:
-                prepared = prepare_project_panels(
-                    db,
-                    project_id,
-                    boundary_assessor=self.runner.assess_strip_boundaries,
-                    review_root=self.review_root,
-                    return_segmentation=True,
-                    review_only_auto_override=review_only_preview,
-                    cached_segmentation=(
-                        cached_segmentation
-                        if isinstance(cached_segmentation, Mapping)
-                        else None
-                    ),
+                stream_enabled = (
+                    not manifest_loaded
+                    and max_cloud_panels is None
+                    and callable(getattr(self.runner, "start_visual_evidence_stream", None))
                 )
+                if stream_enabled:
+                    visual_stream = self.runner.start_visual_evidence_stream()
+                try:
+                    prepared = prepare_project_panels(
+                        db,
+                        project_id,
+                        boundary_assessor=self.runner.assess_strip_boundaries,
+                        review_root=self.review_root,
+                        return_segmentation=True,
+                        review_only_auto_override=review_only_preview,
+                        cached_segmentation=(
+                            cached_segmentation
+                            if isinstance(cached_segmentation, Mapping)
+                            else None
+                        ),
+                        panel_sink=(visual_stream.submit if visual_stream is not None else None),
+                    )
+                except Exception:
+                    if visual_stream is not None:
+                        visual_stream.abort()
+                    raise
             panels, segmentation_state = prepared
+            streamed_visual: VisualStageResult | None = None
+            if visual_stream is not None:
+                streamed_visual = visual_stream.finish(panels)
+                record.stage_results["visual"] = streamed_visual.as_dict()
+                record.stage_results["visual_stream_metrics"] = dict(
+                    self.runner.last_visual_stream_metrics
+                )
             restored_visual_subset: VisualStageResult | None = None
             if manifest_loaded and _visual_cache_requires_subset_restore(
                 self.runner,
@@ -8851,7 +9573,14 @@ class CloudBatchService:
                     segmentation_state,
                 )
             self.store.save(record)
-            record = self.run_job(project_id, panels)
+            if streamed_visual is None:
+                record = self.run_job(project_id, panels)
+            else:
+                record = self.run_job(
+                    project_id,
+                    panels,
+                    precomputed_visual=streamed_visual,
+                )
             if (
                 manifest_loaded
                 and record.error_code == "cloud.prepared_manifest_requires_materialization"
@@ -9339,7 +10068,9 @@ def _visual_panel_identity(panel: CloudPanelInput, ordered_index: int) -> dict[s
         rendered_payload, rendered_mime = _visual_provider_payload(panel)
         rendered_payload_hash = hashlib.sha256(rendered_payload).hexdigest()
     return {
-        "ordered_panel_index": int(ordered_index),
+        "ordered_panel_index": int(
+            panel.prepared_order if panel.prepared_order is not None else ordered_index
+        ),
         "panel_id": panel.panel_id,
         "source_asset_checksum": panel.source_checksum,
         "crop_transform": crop_transform,

@@ -6622,3 +6622,205 @@ def test_position_repair_lineage_merge_is_ordered_and_cache_identity_changes_wit
         changed,
     )
     assert changed_lineage["lineage_hash"] != first["lineage_hash"]
+
+
+def test_stream_visual_batches_are_disjoint_and_restore_prepared_order():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-batch"))
+    )
+
+    batches = module._stream_visual_batches(
+        panels,
+        max_panels=2,
+        max_estimated_bytes=10_000_000,
+    )
+
+    assert [[panel.panel_id for panel in batch] for batch in batches] == [
+        ["stream-batch-panel-0", "stream-batch-panel-1"],
+        ["stream-batch-panel-2"],
+    ]
+    assert len({panel.panel_id for batch in batches for panel in batch}) == len(panels)
+    assert not set(batches[0]).intersection(batches[1])
+
+
+def test_stream_writer_merges_out_of_order_events_by_stable_panel_order():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-merge"))
+    )
+    rows = []
+    for index, panel in enumerate(panels):
+        row = _visual_row(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+            }
+        )
+        row.update(
+            {
+                "source_checksum": panel.source_checksum,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "cache_identity_hash": module._visual_panel_identity_hash(panel, index),
+                "cache_identity_version": module.VISUAL_CACHE_IDENTITY_VERSION,
+            }
+        )
+        rows.append(row)
+    merged = module._merge_stream_visual_rows(
+        (
+            {"rows": [rows[2]], "seeded_ids": (), "missing_ids": ()},
+            {"rows": [rows[0], rows[1]], "seeded_ids": (), "missing_ids": ()},
+        ),
+        panels,
+    )
+
+    assert tuple(row["panel_id"] for row in merged) == tuple(
+        panel.panel_id for panel in panels
+    )
+
+
+def test_stream_session_uses_bounded_backpressure_and_one_writer():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-session"))
+    )
+    identity = _identity(module)
+    provider = _FakeProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=identity,
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=1,
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        stream.submit(panel)
+    result = stream.finish(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert stream.writer_thread_count == 1
+    assert runner.last_visual_stream_metrics["writer_count"] == 1
+    assert runner.last_visual_stream_metrics["max_queue_depth"] <= 1
+    assert runner.last_visual_stream_metrics["worker_levels"] == [4, 8, 16, 32]
+    assert runner.last_visual_stream_metrics["request_count"] == len(provider.calls)
+
+
+def test_stream_retry_tracks_only_missing_panel_ids():
+    module = _module()
+
+    assert module._stream_retry_pending_ids(
+        ("panel-a", "panel-b", "panel-c"),
+        {"panel-a"},
+    ) == ("panel-b", "panel-c")
+
+
+def test_stream_merge_rejects_invalid_or_duplicate_rows_fail_closed():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-invalid"))
+    )
+    row = _visual_row(
+        {
+            "panel_id": panels[0].panel_id,
+            "source_asset_id": panels[0].source_asset_id,
+            "source_order": panels[0].source_order,
+        }
+    )
+    row.update(
+        {
+            "source_checksum": panels[0].source_checksum,
+            "source_asset_id": panels[0].source_asset_id,
+            "source_order": panels[0].source_order,
+            "cache_identity_hash": module._visual_panel_identity_hash(panels[0], 0),
+            "cache_identity_version": module.VISUAL_CACHE_IDENTITY_VERSION,
+        }
+    )
+    with pytest.raises(module.CloudStageError) as caught:
+        module._merge_stream_visual_rows(
+            (
+                {"rows": [row, dict(row)], "seeded_ids": (), "missing_ids": ()},
+            ),
+            panels,
+        )
+    assert caught.value.code == "cloud.visual_stream_row_invalid"
+
+
+def test_run_project_streams_preparation_and_passes_one_precomputed_visual_result(monkeypatch):
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-entrypoint"))
+    )
+    provider = _FakeProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+
+    class Store:
+        def __init__(self):
+            self.saved = []
+
+        def load(self, _project_id):
+            return None
+
+        def save(self, record):
+            self.saved.append(record)
+
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.runner = runner
+    service.store = Store()
+    service.review_root = None
+    prepared_kwargs = {}
+    captured = {}
+
+    def fake_prepare(_db, _project_id, **kwargs):
+        prepared_kwargs.update(kwargs)
+        sink = kwargs["panel_sink"]
+        for panel in panels:
+            sink(panel)
+        return panels, {"status": "RECONCILED"}
+
+    monkeypatch.setattr(module, "prepare_project_panels", fake_prepare)
+    monkeypatch.setattr(
+        module,
+        "_build_project_prepared_manifest",
+        lambda *_args, **_kwargs: {"manifest": "streamed"},
+    )
+
+    def fake_run_job(_job_id, passed_panels, *, precomputed_visual=None):
+        captured["panels"] = tuple(passed_panels)
+        captured["visual"] = precomputed_visual
+        return module.ChapterJobRecord(
+            job_id="stream-entrypoint",
+            state=module.ChapterState.NEEDS_REVIEW,
+            error_code="test.stop_after_visual",
+            stage_results={
+                "visual": precomputed_visual.as_dict()
+                if precomputed_visual is not None
+                else {},
+            },
+        )
+
+    monkeypatch.setattr(service, "run_job", fake_run_job)
+    result = service.run_project(object(), "stream-entrypoint")
+
+    assert callable(prepared_kwargs["panel_sink"])
+    assert captured["visual"] is not None
+    assert captured["visual"].panel_ids == tuple(panel.panel_id for panel in panels)
+    assert captured["panels"] == panels
+    assert result.error_code == "test.stop_after_visual"
+    assert runner.last_visual_stream_metrics["accepted_panel_count"] == len(panels)
+    assert runner.last_visual_stream_metrics["request_count"] == len(provider.calls)
