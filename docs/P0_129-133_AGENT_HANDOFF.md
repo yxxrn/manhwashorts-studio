@@ -1681,3 +1681,48 @@ Equivalent stream batching no longer invalidates a seeded accepted panel solely 
 ## 2026-08-23 - Warm subset resume proof (pre-publication)
 
 The cache-only v4 namespace restored the 37 accepted v3 checkpoint rows in source order: funnel raw=37, ingest=35, candidates=37, canonical=37, admitted=37, rejected/deduped/merged/needs-review=0; stream accepted=37/37, missing=0, one writer, provider requests=0, retries=0, elapsed=14.703s. The guard rejected any provider observation before network, so no cloud call was possible. This is a warm-cache proof only; the cold 40-panel attempt remains 37/40 plus a separate 3/3 replacement set, and no downstream stage has started.
+
+## 2026-08-23 - Source-level streaming callback and admission audit
+
+This checkpoint adds the missing source-level overlap boundary without
+changing quality gates. `strip_segmentation.reconcile_sources` now accepts
+`on_reconciled(group, result)` and calls it only for a reconciled source group.
+When `panel_sink` is active, `prepare_project_panels` uses one local canonical
+coverage map, materializes the completed group's exact panel regions, runs the
+full local `panel-admission-v1` funnel, and dispatches admitted panels before
+the reconciliation loop returns. Non-stream callers retain the old
+reconciliation-first boundary and error codes. Final global admission,
+coverage, and terminal stream accounting remain mandatory; any later failure
+invalidates the provisional stream.
+
+Required funnel evidence is explicit: raw input images -> ingest outputs ->
+candidate regions -> canonical regions -> admitted vision panels. The ledger
+must contain counts, elapsed/reason transitions, source asset/checksum,
+original bounds, candidate panel IDs, detector/version, reproducible metrics,
+coverage manifest, reduction percentages, and ledger hash. Verified
+gutter/transition, explicit no-story blank/title/cover, and exact/near duplicate
+decisions can reject locally; protected/dialogue/face/subject/action,
+unresolved, and ambiguous material must remain admitted or `NEEDS_REVIEW`, never
+silently discarded.
+
+GREEN source/test evidence: 170 cloud mass-production tests and 47
+strip/segmentation tests; Ruff, compileall, and diff-check pass. The 13
+pipeline fixture failures remain unchanged baseline evidence. No provider/TTS
+request was consumed by this code/test checkpoint.
+
+The clean v7 normal-entrypoint probe at
+`/data/data/p0-aws-acceptance/video1-clean-proof-v7` was stopped safely after
+4m13s because no first visual dispatch or visual checkpoint appeared. Twelve
+segmentation-review reports were observed at stop and thirteen were present in
+the preserved read-only namespace afterward; no story map, narration, TTS,
+render, or QC artifact was produced.
+
+Read-only DB audit of v6: current analysis
+`54fc779ba2334d55a46f815fa56ccd6c` is `SCRIPT_DRAFT` with 701 distinct
+canonical rows over source-order domain 0..702 and exact gaps 303/306; it uses
+646 source assets. Two older 280-row analyses are stale. This supports the
+prepared=703/filter=701 arithmetic but does not identify semantic reject/dedupe
+reasons for the two gaps. Only a fresh funnel ledger may make that claim. The
+next action after publication is a new 40-80 panel namespace through the
+source callback, with the full funnel table and first-dispatch/overlap timing;
+do not start story/narration/TTS/render from partial visual evidence.

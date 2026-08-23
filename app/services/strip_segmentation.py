@@ -767,6 +767,7 @@ def reconcile_sources(
     boundary_assessor: Callable[[BoundaryRequest], Mapping[str, Any]] | None = None,
     provider_retry_attempts: int = 2,
     review_root: Path | None = None,
+    on_reconciled: Callable[[tuple[Any, ...], StripSegmentationResult], None] | None = None,
 ) -> SourceSegmentationResult:
     """Reconcile multiple files in file order and each file top-to-bottom."""
     coverage_ratio = _validate_source_input_lineage(inputs)
@@ -794,6 +795,8 @@ def reconcile_sources(
         reports.append(result)
         if result.status == "NEEDS_REVIEW" and review_root is not None:
             write_review_artifact(result, payload, review_root)
+        if result.status == "RECONCILED" and on_reconciled is not None:
+            on_reconciled(tuple(group), result)
     status = "NEEDS_REVIEW" if coverage_ratio != 1.0 or any(report.status != "RECONCILED" for report in reports) else "RECONCILED"
     return SourceSegmentationResult(
         ordered_inputs=ordered,

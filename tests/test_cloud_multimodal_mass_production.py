@@ -1503,6 +1503,93 @@ def test_prepare_project_panels_streams_each_admitted_panel_before_next_payload(
     assert events.index("sink:stream-panel-0") < events.index("encode:stream-panel-1")
 
 
+def test_prepare_project_panels_emits_inside_source_reconciliation_callback(monkeypatch):
+    module = _module()
+    segmentation = importlib.import_module("app.services.segmentation")
+    pipeline = importlib.import_module("app.services.pipeline")
+    from types import SimpleNamespace
+
+    input_row = segmentation.SourceAssetInput(
+        source_asset_id="asset-stream-callback",
+        original_checksum="a" * 64,
+        original_width=100,
+        original_height=200,
+        source_bounds=(0, 0, 100, 200),
+        strip_order=0,
+        region_order=0,
+        payload=b"stream-callback-payload",
+        decoded_width=100,
+        decoded_height=200,
+    )
+    coverage = segmentation.CoverageMap(
+        version="coverage-v1",
+        map_sha256="b" * 64,
+        source_asset_ids=("asset-stream-callback",),
+        tiles=(),
+        regions=tuple(
+            segmentation.CoverageRegion(
+                region_id=panel_id,
+                source_asset_id="asset-stream-callback",
+                source_order=index,
+                bounds=(0, index * 100, 100, (index + 1) * 100),
+                region_class="canonical_panel",
+                area=10_000,
+                confidence=0.99,
+                evidence="provider-confirmed panel",
+            )
+            for index, panel_id in enumerate(("callback-panel-0", "callback-panel-1"))
+        ),
+        source_content_coverage_ratio=1.0,
+        canonical_panel_area=20_000,
+        verified_gutter_area=0,
+        unresolved_material_area=0,
+        panel_count=2,
+        reconciliation_errors=(),
+    )
+    events = []
+
+    monkeypatch.setattr(
+        pipeline,
+        "project_assets",
+        lambda _db, _project_id: (SimpleNamespace(id="asset-stream-callback", type="image"),),
+    )
+    monkeypatch.setattr(pipeline, "image_assets", lambda assets: list(assets))
+    monkeypatch.setattr(
+        pipeline,
+        "_build_source_inputs",
+        lambda _assets: ((input_row,), {"asset-stream-callback": SimpleNamespace(id="asset-stream-callback")}),
+    )
+
+    def reconcile(*_args, **kwargs):
+        events.append("reconcile:begin")
+        callback = kwargs["on_reconciled"]
+        callback(
+            (input_row,),
+            SimpleNamespace(source_asset_id="asset-stream-callback", status="RECONCILED"),
+        )
+        events.append("reconcile:return")
+        return SimpleNamespace(status="RECONCILED", reports=(), as_dict=lambda: {"reports": []})
+
+    monkeypatch.setattr(module.strip_segmentation, "reconcile_sources", reconcile)
+    monkeypatch.setattr(segmentation, "build_complete_coverage_map", lambda *_args, **_kwargs: coverage)
+    monkeypatch.setattr(segmentation, "verify_segmentation_completeness", lambda *_args, **_kwargs: ())
+
+    def encode(transient, _source_input):
+        events.append(f"encode:{transient.panel_id}")
+        return f"payload:{transient.panel_id}".encode()
+
+    monkeypatch.setattr(pipeline, "_encode_panel_payload", encode)
+
+    panels = module.prepare_project_panels(
+        object(),
+        "project-stream-callback",
+        panel_sink=lambda panel: events.append(f"sink:{panel.panel_id}"),
+    )
+
+    assert [panel.panel_id for panel in panels] == ["callback-panel-0", "callback-panel-1"]
+    assert events.index("sink:callback-panel-0") < events.index("reconcile:return")
+
+
 def test_stage_runner_reconciles_all_panels_with_local_hashes_and_pinned_identity():
     module = _module()
     provider = _FakeProvider()

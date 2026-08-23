@@ -1693,3 +1693,42 @@ RED/GREEN: the batch-position-shift regression passes, the complete `tests/test_
 The guarded cache-only resume namespace `/data/data/p0-aws-acceptance/video1-stream-subset-v3-warm-resume-08a503c-v4` restored the 37 accepted rows from the v3 checkpoint in immutable source order. The panel-admission funnel recorded raw=37, ingest assets=35, candidate=37, canonical=37, admitted=37, rejected=0, deduped=0, merged=0, needs-review=0; stream terminal coverage was 37/37, missing=0, duplicate IDs=false, writer_count=1, request_count=0, retries=0, elapsed=14.703s. A local provider-observe guard would fail before any network call on a cache miss, so this is a warm-resume proof, not a new provider run.
 
 This proves valid checkpoint reuse and deterministic order for the accepted subset only. It does not convert the earlier 37/40 cold attempt plus 3/3 replacement into a single cold 40/40 run, and it does not start story, narration, TTS, render, or QC.
+
+## 2026-08-23 - Source-level stream callback and admission audit
+
+The source-level streaming boundary is now implemented behind the existing
+`panel_sink` opt-in. `strip_segmentation.reconcile_sources` accepts an
+`on_reconciled(group, result)` callback and invokes it only after a source
+group has a `RECONCILED` result. Streaming callers build one local canonical
+coverage map, materialize only the completed group's exact panel regions, run
+the deterministic `panel-admission-v1` funnel, and send only admitted panels
+to the single writer before the reconciliation loop returns. Non-stream
+callers retain the historical reconciliation-first boundary and error codes.
+
+The funnel remains local and fail-closed: raw input images -> ingest assets ->
+candidate regions -> canonical regions -> admitted vision panels. Its ledger
+records counts, elapsed/reason transitions, source checksums, original bounds,
+candidate IDs, metrics, coverage, and a ledger hash. Gutter/transition,
+explicit no-story blank/title/cover, and exact/near duplicate decisions may
+reject; protected, dialogue-bearing, unresolved, or ambiguous content becomes
+`NEEDS_REVIEW`. No provider call makes these basic admissions.
+
+GREEN evidence for this checkpoint: 170 cloud mass-production tests, 47
+strip/segmentation tests, Ruff, compileall, and `git diff --check`; five
+existing Pillow deprecation warnings and the 13 unchanged pipeline fixture
+failures are not a full-suite GREEN claim. The clean v7 production probe was
+stopped safely after 4m13s because no visual checkpoint or first visual
+dispatch had occurred; 12 segmentation-review reports were observed at stop
+(13 persisted on the read-only follow-up), with no story, narration, TTS,
+render, or QC artifact.
+
+The read-only v6 database audit proves current analysis
+`54fc779ba2334d55a46f815fa56ccd6c` has 701 distinct canonical rows spanning
+source orders 0..702 with gaps 303 and 306, across 646 source assets. Two
+older 280-row analyses are stale and must not be selected. This explains the
+observed `prepared=703` domain versus `filtered=701` persisted-row arithmetic,
+but it does not prove the two missing rows' semantic reason codes; only a fresh
+funnel ledger may make that claim. The next safe action is a new 40-80 panel
+namespace through the source-level callback, with its full funnel table and
+first-dispatch timing, before any story/narration/TTS/render work. Preserve
+v6/v7 runtime namespaces read-only.

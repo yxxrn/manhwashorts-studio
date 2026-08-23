@@ -8350,45 +8350,55 @@ def prepare_project_panels(
     try:
         assets = pipeline.image_assets(pipeline.project_assets(db, project_id))
         inputs, asset_by_id = pipeline._build_source_inputs(assets)
-        if cached_segmentation is not None:
-            try:
-                reconciliation = strip_segmentation.restore_cached_reconciliation(
-                    inputs,
-                    cached_segmentation,
-                )
-            except strip_segmentation.StripSegmentationError as exc:
-                if exc.code != "segmentation.cache_invalid":
-                    raise
+    except Exception:
+        raise CloudStageError("cloud.panel_coverage_incomplete") from None
+
+    # Preserve the historical reconciliation-first error boundary for callers
+    # that do not request streaming.  Streaming callers need the local
+    # canonical map first so a completed source can materialize exact panel
+    # IDs while later source groups are still being reconciled.
+    reconciliation: Any | None = None
+    if panel_sink is None:
+        try:
+            if cached_segmentation is not None:
+                try:
+                    reconciliation = strip_segmentation.restore_cached_reconciliation(
+                        inputs,
+                        cached_segmentation,
+                    )
+                except strip_segmentation.StripSegmentationError as exc:
+                    if exc.code != "segmentation.cache_invalid":
+                        raise
+                    reconciliation = strip_segmentation.reconcile_sources(
+                        inputs,
+                        boundary_assessor=boundary_assessor,
+                        review_root=review_root,
+                    )
+            else:
                 reconciliation = strip_segmentation.reconcile_sources(
                     inputs,
                     boundary_assessor=boundary_assessor,
                     review_root=review_root,
                 )
-        else:
-            reconciliation = strip_segmentation.reconcile_sources(
-                inputs,
-                boundary_assessor=boundary_assessor,
-                review_root=review_root,
-            )
-    except strip_segmentation.StripSegmentationError as exc:
-        raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
-    except Exception:
-        raise CloudStageError("cloud.panel_coverage_incomplete") from None
-    if reconciliation.status != "RECONCILED" and review_only_auto_override:
-        try:
-            reconciliation = strip_segmentation.apply_review_only_overrides(
-                reconciliation,
-                actor_id="review-preview-auto",
-                reason="review-only preview retained provider-confirmed separators and kept ambiguous artwork contiguous",
-            )
         except strip_segmentation.StripSegmentationError as exc:
             raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
-    if reconciliation.status != "RECONCILED":
-        review_codes = [report.review_code for report in reconciliation.reports if report.review_code]
-        raise CloudStageError(
-            review_codes[0] if review_codes else "segmentation.coverage_incomplete",
-            reviewable=True,
-        )
+        except Exception:
+            raise CloudStageError("cloud.panel_coverage_incomplete") from None
+        if reconciliation.status != "RECONCILED" and review_only_auto_override:
+            try:
+                reconciliation = strip_segmentation.apply_review_only_overrides(
+                    reconciliation,
+                    actor_id="review-preview-auto",
+                    reason="review-only preview retained provider-confirmed separators and kept ambiguous artwork contiguous",
+                )
+            except strip_segmentation.StripSegmentationError as exc:
+                raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
+        if reconciliation.status != "RECONCILED":
+            review_codes = [report.review_code for report in reconciliation.reports if report.review_code]
+            raise CloudStageError(
+                review_codes[0] if review_codes else "segmentation.coverage_incomplete",
+                reviewable=True,
+            )
     try:
         coverage = segmentation.build_complete_coverage_map(
             inputs,
@@ -8417,15 +8427,58 @@ def prepare_project_panels(
     if not regions:
         raise CloudStageError("cloud.panel_coverage_incomplete")
 
-    panels: list[CloudPanelInput] = []
-    stream_candidate_regions: list[dict[str, Any]] = []
     panel_hints: dict[str, dict[str, Any]] = {}
-    stream_submitted_ids: set[str] = set()
-    for panel_order, region in enumerate(regions):
+    stream_candidate_regions: list[dict[str, Any]] = []
+    for region in coverage.regions:
         source_input = input_by_asset.get(region.source_asset_id)
         asset = asset_by_id.get(region.source_asset_id)
         if source_input is None or asset is None:
             raise CloudStageError("cloud.panel_lineage_invalid")
+        quality = getattr(asset, "panel_quality", {}) or {}
+        trim_classification = str(getattr(asset, "trim_classification", "") or "")
+        story_evidence = trim_classification.lower() not in {
+            "blank",
+            "near_blank",
+            "title",
+            "cover",
+            "gutter",
+            "transition",
+        }
+        if str(getattr(asset, "panel_decision", "") or "").lower() == "reject":
+            story_evidence = False
+        if region.region_class == "canonical_panel":
+            panel_hints[region.region_id] = {
+                "panel_decision": str(getattr(asset, "panel_decision", "") or ""),
+                "trim_classification": trim_classification,
+                "story_evidence": story_evidence,
+                "metrics": dict(quality) if isinstance(quality, Mapping) else {},
+            }
+        stream_candidate_regions.append(
+            {
+                "region_id": region.region_id,
+                "source_asset_id": asset.id,
+                "source_checksum": source_input.original_checksum,
+                "source_order": region.source_order,
+                "bounds": list(region.bounds),
+                "region_class": region.region_class,
+                "confidence": float(region.confidence),
+                "evidence": region.evidence,
+            }
+        )
+
+    panel_by_id: dict[str, CloudPanelInput] = {}
+    stream_submitted_ids: set[str] = set()
+    region_order = {region.region_id: order for order, region in enumerate(regions)}
+
+    def materialize_panel(region: Any) -> CloudPanelInput:
+        cached_panel = panel_by_id.get(region.region_id)
+        if cached_panel is not None:
+            return cached_panel
+        source_input = input_by_asset.get(region.source_asset_id)
+        asset = asset_by_id.get(region.source_asset_id)
+        if source_input is None or asset is None:
+            raise CloudStageError("cloud.panel_lineage_invalid")
+        panel_order = region_order[region.region_id]
         transient = PanelRegion(
             id=region.region_id,
             story_analysis_id="cloud-preview",
@@ -8463,64 +8516,105 @@ def prepare_project_panels(
             segmentation_version=strip_segmentation.SEGMENTATION_VERSION,
             prepared_order=panel_order,
         )
-        panels.append(panel)
-        asset = asset_by_id[panel.source_asset_id]
-        quality = getattr(asset, "panel_quality", {}) or {}
-        trim_classification = str(getattr(asset, "trim_classification", "") or "")
-        story_evidence = trim_classification.lower() not in {
-            "blank",
-            "near_blank",
-            "title",
-            "cover",
-            "gutter",
-            "transition",
-        }
-        if str(getattr(asset, "panel_decision", "") or "").lower() == "reject":
-            story_evidence = False
-        panel_hints[panel.panel_id] = {
-            "panel_decision": str(getattr(asset, "panel_decision", "") or ""),
-            "trim_classification": trim_classification,
-            "story_evidence": story_evidence,
-            "metrics": dict(quality) if isinstance(quality, Mapping) else {},
-        }
-        stream_candidate_regions.append(
-            {
-                "region_id": region.region_id,
-                "source_asset_id": asset.id,
-                "source_checksum": source_input.original_checksum,
-                "source_order": panel_order,
-                "bounds": list(region.bounds),
-                "region_class": region.region_class,
-                "confidence": float(region.confidence),
-                "evidence": region.evidence,
-            }
+        panel_by_id[panel.panel_id] = panel
+        return panel
+
+    def admit_and_sink(prefix_panels: Sequence[CloudPanelInput]) -> None:
+        if panel_sink is None:
+            return
+        prefix_admission = admit_panel_inputs(
+            tuple(sorted(prefix_panels, key=_admission_order)),
+            raw_image_count=len(assets),
+            ingest_asset_count=len(inputs),
+            candidate_regions=tuple(stream_candidate_regions),
+            panel_hints=panel_hints,
+            detector_version=PANEL_ADMISSION_DETECTOR_VERSION,
         )
-        if panel_sink is not None:
-            prefix_admission = admit_panel_inputs(
-                tuple(panels),
-                raw_image_count=len(assets),
-                ingest_asset_count=len(inputs),
-                candidate_regions=tuple(stream_candidate_regions),
-                panel_hints=panel_hints,
-                detector_version=PANEL_ADMISSION_DETECTOR_VERSION,
+        if prefix_admission.needs_review:
+            raise CloudStageError(
+                "segmentation.panel_admission_needs_review",
+                reviewable=True,
+                safe_metadata={
+                    "ledger_hash": prefix_admission.ledger["ledger_hash"],
+                    "needs_review": prefix_admission.ledger["counts"]["needs_review"],
+                },
             )
-            if prefix_admission.needs_review:
-                raise CloudStageError(
-                    "segmentation.panel_admission_needs_review",
-                    reviewable=True,
-                    safe_metadata={
-                        "ledger_hash": prefix_admission.ledger["ledger_hash"],
-                        "needs_review": prefix_admission.ledger["counts"]["needs_review"],
-                    },
-                )
-            if panel.panel_id in {item.panel_id for item in prefix_admission.admitted}:
+        admitted_ids = {item.panel_id for item in prefix_admission.admitted}
+        for panel in sorted(prefix_panels, key=_admission_order):
+            if panel.panel_id in admitted_ids and panel.panel_id not in stream_submitted_ids:
                 panel_sink(panel)
                 stream_submitted_ids.add(panel.panel_id)
+
+    def on_reconciled(group: tuple[Any, ...], _result: Any) -> None:
+        if panel_sink is None:
+            return
+        group_asset_ids = {str(item.source_asset_id) for item in group}
+        group_regions = tuple(
+            region
+            for region in regions
+            if str(region.source_asset_id) in group_asset_ids
+        )
+        if not group_regions:
+            return
+        for region in group_regions:
+            materialize_panel(region)
+        admit_and_sink(tuple(panel_by_id.values()))
+
+    stream_callback = on_reconciled if panel_sink is not None else None
+    if reconciliation is None:
+        try:
+            if cached_segmentation is not None:
+                try:
+                    reconciliation = strip_segmentation.restore_cached_reconciliation(
+                        inputs,
+                        cached_segmentation,
+                    )
+                except strip_segmentation.StripSegmentationError as exc:
+                    if exc.code != "segmentation.cache_invalid":
+                        raise
+                    reconciliation = strip_segmentation.reconcile_sources(
+                        inputs,
+                        boundary_assessor=boundary_assessor,
+                        review_root=review_root,
+                        on_reconciled=stream_callback,
+                    )
+            else:
+                reconciliation = strip_segmentation.reconcile_sources(
+                    inputs,
+                    boundary_assessor=boundary_assessor,
+                    review_root=review_root,
+                    on_reconciled=stream_callback,
+                )
+        except strip_segmentation.StripSegmentationError as exc:
+            raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
+        except CloudStageError:
+            raise
+        except Exception:
+            raise CloudStageError("cloud.panel_coverage_incomplete") from None
+    if reconciliation.status != "RECONCILED" and review_only_auto_override:
+        try:
+            reconciliation = strip_segmentation.apply_review_only_overrides(
+                reconciliation,
+                actor_id="review-preview-auto",
+                reason="review-only preview retained provider-confirmed separators and kept ambiguous artwork contiguous",
+            )
+        except strip_segmentation.StripSegmentationError as exc:
+            raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
+    if reconciliation.status != "RECONCILED":
+        review_codes = [report.review_code for report in reconciliation.reports if report.review_code]
+        raise CloudStageError(
+            review_codes[0] if review_codes else "segmentation.coverage_incomplete",
+            reviewable=True,
+        )
+    panels: list[CloudPanelInput] = []
+    for region in regions:
+        panels.append(materialize_panel(region))
+        admit_and_sink(tuple(panels))
     admission = admit_panel_inputs(
         panels,
         raw_image_count=len(assets),
         ingest_asset_count=len(inputs),
-        candidate_regions=coverage.regions,
+        candidate_regions=tuple(stream_candidate_regions),
         panel_hints=panel_hints,
         detector_version=PANEL_ADMISSION_DETECTOR_VERSION,
     )

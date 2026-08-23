@@ -923,3 +923,39 @@ The regression inserts an earlier panel on resume and proves the previously cach
 ## 2026-08-23 - Warm subset checkpoint
 
 The v4 cache-only run restored the accepted v3 rows after sorting checkpoint completion records by immutable source order. The admission ledger was raw=37, ingest=35, candidate=37, canonical=37, admitted=37, with no rejection, dedupe, merge, or review rows; stream terminal accounting was 37/37, one writer, zero provider requests, zero retries, and 14.703s elapsed. A forbidden-observe guard made cache misses fail before any external call. This validates warm reuse and deterministic ordering, not cold provider completeness or downstream production readiness.
+
+## 2026-08-23 - Source-level stream callback and admission audit
+
+The source preparation boundary now exposes an optional `on_reconciled`
+callback. After a source group returns `RECONCILED`, streaming preparation
+materializes that group's canonical regions from one local coverage map, runs
+the local `panel-admission-v1` funnel, and sends only admitted payloads to the
+existing bounded queue/single writer while later groups continue. The default
+non-stream path retains reconciliation-first ordering and legacy error codes.
+This is an overlap correction, not a quality-gate relaxation: the final global
+admission and complete-coverage checks still run before `prepare_project_panels`
+returns, and a later failure aborts the provisional stream.
+
+The funnel is the canonical pre-vision chain:
+`raw_input_images -> ingest_outputs -> candidate_regions -> canonical_regions -> admitted_vision_panels`.
+It records per-transition counts, elapsed time, reason code, source checksum,
+bounds, candidate IDs, detector/version, metrics, coverage manifest, and ledger
+hash. Verified gutters, explicit no-story blank/title/cover, and auditable
+exact/near duplicates can be rejected; protected/dialogue-bearing, unresolved,
+and ambiguous regions remain `NEEDS_REVIEW`. Provider output is not used for
+basic local filtering, and no story-panel bytes are silently dropped.
+
+Source/test GREEN evidence is 170 cloud tests plus 47 strip/segmentation tests;
+Ruff, compileall, and diff-check pass. The unchanged 13 pipeline fixture
+failures remain a named baseline exception. A clean v7 normal-entrypoint probe
+was stopped after 4m13s without a first visual dispatch or visual checkpoint;
+the preserved namespace contains segmentation-review reports only and no
+downstream artifact.
+
+The read-only v6 database explains only the shape of the prepared/filter
+observation: current analysis `54fc779ba2334d55a46f815fa56ccd6c` has 701
+distinct canonical rows over source-order domain 0..702 with gaps 303 and 306,
+while two older 280-row analyses are stale. This is not yet a semantic funnel
+ledger for the two gaps. A fresh 40-80 panel run must produce the complete
+funnel table and reason codes before any story/narration/TTS/render stage; v6
+and v7 runtime data remain read-only.
