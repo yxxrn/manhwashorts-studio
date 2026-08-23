@@ -8105,6 +8105,31 @@ def _seed_visual_subset_cache(
     )
 
 
+def _visual_cache_requires_subset_restore(
+    runner: CloudStageRunner,
+    cached: Mapping[str, Any] | None,
+    panels: Sequence[CloudPanelInput],
+) -> bool:
+    """Detect a partial/stale visual stage before checkpoint restoration."""
+
+    if not isinstance(cached, Mapping):
+        return True
+    try:
+        visual = VisualStageResult.from_dict(cached)
+        ordered = runner._ordered_panels(tuple(panels))
+    except (CloudStageError, KeyError, TypeError, ValueError):
+        return True
+    if visual.panel_ids != tuple(panel.panel_id for panel in ordered):
+        return True
+    for row, panel in zip(visual.panels, ordered, strict=True):
+        try:
+            if not _visual_cached_row_is_reusable(row, panel):
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
 def _find_cached_visual_subset(
     runner: CloudStageRunner,
     panels: Sequence[CloudPanelInput],
@@ -8736,7 +8761,11 @@ class CloudBatchService:
                 )
             panels, segmentation_state = prepared
             restored_visual_subset: VisualStageResult | None = None
-            if manifest_loaded and not isinstance(record.stage_results.get("visual"), Mapping):
+            if manifest_loaded and _visual_cache_requires_subset_restore(
+                self.runner,
+                record.stage_results.get("visual"),
+                panels,
+            ):
                 expected_source_hash = str(
                     manifest_raw.get("source_identity_hash", "")
                     if isinstance(manifest_raw, Mapping)

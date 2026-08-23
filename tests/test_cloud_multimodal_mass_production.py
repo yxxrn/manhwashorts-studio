@@ -2296,6 +2296,30 @@ def test_materialized_visual_subset_reseeds_post_materialization_cache_key():
     assert module.VisualStageResult.from_dict(cached_materialized) == valid
 
 
+def test_incomplete_visual_stage_requires_checkpoint_subset_restore():
+    module = _module()
+    panels = _panels(module, "partial-visual")
+    identity = _identity(module)
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+        cache=module.MemoryStageCache(),
+    )
+    valid = runner.run_visual_evidence(panels)
+    partial = replace(valid, panels=tuple(valid.panels[:2]))
+
+    assert module._visual_cache_requires_subset_restore(
+        runner,
+        partial.as_dict(),
+        panels,
+    ) is True
+    assert module._visual_cache_requires_subset_restore(
+        runner,
+        valid.as_dict(),
+        panels,
+    ) is False
+
+
 def test_file_stage_cache_round_trips_durable_values(tmp_path):
     module = _module()
     cache = module.FileStageCache(tmp_path / "stage-cache")
