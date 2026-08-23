@@ -959,3 +959,24 @@ while two older 280-row analyses are stale. This is not yet a semantic funnel
 ledger for the two gaps. A fresh 40-80 panel run must produce the complete
 funnel table and reason codes before any story/narration/TTS/render stage; v6
 and v7 runtime data remain read-only.
+
+## 2026-08-23 - Callback subset blocker and geometry diagnosis
+
+The fresh callback subset reached the intended overlap boundary but did not
+reach terminal visual coverage. The 40-region callback run emitted two visual
+chunks before a later source group failed `segmentation.ambiguous_boundary`.
+The separate local-only 41-region run emitted one visual chunk and measured
+first visual dispatch at 9.876s, before preparation returned at 15.745s, but
+also failed the strict segmentation boundary. These are control-flow
+diagnostics, not accepted visual subsets.
+
+The failure was isolated offline using only a persisted sanitized assessment
+and source lineage. For source family `129__010`, provider accepted positions
+were 2426, 3866, and 5229; the local candidate/ideal contract required
+1600, 3200, 4800, 6400, 8000, 9600, 11200, 12800, and 14400 within its
+configured proximity and valid-partition rules. The replay returned
+`NEEDS_REVIEW/segmentation.ambiguous_boundary`, so the current result is a
+correct fail-closed geometry decision, not a stream or panel-admission bug.
+Do not loosen proximity, fabricate a cut, or use a review override in the
+production proof. The next implementation slice must add a focused regression
+for the exact boundary contract before any new real subset request.

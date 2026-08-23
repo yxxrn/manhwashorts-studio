@@ -1732,3 +1732,29 @@ funnel ledger may make that claim. The next safe action is a new 40-80 panel
 namespace through the source-level callback, with its full funnel table and
 first-dispatch timing, before any story/narration/TTS/render work. Preserve
 v6/v7 runtime namespaces read-only.
+
+## 2026-08-23 - Source-callback subset evidence and blocker
+
+The first fresh callback subset selected 40 canonical regions from 37 assets
+and seven complete source groups. It dispatched two provisional visual chunks
+before the later source reconciliation failed with
+`segmentation.ambiguous_boundary`; the preserved namespace is
+`/data/data/p0-aws-acceptance/video1-stream-source-callback-v1`. It is not an
+accepted subset or downstream evidence.
+
+A second non-overlapping local-only subset selected 41 regions from 39 assets
+and eight complete groups. It measured first visual dispatch at 9.876s, before
+preparation returned at 15.745s, with no boundary-provider request; it then
+failed closed on the same segmentation blocker after one provisional visual
+chunk. The preserved namespace is
+`/data/data/p0-aws-acceptance/video1-stream-source-callback-local-v1`.
+
+Offline replay of a sanitized real assessment for source family `129__010`
+proved this is not a local admission or stream-order contradiction: the
+provider-confirmed candidate positions were 2426, 3866, and 5229 while the
+deterministic ideal positions were 1600, 3200, 4800, 6400, 8000, 9600, 11200,
+12800, and 14400. None satisfied the configured candidate proximity/partition
+contract, so `segmentation.ambiguous_boundary` is the correct fail-closed
+result. Do not convert this into a cut, use review override, or start
+story/narration/TTS/render until a generic segmentation contract fix is
+RED/GREEN and published.

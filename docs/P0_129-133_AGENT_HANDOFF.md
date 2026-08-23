@@ -1726,3 +1726,28 @@ reasons for the two gaps. Only a fresh funnel ledger may make that claim. The
 next action after publication is a new 40-80 panel namespace through the
 source callback, with the full funnel table and first-dispatch/overlap timing;
 do not start story/narration/TTS/render from partial visual evidence.
+
+## 2026-08-23 - Callback subset blocker and strict geometry evidence
+
+The first source-callback subset used 40 canonical regions from 37 assets and
+seven complete source groups. Two visual chunks were provisionally submitted
+before a later source group returned `segmentation.ambiguous_boundary`; the
+prepare transaction failed closed and no terminal visual ledger was produced.
+The runtime is preserved at
+`/data/data/p0-aws-acceptance/video1-stream-source-callback-v1`.
+
+The second non-overlapping local-only subset used 41 regions from 39 assets and
+eight complete groups. It proved first visual dispatch at 9.876s, before
+preparation returned at 15.745s, with no boundary-provider call and one
+provisional visual chunk. It then failed the same strict segmentation blocker;
+runtime is preserved at
+`/data/data/p0-aws-acceptance/video1-stream-source-callback-local-v1`.
+
+Offline replay of the sanitized provider assessment for source family
+`129__010` returned accepted positions 2426, 3866, and 5229 against the local
+ideal positions 1600/3200/4800/6400/8000/9600/11200/12800/14400. The existing
+proximity and valid-partition checks correctly returned
+`NEEDS_REVIEW/segmentation.ambiguous_boundary`. This is not permission to
+relax the geometry gate, manually cut, or invoke the review-only override.
+Add a focused generic RED/GREEN contract fix before another provider subset;
+until then Video 1 and all downstream stages remain blocked.
