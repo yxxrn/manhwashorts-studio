@@ -8093,13 +8093,51 @@ def _find_cached_visual_subset(
 ) -> VisualStageResult | None:
     """Restore the largest exact visual cache subset after a resume gap."""
 
+    ordered = tuple(panels)
+    prompt = runner.prompts["visual"]
+    checkpoint_scope = runner._checkpoint_scope(
+        _visual_panel_identities(ordered), prompt
+    )
+    checkpoint_rows = runner._checkpoint_load(checkpoint_scope)
+    if checkpoint_rows:
+        checkpoint_panels: list[dict[str, Any]] = []
+        panel_identity_hashes: list[str] = []
+        for panel in ordered:
+            row = checkpoint_rows.get(panel.panel_id)
+            if not isinstance(row, Mapping):
+                continue
+            try:
+                reusable = _visual_cached_row_is_reusable(row, panel)
+            except (TypeError, ValueError):
+                reusable = False
+            if not reusable:
+                continue
+            row_identity_hash = str(row.get("cache_identity_hash", ""))
+            if (
+                panel.identity_descriptor_hash
+                and row_identity_hash
+                and row_identity_hash != panel.identity_descriptor_hash
+            ):
+                continue
+            checkpoint_panels.append(dict(row))
+            panel_identity_hashes.append(row_identity_hash)
+        if checkpoint_panels:
+            return VisualStageResult(
+                panels=tuple(checkpoint_panels),
+                source_hash=expected_source_hash,
+                model_identity_hash=runner.model_identity.identity_hash,
+                prompt_version=prompt[0],
+                prompt_sha256=prompt[1],
+                reconciled=True,
+                cache_identity_version=VISUAL_CACHE_IDENTITY_VERSION,
+                panel_identity_hashes=tuple(panel_identity_hashes),
+            )
+
     iter_records = getattr(runner.cache, "iter_records", None)
     if not callable(iter_records):
         return None
-    ordered = tuple(panels)
     panel_by_id = {panel.panel_id: panel for panel in ordered}
     ordered_index = {panel.panel_id: index for index, panel in enumerate(ordered)}
-    prompt = runner.prompts["visual"]
     candidates: list[VisualStageResult] = []
     try:
         records = iter_records()
