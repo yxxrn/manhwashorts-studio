@@ -16,7 +16,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
-from math import isfinite
+from math import ceil, isfinite
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,7 @@ from PIL import Image, UnidentifiedImageError
 
 from app.services import strips
 
-SEGMENTATION_VERSION = "color-agnostic-strip-reconciliation-v1"
+SEGMENTATION_VERSION = "color-agnostic-strip-reconciliation-v2"
 BOUNDARY_PROMPT_VERSION = "strip-boundary-assessment-v1"
 MAX_ANALYSIS_PIXELS = 20_000_000
 BOUNDARY_REQUEST_MAX_BYTES = 2_000_000
@@ -32,6 +32,7 @@ BOUNDARY_TILE_MAX_COUNT = 12
 BOUNDARY_TILE_MAX_WIDTH = 512
 BOUNDARY_TILE_MAX_HEIGHT = 768
 BOUNDARY_TILE_JPEG_QUALITY = 68
+MAX_SEGMENT_FRAME_MULTIPLIER = 2.0
 _PROTECTED_KINDS = {"balloon", "face", "subject", "action", "effect", "continuity"}
 _HASH_FIELDS = {"analysis_hash", "boundary_hash", "evidence_hash", "mask_sha256"}
 Bounds = tuple[int, int, int, int]
@@ -244,6 +245,94 @@ def _candidate_pool(
             )
     ordered = tuple(sorted(values.values(), key=lambda candidate: (-candidate.confidence, candidate.position)))
     return ordered, ideals
+
+
+def _select_geometry_valid_partition(
+    candidates: Sequence[BoundaryCandidate],
+    *,
+    width: int,
+    height: int,
+    min_segment_px: int,
+    target_parts: int,
+    max_parts: int,
+) -> tuple[int, ...]:
+    """Select a deterministic complete partition from trusted candidates.
+
+    Target positions are a ranking signal, not a requirement that every real
+    panel have equal height.  The hard geometry contract remains explicit:
+    every span must be at least ``min_segment_px`` and at most two target
+    frame-heights, and enough cuts must exist to cover the source without an
+    oversized terminal span.  Dynamic programming keeps the result bounded and
+    stable when provider boundaries are nonuniform.
+    """
+    if not candidates:
+        return ()
+    frame_height = width / strips.TARGET_RATIO
+    max_segment_px = max(
+        min_segment_px,
+        int(round(frame_height * MAX_SEGMENT_FRAME_MULTIPLIER)),
+    )
+    required_cuts = max(1, ceil(height / max_segment_px) - 1)
+    ordered = tuple(sorted(candidates, key=lambda item: item.position))
+    max_cuts = min(max_parts - 1, len(ordered))
+    if required_cuts > max_cuts:
+        return ()
+
+    states: list[dict[int, tuple[int, ...]]] = [{} for _ in ordered]
+
+    def prefix_key(path: tuple[int, ...]) -> tuple[float, float, tuple[int, ...]]:
+        spans = (path[0], *tuple(right - left for left, right in zip(path, path[1:], strict=False)))
+        confidence = sum(
+            next(item.confidence for item in ordered if item.position == position)
+            for position in path
+        )
+        return (
+            sum(abs(span - frame_height) for span in spans),
+            -confidence,
+            path,
+        )
+
+    for index, candidate in enumerate(ordered):
+        if min_segment_px <= candidate.position <= max_segment_px:
+            states[index][1] = (candidate.position,)
+        for previous_index, previous in enumerate(ordered[:index]):
+            gap = candidate.position - previous.position
+            if not min_segment_px <= gap <= max_segment_px:
+                continue
+            for cuts, path in states[previous_index].items():
+                if cuts >= max_cuts:
+                    continue
+                extended = (*path, candidate.position)
+                current = states[index].get(cuts + 1)
+                if current is None or prefix_key(extended) < prefix_key(current):
+                    states[index][cuts + 1] = extended
+
+    ranked: list[tuple[tuple[object, ...], tuple[int, ...]]] = []
+    for state in states:
+        for path in state.values():
+            final_span = height - path[-1]
+            if not min_segment_px <= final_span <= max_segment_px:
+                continue
+            spans = (path[0], *tuple(right - left for left, right in zip(path, path[1:], strict=False)), final_span)
+            confidence = sum(
+                next(item.confidence for item in ordered if item.position == position)
+                for position in path
+            )
+            ranked.append(
+                (
+                    (
+                        abs(len(spans) - target_parts),
+                        sum(abs(span - frame_height) for span in spans),
+                        -confidence,
+                        path,
+                    ),
+                    path,
+                )
+            )
+    if not ranked:
+        return ()
+    ranked.sort(key=lambda item: item[0])
+    return ranked[0][1]
 
 
 def _tiles(image: Image.Image, *, tile_height: int = 2048, overlap: int = 128) -> tuple[dict[str, Any], ...]:
@@ -584,52 +673,53 @@ def reconcile_strip(
     provider_by_position = {
         item["y"]: item for item in (provider_assessment or {}).get("boundaries", ())
     }
-    selected: list[int] = []
-    rejected: list[dict[str, Any]] = []
-    for ideal in ideals:
-        nearby = [candidate for candidate in candidates if abs(candidate.position - ideal) <= max(min_segment_px, int(width / strips.TARGET_RATIO * 0.2))]
-        if provider_assessment is not None:
-            nearby = [candidate for candidate in nearby if candidate.position in provider_by_position]
-            nearby = [candidate for candidate in nearby if provider_by_position[candidate.position]["accepted"]]
-            nearby.sort(
-                key=lambda candidate: (
-                    -provider_by_position[candidate.position]["confidence"],
-                    abs(candidate.position - ideal),
-                    candidate.position,
-                )
-            )
-        else:
-            nearby = [candidate for candidate in nearby if candidate.confidence >= 0.7]
-            nearby.sort(key=lambda candidate: (-candidate.confidence, abs(candidate.position - ideal), candidate.position))
-        choice = next(
-            (
-                candidate
-                for candidate in nearby
-                if not selected or candidate.position - selected[-1] >= min_segment_px
-            ),
-            None,
+    if provider_assessment is not None:
+        selectable = [
+            candidate
+            for candidate in candidates
+            if candidate.position in provider_by_position
+            and provider_by_position[candidate.position]["accepted"]
+        ]
+    else:
+        selectable = [candidate for candidate in candidates if candidate.confidence >= 0.7]
+    selected = list(
+        _select_geometry_valid_partition(
+            selectable,
+            width=width,
+            height=height,
+            min_segment_px=min_segment_px,
+            target_parts=len(ideals) + 1,
+            max_parts=max_parts,
         )
-        if choice is None:
-            reasons = [
-                item["reason"]
-                for item in (provider_assessment or {}).get("boundaries", ())
-                if abs(item["y"] - ideal) <= max(min_segment_px, int(width / strips.TARGET_RATIO * 0.2))
-            ]
+    )
+    rejected: list[dict[str, Any]] = []
+    if not selected:
+        radius = max(min_segment_px, int(width / strips.TARGET_RATIO * 0.2))
+        protected_reasons = {
+            item["reason"]
+            for item in (provider_assessment or {}).get("boundaries", ())
+            if item.get("reason") == "segmentation.protected_boundary"
+        }
+        for ideal in ideals:
             rejected.append(
                 {
                     "ideal": ideal,
-                    "reason": "segmentation.protected_boundary" if "segmentation.protected_boundary" in reasons else "segmentation.ambiguous_boundary",
-                    "candidate_positions": [candidate.position for candidate in by_position.values() if abs(candidate.position - ideal) <= max(min_segment_px, int(width / strips.TARGET_RATIO * 0.2))],
+                    "reason": "segmentation.protected_boundary" if protected_reasons else "segmentation.ambiguous_boundary",
+                    "candidate_positions": [
+                        candidate.position
+                        for candidate in by_position.values()
+                        if abs(candidate.position - ideal) <= radius
+                    ],
                 }
             )
-            continue
-        selected.append(choice.position)
     boundaries = [0, *selected, height]
+    frame_height = width / strips.TARGET_RATIO
+    max_segment_px = max(min_segment_px, int(round(frame_height * MAX_SEGMENT_FRAME_MULTIPLIER)))
     valid_partition = bool(selected) and all(
-        right - left >= min_segment_px
+        min_segment_px <= right - left <= max_segment_px
         for left, right in zip(boundaries, boundaries[1:], strict=False)
-    ) and len(set(selected)) == len(selected)
-    if len(selected) != len(ideals) or not valid_partition:
+    ) and len(selected) >= max(1, ceil(height / max_segment_px) - 1) and len(selected) <= max_parts - 1 and len(set(selected)) == len(selected)
+    if not valid_partition:
         review_code = (
             "segmentation.protected_boundary"
             if any(item["reason"] == "segmentation.protected_boundary" for item in rejected)

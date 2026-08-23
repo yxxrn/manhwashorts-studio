@@ -980,3 +980,24 @@ correct fail-closed geometry decision, not a stream or panel-admission bug.
 Do not loosen proximity, fabricate a cut, or use a review override in the
 production proof. The next implementation slice must add a focused regression
 for the exact boundary contract before any new real subset request.
+
+## 2026-08-23 - Versioned nonuniform boundary selection
+
+The source boundary had a local false rejection: the old greedy reducer
+required a cut near each equal-height ideal before checking whether the
+provider-confirmed candidates formed a safe complete partition. The v2
+reducer now searches only trusted accepted candidates, ranks target-count and
+geometry deviation deterministically, and enforces hard minimum/maximum span,
+coverage, uniqueness, and required-cut constraints. The maximum is two target
+frame-heights; it is not a quality relaxation. A sparse candidate set that
+leaves an oversized terminal span still returns
+`segmentation.ambiguous_boundary`. The versioned segmentation identity forces
+old derived reconciliation metadata to be invalidated rather than mixed.
+
+The RED fixture is a nonuniform 900x3565 source with a safe cut at y=731,
+outside the old ideal-radius window; it is GREEN with the v2 selector. A
+negative 8000px sparse-candidate fixture remains blocked. The pre-fix short
+subset is not proof: 41 target regions, 38 assets, 19 provisional submissions,
+37 requests, first dispatch 14.653s, preparation 227.594s, and no final funnel
+because a later source group remained ambiguous. Publish the source/test fix,
+then run a fresh namespace and require a complete funnel plus terminal N/N.

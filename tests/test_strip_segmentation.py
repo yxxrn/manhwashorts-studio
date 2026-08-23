@@ -387,6 +387,71 @@ def test_provider_can_choose_a_nearby_safe_cut_when_ideal_is_rejected():
     assert all(cut not in {733, 1467} for cut in result.selected_cuts)
 
 
+def test_provider_nonuniform_safe_partition_is_not_rejected_for_ideal_distance():
+    module = _module()
+
+    def assessor(request):
+        target = min(request.candidates, key=lambda candidate: abs(candidate.position - 731))
+        return {
+            "source_asset_id": request.source_asset_id,
+            "source_checksum": request.source_checksum,
+            "random_sampling": False,
+            "boundaries": [
+                {
+                    "y": candidate.position,
+                    "accepted": candidate.position == target.position,
+                    "confidence": 0.98 if candidate.position == target.position else 0.0,
+                    "reason": "nonuniform structural separator" if candidate.position == target.position else "not selected",
+                    "protected_regions": [],
+                }
+                for candidate in request.candidates
+            ],
+        }
+
+    result = module.reconcile_strip(
+        _strip_bytes(width=900, height=3_565),
+        source_asset_id="nonuniform-safe-partition",
+        original_checksum="n" * 64,
+        boundary_assessor=assessor,
+    )
+
+    assert result.status == "RECONCILED"
+    assert result.selected_cuts == (731,)
+    assert result.spans == ((0, 731), (731, 3_565))
+
+
+def test_provider_sparse_cuts_cannot_hide_an_oversized_terminal_scene():
+    module = _module()
+
+    def assessor(request):
+        target = min(request.candidates, key=lambda candidate: abs(candidate.position - 1_600))
+        return {
+            "source_asset_id": request.source_asset_id,
+            "source_checksum": request.source_checksum,
+            "random_sampling": False,
+            "boundaries": [
+                {
+                    "y": candidate.position,
+                    "accepted": candidate.position == target.position,
+                    "confidence": 0.98 if candidate.position == target.position else 0.0,
+                    "reason": "sparse structural separator" if candidate.position == target.position else "not selected",
+                    "protected_regions": [],
+                }
+                for candidate in request.candidates
+            ],
+        }
+
+    result = module.reconcile_strip(
+        _strip_bytes(width=900, height=8_000),
+        source_asset_id="sparse-oversized-terminal",
+        original_checksum="o" * 64,
+        boundary_assessor=assessor,
+    )
+
+    assert result.status == "NEEDS_REVIEW"
+    assert result.review_code == "segmentation.ambiguous_boundary"
+
+
 def test_provider_tiles_have_bounded_encoded_size_and_explicit_format():
     module = _module()
     image = Image.effect_noise((900, 5334), 100).convert("RGB")

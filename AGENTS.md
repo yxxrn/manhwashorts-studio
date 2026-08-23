@@ -1758,3 +1758,28 @@ contract, so `segmentation.ambiguous_boundary` is the correct fail-closed
 result. Do not convert this into a cut, use review override, or start
 story/narration/TTS/render until a generic segmentation contract fix is
 RED/GREEN and published.
+
+## 2026-08-23 - Nonuniform segmentation contract correction
+
+The local false-rejection defect is now isolated and fixed in the next source
+checkpoint: reconciliation previously required one accepted cut within a
+fixed 20%-of-frame radius of every equal-height ideal. That rejected a real
+provider-confirmed nonuniform separator even when the resulting source
+partition was complete and safe. `SEGMENTATION_VERSION` is now v2 and selects
+only provider-accepted (or local high-confidence) candidates with a bounded
+deterministic partition search. Hard geometry remains unchanged in spirit:
+every span is at least `min_segment_px`, at most two target frame-heights, and
+the number of cuts must cover the source without an oversized terminal span;
+stable target-count, geometry-deviation, confidence, and position tie-breaks
+restore deterministic order. Sparse candidates that cannot cover the source
+still fail closed as `segmentation.ambiguous_boundary`.
+
+RED/GREEN: the nonuniform 900x3565 regression failed against the old ideal
+distance rule, then passed with the sparse-oversized-terminal negative and the
+complete strip/segmentation matrix. The full cloud multimodal matrix also
+passed; no gate or protected-region rule was relaxed. The short-group subset
+before this fix remains diagnostic only (41 target regions, 38 assets, 19
+provisional submissions, 37 requests, first dispatch 14.653s, preparation
+227.594s, `segmentation.ambiguous_boundary`); its final panel-admission funnel
+was not emitted and it must not be reused as evidence. Publish this source/test
+fix before a new subset run.

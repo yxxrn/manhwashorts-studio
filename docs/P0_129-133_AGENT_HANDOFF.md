@@ -1751,3 +1751,24 @@ proximity and valid-partition checks correctly returned
 relax the geometry gate, manually cut, or invoke the review-only override.
 Add a focused generic RED/GREEN contract fix before another provider subset;
 until then Video 1 and all downstream stages remain blocked.
+
+## 2026-08-23 - Segmentation v2 handoff
+
+The next source/test checkpoint fixes a proven local false rejection in the
+strip geometry reducer. Equal-height ideal proximity is now a ranking signal,
+not a mandatory admission predicate. A deterministic bounded selector uses
+only provider-accepted/local high-confidence candidates and requires a full
+ordered partition whose spans are between the existing minimum and two target
+frame-heights, with enough cuts to cover the source. The segmentation identity
+is v2, so stale reconciliation metadata cannot be reused. Protected regions,
+lineage, coverage, and ambiguous-boundary fail-closed behavior remain strict.
+
+RED/GREEN is covered by a nonuniform 900x3565 safe partition and an oversized
+terminal-span negative. The pre-fix short subset at
+`/data/data/p0-aws-acceptance/video1-stream-source-callback-short-v2` is
+read-only diagnostic data only: 41 selected canonical regions, 38 assets, 19
+provisional submissions, 37 requests, first dispatch 14.653s, preparation
+227.594s, and final `segmentation.ambiguous_boundary`; no final funnel or
+terminal visual evidence exists. After this checkpoint is published, start a
+new namespace and require the funnel table and exact terminal N/N before any
+story/narration/TTS/render work.
