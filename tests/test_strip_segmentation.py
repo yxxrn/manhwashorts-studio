@@ -349,7 +349,9 @@ def test_provider_request_contains_overlapping_tiles_and_candidate_boundaries():
     assert len(request.tiles) >= 2
     assert request.tiles[0]["overlap_below"] > 0
     assert request.tiles[1]["overlap_above"] > 0
-    assert all(tile["payload_b64"] for tile in request.tiles)
+    assert all(isinstance(tile["payload"], bytes) and tile["payload"] for tile in request.tiles)
+    assert all("payload_b64" not in tile for tile in request.tiles)
+    assert "payload" not in request.as_payload()["overlapping_source_tiles"][0]
 
 
 def test_provider_can_choose_a_nearby_safe_cut_when_ideal_is_rejected():
@@ -458,7 +460,12 @@ def test_provider_tiles_have_bounded_encoded_size_and_explicit_format():
 
     tiles = module._tiles(image)
     encoded = json.dumps(
-        {"overlapping_source_tiles": list(tiles)},
+        {
+            "overlapping_source_tiles": [
+                {key: value for key, value in tile.items() if key != "payload"}
+                for tile in tiles
+            ]
+        },
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")

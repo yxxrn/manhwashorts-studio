@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib
 import json
 import string
@@ -227,13 +228,40 @@ class VisionCapabilityError(RuntimeError):
 class VisionRequestInvalid(VisionCapabilityError):
     code = "vision_request_invalid"
 
+    def __init__(self, message: str = "invalid vision request") -> None:
+        super().__init__(message)
+        self.retryable = False
+        self.status_code: int | None = None
+        self.retry_after_s: float | None = None
+
 
 class VisionResponseInvalid(VisionCapabilityError):
     code = "vision_response_invalid"
 
+    def __init__(self, message: str = "invalid vision response") -> None:
+        super().__init__(message)
+        self.retryable = False
+        self.status_code: int | None = None
+        self.retry_after_s: float | None = None
+
 
 class VisionProviderRequestFailed(VisionCapabilityError):
     code = "vision_provider_request_failed"
+
+    def __init__(
+        self,
+        message: str = "vision provider request failed",
+        *,
+        status_code: int | None = None,
+        retry_after_s: float | None = None,
+        retryable: bool = True,
+        timeout: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = bool(retryable)
+        self.status_code = status_code
+        self.retry_after_s = retry_after_s
+        self.timeout = bool(timeout)
 
 
 def _chat_completion_content(response: httpx.Response) -> str:
@@ -316,7 +344,19 @@ def _raise_http_failure(response: httpx.Response) -> None:
         and body.get("code") == "invalid_image"
     ):
         raise VisionRequestInvalid() from None
-    raise VisionProviderRequestFailed() from None
+    retry_after: float | None = None
+    raw_retry_after = getattr(response, "headers", {}).get("retry-after")
+    if isinstance(raw_retry_after, str):
+        try:
+            retry_after = max(0.0, min(60.0, float(raw_retry_after.strip())))
+        except (TypeError, ValueError):
+            retry_after = None
+    retryable = response.status_code == 429 or response.status_code >= 500
+    raise VisionProviderRequestFailed(
+        status_code=int(response.status_code),
+        retry_after_s=retry_after,
+        retryable=retryable,
+    ) from None
 
 
 class OpenAICompatibleVisionProvider:
@@ -326,6 +366,10 @@ class OpenAICompatibleVisionProvider:
         self._base_url = base_url.strip() if isinstance(base_url, str) else ""
         self._model = model.strip() if isinstance(model, str) else ""
         self._api_key = api_key.strip() if isinstance(api_key, str) else ""
+        # Process-local only: encoded image data is never persisted or exposed
+        # in stage payloads.  The bounded cache avoids re-encoding the same
+        # panel on a missing-only retry.
+        self._ephemeral_image_cache: dict[str, str] = {}
 
     def __repr__(self) -> str:
         return (
@@ -345,6 +389,17 @@ class OpenAICompatibleVisionProvider:
         """Configured endpoint without credentials, for pinned stage identity."""
 
         return self._base_url
+
+    def _encoded_image(self, *, mime_type: str, payload: bytes) -> str:
+        digest = hashlib.sha256(payload).hexdigest()
+        key = f"{mime_type.lower()}:{digest}"
+        encoded = self._ephemeral_image_cache.get(key)
+        if encoded is None:
+            encoded = base64.b64encode(payload).decode("ascii")
+            if len(self._ephemeral_image_cache) >= 256:
+                self._ephemeral_image_cache.pop(next(iter(self._ephemeral_image_cache)))
+            self._ephemeral_image_cache[key] = encoded
+        return encoded
 
     def capability(self) -> VisionCapabilityReport:
         available = self._configured()
@@ -368,7 +423,12 @@ class OpenAICompatibleVisionProvider:
             raise VisionCapabilityError()
 
         panels = _validate_request(request)
-        payload = _build_payload(request, panels, self._model)
+        payload = _build_payload(
+            request,
+            panels,
+            self._model,
+            encode_image=self._encoded_image,
+        )
         try:
             response = httpx.post(
                 f"{self._base_url.rstrip('/')}/chat/completions",
@@ -382,8 +442,12 @@ class OpenAICompatibleVisionProvider:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             _raise_http_failure(exc.response)
+        except httpx.TimeoutException:
+            raise VisionProviderRequestFailed(timeout=True, retryable=True) from None
+        except httpx.TransportError:
+            raise VisionProviderRequestFailed(retryable=True) from None
         except Exception:
-            raise VisionProviderRequestFailed() from None
+            raise VisionProviderRequestFailed(retryable=False) from None
 
         try:
             content = _chat_completion_content(response)
@@ -437,8 +501,12 @@ class OpenAICompatibleVisionProvider:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             _raise_http_failure(exc.response)
+        except httpx.TimeoutException:
+            raise VisionProviderRequestFailed(timeout=True, retryable=True) from None
+        except httpx.TransportError:
+            raise VisionProviderRequestFailed(retryable=True) from None
         except Exception:
-            raise VisionProviderRequestFailed() from None
+            raise VisionProviderRequestFailed(retryable=False) from None
 
         try:
             provider_payload = response.json()
@@ -525,8 +593,111 @@ class OpenAICompatibleVisionProvider:
             value = _decode_json_content(content)
         except httpx.HTTPStatusError as exc:
             _raise_http_failure(exc.response)
+        except httpx.TimeoutException:
+            raise VisionProviderRequestFailed(timeout=True, retryable=True) from None
+        except httpx.TransportError:
+            raise VisionProviderRequestFailed(retryable=True) from None
         except Exception:
-            raise VisionProviderRequestFailed() from None
+            raise VisionProviderRequestFailed(retryable=False) from None
+        if not isinstance(value, Mapping):
+            raise VisionResponseInvalid()
+        return value
+
+    def complete_json_with_images(
+        self,
+        *,
+        stage: str,
+        prompt_version: str,
+        prompt_sha256: str,
+        prompt_text: str = "",
+        payload: Mapping[str, Any],
+        images: tuple[Mapping[str, Any], ...],
+    ) -> Mapping[str, Any]:
+        """Send structured JSON plus real multimodal image content.
+
+        ``payload`` remains metadata-only.  Raw bytes are encoded only while
+        constructing the request body and are retained solely in the bounded
+        process-local image cache for a missing-only retry.
+        """
+
+        if (
+            not isinstance(stage, str)
+            or not stage.strip()
+            or not isinstance(prompt_version, str)
+            or not prompt_version.strip()
+            or not isinstance(prompt_sha256, str)
+            or len(prompt_sha256) != 64
+            or not isinstance(prompt_text, str)
+            or not isinstance(payload, Mapping)
+            or not isinstance(images, tuple)
+            or not images
+        ):
+            raise VisionRequestInvalid()
+        report = self.capability()
+        if not report.available:
+            raise VisionCapabilityError()
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": (
+                    f"{prompt_text.rstrip()}\n\nStage: {stage}. Prompt version: "
+                    f"{prompt_version}. Prompt SHA-256: {prompt_sha256}. "
+                    "Return only valid JSON. Metadata: "
+                    f"{json.dumps(payload, sort_keys=True, separators=(',', ':'))}"
+                ),
+            }
+        ]
+        for image in images:
+            mime_type = image.get("mime_type")
+            image_bytes = image.get("payload")
+            if (
+                not isinstance(mime_type, str)
+                or not mime_type.lower().startswith("image/")
+                or not isinstance(image_bytes, bytes)
+                or not image_bytes
+            ):
+                raise VisionRequestInvalid()
+            encoded = self._encoded_image(
+                mime_type=mime_type,
+                payload=image_bytes,
+            )
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{encoded}",
+                    },
+                }
+            )
+        body = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": content}],
+            "response_format": {"type": "json_object"},
+            "temperature": 0,
+            "max_tokens": 65536,
+        }
+        try:
+            response = httpx.post(
+                f"{self._base_url.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=VISION_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            value = _decode_json_content(_chat_completion_content(response))
+        except httpx.HTTPStatusError as exc:
+            _raise_http_failure(exc.response)
+        except httpx.TimeoutException:
+            raise VisionProviderRequestFailed(timeout=True, retryable=True) from None
+        except httpx.TransportError:
+            raise VisionProviderRequestFailed(retryable=True) from None
+        except (TypeError, ValueError, KeyError):
+            raise VisionResponseInvalid() from None
+        except Exception:
+            raise VisionProviderRequestFailed(retryable=False) from None
         if not isinstance(value, Mapping):
             raise VisionResponseInvalid()
         return value
@@ -641,6 +812,8 @@ def _build_payload(
     request: VisionObservationRequest,
     panels: tuple[dict[str, Any], ...],
     model: str,
+    *,
+    encode_image=None,
 ) -> dict[str, Any]:
     metadata = {
         "analysis_run_id": request.analysis_run_id,
@@ -691,7 +864,11 @@ def _build_payload(
         )
     content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
     for panel in panels:
-        encoded = base64.b64encode(panel["payload"]).decode("ascii")
+        encoded = (
+            encode_image(mime_type=panel["mime_type"], payload=panel["payload"])
+            if encode_image is not None
+            else base64.b64encode(panel["payload"]).decode("ascii")
+        )
         content.append(
             {
                 "type": "image_url",

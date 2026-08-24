@@ -254,6 +254,41 @@ def test_invalid_image_http_error_is_classified_as_request_invalid(monkeypatch):
         provider.observe(_request(module))
 
 
+def test_observation_reuses_one_ephemeral_encoding_per_panel(monkeypatch):
+    module = _vision_module()
+    import mock_provider
+
+    mock_provider.reset_vision_state()
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url="http://provider.test/v1",
+        model="mock-large",
+        api_key="test-key",
+    )
+    original = module.base64.b64encode
+    calls = []
+
+    def counted(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(module.base64, "b64encode", counted)
+    response = mock_provider.default_vision_response()
+    import httpx
+
+    monkeypatch.setattr(
+        module.httpx,
+        "post",
+        lambda *args, **kwargs: httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps(response)}}]},
+            request=httpx.Request("POST", "http://provider.test/v1/chat/completions"),
+        ),
+    )
+    provider.observe(_request(module))
+    provider.observe(_request(module))
+    assert len(calls) == len(_panels())
+
+
 def test_observation_accepts_a_whole_json_code_fence(monkeypatch):
     module = _vision_module()
     import httpx
@@ -316,6 +351,48 @@ def test_sse_chat_completion_is_assembled_for_json_stage(monkeypatch):
     )
 
     assert result == {"stage": "ok"}
+
+
+def test_complete_json_with_images_sends_image_parts_not_json_payload_text(monkeypatch):
+    module = _vision_module()
+    import httpx
+
+    captured = {}
+    response = httpx.Response(
+        200,
+        json={"choices": [{"message": {"content": '{"stage":"ok"}'}}]},
+        request=httpx.Request("POST", "http://provider.test/v1/chat/completions"),
+    )
+
+    def fake_post(*args, **kwargs):
+        captured["body"] = kwargs["json"]
+        return response
+
+    monkeypatch.setattr(module.httpx, "post", fake_post)
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url="http://provider.test/v1",
+        model="mock-large",
+        api_key="test-key",
+    )
+    result = provider.complete_json_with_images(
+        stage="strip_segmentation",
+        prompt_version="strip-boundary-assessment-v1",
+        prompt_sha256="a" * 64,
+        payload={"source_asset_id": "asset-a"},
+        images=(
+            {
+                "mime_type": "image/jpeg",
+                "payload": b"jpeg-bytes",
+                "tile_index": 0,
+            },
+        ),
+    )
+    assert result == {"stage": "ok"}
+    body = captured["body"]
+    parts = _body_parts(body)
+    assert any(part.get("type") == "image_url" for part in parts)
+    assert "payload_b64" not in json.dumps(body)
+    assert "jpeg-bytes" not in json.dumps(body)
 
 
 def test_complete_json_accepts_a_whole_json_code_fence(monkeypatch):

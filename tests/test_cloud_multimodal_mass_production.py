@@ -651,7 +651,7 @@ def test_stage_runner_sends_strip_boundary_tiles_through_pinned_prompt():
     assert "protected_regions. Never rename y to position or cut." in provider.boundary_prompts[-1]
 
 
-def test_stage_runner_retries_foreign_boundary_lineage_then_accepts_valid_response():
+def test_stage_runner_rejects_foreign_boundary_lineage_without_duplicate_request():
     module = _module()
     provider = _BoundaryLineageProvider(foreign_responses=1)
     runner = module.CloudStageRunner(
@@ -660,10 +660,11 @@ def test_stage_runner_retries_foreign_boundary_lineage_then_accepts_valid_respon
         max_attempts=2,
     )
 
-    result = runner.assess_strip_boundaries(_boundary_request(module))
+    with pytest.raises(module.strip_segmentation.StripSegmentationError) as caught:
+        runner.assess_strip_boundaries(_boundary_request(module))
 
-    assert result["source_asset_id"] == "strip-a"
-    assert len([call for call in provider.calls if call[0] == "strip_segmentation"]) == 2
+    assert caught.value.code == "segmentation.provider_lineage_invalid"
+    assert len([call for call in provider.calls if call[0] == "strip_segmentation"]) == 1
 
 
 def test_stage_runner_keeps_foreign_boundary_lineage_blocked_after_bounded_retries():
@@ -679,7 +680,7 @@ def test_stage_runner_keeps_foreign_boundary_lineage_blocked_after_bounded_retri
         runner.assess_strip_boundaries(_boundary_request(module))
 
     assert caught.value.code == "segmentation.provider_lineage_invalid"
-    assert len([call for call in provider.calls if call[0] == "strip_segmentation"]) == 2
+    assert len([call for call in provider.calls if call[0] == "strip_segmentation"]) == 1
 
 
 def test_causal_map_prompt_declares_exact_reconciled_object_fields():
@@ -6983,7 +6984,8 @@ def test_stream_session_uses_bounded_backpressure_and_one_writer():
     assert stream.writer_thread_count == 1
     assert runner.last_visual_stream_metrics["writer_count"] == 1
     assert runner.last_visual_stream_metrics["max_queue_depth"] <= 1
-    assert runner.last_visual_stream_metrics["worker_levels"] == [4, 8, 16, 32]
+    assert runner.last_visual_stream_metrics["worker_levels"] == [8]
+    assert runner.last_visual_stream_metrics["worker_count"] == 8
     assert runner.last_visual_stream_metrics["request_count"] == len(provider.calls)
 
 
@@ -7111,9 +7113,72 @@ def test_stream_retry_tracks_only_missing_panel_ids():
     ) == ("panel-b", "panel-c")
 
 
-def test_adaptive_stream_concurrency_rolls_back_at_first_instability_knee():
+def test_fixed_stream_worker_count_is_configurable_and_only_selected_workers_start():
     module = _module()
-    controller = module._AdaptiveVisualConcurrency((4, 8, 16, 32), wave_panel_target=2)
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-worker-count"))
+    )
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+        visual_parallel_workers=3,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=1,
+        max_estimated_bytes=10_000_000,
+    )
+    assert len(stream._workers) == 3
+    for panel in panels:
+        stream.submit(panel)
+    stream.finish(panels)
+    assert runner.last_visual_stream_metrics["worker_count"] == 3
+
+
+def test_typed_retryable_provider_error_retries_once_and_permanent_does_not():
+    module = _module()
+    provider = _FakeProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        max_attempts=2,
+    )
+    calls = []
+
+    def retryable():
+        calls.append("retryable")
+        if len(calls) == 1:
+            raise module.VisionProviderRequestFailed(
+                status_code=429,
+                retry_after_s=0,
+                retryable=True,
+            )
+        return {"ok": True}
+
+    assert runner._call(retryable) == {"ok": True}
+    assert calls == ["retryable", "retryable"]
+
+    permanent_calls = []
+
+    def permanent():
+        permanent_calls.append("permanent")
+        raise module.VisionProviderRequestFailed(
+            status_code=400,
+            retryable=False,
+        )
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._call(permanent)
+    assert caught.value.code == "cloud.provider_request_failed"
+    assert permanent_calls == ["permanent"]
+
+
+def test_fixed_stream_concurrency_keeps_configured_width_and_metrics():
+    module = _module()
+    controller = module._FixedVisualConcurrency(8, wave_panel_target=2)
 
     controller.acquire()
     controller.release(panel_count=1, request_count=1, latency_s=1.0, categories={})
@@ -7137,7 +7202,7 @@ def test_adaptive_stream_concurrency_rolls_back_at_first_instability_knee():
     )
 
     snapshot = controller.snapshot()
-    assert snapshot["selected_worker_level"] == 4
+    assert snapshot["selected_worker_level"] == 8
     assert snapshot["waves"][-1]["stable"] is False
 
 

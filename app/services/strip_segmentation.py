@@ -9,7 +9,6 @@ boundaries into an auditable review state.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import io
 import json
@@ -73,6 +72,13 @@ class BoundaryRequest:
     detector_version: str = strips.COLOR_AGNOSTIC_DETECTOR_VERSION
 
     def as_payload(self) -> dict[str, Any]:
+        # Raw tile bytes are request content, not JSON metadata.  The adapter
+        # receives them separately as multimodal image parts; keeping them out
+        # of this payload prevents accidental persistence/serialization.
+        metadata_tiles = [
+            {key: value for key, value in tile.items() if key != "payload"}
+            for tile in self.tiles
+        ]
         return {
             "contract_version": BOUNDARY_PROMPT_VERSION,
             "source_asset_id": self.source_asset_id,
@@ -80,7 +86,7 @@ class BoundaryRequest:
             "source_dimensions": [self.width, self.height],
             "detector_version": self.detector_version,
             "candidate_boundaries": [candidate.as_dict() for candidate in self.candidates],
-            "overlapping_source_tiles": [dict(tile) for tile in self.tiles],
+            "overlapping_source_tiles": metadata_tiles,
             "random_sampling": False,
         }
 
@@ -364,7 +370,7 @@ def _tiles(image: Image.Image, *, tile_height: int = 2048, overlap: int = 128) -
             progressive=False,
             subsampling=2,
         )
-        encoded = base64.b64encode(output.getvalue()).decode("ascii")
+        payload = output.getvalue()
         result.append(
             {
                 "tile_index": index,
@@ -375,14 +381,18 @@ def _tiles(image: Image.Image, *, tile_height: int = 2048, overlap: int = 128) -
                 "mime_type": "image/jpeg",
                 "encoded_width": preview.width,
                 "encoded_height": preview.height,
-                "payload_b64": encoded,
+                # Ephemeral bytes consumed by a multimodal adapter.  This
+                # field is intentionally removed by BoundaryRequest.as_payload
+                # and is never written to a report/checkpoint.
+                "payload": payload,
+                "payload_sha256": hashlib.sha256(payload).hexdigest(),
             }
         )
         if end == height:
             break
         start = end - overlap
         index += 1
-    payload_bytes = sum(len(tile["payload_b64"]) for tile in result)
+    payload_bytes = sum(len(tile["payload"]) for tile in result)
     if payload_bytes > BOUNDARY_REQUEST_MAX_BYTES:
         raise StripSegmentationError("segmentation.tile_payload_budget_exceeded")
     return tuple(result)

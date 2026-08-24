@@ -14,6 +14,7 @@ import json
 import math
 import os
 import queue
+import random
 import re
 import sys
 import threading
@@ -37,7 +38,13 @@ from app.services import (
     visual_narrative_repair,
     visual_scoring,
 )
-from app.services.vision_adapter import VisionObservationRequest
+from app.services.vision_adapter import (
+    VisionCapabilityError,
+    VisionObservationRequest,
+    VisionProviderRequestFailed,
+    VisionRequestInvalid,
+    VisionResponseInvalid,
+)
 
 CAUSAL_MAP_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "cloud_causal_map_v1.txt"
 CAUSAL_MAP_PROMPT_VERSION = "cloud-causal-map-v2"
@@ -50,7 +57,7 @@ VISUAL_REQUEST_MAX_PANELS = 8  # preview-only: 4-5 worker saturation sweet spot
 VISUAL_REQUEST_MAX_ESTIMATED_BYTES = 3_500_000  # preview-only: larger visual batches
 VISUAL_REQUEST_OVERLAP = 0
 VISUAL_STREAM_VERSION = "visual-stream-v1"
-VISUAL_STREAM_WORKER_LEVELS = (4, 8, 16, 32)
+VISUAL_STREAM_WORKER_COUNT = 8
 VISUAL_STREAM_QUEUE_SIZE = 8
 VISUAL_STREAM_WAVE_PANEL_TARGET = 32
 STORY_MAP_CHUNK_STEP = 180
@@ -2290,7 +2297,7 @@ class CloudStageRunner:
         queue_size: int = VISUAL_STREAM_QUEUE_SIZE,
         max_panels: int = VISUAL_REQUEST_MAX_PANELS,
         max_estimated_bytes: int = VISUAL_REQUEST_MAX_ESTIMATED_BYTES,
-        worker_levels: Sequence[int] = VISUAL_STREAM_WORKER_LEVELS,
+        worker_count: int | None = None,
     ) -> _StreamingVisualEvidenceSession:
         """Start bounded producer/consumer visual analysis for cold preparation."""
 
@@ -2299,7 +2306,11 @@ class CloudStageRunner:
             queue_size=queue_size,
             max_panels=max_panels,
             max_estimated_bytes=max_estimated_bytes,
-            worker_levels=worker_levels,
+            worker_count=(
+                self.visual_parallel_workers
+                if worker_count is None
+                else int(worker_count)
+            ),
         )
 
     def _response_shape_metrics_for_failure(self, code: str) -> dict[str, Any]:
@@ -2394,7 +2405,7 @@ class CloudStageRunner:
     def _call(self, operation, *, request_stage: str = "other") -> Any:
         last_error: Exception | None = None
         stage = request_stage if request_stage in self.request_counts else "other"
-        for _ in range(self.max_attempts):
+        for attempt in range(self.max_attempts):
             stage_limit = (
                 self.max_narration_requests
                 if stage == "narration"
@@ -2422,8 +2433,24 @@ class CloudStageRunner:
                 return operation()
             except CloudStageError:
                 raise
+            except (VisionRequestInvalid, VisionResponseInvalid) as exc:
+                last_error = exc
+                break
+            except VisionProviderRequestFailed as exc:
+                last_error = exc
+                if not exc.retryable or attempt + 1 >= self.max_attempts:
+                    break
+                delay = exc.retry_after_s
+                if delay is None:
+                    base = min(8.0, 0.5 * (2**attempt))
+                    delay = base + random.uniform(0.0, base * 0.25)
+                if delay > 0:
+                    time.sleep(float(delay))
             except Exception as exc:
                 last_error = exc
+                if attempt + 1 < self.max_attempts:
+                    base = min(8.0, 0.5 * (2**attempt))
+                    time.sleep(base + random.uniform(0.0, base * 0.25))
         provider_error_code = str(getattr(last_error, "code", "") or "")
         provider_error_mapping = {
             "vision_response_invalid": "cloud.provider_response_invalid",
@@ -2433,38 +2460,87 @@ class CloudStageRunner:
         }
         mapped_code = provider_error_mapping.get(provider_error_code)
         if mapped_code is not None:
+            metadata = {
+                "provider_error_code": provider_error_code,
+                "request_stage": stage,
+            }
+            status_code = getattr(last_error, "status_code", None)
+            retry_after = getattr(last_error, "retry_after_s", None)
+            if isinstance(status_code, int):
+                metadata["status_code"] = status_code
+            if isinstance(retry_after, (int, float)):
+                metadata["retry_after_s"] = float(retry_after)
             raise CloudStageError(
                 mapped_code,
                 reviewable=mapped_code == "cloud.provider_response_invalid",
-                safe_metadata={
-                    "provider_error_code": provider_error_code,
-                    "request_stage": stage,
-                },
+                safe_metadata=metadata,
             ) from None
         raise CloudStageError("cloud.provider_request_failed") from None
 
     def assess_strip_boundaries(self, request: strip_segmentation.BoundaryRequest) -> Mapping[str, Any]:
-        """Ask the pinned model to validate candidates and protected regions."""
+        """Validate strip boundaries using real images or a local fallback.
+
+        Generated strip tiles carry ephemeral bytes.  New requests use the
+        provider's multimodal method when available; legacy metadata-only
+        fixtures retain the text contract for backward-compatible reads.
+        """
         prompt = self.prompts["segmentation"]
         payload = request.as_payload()
-        for attempt in range(self.max_attempts):
+        images = tuple(
+            tile
+            for tile in request.tiles
+            if isinstance(tile.get("payload"), bytes) and tile.get("payload")
+        )
+        complete_with_images = getattr(self.provider, "complete_json_with_images", None)
+        if images and callable(complete_with_images):
             raw = self._call(
-                lambda attempt=attempt: self.provider.complete_json(
+                lambda: complete_with_images(
                     stage="strip_segmentation",
                     prompt_version=prompt[0],
                     prompt_sha256=prompt[1],
                     prompt_text=prompt[2],
-                    payload={**payload, "lineage_retry_attempt": attempt},
+                    payload=payload,
+                    images=images,
                 ),
                 request_stage="other",
             )
-            if not isinstance(raw, Mapping):
-                return raw
-            if (
-                raw.get("source_asset_id") == request.source_asset_id
-                and raw.get("source_checksum") == request.source_checksum
-            ):
-                return raw
+        elif images:
+            # A provider without multimodal support must not receive bytes as
+            # JSON text.  The deterministic local assessment is conservative:
+            # only candidates already scored by the local detector can pass.
+            raw = {
+                "source_asset_id": request.source_asset_id,
+                "source_checksum": request.source_checksum,
+                "random_sampling": False,
+                "boundaries": [
+                    {
+                        "y": candidate.position,
+                        "accepted": candidate.confidence >= 0.7,
+                        "confidence": candidate.confidence,
+                        "reason": "segmentation.local_detector_assessment",
+                        "protected_regions": [],
+                    }
+                    for candidate in request.candidates
+                ],
+            }
+        else:
+            raw = self._call(
+                lambda: self.provider.complete_json(
+                    stage="strip_segmentation",
+                    prompt_version=prompt[0],
+                    prompt_sha256=prompt[1],
+                    prompt_text=prompt[2],
+                    payload=payload,
+                ),
+                request_stage="other",
+            )
+        if not isinstance(raw, Mapping):
+            return raw
+        if (
+            raw.get("source_asset_id") == request.source_asset_id
+            and raw.get("source_checksum") == request.source_checksum
+        ):
+            return raw
         raise strip_segmentation.StripSegmentationError(
             "segmentation.provider_lineage_invalid"
         )
@@ -7840,21 +7916,26 @@ def _stream_error_category(code: str) -> str:
     return "other_failure"
 
 
-class _AdaptiveVisualConcurrency:
-    """Rate-safe worker controller with deterministic 4/8/16/32 waves."""
+class _FixedVisualConcurrency:
+    """Bounded fixed-width controller with observability-compatible metrics.
+
+    Worker selection is intentionally made once when the stream starts.  The
+    controller still records wave latency and failure categories so operators
+    can tune the configured width between runs without creating or destroying
+    workers while a run is in flight.
+    """
 
     def __init__(
         self,
-        worker_levels: Sequence[int],
+        worker_count: int,
         *,
         wave_panel_target: int = VISUAL_STREAM_WAVE_PANEL_TARGET,
     ) -> None:
-        levels = tuple(int(level) for level in worker_levels)
-        if not levels or any(level < 1 for level in levels) or tuple(sorted(set(levels))) != levels:
+        count = int(worker_count)
+        if count < 1:
             raise CloudStageError("cloud.visual_stream_config_invalid")
-        self.worker_levels = levels
+        self.worker_count = count
         self.wave_panel_target = max(1, int(wave_panel_target))
-        self.level_index = 0
         self.in_flight = 0
         self.peak_in_flight = 0
         self.previous_p95: float | None = None
@@ -7868,7 +7949,7 @@ class _AdaptiveVisualConcurrency:
 
     @property
     def current_limit(self) -> int:
-        return self.worker_levels[self.level_index]
+        return self.worker_count
 
     def acquire(self) -> None:
         with self._condition:
@@ -7927,10 +8008,6 @@ class _AdaptiveVisualConcurrency:
                 )
                 if p95 is not None:
                     self.previous_p95 = p95
-                if not unstable and self.level_index + 1 < len(self.worker_levels):
-                    self.level_index += 1
-                elif unstable and self.level_index > 0:
-                    self.level_index -= 1
                 self._wave_started = time.monotonic()
                 self._wave_panels = 0
                 self._wave_requests = 0
@@ -7957,7 +8034,8 @@ class _AdaptiveVisualConcurrency:
                     }
                 )
             return {
-                "worker_levels": list(self.worker_levels),
+                "worker_count": self.worker_count,
+                "worker_levels": [self.worker_count],
                 "selected_worker_level": self.current_limit,
                 "peak_in_flight": self.peak_in_flight,
                 "waves": waves,
@@ -7974,7 +8052,7 @@ class _StreamingVisualEvidenceSession:
         queue_size: int,
         max_panels: int,
         max_estimated_bytes: int,
-        worker_levels: Sequence[int],
+        worker_count: int,
     ) -> None:
         if queue_size < 1:
             raise CloudStageError("cloud.visual_stream_config_invalid")
@@ -7982,8 +8060,8 @@ class _StreamingVisualEvidenceSession:
         self.queue_size = int(queue_size)
         self.max_panels = int(max_panels)
         self.max_estimated_bytes = int(max_estimated_bytes)
-        self.worker_levels = tuple(int(value) for value in worker_levels)
-        self._controller = _AdaptiveVisualConcurrency(self.worker_levels)
+        self.worker_count = int(worker_count)
+        self._controller = _FixedVisualConcurrency(self.worker_count)
         self._tasks: queue.Queue[Any] = queue.Queue(maxsize=self.queue_size)
         self._events: queue.Queue[Any] = queue.Queue(maxsize=max(2, self.queue_size * 2))
         self._stop = threading.Event()
@@ -8022,7 +8100,7 @@ class _StreamingVisualEvidenceSession:
                 args=(index,),
                 name=f"visual-stream-worker-{index}",
             )
-            for index in range(max(self.worker_levels))
+            for index in range(self.worker_count)
         ]
         for worker in self._workers:
             worker.start()
@@ -8032,7 +8110,10 @@ class _StreamingVisualEvidenceSession:
             provider=self.runner.provider,
             model_identity=self.runner.model_identity,
             cache=MemoryStageCache(),
-            max_attempts=self.runner.max_attempts,
+            # The stream owns the explicit missing-panel retry budget.  Keep
+            # transport retries out of each worker runner so a failed chunk
+            # cannot amplify into nested whole-batch retries.
+            max_attempts=1,
             min_request_interval_s=self.runner.min_request_interval_s,
             estimated_cost_per_request=self.runner.estimated_cost_per_request,
             allow_balloon_unknown=self.runner.allow_balloon_unknown,
@@ -8107,7 +8188,11 @@ class _StreamingVisualEvidenceSession:
         error_code = ""
         categories: dict[str, int] = {}
         retries = 0
-        for attempt in range(1 + (1 if self.runner.max_attempts > 1 else 0)):
+        # Retry only the IDs omitted by a successful response.  A worker
+        # runner is single-attempt; transport retry ownership stays in the
+        # parent runner and is never multiplied by this loop.
+        retry_budget = 1 if self.runner.max_attempts > 1 else 0
+        for attempt in range(1 + retry_budget):
             if not pending:
                 break
             try:
@@ -8133,7 +8218,7 @@ class _StreamingVisualEvidenceSession:
                 error_code = exc.code
                 category = _stream_error_category(exc.code)
                 categories[category] = categories.get(category, 0) + 1
-                if attempt >= (1 if self.runner.max_attempts > 1 else 0):
+                if attempt >= retry_budget:
                     break
                 retries += 1
         if pending and not error_code:
@@ -8511,6 +8596,7 @@ def prepare_project_panels(
 
     panel_by_id: dict[str, CloudPanelInput] = {}
     stream_submitted_ids: set[str] = set()
+    stream_admitted_keys: dict[tuple[Any, ...], CloudPanelInput] = {}
     last_panel_admission: PanelAdmissionResult | None = None
     region_order = {region.region_id: order for order, region in enumerate(regions)}
 
@@ -8563,31 +8649,59 @@ def prepare_project_panels(
         panel_by_id[panel.panel_id] = panel
         return panel
 
-    def admit_and_sink(prefix_panels: Sequence[CloudPanelInput]) -> None:
+    candidate_region_by_key = {
+        (str(item.get("source_asset_id", "")), tuple(item.get("bounds", ()))): item
+        for item in stream_candidate_regions
+        if isinstance(item, Mapping) and isinstance(item.get("bounds"), (list, tuple))
+    }
+
+    def admit_incremental_and_sink(panel: CloudPanelInput) -> None:
+        """Admit one newly reconciled panel without rescanning a prefix."""
+
         nonlocal last_panel_admission
         if panel_sink is None:
             return
-        prefix_admission = admit_panel_inputs(
-            tuple(sorted(prefix_panels, key=_admission_order)),
+        exact_key = _admission_panel_key(panel)
+        if exact_key in stream_admitted_keys:
+            return
+        for prior in stream_admitted_keys.values():
+            if (
+                prior.source_checksum == panel.source_checksum
+                and prior.source_dimensions == panel.source_dimensions
+                and prior.panel_bounds is not None
+                and panel.panel_bounds is not None
+                and _admission_area(panel.panel_bounds) > 0
+                and _admission_intersection_area(panel.panel_bounds, prior.panel_bounds)
+                / min(_admission_area(panel.panel_bounds), _admission_area(prior.panel_bounds))
+                >= 0.98
+            ):
+                return
+        region = candidate_region_by_key.get(
+            (panel.source_asset_id, tuple(panel.panel_bounds or ()))
+        )
+        if region is None:
+            raise CloudStageError("cloud.panel_admission_invalid")
+        incremental = admit_panel_inputs(
+            (panel,),
             raw_image_count=len(assets),
             ingest_asset_count=len(inputs),
-            candidate_regions=tuple(stream_candidate_regions),
-            panel_hints=panel_hints,
+            candidate_regions=(region,),
+            panel_hints={panel.panel_id: dict((panel_hints or {}).get(panel.panel_id, {}))},
             detector_version=PANEL_ADMISSION_DETECTOR_VERSION,
         )
-        last_panel_admission = prefix_admission
-        if prefix_admission.needs_review:
+        last_panel_admission = incremental
+        if incremental.needs_review:
             raise CloudStageError(
                 "segmentation.panel_admission_needs_review",
                 reviewable=True,
                 safe_metadata={
-                    "ledger_hash": prefix_admission.ledger["ledger_hash"],
-                    "needs_review": prefix_admission.ledger["counts"]["needs_review"],
+                    "ledger_hash": incremental.ledger["ledger_hash"],
+                    "needs_review": incremental.ledger["counts"]["needs_review"],
                 },
             )
-        admitted_ids = {item.panel_id for item in prefix_admission.admitted}
-        for panel in sorted(prefix_panels, key=_admission_order):
-            if panel.panel_id in admitted_ids and panel.panel_id not in stream_submitted_ids:
+        if incremental.admitted:
+            stream_admitted_keys[exact_key] = panel
+            if panel.panel_id not in stream_submitted_ids:
                 panel_sink(panel)
                 stream_submitted_ids.add(panel.panel_id)
 
@@ -8624,8 +8738,7 @@ def prepare_project_panels(
         if not group_regions:
             return
         for region in group_regions:
-            materialize_panel(region)
-        admit_and_sink(tuple(panel_by_id.values()))
+            admit_incremental_and_sink(materialize_panel(region))
 
     stream_callback = on_reconciled if panel_sink is not None else None
     if reconciliation is None:
@@ -8688,8 +8801,9 @@ def prepare_project_panels(
         )
     panels: list[CloudPanelInput] = []
     for region in regions:
-        panels.append(materialize_panel(region))
-        admit_and_sink(tuple(panels))
+        panel = materialize_panel(region)
+        panels.append(panel)
+        admit_incremental_and_sink(panel)
     admission = admit_panel_inputs(
         panels,
         raw_image_count=len(assets),
