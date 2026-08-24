@@ -123,6 +123,109 @@ def test_tampered_segmentation_checkpoint_fails_closed_before_resume():
         module.restore_cached_reconciliation((source,), cached)
 
 
+def test_source_checkpoint_resumes_only_missing_group_after_transport_failure(tmp_path):
+    module = _module()
+    from app.services.vision_adapter import VisionProviderRequestFailed
+
+    sources = (
+        _input(module, "source-one", _strip_bytes(), order=0),
+        _input(module, "source-two", _strip_bytes(), order=1),
+    )
+    calls: list[str] = []
+
+    def assessor(request):
+        calls.append(request.source_asset_id)
+        if request.source_asset_id == "source-two" and calls.count("source-two") == 1:
+            raise VisionProviderRequestFailed(
+                status_code=503,
+                retry_after_s=0.0,
+                retryable=False,
+            )
+        return {
+            "source_asset_id": request.source_asset_id,
+            "source_checksum": request.source_checksum,
+            "random_sampling": False,
+            "boundaries": [
+                {
+                    "y": candidate.position,
+                    "accepted": True,
+                    "confidence": 0.99,
+                    "reason": "provider separator",
+                    "protected_regions": [],
+                }
+                for candidate in request.candidates
+            ],
+        }
+
+    with pytest.raises(module.StripSegmentationError) as caught:
+        module.reconcile_sources(
+            sources,
+            boundary_assessor=assessor,
+            checkpoint_root=tmp_path,
+            checkpoint_identity={"model": "m1", "prompt": "p1"},
+        )
+    assert caught.value.code == "segmentation.provider_request_failed"
+    assert caught.value.safe_metadata["status_code"] == 503
+    assert caught.value.safe_metadata["provider_error_category"] == "server"
+    assert caught.value.safe_metadata["durable_progress"] is True
+    assert calls == ["source-one", "source-two"]
+
+    resumed = module.reconcile_sources(
+        sources,
+        boundary_assessor=assessor,
+        checkpoint_root=tmp_path,
+        checkpoint_identity={"model": "m1", "prompt": "p1"},
+    )
+    assert resumed.status == "RECONCILED"
+    assert calls == ["source-one", "source-two", "source-two"]
+    assert sorted(path.name for path in tmp_path.glob("*.json"))
+
+
+def test_source_checkpoint_invalidates_on_model_or_prompt_identity_change(tmp_path):
+    module = _module()
+    source = _input(module, "identity-source", _strip_bytes())
+    calls = 0
+
+    def assessor(request):
+        nonlocal calls
+        calls += 1
+        return {
+            "source_asset_id": request.source_asset_id,
+            "source_checksum": request.source_checksum,
+            "random_sampling": False,
+            "boundaries": [
+                {
+                    "y": candidate.position,
+                    "accepted": True,
+                    "confidence": 0.99,
+                    "reason": "provider separator",
+                    "protected_regions": [],
+                }
+                for candidate in request.candidates
+            ],
+        }
+
+    module.reconcile_sources(
+        (source,),
+        boundary_assessor=assessor,
+        checkpoint_root=tmp_path,
+        checkpoint_identity={"model": "m1", "prompt": "p1"},
+    )
+    module.reconcile_sources(
+        (source,),
+        boundary_assessor=assessor,
+        checkpoint_root=tmp_path,
+        checkpoint_identity={"model": "m2", "prompt": "p1"},
+    )
+    module.reconcile_sources(
+        (source,),
+        boundary_assessor=assessor,
+        checkpoint_root=tmp_path,
+        checkpoint_identity={"model": "m2", "prompt": "p2"},
+    )
+    assert calls == 3
+
+
 def test_artwork_connected_strip_without_separator_becomes_needs_review():
     module = _module()
 

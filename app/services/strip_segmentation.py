@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -40,9 +41,17 @@ Bounds = tuple[int, int, int, int]
 class StripSegmentationError(RuntimeError):
     """Safe, stable error at the source-segmentation boundary."""
 
-    def __init__(self, code: str, message: str = "strip segmentation failed", *, reviewable: bool = True):
+    def __init__(
+        self,
+        code: str,
+        message: str = "strip segmentation failed",
+        *,
+        reviewable: bool = True,
+        safe_metadata: Mapping[str, Any] | None = None,
+    ):
         self.code = code
         self.reviewable = reviewable
+        self.safe_metadata = dict(safe_metadata or {})
         super().__init__(f"{code}: {message}")
 
 
@@ -484,39 +493,167 @@ def _validate_provider_assessment(
     return {"boundaries": boundaries, "source_asset_id": request.source_asset_id}
 
 
-_RETRYABLE_PROVIDER_CODES = frozenset(
-    {
-        "segmentation.provider_coordinate_invalid",
-        "segmentation.provider_geometry_invalid",
-        "segmentation.provider_response_invalid",
-        "segmentation.provider_lineage_invalid",
-        "segmentation.provider_sampling_invalid",
-    }
-)
-
-
 def _assess_with_retry(
     boundary_assessor: Callable[[BoundaryRequest], Mapping[str, Any]],
     request: BoundaryRequest,
     attempts: int,
 ) -> dict[str, Any]:
-    """Call the provider assessor, retrying only flaky provider errors.
+    """Validate one provider response.
 
-    The strict validation still runs after every response; when the budget is
-    exhausted the last failure is re-raised exactly as before. This never
-    bypasses or relaxes a gate.
+    Transport retry ownership lives in the provider adapter/runner.  Keeping
+    this boundary single-shot prevents nested retry multiplication and ensures
+    schema, lineage, and geometry failures are permanent for this source.
+    ``attempts`` remains an API-compatible argument for older callers.
     """
-    last: StripSegmentationError | None = None
-    for attempt in range(max(1, int(attempts))):
-        try:
-            raw = boundary_assessor(request)
-            return _validate_provider_assessment(raw, request)
-        except StripSegmentationError as exc:
-            last = exc
-            if exc.code not in _RETRYABLE_PROVIDER_CODES or attempt + 1 >= max(1, int(attempts)):
-                raise
-    assert last is not None
-    raise last
+    del attempts
+    raw = boundary_assessor(request)
+    return _validate_provider_assessment(raw, request)
+
+
+def _safe_provider_error(exc: Exception) -> tuple[str, bool, dict[str, Any]]:
+    """Map provider failures while retaining only typed, non-sensitive facts."""
+
+    code = str(getattr(exc, "code", "") or "")
+    mapping = {
+        "cloud.provider_request_failed": "segmentation.provider_request_failed",
+        "cloud.provider_request_invalid": "segmentation.provider_request_invalid",
+        "cloud.provider_response_invalid": "segmentation.provider_response_invalid",
+        "vision_provider_request_failed": "segmentation.provider_request_failed",
+        "vision_request_invalid": "segmentation.provider_request_invalid",
+        "vision_response_invalid": "segmentation.provider_response_invalid",
+    }
+    mapped = mapping.get(code, "segmentation.provider_request_failed")
+    raw = getattr(exc, "safe_metadata", {})
+    metadata = dict(raw) if isinstance(raw, Mapping) else {}
+    for name in ("status_code", "retry_after_s", "timeout"):
+        value = getattr(exc, name, None)
+        if isinstance(value, (int, float, bool)) and not isinstance(value, bool) or (
+            name == "timeout" and isinstance(value, bool)
+        ):
+            metadata.setdefault(name, value)
+    subtype = getattr(exc, "transport_subtype", None)
+    if isinstance(subtype, str) and subtype:
+        metadata.setdefault("transport_subtype", subtype)
+    if "provider_error_category" not in metadata:
+        if metadata.get("timeout"):
+            metadata["provider_error_category"] = "timeout"
+        elif metadata.get("status_code") == 429:
+            metadata["provider_error_category"] = "rate_limit"
+        elif isinstance(metadata.get("status_code"), int) and metadata["status_code"] >= 500:
+            metadata["provider_error_category"] = "server"
+        else:
+            metadata["provider_error_category"] = "transport"
+    metadata.setdefault("provider_error_code", code or type(exc).__name__)
+    metadata["retryable"] = bool(getattr(exc, "retryable", False))
+    return mapped, bool(getattr(exc, "reviewable", True)), metadata
+
+
+def _checkpoint_identity_hash(identity: Mapping[str, Any] | None) -> str:
+    return _hash({"segmentation_version": SEGMENTATION_VERSION, "identity": dict(identity or {})})
+
+
+def _checkpoint_path(
+    root: Path,
+    *,
+    source_asset_id: str,
+    source_checksum: str,
+    identity: Mapping[str, Any],
+) -> Path:
+    key = _hash(
+        {
+            "source_asset_id": source_asset_id,
+            "source_checksum": source_checksum,
+            "segmentation_version": SEGMENTATION_VERSION,
+            "identity_hash": _checkpoint_identity_hash(identity),
+        }
+    )
+    return Path(root) / f"{key}.json"
+
+
+def _load_source_checkpoint(
+    group: Sequence[Any],
+    *,
+    payload: bytes,
+    source_asset_id: str,
+    source_checksum: str,
+    root: Path | None,
+    identity: Mapping[str, Any] | None,
+) -> StripSegmentationResult | None:
+    if root is None or identity is None:
+        return None
+    path = _checkpoint_path(
+        root,
+        source_asset_id=source_asset_id,
+        source_checksum=source_checksum,
+        identity=identity,
+    )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    if (
+        raw.get("checkpoint_version") != 1
+        or raw.get("source_asset_id") != source_asset_id
+        or raw.get("source_checksum") != source_checksum
+        or raw.get("segmentation_version") != SEGMENTATION_VERSION
+        or raw.get("identity_hash") != _checkpoint_identity_hash(identity)
+    ):
+        return None
+    report = raw.get("report")
+    if not isinstance(report, Mapping):
+        return None
+    ordered_ids = [item.source_asset_id for item in group]
+    expected_hash = _hash(
+        {
+            "version": SEGMENTATION_VERSION,
+            "coverage_ratio": 1.0,
+            "reports": [report.get("analysis_hash")],
+            "source_asset_ids": ordered_ids,
+        }
+    )
+    cached = {
+        "ordered_source_asset_ids": ordered_ids,
+        "reports": [dict(report)],
+        "status": "RECONCILED",
+        "coverage_ratio": 1.0,
+        "analysis_hash": expected_hash,
+    }
+    try:
+        restored = restore_cached_reconciliation(group, cached)
+    except StripSegmentationError:
+        return None
+    return restored.reports[0]
+
+
+def _write_source_checkpoint(
+    result: StripSegmentationResult,
+    *,
+    root: Path | None,
+    identity: Mapping[str, Any] | None,
+) -> None:
+    if root is None or identity is None:
+        return
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    path = _checkpoint_path(
+        root,
+        source_asset_id=result.source_asset_id,
+        source_checksum=result.source_checksum,
+        identity=identity,
+    )
+    value = {
+        "checkpoint_version": 1,
+        "source_asset_id": result.source_asset_id,
+        "source_checksum": result.source_checksum,
+        "segmentation_version": SEGMENTATION_VERSION,
+        "identity_hash": _checkpoint_identity_hash(identity),
+        "report": result.as_dict(),
+    }
+    temporary = path.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(_canonical(value), encoding="utf-8")
+    temporary.replace(path)
 
 
 def _make_result(
@@ -677,8 +814,13 @@ def reconcile_strip(
             )
         except StripSegmentationError:
             raise
-        except Exception:
-            raise StripSegmentationError("segmentation.provider_request_failed") from None
+        except Exception as exc:
+            code, reviewable, metadata = _safe_provider_error(exc)
+            raise StripSegmentationError(
+                code,
+                reviewable=reviewable,
+                safe_metadata=metadata,
+            ) from None
     by_position = {candidate.position: candidate for candidate in candidates}
     provider_by_position = {
         item["y"]: item for item in (provider_assessment or {}).get("boundaries", ())
@@ -867,6 +1009,8 @@ def reconcile_sources(
     boundary_assessor: Callable[[BoundaryRequest], Mapping[str, Any]] | None = None,
     provider_retry_attempts: int = 2,
     review_root: Path | None = None,
+    checkpoint_root: Path | None = None,
+    checkpoint_identity: Mapping[str, Any] | None = None,
     on_reconciled: Callable[[tuple[Any, ...], StripSegmentationResult], None] | None = None,
 ) -> SourceSegmentationResult:
     """Reconcile multiple files in file order and each file top-to-bottom."""
@@ -885,13 +1029,39 @@ def reconcile_sources(
             checksum = item.original_checksum
         else:
             payload, source_asset_id, checksum = reconstructed
-        result = reconcile_strip(
-            payload,
+        result = _load_source_checkpoint(
+            group,
+            payload=payload,
             source_asset_id=source_asset_id,
-            original_checksum=checksum,
-            boundary_assessor=boundary_assessor,
-            provider_retry_attempts=provider_retry_attempts,
+            source_checksum=checksum,
+            root=checkpoint_root,
+            identity=checkpoint_identity,
         )
+        if result is None:
+            try:
+                result = reconcile_strip(
+                    payload,
+                    source_asset_id=source_asset_id,
+                    original_checksum=checksum,
+                    boundary_assessor=boundary_assessor,
+                    provider_retry_attempts=provider_retry_attempts,
+                )
+            except StripSegmentationError as exc:
+                metadata = dict(exc.safe_metadata)
+                if checkpoint_root is not None:
+                    metadata["durable_progress"] = bool(tuple(Path(checkpoint_root).glob("*.json")))
+                    metadata["checkpoint_root"] = "segmentation-checkpoints"
+                raise StripSegmentationError(
+                    exc.code,
+                    reviewable=exc.reviewable,
+                    safe_metadata=metadata,
+                ) from None
+            if result.status == "RECONCILED":
+                _write_source_checkpoint(
+                    result,
+                    root=checkpoint_root,
+                    identity=checkpoint_identity,
+                )
         reports.append(result)
         if result.status == "NEEDS_REVIEW" and review_root is not None:
             write_review_artifact(result, payload, review_root)

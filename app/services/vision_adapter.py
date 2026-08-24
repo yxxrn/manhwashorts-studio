@@ -256,12 +256,14 @@ class VisionProviderRequestFailed(VisionCapabilityError):
         retry_after_s: float | None = None,
         retryable: bool = True,
         timeout: bool = False,
+        transport_subtype: str | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = bool(retryable)
         self.status_code = status_code
         self.retry_after_s = retry_after_s
         self.timeout = bool(timeout)
+        self.transport_subtype = transport_subtype
 
 
 def _chat_completion_content(response: httpx.Response) -> str:
@@ -443,9 +445,13 @@ class OpenAICompatibleVisionProvider:
         except httpx.HTTPStatusError as exc:
             _raise_http_failure(exc.response)
         except httpx.TimeoutException:
-            raise VisionProviderRequestFailed(timeout=True, retryable=True) from None
+            raise VisionProviderRequestFailed(
+                timeout=True, retryable=True, transport_subtype="timeout"
+            ) from None
         except httpx.TransportError:
-            raise VisionProviderRequestFailed(retryable=True) from None
+            raise VisionProviderRequestFailed(
+                retryable=True, transport_subtype="connect"
+            ) from None
         except Exception:
             raise VisionProviderRequestFailed(retryable=False) from None
 
@@ -502,9 +508,13 @@ class OpenAICompatibleVisionProvider:
         except httpx.HTTPStatusError as exc:
             _raise_http_failure(exc.response)
         except httpx.TimeoutException:
-            raise VisionProviderRequestFailed(timeout=True, retryable=True) from None
+            raise VisionProviderRequestFailed(
+                timeout=True, retryable=True, transport_subtype="timeout"
+            ) from None
         except httpx.TransportError:
-            raise VisionProviderRequestFailed(retryable=True) from None
+            raise VisionProviderRequestFailed(
+                retryable=True, transport_subtype="connect"
+            ) from None
         except Exception:
             raise VisionProviderRequestFailed(retryable=False) from None
 
@@ -594,9 +604,13 @@ class OpenAICompatibleVisionProvider:
         except httpx.HTTPStatusError as exc:
             _raise_http_failure(exc.response)
         except httpx.TimeoutException:
-            raise VisionProviderRequestFailed(timeout=True, retryable=True) from None
+            raise VisionProviderRequestFailed(
+                timeout=True, retryable=True, transport_subtype="timeout"
+            ) from None
         except httpx.TransportError:
-            raise VisionProviderRequestFailed(retryable=True) from None
+            raise VisionProviderRequestFailed(
+                retryable=True, transport_subtype="connect"
+            ) from None
         except Exception:
             raise VisionProviderRequestFailed(retryable=False) from None
         if not isinstance(value, Mapping):
@@ -691,9 +705,13 @@ class OpenAICompatibleVisionProvider:
         except httpx.HTTPStatusError as exc:
             _raise_http_failure(exc.response)
         except httpx.TimeoutException:
-            raise VisionProviderRequestFailed(timeout=True, retryable=True) from None
+            raise VisionProviderRequestFailed(
+                timeout=True, retryable=True, transport_subtype="timeout"
+            ) from None
         except httpx.TransportError:
-            raise VisionProviderRequestFailed(retryable=True) from None
+            raise VisionProviderRequestFailed(
+                retryable=True, transport_subtype="connect"
+            ) from None
         except (TypeError, ValueError, KeyError):
             raise VisionResponseInvalid() from None
         except Exception:

@@ -1823,6 +1823,101 @@ def test_call_preserves_known_provider_response_error_category():
     }
 
 
+def test_call_preserves_typed_transport_metadata_without_retrying_permanent_failure():
+    module = _module()
+    from app.services import vision_adapter
+
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        max_attempts=3,
+    )
+    calls = 0
+
+    def permanent_transport():
+        nonlocal calls
+        calls += 1
+        raise vision_adapter.VisionProviderRequestFailed(
+            status_code=429,
+            retry_after_s=7.0,
+            retryable=False,
+            timeout=True,
+            transport_subtype="connect",
+        )
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._call(permanent_transport, request_stage="other")
+
+    assert calls == 1
+    assert caught.value.code == "cloud.provider_request_failed"
+    assert caught.value.safe_metadata == {
+        "provider_error_code": "vision_provider_request_failed",
+        "request_stage": "other",
+        "status_code": 429,
+        "retry_after_s": 7.0,
+        "timeout": True,
+        "retryable": False,
+        "transport_subtype": "connect",
+        "provider_error_category": "timeout",
+    }
+
+
+def test_call_does_not_retry_capability_errors_as_generic_transport():
+    module = _module()
+    from app.services import vision_adapter
+
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        max_attempts=3,
+    )
+    calls = 0
+
+    def missing_capability():
+        nonlocal calls
+        calls += 1
+        raise vision_adapter.VisionCapabilityError()
+
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._call(missing_capability, request_stage="other")
+
+    assert calls == 1
+    assert caught.value.code == "cloud.capability_missing"
+
+
+def test_transient_segmentation_failure_with_durable_progress_waits_for_provider():
+    module = _module()
+
+    class Store:
+        def save(self, record):
+            self.record = record
+
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.runner = SimpleNamespace(
+        request_count=1,
+        request_counts={"other": 1},
+        estimated_cost_usd=0.0,
+    )
+    service.store = Store()
+    record = module.ChapterJobRecord(job_id="waiting-project")
+
+    result = service._record_failure(
+        record,
+        module.CloudStageError(
+            "segmentation.provider_request_failed",
+            reviewable=False,
+            safe_metadata={
+                "status_code": 503,
+                "retryable": True,
+                "durable_progress": True,
+            },
+        ),
+    )
+
+    assert result.state == module.ChapterState.WAITING_PROVIDER
+    assert result.review_queue[0]["safe_metadata"]["resume"]
+
+
 def test_transient_invalid_story_map_is_retried_atomically():
     module = _module()
     provider = _FakeProvider(transient_story_map_invalid_count=1)

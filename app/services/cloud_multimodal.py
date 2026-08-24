@@ -326,6 +326,7 @@ class ChapterState(StrEnum):
     REVIEW_PREVIEW_READY = "REVIEW_PREVIEW_READY"
     RENDERED = "RENDERED"
     NEEDS_REVIEW = "NEEDS_REVIEW"
+    WAITING_PROVIDER = "WAITING_PROVIDER"
     FAILED = "FAILED"
 
 
@@ -2454,14 +2455,14 @@ class CloudStageRunner:
                     delay = base + random.uniform(0.0, base * 0.25)
                 if delay > 0:
                     time.sleep(float(delay))
+            except VisionCapabilityError as exc:
+                last_error = exc
+                break
             except Exception as exc:
                 last_error = exc
                 if attempt + 1 < self.max_attempts:
                     base = min(8.0, 0.5 * (2**attempt))
                     time.sleep(base + random.uniform(0.0, base * 0.25))
-            except VisionCapabilityError as exc:
-                last_error = exc
-                break
         provider_error_code = str(getattr(last_error, "code", "") or "")
         provider_error_mapping = {
             "vision_response_invalid": "cloud.provider_response_invalid",
@@ -2481,6 +2482,20 @@ class CloudStageRunner:
                 metadata["status_code"] = status_code
             if isinstance(retry_after, (int, float)):
                 metadata["retry_after_s"] = float(retry_after)
+            if isinstance(last_error, VisionProviderRequestFailed):
+                metadata["timeout"] = bool(getattr(last_error, "timeout", False))
+                metadata["retryable"] = bool(getattr(last_error, "retryable", False))
+                subtype = getattr(last_error, "transport_subtype", None)
+                if isinstance(subtype, str) and subtype:
+                    metadata["transport_subtype"] = subtype
+                if metadata.get("timeout"):
+                    metadata["provider_error_category"] = "timeout"
+                elif metadata.get("status_code") == 429:
+                    metadata["provider_error_category"] = "rate_limit"
+                elif isinstance(metadata.get("status_code"), int) and metadata["status_code"] >= 500:
+                    metadata["provider_error_category"] = "server"
+                else:
+                    metadata["provider_error_category"] = "transport"
             raise CloudStageError(
                 mapped_code,
                 reviewable=mapped_code == "cloud.provider_response_invalid",
@@ -8482,6 +8497,7 @@ def prepare_project_panels(
     review_only_auto_override: bool = False,
     cached_segmentation: Mapping[str, Any] | None = None,
     panel_sink: Callable[[CloudPanelInput], None] | None = None,
+    segmentation_checkpoint_identity: Mapping[str, Any] | None = None,
 ) -> tuple[CloudPanelInput, ...] | tuple[tuple[CloudPanelInput, ...], dict[str, Any]]:
     """Build immutable cloud inputs from the current project panel lineage.
 
@@ -8492,6 +8508,10 @@ def prepare_project_panels(
 
     from app.models import PanelRegion
     from app.services import pipeline, segmentation
+
+    segmentation_checkpoint_root = (
+        Path(review_root) / "segmentation-checkpoints" if review_root is not None else None
+    )
 
     try:
         assets = pipeline.image_assets(pipeline.project_assets(db, project_id))
@@ -8519,15 +8539,23 @@ def prepare_project_panels(
                         inputs,
                         boundary_assessor=boundary_assessor,
                         review_root=review_root,
+                        checkpoint_root=segmentation_checkpoint_root,
+                        checkpoint_identity=segmentation_checkpoint_identity,
                     )
             else:
                 reconciliation = strip_segmentation.reconcile_sources(
                     inputs,
                     boundary_assessor=boundary_assessor,
                     review_root=review_root,
+                    checkpoint_root=segmentation_checkpoint_root,
+                    checkpoint_identity=segmentation_checkpoint_identity,
                 )
         except strip_segmentation.StripSegmentationError as exc:
-            raise CloudStageError(exc.code, reviewable=exc.reviewable) from None
+            raise CloudStageError(
+                exc.code,
+                reviewable=exc.reviewable,
+                safe_metadata=exc.safe_metadata,
+            ) from None
         except Exception:
             raise CloudStageError("cloud.panel_coverage_incomplete") from None
         if reconciliation.status != "RECONCILED" and review_only_auto_override:
@@ -8774,6 +8802,8 @@ def prepare_project_panels(
                         inputs,
                         boundary_assessor=boundary_assessor,
                         review_root=review_root,
+                        checkpoint_root=segmentation_checkpoint_root,
+                        checkpoint_identity=segmentation_checkpoint_identity,
                         on_reconciled=stream_callback,
                     )
             else:
@@ -8781,13 +8811,17 @@ def prepare_project_panels(
                     inputs,
                     boundary_assessor=boundary_assessor,
                     review_root=review_root,
+                    checkpoint_root=segmentation_checkpoint_root,
+                    checkpoint_identity=segmentation_checkpoint_identity,
                     on_reconciled=stream_callback,
                 )
         except strip_segmentation.StripSegmentationError as exc:
+            metadata = dict(admission_failure_metadata(exc.code))
+            metadata.update(exc.safe_metadata)
             raise CloudStageError(
                 exc.code,
                 reviewable=exc.reviewable,
-                safe_metadata=admission_failure_metadata(exc.code),
+                safe_metadata=metadata,
             ) from None
         except CloudStageError as exc:
             metadata = dict(exc.safe_metadata)
@@ -8854,6 +8888,21 @@ def prepare_project_panels(
     if return_segmentation:
         return result, segmentation_state
     return result
+
+
+def _segmentation_checkpoint_identity(runner: Any) -> dict[str, Any]:
+    """Build a compatibility-safe identity for durable source checkpoints."""
+
+    identity: dict[str, Any] = {
+        "model_identity_hash": str(
+            getattr(getattr(runner, "model_identity", None), "identity_hash", "")
+        ),
+    }
+    prompts = getattr(runner, "prompts", {})
+    prompt = prompts.get("segmentation") if isinstance(prompts, Mapping) else None
+    if isinstance(prompt, (tuple, list)) and len(prompt) >= 2:
+        identity.update({"prompt_version": str(prompt[0]), "prompt_sha256": str(prompt[1])})
+    return identity
 
 
 def _project_source_asset_metadata(db: Any, project_id: str) -> tuple[dict[str, Any], ...]:
@@ -10197,12 +10246,29 @@ class CloudBatchService:
             "request_counts": dict(self.runner.request_counts),
             "estimated_cost_usd": round(self.runner.estimated_cost_usd, 8),
         }
-        record.state = ChapterState.NEEDS_REVIEW if exc.reviewable else ChapterState.FAILED
+        safe_metadata = dict(exc.safe_metadata)
+        status_code = safe_metadata.get("status_code")
+        transient_provider = bool(
+            safe_metadata.get("retryable")
+            or safe_metadata.get("timeout")
+            or status_code == 429
+            or isinstance(status_code, int)
+            and status_code >= 500
+        )
+        waiting_for_provider = transient_provider and bool(safe_metadata.get("durable_progress"))
+        record.state = (
+            ChapterState.WAITING_PROVIDER
+            if waiting_for_provider
+            else ChapterState.NEEDS_REVIEW
+            if exc.reviewable
+            else ChapterState.FAILED
+        )
         record.error_code = exc.code
         record.error_message = str(exc)
-        if exc.reviewable:
+        if waiting_for_provider:
+            safe_metadata.setdefault("resume", "retry failed source units from the durable segmentation checkpoint")
+        if exc.reviewable or waiting_for_provider:
             review_entry = {"code": exc.code, "reason": str(exc)}
-            safe_metadata = dict(exc.safe_metadata)
             metrics_for_failure = getattr(
                 self.runner, "_response_shape_metrics_for_failure", None
             )
@@ -10480,6 +10546,7 @@ class CloudBatchService:
                             else None
                         ),
                         panel_sink=(visual_stream.submit if visual_stream is not None else None),
+                        segmentation_checkpoint_identity=_segmentation_checkpoint_identity(self.runner),
                     )
                 except Exception:
                     if visual_stream is not None:
@@ -10618,6 +10685,7 @@ class CloudBatchService:
                             if isinstance(cached_segmentation, Mapping)
                             else None
                         ),
+                        segmentation_checkpoint_identity=_segmentation_checkpoint_identity(self.runner),
                     )
                     panels, segmentation_state = prepared
                     panels = _panels_for_cached_visual_stage(
