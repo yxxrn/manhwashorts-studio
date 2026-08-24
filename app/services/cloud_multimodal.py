@@ -2368,6 +2368,7 @@ class CloudStageRunner:
         self.estimated_cost_usd = 0.0
         self.last_response_shape_metrics: dict[str, Any] = {}
         self.last_visual_stream_metrics: dict[str, Any] = {}
+        self.last_visual_failure_predicates: dict[str, int] = {}
         self._last_request_at = 0.0
         self.prompts = _prompt_specs()
         expected = dict(model_identity.prompt_versions)
@@ -2954,6 +2955,7 @@ class CloudStageRunner:
         chunks = list(_visual_panel_chunks(ordered))
         reconciled_by_id: dict[str, dict[str, Any]] = dict(cached_reusable)
         skipped_codes: list[str] = []
+        failure_predicates: dict[str, int] = {}
         unknown_failure_metadata: dict[str, Any] | None = None
         reconcile_lock = threading.Lock()
         VISUAL_PARALLEL_WORKERS = self.visual_parallel_workers
@@ -3015,8 +3017,12 @@ class CloudStageRunner:
                 raise CloudStageError("visual.balloon_geometry_invalid", reviewable=True)
             evidence_json = visual_scoring.panel_visual_evidence_json(evidence)
             merged["visual_evidence"] = evidence_json
-            if not _visual_observation_has_visible_facts(merged):
-                raise CloudStageError("cloud.visual_evidence_invalid")
+            failed_predicate = _visual_observation_failure_predicate(merged)
+            if failed_predicate is not None:
+                raise CloudStageError(
+                    "cloud.visual_evidence_invalid",
+                    safe_metadata={"failed_predicate": failed_predicate},
+                )
             entry = {
                 "panel_id": item.panel_id,
                 "source_asset_id": item.source_asset_id,
@@ -3143,9 +3149,14 @@ class CloudStageRunner:
                             entry, unknown = visual_row_entry(item, raw)
                         except visual_scoring.VisualEvidenceError as exc:
                             failed_rows[item.panel_id] = getattr(exc, "code", "cloud.visual_evidence_invalid")
+                            failure_predicates[getattr(exc, "code", "visual_validator")] = (
+                                failure_predicates.get(getattr(exc, "code", "visual_validator"), 0) + 1
+                            )
                             continue
                         except CloudStageError as exc:
                             failed_rows[item.panel_id] = exc.code
+                            predicate = str(exc.safe_metadata.get("failed_predicate", exc.code))
+                            failure_predicates[predicate] = failure_predicates.get(predicate, 0) + 1
                             continue
                         if unknown is not None:
                             unknown_rows[item.panel_id] = unknown
@@ -3327,6 +3338,7 @@ class CloudStageRunner:
             ]
             for future in futures:
                 future.result()
+        self.last_visual_failure_predicates = dict(failure_predicates)
         if set(reconciled_by_id) != {item.panel_id for item in ordered}:
             print(
                 f"VISUAL_SKIP_TOTAL missing={len(ordered) - len(reconciled_by_id)} "
@@ -8356,6 +8368,7 @@ class _StreamingVisualEvidenceSession:
         self._accepted: dict[str, dict[str, Any]] = {}
         self._missing: set[str] = set()
         self._failure_codes: list[str] = []
+        self._failure_predicates: dict[str, int] = {}
         self._retry_count_total = 0
         self._writer_error: CloudStageError | None = None
         self._max_queue_depth = 0
@@ -8519,6 +8532,7 @@ class _StreamingVisualEvidenceSession:
             "request_counts": dict(worker_runner.request_counts),
             "estimated_cost_usd": worker_runner.estimated_cost_usd,
             "categories": categories,
+            "failure_predicates": dict(worker_runner.last_visual_failure_predicates),
         }
 
     def _worker_loop(self, worker_index: int) -> None:
@@ -8587,6 +8601,8 @@ class _StreamingVisualEvidenceSession:
         self.runner.request_count += int(event.get("request_count", 0))
         self.runner.estimated_cost_usd += float(event.get("estimated_cost_usd", 0.0))
         self._retry_count_total += int(event.get("retry_count", 0))
+        for key, value in dict(event.get("failure_predicates", {})).items():
+            self._failure_predicates[str(key)] = self._failure_predicates.get(str(key), 0) + int(value)
         if self._writer_error is not None:
             return
         batch_index = int(event.get("batch_index", -1))
@@ -8684,6 +8700,7 @@ class _StreamingVisualEvidenceSession:
                     "retry_count": self._retry_count_total,
                     "max_queue_depth": self._max_queue_depth,
                     "terminal_failure_codes": sorted(set(self._failure_codes)),
+                    "visual_failure_predicates": dict(self._failure_predicates),
                 }
             )
             self.runner.last_visual_stream_metrics = metrics
@@ -8730,6 +8747,7 @@ class _StreamingVisualEvidenceSession:
                 "request_counts": dict(self.runner.request_counts),
                 "retry_count": self._retry_count_total,
                 "max_queue_depth": self._max_queue_depth,
+                "visual_failure_predicates": dict(self._failure_predicates),
             }
         )
         self.runner.last_visual_stream_metrics = metrics
@@ -9448,12 +9466,18 @@ def _visual_panel_chunks(
 def _visual_observation_has_visible_facts(row: Mapping[str, Any]) -> bool:
     """Return whether one visual row can satisfy the narration observation gate."""
 
+    return _visual_observation_failure_predicate(row) is None
+
+
+def _visual_observation_failure_predicate(row: Mapping[str, Any]) -> str | None:
+    """Return a non-prose predicate for a visual row that fails semantic admission."""
+
     observation = row.get("observation", row)
     if not isinstance(observation, Mapping):
-        return False
+        return "observation_mapping"
     values = observation.get("visible_facts")
     if not isinstance(values, list) or not values:
-        return False
+        return "visible_facts_nonempty"
     for value in values:
         if isinstance(value, str) and value.strip():
             continue
@@ -9462,8 +9486,8 @@ def _visual_observation_has_visible_facts(row: Mapping[str, Any]) -> bool:
             for candidate in value.values()
         ):
             continue
-        return False
-    return True
+        return "visible_facts_item"
+    return None
 
 
 def _visual_cached_row_is_reusable(
