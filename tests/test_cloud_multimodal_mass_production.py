@@ -2020,7 +2020,7 @@ def test_unknown_visual_geometry_uses_conservative_fallback_before_story_mapping
     assert result.state == module.ChapterState.READY_TO_RENDER
     assert result.visual.reconciled is True
     assert result.visual.panel_ids == tuple(panel.panel_id for panel in _panels(module))
-    assert len([call for call in provider.calls if call[0] == "visual"]) == 2
+    assert len([call for call in provider.calls if call[0] == "visual"]) == 5
     assert all(
         row.get("fallback_mode") == "conservative_full_panel_v1"
         and row["visual_evidence"]["evidence_source"] == "conservative_full_panel_v1"
@@ -2063,10 +2063,54 @@ def test_unknown_visual_geometry_isolated_to_poison_panel():
         "chapter-a-panel-1",
         "chapter-a-panel-2",
     )
-    assert len([call for call in provider.calls if call[0] == "visual"]) == 1
+    assert len([call for call in provider.calls if call[0] == "visual"]) == 2
     fallback = result.panels[1]
     assert fallback["fallback_mode"] == "conservative_full_panel_v1"
     assert fallback["visual_evidence"]["evidence_source"] == "conservative_full_panel_v1"
+
+
+def test_unknown_visual_geometry_gets_targeted_singleton_repair_before_fallback():
+    module = _module()
+
+    class _ChunkUnknownSingletonKnown(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.request_panel_ids = []
+
+        def observe(self, request):
+            self.request_panel_ids.append(
+                tuple(panel["panel_id"] for panel in request.panels)
+            )
+            rows = super().observe(request)
+            if len(request.panels) > 1:
+                for row in rows:
+                    if row["panel_id"] == "chapter-a-panel-1":
+                        row["visual_evidence"].update(
+                            {
+                                "balloon_mask_status": "unknown",
+                                "mask_confidence": 0.0,
+                                "evidence_source": "vision_geometry_unavailable",
+                                "mask_reason": "geometry is unavailable in a multi-panel response",
+                            }
+                        )
+            return rows
+
+    provider = _ChunkUnknownSingletonKnown()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        max_attempts=1,
+    )
+
+    result = runner.run_visual_evidence(_panels(module))
+
+    assert provider.request_panel_ids == [
+        ("chapter-a-panel-0", "chapter-a-panel-1", "chapter-a-panel-2"),
+        ("chapter-a-panel-1",),
+    ]
+    repaired = result.panels[1]
+    assert repaired.get("fallback_mode") is None
+    assert repaired["visual_evidence"]["balloon_mask_status"] != "unknown"
 
 
 def test_transient_unknown_visual_response_is_retried_atomically():

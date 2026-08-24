@@ -3170,6 +3170,73 @@ class CloudStageRunner:
                         chunk = tuple(item for item in current_chunk if item.panel_id in pending_ids)
                         continue
                     if unknown_rows:
+                        # A multi-panel response can be semantically valid but
+                        # omit balloon geometry because the provider's visual
+                        # attention is shared across the batch.  Before using
+                        # the conservative whole-panel review fallback, retry
+                        # each unknown row as its own bounded geometry request.
+                        # This remains missing-only and keeps the strict local
+                        # evidence/lineage validator authoritative.
+                        for item in current_chunk:
+                            if item.panel_id not in unknown_rows:
+                                continue
+                            try:
+                                provider_payload, provider_mime = _visual_provider_payload(item)
+                                targeted_request = VisionObservationRequest(
+                                    analysis_run_id=(
+                                        f"{request.analysis_run_id}-geometry-"
+                                        f"{chunk_index}-{item.source_order}"
+                                    ),
+                                    instruction_version=instruction_version,
+                                    instruction_sha256=instruction_sha256,
+                                    chunk_index=chunk_index,
+                                    panels=(
+                                        {
+                                            **item.descriptor(),
+                                            "mime_type": provider_mime,
+                                            "payload": provider_payload,
+                                        },
+                                    ),
+                                    visual_instruction_version=repair_prompt[0],
+                                    visual_instruction_sha256=repair_prompt[1],
+                                )
+                                targeted_rows = self._call(
+                                    lambda targeted_request=targeted_request: self.provider.observe(
+                                        targeted_request
+                                    ),
+                                    request_stage="other",
+                                )
+                                target_raw = None
+                                if isinstance(targeted_rows, list):
+                                    for raw in targeted_rows:
+                                        if isinstance(raw, Mapping) and str(
+                                            raw.get("panel_id", "")
+                                        ) == item.panel_id:
+                                            target_raw = raw
+                                            break
+                                if not isinstance(target_raw, Mapping):
+                                    continue
+                                target_entry, target_unknown = visual_row_entry(item, target_raw)
+                                if target_entry is None or target_unknown is not None:
+                                    continue
+                                target_entry["cache_identity_hash"] = panel_identity_by_id[item.panel_id]
+                                target_entry["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
+                                target_entry["chunk_cache_key"] = _visual_chunk_cache_key(
+                                    current_chunk,
+                                    chunk_index=chunk_index,
+                                    batch_count=len(chunks),
+                                    model_identity=self.model_identity,
+                                    prompt=prompt,
+                                )
+                                with reconcile_lock:
+                                    reconciled_by_id[item.panel_id] = target_entry
+                                self._checkpoint_append(checkpoint_scope, target_entry)
+                                unknown_rows.pop(item.panel_id, None)
+                            except (CloudStageError, visual_scoring.VisualEvidenceError):
+                                # Keep the original unknown row for the
+                                # explicitly audited conservative fallback.
+                                continue
+                    if unknown_rows:
                         for item in current_chunk:
                             if item.panel_id not in unknown_rows:
                                 continue
