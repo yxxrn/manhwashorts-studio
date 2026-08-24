@@ -1873,6 +1873,19 @@ completion/group order while the final canonical list was in prepared order.
 equality and lets the existing merge restore canonical order. This preserves
 single-writer, duplicate/missing-ID, prepared identity, and coverage checks.
 
+## 2026-08-24 local review-render diagnostic checkpoint
+
+The first render resume after the narration reuse fix reached the regular
+review render boundary without another provider call, but persisted only
+`review.preview_failed`. A focused regression reproduced that `PipelineError`
+could contain a stable nested `render.*`/`ffmpeg.*` code without a `.code`
+attribute; the render wrapper replaced it with the generic review code. The
+minimal GREEN fix extracts only an allowlisted stable code and preserves the
+generic fallback. Cloud/review tests passed 201/201, with Ruff, compileall,
+and diff-check clean. Resume the same job once this checkpoint is published;
+the next run must expose the concrete local render/QC predicate. No MP4,
+TTS, or provider request is claimed by this fix.
+
 ## 2026-08-24 local narration-repair admission checkpoint
 
 Offline replay of the current `phase5b-cold-v1` durable state reproduced the

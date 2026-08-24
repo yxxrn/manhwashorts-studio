@@ -1111,3 +1111,17 @@ closure, causal order, anti-dialogue-copy, 115--125 word, and 50--60 second
 validators remain fail-closed. The current phase5b visual/story stages are
 reused; this fix consumed no provider/TTS/render request and does not claim an
 artifact.
+
+## 2026-08-24 — stable review-render error propagation
+
+Review rendering has a nested failure boundary: `build_render_request()` or
+the renderer can raise a local exception whose stable code is present in its
+message even when the exception type has no `.code` field. Previously the
+wrapper persisted `review.preview_failed`, preventing diagnosis and causing a
+repeat of the same expensive resume. The canonical boundary now extracts only
+known stable code namespaces (`render`, `ffmpeg`, `subtitle`, `visual`, and
+the other existing review-stage namespaces) and uses the generic code only
+when no stable code exists. This is diagnostic preservation, not a gate
+relaxation. The focused cloud/review tests passed 201/201; no provider/TTS or
+media work was performed. The next durable resume must use the preserved code
+to fix the smallest render/QC boundary.

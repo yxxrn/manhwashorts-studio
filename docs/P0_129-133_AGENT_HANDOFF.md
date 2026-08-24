@@ -1891,3 +1891,18 @@ and zero provider/TTS/render requests in this slice. Runtime job
 Fresh-agent resume: use the existing local environment variables and run the
 real operator menu resume for `data/phase5b-cold-v1`; do not repeat the 60-panel
 visual or story stages unless their current identity checks fail.
+
+## 2026-08-24 local render diagnostic handoff
+
+The persisted job remains `NEEDS_REVIEW` and no MP4/audio/QC artifact exists.
+The first post-repair resume reached review rendering, but the durable error
+was incorrectly collapsed to `review.preview_failed`. A focused regression
+reproduced the exact boundary: `render_silent_review_preview()` received a
+`PipelineError` carrying `render.encoder_unavailable` in its message but no
+`.code`, then wrote the generic code. The minimal fix preserves only stable
+allowlisted codes and keeps the generic fallback for unstructured failures.
+The cloud/review matrix is 201/201 green; Ruff/compileall/diff-check remain
+required before publish. No provider or TTS request was used here. Publish
+this source/test/docs checkpoint, then resume the same job once to obtain the
+actual render/QC predicate; do not repeat visual/story stages or alter runtime
+artifacts.

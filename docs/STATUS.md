@@ -3164,3 +3164,18 @@ render request was consumed by the offline replay. The job is still
 (60 visual panels and 60 story panel IDs); no MP4, audio, or QC artifact is
 claimed. After publishing, resume the same job and reuse valid visual/story
 state; do not restart vision.
+
+## 2026-08-24 — review render failure-code propagation
+
+The same job was resumed after the persisted narration was accepted and again
+returned to the menu, but the job file still showed `review.preview_failed`.
+Offline RED/GREEN reproduction proved the local cause: the review render
+wrapper caught a nested `PipelineError` whose message contained a stable
+`render.*`/`ffmpeg.*` predicate but whose exception had no `.code`, then
+overwrote it with the generic code. The fix now extracts only the allowlisted
+stable code before persisting/raising it; unstructured failures still remain
+`review.preview_failed`. The focused cloud/review matrix passed 201 tests;
+Ruff, compileall, and diff-check are the publish gate. No provider/TTS request
+or media artifact was produced in this code slice. After publication, resume
+the same namespace to capture the concrete render/QC blocker; do not repeat
+visual/story work.

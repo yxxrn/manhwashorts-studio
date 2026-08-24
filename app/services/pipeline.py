@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import secrets
 import time
 from collections.abc import Mapping, Sequence
@@ -99,6 +100,21 @@ from app.services.vision_adapter import (
 
 class PipelineError(RuntimeError):
     """Raised when a stage cannot proceed. Message is user-facing."""
+
+
+_REVIEW_FAILURE_CODE_PATTERN = re.compile(
+    r"\b(?:cloud|visual|reference|review|subtitle|render|ffmpeg|encoder|quality|audio|timeline|media)\.[a-z0-9_.-]+\b"
+)
+
+
+def _review_failure_code(exc: BaseException) -> str:
+    """Preserve a stable nested code without exposing error text."""
+
+    explicit = str(getattr(exc, "code", "") or "").strip()
+    if explicit and explicit != "review.preview_failed":
+        return explicit
+    match = _REVIEW_FAILURE_CODE_PATTERN.search(str(exc))
+    return match.group(0) if match else "review.preview_failed"
 
 
 def _now() -> datetime:
@@ -4151,7 +4167,7 @@ def render_silent_review_preview(
     except (render_svc.RenderError, PipelineError, review_preview.ReviewPreviewError) as exc:
         job.status = JobStatus.FAILED
         job.stage = "review-preview-failed"
-        job.error_code = str(getattr(exc, "code", "review.preview_failed"))[:80]
+        job.error_code = _review_failure_code(exc)[:80]
         job.error_message = str(exc)[:1000]
         project.status = ProjectStatus.REVIEW
         db.flush()
