@@ -20,6 +20,29 @@ boundary checkpoint only: the job is still `NEEDS_REVIEW` with
 claimed. Next action is one normal existing-job resume using cached
 visual/story state and the current review policy.
 
+## 2026-08-24 - Review preview ready; production approval required
+
+The published title-policy fix was resumed through the real operator CLI on
+job `a49a1db9b7c74b83b28b926cfa106622`. The job reached
+`REVIEW_PREVIEW_READY`, and the review-only video is at
+`B:\Project\manhwashorts-studio\data\phase5b-cold-v1\output\a49a1db9b7c74b83b28b926cfa106622\review\silent_preview.mp4`.
+Its SHA-256 is
+`c5ecad58faa21aebd4ff8fc9dc6dd19d9517e03b8b75bbfddb0f81e3899c73c2`, size
+6,792,557 bytes; FFprobe measured 51.3 seconds, 1080x1920, H.264 High,
+`yuv420p`, 60 fps, and zero audio streams. This is review-only evidence, not
+the requested final voiced MP4.
+
+Menu 8 was invoked through the same CLI with current script version 11 and
+canonical hash
+`5867049bf28aa8f6f0a32a15cf84f8f32a09a6496d283b157bc8e4abe82ebd6b`. The
+normal production gate returned `operator.production_blocked` because
+`editorial_review_confirmed=false`, `human_review_required=true`, and no
+approved script hash/version exist. This is an intentional human approval
+boundary, not a render defect; no DB edit, TTS call, audio render, or gate
+bypass was performed. The next action requires human approval of the exact
+script through the supported approval UI/API, followed by menu 8 and strict
+audio/video QC.
+
 ## 2026-08-24 - Visual-repair predicate checkpoint
 
 The published smaller-position registry fix is `1d21a65071df78020863f45196caa40fc14ee0e2`.

@@ -18,6 +18,24 @@ artifact has been accepted. Resume from the existing job with the normal
 operator CLI after confirming no duplicate process; do not redo valid
 visual/story stages or alter protected runtime/input data.
 
+## Real resume checkpoint - review-only artifact, final approval blocked
+
+The published fix was resumed through the actual operator CLI. The existing
+job reached `REVIEW_PREVIEW_READY` and produced the ignored review-only MP4 at
+`B:\Project\manhwashorts-studio\data\phase5b-cold-v1\output\a49a1db9b7c74b83b28b926cfa106622\review\silent_preview.mp4`.
+Measured SHA-256 is
+`c5ecad58faa21aebd4ff8fc9dc6dd19d9517e03b8b75bbfddb0f81e3899c73c2`;
+FFprobe reports 51.3s, 1080x1920, H.264 High, `yuv420p`, 60fps, video-only.
+
+The same CLI's explicit production option reached the strict approval gate
+and returned `operator.production_blocked`: script v11 is not explicitly
+approved (`editorial_review_confirmed=false`, `human_review_required=true`,
+no approved hash/version). The CLI exited cleanly; no TTS/audio request was
+made and no DB/artifact bypass occurred. Resume only after a human editor
+approves the exact current script through the supported UI/API, then supply
+the resulting approved hash/version to menu 8. Do not label the review MP4 as
+upload-ready.
+
 ## Visual-repair predicate checkpoint - 2026-08-24
 
 At published `1d21a65071df78020863f45196caa40fc14ee0e2`, the warm job reused

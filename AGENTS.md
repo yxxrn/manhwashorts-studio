@@ -22,6 +22,25 @@ feasible entries at source orders 20, 22, 26, 40, and 43, with only `hook` and
 repeat valid visual/story stages or stage the protected `final_test/` and
 `The Novel’s Extra/` input trees.
 
+## Real resume result and approval boundary - 2026-08-24
+
+The normal CLI resume reused valid visual/story state, completed the feasible
+repair path, and reached `REVIEW_PREVIEW_READY`. The review-only video exists
+at `B:\Project\manhwashorts-studio\data\phase5b-cold-v1\output\a49a1db9b7c74b83b28b926cfa106622\review\silent_preview.mp4`;
+SHA-256 is `c5ecad58faa21aebd4ff8fc9dc6dd19d9517e03b8b75bbfddb0f81e3899c73c2`,
+size is 6,792,557 bytes, and FFprobe reports 51.3 seconds, 1080x1920, H.264
+High, `yuv420p`, 60 fps, video-only. This is not the required voiced final.
+
+The explicitly approved production menu path was attempted with script version
+11 and canonical content hash
+`5867049bf28aa8f6f0a32a15cf84f8f32a09a6496d283b157bc8e4abe82ebd6b`; it
+failed closed at `operator.production_blocked` because the latest script has
+`editorial_review_confirmed=false`, `human_review_required=true`, and no
+approved hash/version. Do not edit the DB or bypass this gate. After a human
+editor approves the exact current script through the supported app boundary,
+resume menu 8 with the resulting approved hash/version and operator ID; only
+then may TTS, real timing, karaoke, AAC render, and strict QC run.
+
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
 ## Current local visual-repair checkpoint - 2026-08-24

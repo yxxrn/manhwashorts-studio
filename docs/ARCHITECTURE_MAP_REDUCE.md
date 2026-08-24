@@ -16,6 +16,24 @@ records and 5 feasible records at source orders 20, 22, 26, 40, and 43, with
 request and does not claim an artifact; the next operation is the normal
 cached-job review resume.
 
+## Real review resume and production gate - 2026-08-24
+
+The cached local job completed the feasible visual repair and reached
+`REVIEW_PREVIEW_READY` through the normal operator entrypoint. The ignored
+review-only MP4 is
+`B:\Project\manhwashorts-studio\data\phase5b-cold-v1\output\a49a1db9b7c74b83b28b926cfa106622\review\silent_preview.mp4`
+with SHA-256
+`c5ecad58faa21aebd4ff8fc9dc6dd19d9517e03b8b75bbfddb0f81e3899c73c2`.
+Independent FFprobe measured 51.3s, 1080x1920, H.264 High, `yuv420p`, 60fps,
+and zero audio streams.
+
+Production option 8 correctly stopped before TTS because current script v11
+has no explicit approval metadata. The invariant is intentional: review-only
+output may use evidence-backed draft narration, while voiced production
+requires the supported human approval operation and an exact approved content
+hash/version. No code path may convert the review artifact or set approval
+metadata by direct DB mutation.
+
 ## Visual-repair predicate checkpoint - 2026-08-24
 
 The latest warm normal-entrypoint attempt reused 60/60 visual and story
