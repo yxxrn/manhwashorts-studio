@@ -27,6 +27,12 @@ only after the existing panel-reference and missing-section validators pass;
 invalid citations still trigger repair. No provider request was made by this
 fix and no render artifact is claimed.
 
+The next resume reached the local review-render boundary but collapsed its
+underlying blocker to `review.preview_failed`; the failed transaction left no
+render job row or MP4. The classifier now preserves stable `render.*`,
+`ffmpeg.*`, `encoder.*`, `quality.*`, `audio.*`, `timeline.*`, and `media.*`
+codes for the next offline/real retry. No render or TTS claim is made yet.
+
 ## Review resume preserves segmentation safety mode - 2026-08-24
 
 Menu 6 (`Resume failed/pending jobs`) previously omitted the explicit

@@ -19,6 +19,11 @@ missing-section validators pass, rather than issuing a duplicate visual-repair
 request. The validators remain authoritative and invalid persisted state still
 falls through to bounded repair.
 
+Review-render failures now retain nested stable render, FFmpeg, encoder,
+quality, audio, timeline, and media codes instead of collapsing to
+`review.preview_failed`; this is diagnostic only and leaves all render/QC gates
+unchanged.
+
 ## Frozen release-candidate gate - 2026-08-23
 
 The corrected production wall-clock gate is `<=90` minutes from ingestion

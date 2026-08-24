@@ -279,7 +279,7 @@ EDITORIAL_SELECTION_TARGET_BEATS = 10
 EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT = 4
 STAGE_PARALLEL_WORKERS = 4
 _REVIEW_ERROR_CODE_PATTERN = re.compile(
-    r"\b(?:cloud|visual|reference|review|subtitle)\.[a-z0-9_.-]+\b"
+    r"\b(?:cloud|visual|reference|review|subtitle|render|ffmpeg|encoder|quality|audio|timeline|media)\.[a-z0-9_.-]+\b"
 )
 
 

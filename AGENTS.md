@@ -19,6 +19,11 @@ feasible-panel and missing-section validators pass. This removes duplicate
 repair calls without accepting stale or ungrounded citations; invalid state
 still enters the bounded provider repair path.
 
+The latest runtime reached review rendering but collapsed the underlying
+blocker to `review.preview_failed`, and the transaction rolled back the render
+row. The classifier now preserves stable render/FFmpeg/encoder/quality/audio/
+timeline/media codes so the next retry can target the exact local boundary.
+
 ## Cached visual-stage metadata reuse - 2026-08-23
 
 Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.

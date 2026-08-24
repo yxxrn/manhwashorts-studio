@@ -18,6 +18,12 @@ coverage before another repair request. A valid persisted repair is reused;
 invalid lineage remains fail-closed. This local fix consumed no provider/TTS
 request and does not claim a preview artifact.
 
+The next resume reached review rendering and ended `review.preview_failed`;
+the render transaction rolled back, so no MP4 exists. The stable failure-code
+classifier now retains nested render/FFmpeg/encoder/quality/audio/timeline/
+media codes for the next retry; do not infer an encoder or subtitle result
+until that retry records one.
+
 ## Frozen release-candidate gate - 2026-08-23
 
 The corrected end-to-end wall-clock limit is `<=90` minutes from ingestion to

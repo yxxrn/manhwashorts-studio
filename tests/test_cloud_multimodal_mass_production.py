@@ -968,6 +968,17 @@ def test_review_preview_failure_code_keeps_nested_stable_code():
     assert module._review_failure_code("unstructured local failure") == "review.preview_failed"
 
 
+def test_review_preview_failure_code_preserves_render_and_encoder_codes():
+    module = _module()
+
+    assert module._review_failure_code(
+        "render.encoder_unavailable: review preview failed"
+    ) == "render.encoder_unavailable"
+    assert module._review_failure_code(
+        "ffmpeg.filter_failed: review preview failed"
+    ) == "ffmpeg.filter_failed"
+
+
 def test_review_preview_failure_code_keeps_subtitle_stable_code():
     module = _module()
 
