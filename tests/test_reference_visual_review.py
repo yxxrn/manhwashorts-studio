@@ -226,6 +226,7 @@ def test_reference_scene_input_carries_exact_panel_review_identity():
         selected_roi={"kind": "primary", "crop_box": [0, 0, 100, 200]},
         fallback_attempts=[{"accepted": True}],
         framing_telemetry={"crop_box": [0, 0, 100, 200]},
+        transition="fade",
         publish_allowed=False,
     )
     assert scene.source_asset_id == "asset-a"
@@ -262,6 +263,52 @@ def test_reference_review_result_can_expose_sidecar():
         sidecar_path=Path("review.json"),
     )
     assert result.sidecar_path.name == "review.json"
+
+
+def test_review_sidecar_preserves_motion_and_transition_intent():
+    from app.services import render
+
+    request = render.RenderRequest(
+        project_id="project",
+        scenes=[
+            render.SceneInput(
+                image_path=None,
+                start_time=0.0,
+                end_time=1.0,
+                motion_mode="slow_push",
+                camera_curve="slow_push_in",
+                motion_intensity="medium",
+                motion_reason="distinct evidence viewport",
+                transition="fade",
+                publish_allowed=False,
+            )
+        ],
+        audio_path=None,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        silent_reference_review=True,
+    )
+    sidecar = render._reference_review_sidecar(request, {"has_audio": False})
+
+    assert sidecar["shots"][0]["motion_mode"] == "slow_push"
+    assert sidecar["shots"][0]["camera_curve"] == "slow_push_in"
+    assert sidecar["shots"][0]["transition"] == "fade"
+    assert sidecar["shots"][0]["transition_duration_s"] == 0.18
+
+
+def test_review_frame_motion_audit_measures_non_noop_change(tmp_path):
+    from app.services import review_preview
+
+    first = Image.new("L", (64, 64), 0)
+    second = Image.new("L", (64, 64), 255)
+    first_path = tmp_path / "frame-01.jpg"
+    second_path = tmp_path / "frame-02.jpg"
+    first.save(first_path)
+    second.save(second_path)
+
+    metrics = review_preview._frame_motion_audit([first_path, second_path], 1.0)
+
+    assert metrics["mean_frame_diff"] > 0.25
+    assert metrics["max_frame_diff"] > 0.25
 
 
 class _EmptyScalars:
@@ -401,6 +448,7 @@ def test_silent_reference_build_never_reads_script_or_calls_tts(monkeypatch, tmp
         panel_id="panel-a",
         source_asset_id="asset-a",
         source_order=3,
+        transition="fade",
         publish_allowed=False,
     )
     monkeypatch.setattr(pipeline, "get_project", lambda *_args: project)
@@ -422,6 +470,7 @@ def test_silent_reference_build_never_reads_script_or_calls_tts(monkeypatch, tmp
     assert request.silent_reference_review is True
     assert request.title_text == ""
     assert request.output_path == tmp_path / "isolated-review.mp4"
+    assert request.scenes[0].transition == "fade"
 
 
 
@@ -872,6 +921,7 @@ def test_reference_planner_tries_all_roi_phases_on_alternate_panel(monkeypatch):
                 "camera_intent": "neutral",
                 "effect": "static",
                 "asset_id": "unused",
+                "transition": "cut",
                 "focus_x": 0.5,
                 "focus_y": 0.5,
                 "focus_end_x": 0.5,
@@ -890,7 +940,7 @@ def test_reference_planner_tries_all_roi_phases_on_alternate_panel(monkeypatch):
     assert accepted["roi_kind"] == "alternate_roi"
 
 
-def test_reference_planner_caps_single_panel_section_before_consecutive_reuse(monkeypatch):
+def test_reference_planner_counts_distinct_roi_capacity_for_single_panel(monkeypatch):
     from types import SimpleNamespace
 
     from app.services import editorial_visual_planner
@@ -956,8 +1006,132 @@ def test_reference_planner_caps_single_panel_section_before_consecutive_reuse(mo
         allow_review_duration=True,
     )
 
-    assert captured["capacity"] == 1
-    assert len(result) == 1
+    assert captured["capacity"] == 2
+    assert len(result) == 2
+
+
+def test_review_planner_uses_distinct_roi_capacity_before_long_holds(monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from app.services import editorial_visual_planner
+
+    regions = []
+    crops = {}
+    candidates = {}
+    for index in range(5):
+        panel_id = f"panel-{index}"
+        region_id = f"region-{index}"
+        asset_id = f"asset-{index}"
+        regions.append(
+            _region(
+                panel_id,
+                region_id,
+                asset_id,
+                index + 3,
+                (0, 0, 100, 200),
+                f"{asset_id}-checksum",
+            )
+        )
+        crops[region_id] = _crop((40 + index * 20, 60, 100), True)
+        candidates[region_id] = _candidate(asset_id, index + 3, f"signature-{index}")
+    candidate_tuple = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id=candidates,
+        panel_crops_by_region_id=crops,
+        section_evidence_panel_ids={"setup": tuple(item.panel_id for item in regions)},
+        section_citations={},
+        beats_by_section={"setup": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    alternate_rois = (
+        editorial_visual_planner.ReferenceROIAlternative(
+            kind="primary",
+            roi_label="primary",
+            crop_box=(0, 0, 100, 200),
+            focus=(0.25, 0.5, 0.25, 0.5),
+        ),
+        editorial_visual_planner.ReferenceROIAlternative(
+            kind="alternate_roi",
+            roi_label="alternate",
+            crop_box=(0, 0, 100, 200),
+            focus=(0.75, 0.5, 0.75, 0.5),
+        ),
+    )
+    candidate_tuple = tuple(
+        replace(candidate, roi_alternatives=alternate_rois)
+        for candidate in candidate_tuple
+    )
+    sections = ("hook", "setup", "conflict", "twist", "cta")
+    candidate_tuple = tuple(
+        replace(candidate, eligible_sections=(sections[index],))
+        for index, candidate in enumerate(candidate_tuple)
+    )
+
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_feasible_roi_capacity",
+        lambda *_args, **_kwargs: 2,
+    )
+    original_reference = editorial_visual_planner._plan_reference
+
+    def forced_cut_reference(*args, **kwargs):
+        shots = original_reference(*args, **kwargs)
+        for shot in shots:
+            shot["transition"] = "cut"
+        return shots
+
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_plan_reference",
+        forced_cut_reference,
+    )
+
+    def fake_attempt(candidate, roi, **kwargs):
+        duplicate = tuple(editorial_visual_planner._roi_key(roi)) in kwargs["used_rois"]
+        entry = {
+            "panel_region_id": candidate.panel_region_id,
+            "panel_id": candidate.panel_id,
+            "source_asset_id": candidate.source_asset_id,
+            "source_order": candidate.source_order,
+            "source_asset_checksum": candidate.source_asset_checksum,
+            "panel_size": list(candidate.panel_size),
+            "evidence_hash": candidate.evidence_hash,
+            "roi_label": roi.roi_label,
+            "crop_box": list(roi.crop_box),
+            "roi_kind": roi.kind,
+            "kind": kwargs["phase_kind"],
+            "accepted": not duplicate,
+            "code": "visual.reuse_roi_duplicate" if duplicate else None,
+            "telemetry": {"edge_connected_blank_fraction": 0.0},
+        }
+        return not duplicate, {"edge_connected_blank_fraction": 0.0}, entry
+
+    monkeypatch.setattr(editorial_visual_planner, "_reference_panel_attempt", fake_attempt)
+    result = editorial_visual_planner._plan_reference_panel_candidates(
+        [
+            SimpleNamespace(
+                section=section,
+                start_time=index * 10.26,
+                end_time=(index + 1) * 10.26,
+                text="The pressure shifts as the next move changes the stakes.",
+            )
+            for index, section in enumerate(sections)
+        ],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        candidate_tuple,
+        allow_review_cadence_adaptation=True,
+        allow_review_duration=True,
+    )
+
+    assert len(result) == 10
+    assert max(shot["end_time"] - shot["start_time"] for shot in result) < 6.0
+    assert len({shot["panel_id"] for shot in result}) == 5
+    assert all(
+        len({shot["roi_label"] for shot in result if shot["panel_id"] == panel_id}) == 2
+        for panel_id in {shot["panel_id"] for shot in result}
+    )
+    assert any(shot["transition"] == "fade" for shot in result[1:])
 
 
 def test_silent_render_video_uses_persisted_roi_without_reselection(monkeypatch, tmp_path):
@@ -1254,3 +1428,29 @@ def test_review_qc_accepts_measured_pixel_safe_subtitle_and_three_percent_blank(
 
     assert subtitle["font_file_sha256"] == "abc"
     assert visual["max_edge_blank_fraction"] == 0.03
+
+
+def test_review_qc_rejects_excessive_visual_hold_and_missing_diversity_metrics():
+    from app.services import review_preview
+
+    sidecar = {
+        "shots": [
+            {
+                "framing_telemetry": {"edge_connected_blank_fraction": 0.0},
+                "panel_id": "panel-a",
+                "selected_roi": {"roi_label": "primary"},
+            }
+        ],
+        "visual_motion_audit": {
+            "max_unchanged_hold_s": 8.0,
+            "unique_visuals": 1,
+            "available_visuals": 8,
+            "motion_mode_diversity": 1,
+            "transition_count": 0,
+        },
+    }
+
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+
+    assert exc.value.code == "review.visual_hold_excessive"

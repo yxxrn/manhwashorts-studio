@@ -129,6 +129,43 @@ def test_review_panel_crop_fallback_rejects_tampered_bytes_or_geometry():
         )
 
 
+def test_review_resume_falls_back_to_verified_full_source_storage_when_root_is_not_input(
+    tmp_path, monkeypatch
+):
+    pipeline = importlib.import_module("app.services.pipeline")
+    image_path = tmp_path / "stored-source.jpg"
+    image = Image.new("RGB", (900, 1600), (30, 60, 90))
+    image.save(image_path, format="JPEG")
+    checksum = hashlib.sha256(image_path.read_bytes()).hexdigest()
+    asset = SimpleNamespace(
+        checksum=checksum,
+        original_checksum=checksum,
+        original_width=900,
+        original_height=1600,
+        storage_key="stored/source.jpg",
+    )
+    region = SimpleNamespace(
+        bounds_json={"x": 0, "y": 0, "width": 900, "height": 1600}
+    )
+    monkeypatch.setattr(pipeline.storage, "path_for", lambda _key: image_path)
+
+    source, dimensions, bounds, materialization, source_path = (
+        pipeline._load_review_panel_source(
+            asset,
+            region,
+            source_root=tmp_path / "review-output",
+            allow_persisted_panel_crop_fallback=True,
+        )
+    )
+
+    assert source.size == (900, 1600)
+    assert dimensions == (900, 1600)
+    assert bounds == (0, 0, 900, 1600)
+    assert materialization == pipeline.review_source_upscale.ORIGINAL_SOURCE_MATERIALIZATION
+    assert source_path == image_path
+    source.close()
+
+
 def test_default_review_policy_uses_approved_mass_production_cap():
     module = _upscale_module()
 

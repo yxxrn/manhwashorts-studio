@@ -1968,3 +1968,28 @@ not bypassed. The affected matrix is green. A no-provider ledger preflight
 found 50 candidates and 5 genuinely feasible panels; the selected hook/payoff
 sections still need evidence-grounded visual repair before render. No provider,
 TTS, or media artifact is claimed.
+
+## 2026-08-24 local review visual-diversity checkpoint
+
+The same durable review job now produces a real revised silent preview after
+the visual-diversity/motion fix. The root causes were (a) review cadence
+counting only unique panel IDs instead of distinct feasible ROI capacity and
+(b) the review render-request builder overwriting every persisted transition
+with `cut`. The generic fix uses distinct grounded ROI alternatives before
+extending a hold, bounds reuse, preserves the planner's bounded fade decision,
+and measures rendered frames rather than trusting motion metadata. Strict
+balloon, protected-region, blank-space, checksum, chronology, and lineage
+gates remain unchanged.
+
+Verified runtime artifact:
+`data/phase5b-cold-v1/output/a49a1db9b7c74b83b28b926cfa106622/review/silent_preview.mp4`
+SHA-256 `15b4c0aad76c07f84232bc4baaa8e52d3d6ef47872082815dc4c421a3728c214`.
+It is 51.3 seconds, 1080x1920, 60 fps, H.264 High/yuv420p, video-only.
+The revised audit reports 8 shots, 8 unique panel/ROI visuals, 5 motion
+modes, maximum unchanged hold 2.263 seconds, reuse streak 2, one 0.18-second
+fade, mean frame difference 5.215, and no blocking QC codes. The contact sheet
+and ignored frame samples are under the same `review/` directory. The bundle
+remains `PENDING_EDITORIAL_REVIEW` with `publish_allowed=false`; this is not a
+voiced or publication-ready output. Resume the same job with the normal review
+menu only if a new review artifact is requested; do not run TTS or final media
+from this pending preview.

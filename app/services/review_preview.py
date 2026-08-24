@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageStat
 from sqlalchemy import select
 
 from app.config import settings
@@ -82,11 +82,101 @@ def _measured_visual_qc(
         if not 0.0 <= fraction <= blank_target_fraction + 1e-9:
             raise ReviewPreviewError("review.blank_space_exceeds_target")
         fractions.append(fraction)
-    return {
+    measured: dict[str, object] = {
         "blank_target_fraction": blank_target_fraction,
         "max_edge_blank_fraction": max(fractions),
         "per_shot_edge_blank_fraction": fractions,
     }
+    visual_motion = sidecar.get("visual_motion_audit")
+    if not isinstance(visual_motion, Mapping):
+        return measured
+    audit = dict(visual_motion)
+    visual_keys = {
+        (
+            str(shot.get("panel_id") or shot.get("source_asset_id") or ""),
+            _canonical(shot.get("selected_roi") or {}),
+        )
+        for shot in shots
+        if isinstance(shot, Mapping)
+    }
+    available_capacity = max(
+        [
+            int(
+                (shot.get("framing_telemetry") or {}).get(
+                    "available_visual_capacity", 0
+                )
+            )
+            for shot in shots
+            if isinstance(shot, Mapping)
+            and isinstance(shot.get("framing_telemetry"), Mapping)
+        ]
+        or [0]
+    )
+    durations = [
+        max(0.0, float(shot.get("end_time", 0.0)) - float(shot.get("start_time", 0.0)))
+        for shot in shots
+        if isinstance(shot, Mapping)
+    ]
+    total_duration = sum(durations)
+    modes = {
+        str(shot.get("motion_mode", "hold"))
+        for shot in shots
+        if isinstance(shot, Mapping)
+    }
+    mode_counts: dict[str, int] = {}
+    for shot in shots:
+        if isinstance(shot, Mapping):
+            mode = str(shot.get("motion_mode", "hold"))
+            mode_counts[mode] = mode_counts.get(mode, 0) + 1
+    panel_ids = [
+        str(shot.get("panel_id") or shot.get("source_asset_id") or "")
+        for shot in shots
+        if isinstance(shot, Mapping)
+    ]
+    reuse_streak = 0
+    current_streak = 0
+    previous_panel = None
+    for panel_id in panel_ids:
+        if panel_id and panel_id == previous_panel:
+            current_streak += 1
+        else:
+            current_streak = 1 if panel_id else 0
+        reuse_streak = max(reuse_streak, current_streak)
+        previous_panel = panel_id
+    transition_count = sum(
+        1
+        for shot in shots[1:]
+        if isinstance(shot, Mapping) and shot.get("transition") == "fade"
+    )
+    audit.setdefault("unique_visuals", len(visual_keys))
+    audit.setdefault("available_visuals", max(len(visual_keys), available_capacity))
+    audit.setdefault("motion_mode_diversity", len(modes))
+    audit.setdefault("motion_mode_distribution", dict(sorted(mode_counts.items())))
+    audit.setdefault("reuse_streak_max", reuse_streak)
+    audit.setdefault("transition_count", transition_count)
+    if float(audit.get("max_unchanged_hold_s", 0.0)) > 4.0:
+        raise ReviewPreviewError("review.visual_hold_excessive")
+    required_visuals = min(
+        int(audit.get("available_visuals", len(visual_keys))),
+        max(4, int(round(total_duration / 5.5))) if total_duration >= 45.0 else 4,
+    )
+    if len(shots) >= 4 and len(visual_keys) < required_visuals:
+        raise ReviewPreviewError("review.visual_diversity_insufficient")
+    if int(audit.get("reuse_streak_max", reuse_streak)) > 2:
+        raise ReviewPreviewError("review.visual_reuse_streak_excessive")
+    if len(shots) >= 4 and int(audit.get("motion_mode_diversity", len(modes))) < 4:
+        raise ReviewPreviewError("review.motion_mode_diversity_insufficient")
+    if len(shots) >= 4 and int(audit.get("transition_count", transition_count)) < 1:
+        raise ReviewPreviewError("review.transition_missing")
+    if (
+        len(shots) >= 4
+        and int(audit.get("motion_mode_diversity", len(modes))) > 0
+        and "mean_frame_diff" in audit
+        and float(audit.get("mean_frame_diff", 0.0)) < 0.25
+    ):
+        raise ReviewPreviewError("review.motion_noop")
+    measured["visual_motion_audit"] = audit
+    return measured
 
 
 @dataclass(frozen=True)
@@ -151,7 +241,42 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _render_audit(output: Path, root: Path, duration: float) -> tuple[Path, Path, str]:
+def _frame_motion_audit(frame_paths: list[Path], duration: float) -> dict[str, object]:
+    """Measure rendered frame change without trusting planned motion metadata."""
+
+    if len(frame_paths) < 2:
+        raise ReviewPreviewError("review.motion_measurement_missing")
+    differences: list[float] = []
+    try:
+        for before_path, after_path in zip(frame_paths, frame_paths[1:], strict=False):
+            with Image.open(before_path) as before, Image.open(after_path) as after:
+                left = before.convert("L").resize((64, 114))
+                right = after.convert("L").resize((64, 114))
+                differences.append(round(float(ImageStat.Stat(ImageChops.difference(left, right)).mean[0]), 4))
+    except (OSError, ValueError, TypeError) as exc:
+        raise ReviewPreviewError("review.motion_measurement_failed") from exc
+    ordered = sorted(differences)
+    interval = float(duration) / max(1, len(frame_paths) - 1)
+    longest_run = 0
+    current_run = 0
+    for difference in differences:
+        if difference < 0.5:
+            current_run += 1
+            longest_run = max(longest_run, current_run)
+        else:
+            current_run = 0
+    return {
+        "sample_frame_count": len(frame_paths),
+        "mean_frame_diff": round(sum(differences) / len(differences), 4),
+        "p95_frame_diff": ordered[min(len(ordered) - 1, int((len(ordered) - 1) * 0.95))],
+        "min_frame_diff": ordered[0],
+        "max_frame_diff": ordered[-1],
+        "near_identical_fraction": round(sum(value < 0.5 for value in differences) / len(differences), 4),
+        "max_unchanged_hold_s": round((longest_run + 1) * interval, 3),
+    }
+
+
+def _render_audit(output: Path, root: Path, duration: float) -> tuple[Path, Path, str, dict[str, object]]:
     """Create ffprobe, blackdetect, and a deterministic 69-frame contact sheet."""
 
     root.mkdir(parents=True, exist_ok=True)
@@ -243,7 +368,7 @@ def _render_audit(output: Path, root: Path, duration: float) -> tuple[Path, Path
         raise
     except (OSError, ValueError, render_service.RenderError) as exc:
         raise ReviewPreviewError("review.contact_sheet_failed") from exc
-    return root / "ffprobe.json", contact_sheet, root / "blackdetect.txt"
+    return root / "ffprobe.json", contact_sheet, root / "blackdetect.txt", _frame_motion_audit(paths, duration)
 
 
 def write_review_preview_bundle(
@@ -385,13 +510,19 @@ def write_review_preview_bundle(
     else:
         sidecar = {"shots": [], "publish_allowed": False}
     measured_subtitle = _measured_subtitle_qc(sidecar, subtitle_contract or {})
+    ffprobe_path, contact_sheet, blackdetect_path, frame_motion = _render_audit(
+        output, output_dir, float(result.duration)
+    )
+    sidecar_for_qc = dict(sidecar)
+    sidecar_for_qc["visual_motion_audit"] = frame_motion
     measured_visual = _measured_visual_qc(
-        sidecar,
+        sidecar_for_qc,
         blank_target_fraction=blank_target_fraction,
     )
-    _write_json(output_dir / "edit_shot_plan.json", {"schema_version": "review_silent_edit_plan_v1", "provenance": PROVENANCE, "mp4": str(output), "render_sidecar": str(result.sidecar_path or ""), "shots": sidecar.get("shots", []), "audio_stream_expected": False, "publish_allowed": False})
+    visual_metrics_path = output_dir / "visual_diversity_metrics.json"
+    _write_json(visual_metrics_path, measured_visual.get("visual_motion_audit", frame_motion))
+    _write_json(output_dir / "edit_shot_plan.json", {"schema_version": "review_silent_edit_plan_v1", "provenance": PROVENANCE, "mp4": str(output), "render_sidecar": str(result.sidecar_path or ""), "shots": sidecar.get("shots", []), "visual_motion_audit": measured_visual.get("visual_motion_audit", frame_motion), "audio_stream_expected": False, "publish_allowed": False})
 
-    ffprobe_path, contact_sheet, blackdetect_path = _render_audit(output, output_dir, float(result.duration))
     probe = json.loads(ffprobe_path.read_text(encoding="utf-8"))
     video_streams = [item for item in probe.get("streams", []) if item.get("codec_type") == "video"]
     audio_streams = [item for item in probe.get("streams", []) if item.get("codec_type") == "audio"]

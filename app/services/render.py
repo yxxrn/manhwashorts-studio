@@ -1993,6 +1993,11 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
                 "fallback_attempts": attempts,
                 "framing_telemetry": scene.framing_telemetry,
                 "source_upscale_manifest": scene.review_source_upscale_manifest,
+                "motion_mode": scene.motion_mode,
+                "motion_intensity": scene.motion_intensity,
+                "camera_curve": scene.camera_curve,
+                "transition": scene.transition,
+                "transition_duration_s": 0.18 if scene.transition == "fade" else 0.0,
                 "reason": scene.motion_reason,
                 "rejection_code": None,
             }

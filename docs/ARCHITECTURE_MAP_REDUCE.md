@@ -1177,3 +1177,29 @@ gates remain active. A local no-provider preflight measured 50 candidates and
 5 feasible panels; the next repair stage must remap/rewrite sections whose
 exact citations have no feasible ROI. No provider/TTS/render work was done in
 this checkpoint.
+
+## 2026-08-24 — review visual cadence and transition boundary
+
+The review-only visual planner now treats a distinct feasible ROI as a real
+visual alternative. It uses the persisted panel/ROI ledger and source order,
+prefers an unused grounded panel, permits same-panel reuse only through a
+different safe ROI within capacity, and records the selected ROI/lineage in
+the existing review telemetry. This addresses long still holds without
+inventing panel evidence or bypassing balloon/protected/blank gates.
+
+Review transitions are selected after exact panel binding, persisted on
+`TimelineScene`, and carried unchanged into `render.SceneInput`. The previous
+request builder hardcoded `cut`; the regression now protects this boundary.
+The review renderer emits a short fade only at the bounded selected boundary,
+and the post-render audit measures decoded frame differences, unchanged-hold
+duration, reuse streak, motion-mode distribution, visual-key diversity, and
+transition count. A missing/weak metric is blocking for review; production
+and voiced timing contracts are unchanged.
+
+Verified local review output: 8 shots and 8 panel/ROI keys over 51.3 seconds,
+five motion modes, max unchanged hold 2.263 seconds, one 0.18-second fade,
+mean sampled frame diff 5.215, p95 38.6536, and zero blocking QC codes. The
+artifact and machine evidence remain ignored runtime data under
+`data/phase5b-cold-v1/output/a49a1db9b7c74b83b28b926cfa106622/review/`; the
+state is pending human editorial review and cannot be treated as final audio
+or publication evidence.

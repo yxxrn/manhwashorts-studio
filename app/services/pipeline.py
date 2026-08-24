@@ -472,7 +472,16 @@ def _review_reference_source_path(
                 source_dimensions=source_dimensions,
             )
         except review_source_upscale.ReviewSourceUpscaleError as exc:
-            raise PipelineError(f"{exc.code}: {exc}") from exc
+            # A resumed silent review may retain only its output directory,
+            # not the original input folder.  Storage is a safe fallback only
+            # for a missing/invalid root: the no-root resolver below still
+            # requires byte-identical content and decoded dimensions.  A
+            # checksum/geometry/lineage failure remains fail-closed.
+            if exc.code not in {
+                "review.upscale_source_root_invalid",
+                "review.upscale_source_missing",
+            }:
+                raise PipelineError(f"{exc.code}: {exc}") from exc
     path = storage.path_for(asset.storage_key)
     if not path.is_file() or asset.checksum != source_checksum:
         raise PipelineError(
@@ -531,10 +540,33 @@ def _load_review_panel_source(
             source_path,
         )
     except PipelineError as exc:
-        if not allow_persisted_panel_crop_fallback or not str(exc).startswith(
-            "review.upscale_source_missing:"
+        if not allow_persisted_panel_crop_fallback or not any(
+            str(exc).startswith(prefix)
+            for prefix in (
+                "review.upscale_source_missing:",
+                "review.upscale_source_root_invalid:",
+            )
         ):
             raise
+        # A resumed review may only know its ignored output directory rather
+        # than the original input folder.  If storage still contains the
+        # byte-identical full source, use it before attempting the crop-only
+        # fallback.  The resolver rechecks checksum and decoded dimensions;
+        # no segmented crop is promoted to original-source lineage.
+        try:
+            source_path = _review_reference_source_path(asset, source_root=None)
+            with Image.open(source_path) as source:
+                source.load()
+                image = source.convert("RGB")
+            return (
+                image,
+                tuple(int(value) for value in image.size),
+                bounds,
+                review_source_upscale.ORIGINAL_SOURCE_MATERIALIZATION,
+                source_path,
+            )
+        except PipelineError:
+            pass
     raw = storage.read_bytes(asset.storage_key)
     try:
         image, local_bounds = review_source_upscale.resolve_persisted_panel_crop(
@@ -3038,6 +3070,42 @@ def build_timeline(
                 except reference_visual_review.ReferenceReviewError as exc:
                     raise PipelineError(f"{exc.code}: {exc}") from exc
 
+    if profile is not None and silent_reference_review and len(planned) > 1:
+        # Persist the review transition contract after panel binding.  The
+        # candidate planner may replace synthetic base-shot identities while
+        # validating exact panel lineage; this final timeline boundary keeps a
+        # bounded visible fade from being lost before the renderer sees it.
+        boundaries = [
+            index
+            for index in range(1, len(planned))
+            if (
+                planned[index].get("section") != planned[index - 1].get("section")
+                or planned[index].get("panel_id") != planned[index - 1].get("panel_id")
+            )
+        ]
+        fade_budget = min(
+            len(boundaries),
+            max(1, int(len(planned) * (1.0 - profile.hard_cut_ratio_min))),
+        )
+        priority_sections = {"twist", "cta", "cliffhanger"}
+        fade_boundaries = set(
+            sorted(
+                boundaries,
+                key=lambda index: (
+                    planned[index].get("section") not in priority_sections,
+                    index,
+                ),
+            )[:fade_budget]
+        )
+        for index, shot in enumerate(planned):
+            shot["transition"] = (
+                "none"
+                if index == 0
+                else "fade"
+                if index in fade_boundaries
+                else "cut"
+            )
+
     for old in db.scalars(select(TimelineScene).where(TimelineScene.project_id == project_id)):
         db.delete(old)
     for old_cue in db.scalars(select(SubtitleCue).where(SubtitleCue.project_id == project_id)):
@@ -3929,7 +3997,9 @@ def _reference_scene_inputs(
                 motion_reason=scene.motion_reason,
                 effect=scene.effect,
                 disabled_effects=list(scene.disabled_effects or []),
-                transition="cut",
+                # Preserve the persisted director decision.  The review path
+                # must not erase a bounded fade before the renderer/QC sees it.
+                transition=getattr(scene, "transition", "cut") or "cut",
                 overlay_text="",
                 panel_region_id=getattr(scene, "panel_region_id", None),
                 panel_id=getattr(scene, "panel_id", ""),

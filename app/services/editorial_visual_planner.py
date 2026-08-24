@@ -1033,6 +1033,7 @@ def _plan_reference_panel_candidates(
         dict.fromkeys(str(span.section) for span in spans if str(span.section))
     )
     section_capacity: dict[str, int] = {}
+    review_capacity_by_panel: dict[str, int] = {}
     for section in section_names:
         eligible_for_section = [
             candidate
@@ -1061,19 +1062,13 @@ def _plan_reference_panel_candidates(
             )
             for candidate in eligible_for_section
         ]
-        # A single eligible panel cannot be selected twice in succession. Its
-        # feasible ROI count is still useful for multi-panel reuse, but must
-        # not inflate this section's cadence capacity beyond one shot.
-        unique_feasible = {
-            candidate.panel_id
-            for candidate, capacity in zip(eligible_for_section, capacities, strict=True)
-            if capacity > 0
-        }
-        if len(unique_feasible) <= 1:
-            section_capacity[section] = 1 if unique_feasible else 0
-        else:
-            # Silent review: one shot per unique feasible panel at most.
-            section_capacity[section] = len(unique_feasible)
+        for candidate, capacity in zip(eligible_for_section, capacities, strict=True):
+            review_capacity_by_panel[candidate.panel_id] = capacity
+        # A safe ROI is a distinct visual alternative, not just metadata. Use
+        # every bounded alternative before extending a continuous hold. A
+        # single evidence panel may repeat only through distinct feasible ROIs;
+        # selection still avoids reuse when another grounded panel is available.
+        section_capacity[section] = sum(capacities)
     if allow_review_cadence_adaptation and any(
         capacity < 1 for capacity in section_capacity.values()
     ):
@@ -1099,18 +1094,30 @@ def _plan_reference_panel_candidates(
         section = str(shot.get("section", ""))
         beat = str(shot.get("camera_intent", "") or "")
         rotated = ordered[shot_index % len(ordered) :] + ordered[: shot_index % len(ordered)]
-        panel_uses_cap = (
-            min(1, int(profile.max_canonical_panel_uses))
-            if allow_review_cadence_adaptation
-            else int(profile.max_canonical_panel_uses)
-        )
+        panel_uses_cap = int(profile.max_canonical_panel_uses)
         eligible = [
             candidate
             for candidate in rotated
             if _candidate_is_eligible(candidate, section, beat)
-            and uses.get(candidate.panel_id, 0) < panel_uses_cap
-            and candidate.panel_id != last_panel_id
+            and uses.get(candidate.panel_id, 0)
+            < (
+                review_capacity_by_panel.get(candidate.panel_id, panel_uses_cap)
+                if allow_review_cadence_adaptation
+                else panel_uses_cap
+            )
         ]
+        if allow_review_cadence_adaptation:
+            non_reused = [
+                candidate for candidate in eligible if candidate.panel_id != last_panel_id
+            ]
+            # If this is the only grounded panel for the section, a second
+            # shot is allowed only while another safe ROI remains. The
+            # fallback attempt ledger records that exception.
+            eligible = non_reused or eligible
+        else:
+            eligible = [
+                candidate for candidate in eligible if candidate.panel_id != last_panel_id
+            ]
         eligible = list(_prioritize_resolution_candidates(eligible))
         if allow_review_cadence_adaptation:
             # Silent review must follow the chapter/source order (204 -> 205 ->
@@ -1298,6 +1305,10 @@ def _plan_reference_panel_candidates(
             telemetry_record["planned_target_shots"] = shot.get(
                 "planned_target_shots"
             )
+        if allow_review_cadence_adaptation:
+            telemetry_record["available_visual_capacity"] = sum(
+                section_capacity.values()
+            )
         telemetry_record = _canonical_json_mapping(telemetry_record)
         accepted_index = next(
             (
@@ -1358,6 +1369,43 @@ def _plan_reference_panel_candidates(
                 shot["camera_curve"] = "slow_push_in"
                 shot["motion_mode"] = "slow_push"
                 shot["motion_reason"] = "static focus: pan/focus_shift downgraded to zoom"
+    if allow_review_cadence_adaptation and len(selected_shots) > 1:
+        # The panel-candidate path reuses the base shot list but can replace
+        # its panel/ROI identity during exact lineage binding. Reassert a
+        # bounded visible transition after that selection so a base ``cut``
+        # cannot silently erase review-edit intent.
+        boundaries = [
+            index
+            for index in range(1, len(selected_shots))
+            if (
+                selected_shots[index].get("section")
+                != selected_shots[index - 1].get("section")
+                or selected_shots[index].get("panel_id")
+                != selected_shots[index - 1].get("panel_id")
+            )
+        ]
+        fade_budget = min(
+            len(boundaries),
+            max(1, int(len(selected_shots) * (1.0 - profile.hard_cut_ratio_min))),
+        )
+        priority_sections = {"twist", "cta", "cliffhanger"}
+        fade_boundaries = set(
+            sorted(
+                boundaries,
+                key=lambda index: (
+                    selected_shots[index].get("section") not in priority_sections,
+                    index,
+                ),
+            )[:fade_budget]
+        )
+        for index, shot in enumerate(selected_shots):
+            shot["transition"] = (
+                "none"
+                if index == 0
+                else "fade"
+                if index in fade_boundaries
+                else "cut"
+            )
     return selected_shots
 
 
@@ -1469,6 +1517,28 @@ def _plan_reference(
             f"{profile.profile_id} planned {len(shots)} shots; expected {target}"
         )
 
+    review_fade_boundaries: set[int] = set()
+    if allow_review_cadence_adaptation and len(shots) > 1:
+        boundaries = [
+            index
+            for index in range(1, len(shots))
+            if shots[index].get("section") != shots[index - 1].get("section")
+        ]
+        fade_budget = min(
+            len(boundaries),
+            max(1, int(len(shots) * (1.0 - profile.hard_cut_ratio_min))),
+        )
+        priority_sections = {"twist", "cta", "cliffhanger"}
+        review_fade_boundaries = set(
+            sorted(
+                boundaries,
+                key=lambda index: (
+                    shots[index].get("section") not in priority_sections,
+                    index,
+                ),
+            )[:fade_budget]
+        )
+
     if cadence_adapted:
         warning = "visual.cadence_adapted_to_feasible_capacity"
         for shot in shots:
@@ -1529,7 +1599,14 @@ def _plan_reference(
                 end_time = round(start + round(durations[shot_index], 3), 3)
             shot["start_time"] = start
             shot["end_time"] = end_time
-            shot["transition"] = "none" if shot_cursor + shot_index == 0 else "cut"
+            absolute_index = shot_cursor + shot_index
+            shot["transition"] = (
+                "none"
+                if absolute_index == 0
+                else "fade"
+                if absolute_index in review_fade_boundaries
+                else "cut"
+            )
             reasons = list(shot.get("alignment_reasons", ()))
             valid = (
                 {

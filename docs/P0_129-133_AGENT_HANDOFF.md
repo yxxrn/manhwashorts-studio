@@ -1962,3 +1962,30 @@ codes (`visual.balloon_mask_overlap`, `visual.blank_infeasible`, and
 and story state and the same configured bounded repair path; do not repeat
 visual/story analysis. No provider/TTS/media artifact is claimed for this
 checkpoint.
+
+## 2026-08-24 local revised visual-review handoff
+
+Resume of the same local namespace/job completed through the normal review
+entrypoint after the timeline diversity fix. Before the fix the preview had
+5 shots, 5 panel IDs, 3 effective ROI keys, no visible transition, and a
+62.75% near-identical frame fraction. The code now consumes distinct feasible
+ROI capacity, bounds same-panel reuse, preserves persisted transition intent,
+and blocks measured no-op/long-hold/diversity failures. No hard visual or
+lineage gate was relaxed.
+
+Artifact:
+`data/phase5b-cold-v1/output/a49a1db9b7c74b83b28b926cfa106622/review/silent_preview.mp4`
+SHA-256 `15b4c0aad76c07f84232bc4baaa8e52d3d6ef47872082815dc4c421a3728c214`.
+Measured 51.3s, 1080x1920, 60fps, H.264 High/yuv420p, zero audio streams;
+8 shots/8 panel-ROI keys, 5 motion modes, 2.263s max unchanged hold, reuse
+streak 2, one 0.18s fade, mean frame diff 5.215, p95 38.6536, no blackdetect
+events, and no blocking QC codes. Subtitle contract measured max 2 lines,
+Barber Chop 77px, yellow active word at 1.08 scale, punctuation-free display.
+Contact sheet, ffprobe, blackdetect, edit plan, sidecar, and metrics are in
+the ignored `review/` directory above; `frame-audit/` contains the sampled
+boundary frames used for visual inspection.
+
+State remains `PENDING_EDITORIAL_REVIEW` / `publish_allowed=false`. This is a
+silent review artifact only; TTS, authoritative voice timing, final voiced
+render, and publication remain deferred. Do not edit the MP4 manually or
+resume the final/voice path until editorial review accepts the visual cadence.

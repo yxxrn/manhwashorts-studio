@@ -3242,3 +3242,46 @@ ROI under the unchanged `visual.balloon_mask_overlap`,
 `visual.blank_infeasible`, and `visual.protected_*` gates; the next normal
 resume must use the existing bounded evidence-grounded visual repair before
 render. No provider/TTS call or media artifact was produced in this slice.
+
+## 2026-08-24 — revised review preview visual diversity/motion
+
+The rejected review preview had 5 shots/5 panel IDs, only 3 panel/ROI visual
+keys, 9.128--11.738 second shot holds, no transition duration, and a 62.75%
+near-identical sampled-frame fraction. The root cause was split: cadence used
+unique panel count instead of the available distinct safe ROI capacity, and
+`_reference_scene_inputs()` hardcoded every review transition to `cut` after
+the planner had selected it.
+
+The generic source fix now consumes distinct feasible ROI alternatives before
+extending a hold, keeps reuse bounded, reasserts a bounded fade at review
+boundaries, propagates the persisted transition to `SceneInput`, and measures
+actual rendered frame deltas. It does not weaken framing, balloon/protected,
+blank-space, checksum, chronology, lineage, or subtitle gates.
+
+The normal local resume of job
+`a49a1db9b7c74b83b28b926cfa106622` reached `REVIEW_PREVIEW_READY` and produced:
+
+`data/phase5b-cold-v1/output/a49a1db9b7c74b83b28b926cfa106622/review/silent_preview.mp4`
+
+SHA-256: `15b4c0aad76c07f84232bc4baaa8e52d3d6ef47872082815dc4c421a3728c214`;
+7,917,388 bytes; 51.3 seconds; 1080x1920; 60 fps; H.264 High/yuv420p;
+zero audio streams. After the fix: 8 shots, 8 unique panel/ROI keys, 5
+motion modes, max unchanged hold 2.263 seconds, p95 shot dwell 11.129 seconds,
+reuse streak 2, one 0.18-second fade, mean frame difference 5.215, p95 frame
+diff 38.6536, and `max_edge_blank_fraction=0.02956`. `qc_report.json` has no
+blocking codes, max measured subtitle lines is 2, and blackdetect found no
+events. The contact sheet is
+`.../review/contact-sheet-69-frame.jpg`; machine metrics are
+`.../review/visual_diversity_metrics.json`; the ignored boundary samples are
+under `.../review/frame-audit/`.
+
+The result is still `PENDING_EDITORIAL_REVIEW`, provenance remains review-only,
+and `publish_allowed=false`. No TTS, voice, audio, provider call, or final
+production render is claimed or enabled by this checkpoint.
+
+The direct `tests/test_pipeline.py` run still has 13 known fixture failures,
+all stopping at the unchanged prerequisite `run vision analysis before
+generating a draft`; this slice does not touch that draft boundary. They are
+reported as an environment/fixture exception, not as a green full pipeline
+claim. The visual-review acceptance above is independently covered by the
+163-test affected matrix plus the real FFmpeg run.
