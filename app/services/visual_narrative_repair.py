@@ -320,6 +320,7 @@ def build_feasible_visual_ledger(
     profile: object,
     model_identity_hash: str,
     allow_source_resolution_warning: bool = False,
+    allow_conservative_full_panel: bool = False,
 ) -> FeasibleVisualLedger:
     """Evaluate every candidate ROI and retain only genuinely feasible panels."""
 
@@ -343,6 +344,7 @@ def build_feasible_visual_ledger(
                     tuple(int(value) for value in candidate.panel_size),
                     target_size,
                     allow_source_resolution_warning=allow_source_resolution_warning,
+                    allow_conservative_full_panel=allow_conservative_full_panel,
                     review_aggressive_crop=allow_source_resolution_warning,
                     blank_target_fraction=getattr(profile, "framing_blank_target_fraction", None),
                 )

@@ -3179,3 +3179,23 @@ Ruff, compileall, and diff-check are the publish gate. No provider/TTS request
 or media artifact was produced in this code slice. After publication, resume
 the same namespace to capture the concrete render/QC blocker; do not repeat
 visual/story work.
+
+## 2026-08-24 — explicit review approval and feasible-ledger propagation
+
+The first no-provider timeline preflight after the render-code fix exposed
+`latest evidence-backed script must be explicitly approved`. This is correct
+for normal/final media, but wrong for the explicit silent review path, which
+must remain pending and `publish_allowed=false` while still producing a review
+artifact. The minimal fix adds an explicit review-only allowance to script
+lookup and passes it only from `build_timeline()` and the silent reference
+request; the default and production paths retain the exact approval/hash gate.
+
+The same preflight exposed a second generic defect: the visual-repair ledger
+did not forward its conservative whole-panel opt-in to framing. The fix adds
+that typed flag and passes it only for review mode. A bounded all-panel
+preflight now sees 50 candidates and 5 feasible panels (source orders 20, 22,
+26, 40, 43). The remaining selected hook/payoff candidates have no feasible
+ROI under the unchanged `visual.balloon_mask_overlap`,
+`visual.blank_infeasible`, and `visual.protected_*` gates; the next normal
+resume must use the existing bounded evidence-grounded visual repair before
+render. No provider/TTS call or media artifact was produced in this slice.

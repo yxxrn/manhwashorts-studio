@@ -1435,12 +1435,19 @@ def current_script(db: Session, project_id: str) -> ScriptVersion | None:
     return latest_script_row(db, project_id)
 
 
-def _script_for_media(db: Session, project_id: str) -> ScriptVersion:
+def _script_for_media(
+    db: Session,
+    project_id: str,
+    *,
+    allow_unapproved_review: bool = False,
+) -> ScriptVersion:
     """Return the newest script only when its approval contract is satisfied."""
     latest = latest_script_row(db, project_id)
     if latest is None:
         raise PipelineError("generate a script first")
     if not _script_requires_explicit_approval(latest):
+        return latest
+    if allow_unapproved_review:
         return latest
     approved_hash = (latest.editorial_metadata or {}).get("approved_script_hash")
     expected_hash = _script_content_hash(latest)
@@ -2880,7 +2887,11 @@ def build_timeline(
     """Derive scenes/cues from voice timing or explicit silent-review pacing."""
     project = get_project(db, project_id)
     profile = reference_profile.resolve_reference_profile(project.template)
-    script = _script_for_media(db, project_id)
+    script = _script_for_media(
+        db,
+        project_id,
+        allow_unapproved_review=silent_reference_review,
+    )
 
     review_policy = None
     if silent_reference_review:
@@ -4000,7 +4011,11 @@ def _build_silent_reference_request(
             "reference.publish_not_allowed: publish_allowed must be false for silent review scenes"
         )
     if review_source_upscale_policy is not None:
-        script = _script_for_media(db, job.project_id)
+        script = _script_for_media(
+            db,
+            job.project_id,
+            allow_unapproved_review=True,
+        )
         provisional_spans = _review_provisional_spans(script, media_duration)
         sentence_groups: list[object] = []
         for span_index, span in enumerate(provisional_spans):

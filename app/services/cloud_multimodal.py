@@ -10603,12 +10603,14 @@ class CloudBatchService:
                 beats_by_section={beat_id: (beat_id,) for beat_id in beat_panel_ids},
                 allow_persisted_panel_crop_fallback=policy is not None,
                 review_source_root=review_source_root,
+                allow_conservative_full_panel=policy is not None,
             )
         ledger = visual_narrative_repair.build_feasible_visual_ledger(
             candidates,
             profile=profile,
             model_identity_hash=self.runner.model_identity.identity_hash,
             allow_source_resolution_warning=bool(policy.allow_low_source_resolution_warning),
+            allow_conservative_full_panel=policy is not None,
         )
         missing = visual_narrative_repair.missing_visual_sections(ledger, section_to_beats)
         if current_narration is not None and (

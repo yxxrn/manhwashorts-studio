@@ -1125,3 +1125,21 @@ when no stable code exists. This is diagnostic preservation, not a gate
 relaxation. The focused cloud/review tests passed 201/201; no provider/TTS or
 media work was performed. The next durable resume must use the preserved code
 to fix the smallest render/QC boundary.
+
+## 2026-08-24 — review-only approval and conservative ledger contracts
+
+Approval is now explicit at the media boundary: evidence-generated scripts
+may be consumed by `build_timeline()` and `_build_silent_reference_request()`
+only when the caller explicitly selects silent review. The default media path
+and `run_production()` still require the approved script hash/version and
+human approval. This keeps review artifacts pending without turning them into
+production evidence.
+
+The feasible-visual ledger now receives the same explicit
+`allow_conservative_full_panel` flag as framing. Review mode can therefore
+evaluate an audited `conservative_full_panel_v1` evidence record, while
+unknown ordinary geometry still fails closed and all blank/balloon/protected
+gates remain active. A local no-provider preflight measured 50 candidates and
+5 feasible panels; the next repair stage must remap/rewrite sections whose
+exact citations have no feasible ROI. No provider/TTS/render work was done in
+this checkpoint.

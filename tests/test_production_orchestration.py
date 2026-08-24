@@ -34,6 +34,35 @@ def test_evidence_v3_requires_exact_approval_and_never_falls_back(db):
     assert pl._script_for_media(db, project.id).id == script.id
 
 
+def test_review_only_media_may_use_unapproved_evidence_script_without_relaxing_default(db):
+    from app.services import pipeline as pl
+    from tests.test_script_evidence_gate import _project, _seed_analysis, _seed_script
+
+    project = _project(db)
+    row = _seed_analysis(db, project)
+    script = _seed_script(db, project, row)
+    script.generator = "vision_evidence_v3"
+    script.approved_by = ""
+    script.approved_at = None
+    db.flush()
+
+    try:
+        pl._script_for_media(db, project.id)
+    except pl.PipelineError as exc:
+        assert "approved" in str(exc)
+    else:  # pragma: no cover - contract guard
+        raise AssertionError("default media path must keep the approval gate")
+
+    assert (
+        pl._script_for_media(
+            db,
+            project.id,
+            allow_unapproved_review=True,
+        ).id
+        == script.id
+    )
+
+
 def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp_path):
     from app.constants import JobStatus
     from app.models import RenderJob, ScriptVersion

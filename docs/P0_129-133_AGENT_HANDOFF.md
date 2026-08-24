@@ -1906,3 +1906,23 @@ required before publish. No provider or TTS request was used here. Publish
 this source/test/docs checkpoint, then resume the same job once to obtain the
 actual render/QC predicate; do not repeat visual/story stages or alter runtime
 artifacts.
+
+## 2026-08-24 local review approval and feasible-ledger handoff
+
+The persisted 121-word/52.61-second script is evidence-generated and remains
+unapproved by design. A no-provider timeline preflight showed that the final
+media approval gate was being applied too early to the explicit review-only
+path. The source fix adds a narrowly scoped `allow_unapproved_review` lookup
+flag used only by silent review timeline/request construction; normal media
+and `run_production()` still require explicit approval/hash/version.
+
+The same boundary audit found that the repair ledger did not pass
+`allow_conservative_full_panel` into the framing gate. That propagation is
+now explicit and tested. Current all-panel preflight: 50 candidates, 5 safe
+feasible panels at source orders 20, 22, 26, 40, and 43. The selected hook and
+payoff evidence has no feasible crop, with only the existing hard rejection
+codes (`visual.balloon_mask_overlap`, `visual.blank_infeasible`, and
+`visual.protected_*`). The next resume may use the already persisted visual
+and story state and the same configured bounded repair path; do not repeat
+visual/story analysis. No provider/TTS/media artifact is claimed for this
+checkpoint.

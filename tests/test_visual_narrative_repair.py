@@ -408,6 +408,51 @@ def test_feasible_ledger_calls_framing_gate_and_excludes_rejected_panels(monkeyp
     assert len(calls) == 2
 
 
+def test_feasible_ledger_forwards_conservative_full_panel_opt_in(monkeypatch):
+    module = _module()
+    calls = []
+
+    def fake_feasible(crop_box, evidence, mask, panel_size, target_size, **kwargs):
+        calls.append(kwargs)
+        return (bool(kwargs.get("allow_conservative_full_panel")), _telemetry(module, tuple(crop_box)))
+
+    monkeypatch.setattr(module.framing_analysis, "candidate_is_feasible", fake_feasible)
+    candidate = SimpleNamespace(
+        panel_region_id="region-fallback",
+        panel_id="panel-fallback",
+        source_asset_id="asset-1",
+        source_order=1,
+        panel_size=(1080, 2164),
+        border_mask=SimpleNamespace(
+            mask_sha256="m" * 64,
+            detector_version="color-agnostic-border-v1",
+        ),
+        visual_evidence=SimpleNamespace(),
+        evidence_hash="e" * 64,
+        source_upscale_manifest={"resolution_state": "UPSCALED"},
+        eligible_sections=("hook",),
+        eligible_beats=("beat-1",),
+        roi_alternatives=(
+            SimpleNamespace(
+                kind="conservative_full_panel",
+                roi_label="conservative_full_panel",
+                crop_box=(0, 0, 1080, 2164),
+                focus=(0.5, 0.5, 0.5, 0.5),
+            ),
+        ),
+    )
+
+    ledger = module.build_feasible_visual_ledger(
+        [candidate],
+        profile=SimpleNamespace(final_width=1080, final_height=1920),
+        model_identity_hash="model-hash",
+        allow_conservative_full_panel=True,
+    )
+
+    assert len(ledger.entries) == 1
+    assert calls[0]["allow_conservative_full_panel"] is True
+
+
 def test_repair_attempts_are_bounded_and_cache_identity_includes_ledger_hash():
     module = _module()
     ledger = module.FeasibleVisualLedger(entries=(_entry(module),), model_identity_hash="model-hash")

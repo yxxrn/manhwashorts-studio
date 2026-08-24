@@ -1909,3 +1909,19 @@ compileall, and diff-check are green. No new provider/TTS/render request was
 made in this offline slice. The current job remains `NEEDS_REVIEW` at the
 narration boundary; resume the same namespace after publishing this
 checkpoint, reuse the valid visual/story stages, and do not re-run vision.
+
+## 2026-08-24 local review approval/feasibility checkpoint
+
+The no-provider timeline preflight exposed two reachable local contracts.
+Final/normal media still correctly requires explicit approval for an
+evidence-generated script, but the review-only silent path must materialize a
+pending review artifact without claiming approval. The explicit review flag
+now travels through timeline and silent-request script lookup; default and
+production callers remain strict. A second regression forwards the explicit
+conservative whole-panel opt-in into the feasible-visual ledger, so an audited
+`conservative_full_panel_v1` record is evaluated by the same framing gates;
+unknown geometry, blank space, balloon overlap, and protected retention are
+not bypassed. The affected matrix is green. A no-provider ledger preflight
+found 50 candidates and 5 genuinely feasible panels; the selected hook/payoff
+sections still need evidence-grounded visual repair before render. No provider,
+TTS, or media artifact is claimed.

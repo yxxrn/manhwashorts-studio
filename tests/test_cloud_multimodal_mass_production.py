@@ -1176,6 +1176,7 @@ def test_review_repair_forwards_persisted_panel_crop_fallback(monkeypatch):
 
     assert outcome[0] is result
     assert observed["allow_persisted_panel_crop_fallback"] is True
+    assert observed["allow_conservative_full_panel"] is True
 
 
 def test_persisted_review_reuses_exact_prepared_panel_payloads(monkeypatch):
