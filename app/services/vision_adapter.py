@@ -774,9 +774,17 @@ def _validate_request(
         ):
             raise VisionRequestInvalid()
         try:
-            expected_visual_version, expected_visual_sha256, _ = (
-                visual_scoring.load_visual_evidence_instruction()
-            )
+            if (
+                request.visual_instruction_version
+                == visual_scoring.VISUAL_EVIDENCE_REPAIR_PROMPT_VERSION
+            ):
+                expected_visual_version, expected_visual_sha256, _ = (
+                    visual_scoring.load_visual_evidence_repair_instruction()
+                )
+            else:
+                expected_visual_version, expected_visual_sha256, _ = (
+                    visual_scoring.load_visual_evidence_instruction()
+                )
         except Exception:
             raise VisionRequestInvalid() from None
         if (

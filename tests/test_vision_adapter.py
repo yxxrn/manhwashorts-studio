@@ -109,6 +109,25 @@ def test_versioned_visual_semantic_repair_prompt_requires_grounded_facts():
     assert "at least one" in rendered.lower()
 
 
+def test_request_validator_accepts_only_known_visual_repair_identity():
+    module = _vision_module()
+    scoring = importlib.import_module("app.services.visual_scoring")
+    version, digest, _text = scoring.load_visual_evidence_repair_instruction()
+    request = module.VisionObservationRequest(
+        analysis_run_id="run-vision-repair-002",
+        instruction_version="vision-first-story-analyzer-v1",
+        instruction_sha256="a" * 64,
+        chunk_index=0,
+        panels=_panels()[:1],
+        visual_instruction_version=version,
+        visual_instruction_sha256=digest,
+    )
+
+    normalized = module._validate_request(request)
+
+    assert normalized[0]["panel_id"] == "panel-a"
+
+
 def _body_parts(body):
     parts = []
     for message in body.get("messages", []):
