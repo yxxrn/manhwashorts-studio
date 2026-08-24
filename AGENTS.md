@@ -1812,3 +1812,21 @@ raising `StripSegmentationError`. That returned-status path now attaches the
 same blocked admission ledger. V5 remains read-only diagnostic evidence
 (41 regions, 37 assets, 36 provisional submissions, 13 requests,
 `segmentation.ambiguous_boundary`); its empty pre-fix funnel is not backfilled.
+
+## 2026-08-24 local visual-recovery checkpoint
+
+On local `main` parent `b8c52bd49a0b243d42d77dcbe8f3596f922334d8`, the scoped
+visual recovery tests are green. A no-safe-cut segmentation result now retains
+one reconciled full-height `segmentation.tall_scene_retained` span with
+complete coverage and a `viewport_pan_required` action; it never cuts through
+protected artwork. Visual provider rows are reconciled per panel, valid rows
+are checkpointed immediately, and schema/geometry failures are retried only
+for the affected panel. After bounded retry, unknown balloon geometry is kept
+only as typed `conservative_full_panel_v1` evidence; ordinary unknown evidence
+still fails closed. The downstream opt-in accepts that evidence only with a
+full-source ROI and `publish_allowed=false`; publish-strict/default framing
+remains unchanged. Verified locally: cloud multimodal + strip suites, visual
+evidence/framing/reference suites, Ruff, compileall, and diff-check. The
+phase5b resume is not yet a production artifact: its isolated DB has no
+provider credential, so no provider request was consumed. Protected inputs and
+runtime data remain untracked.

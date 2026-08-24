@@ -20,6 +20,7 @@ from PIL import Image
 from app.services.visual_scoring import (
     PanelVisualEvidence,
     VisualEvidenceError,
+    is_conservative_full_panel_visual_evidence,
     panel_visual_evidence_json,
     require_reference_ready_visual_evidence,
     validate_panel_visual_evidence,
@@ -342,7 +343,11 @@ def _mask_hash(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _reference_evidence(evidence: PanelVisualEvidence | Any) -> PanelVisualEvidence:
+def _reference_evidence(
+    evidence: PanelVisualEvidence | Any,
+    *,
+    allow_conservative_full_panel: bool = False,
+) -> PanelVisualEvidence:
     if evidence is None:
         raise VisualEvidenceError(
             "visual.panel_lineage_unavailable",
@@ -351,8 +356,14 @@ def _reference_evidence(evidence: PanelVisualEvidence | Any) -> PanelVisualEvide
     try:
         if isinstance(evidence, PanelVisualEvidence):
             validate_panel_visual_evidence(evidence)
-            return require_reference_ready_visual_evidence(evidence)
-        return require_reference_ready_visual_evidence(evidence)
+            return require_reference_ready_visual_evidence(
+                evidence,
+                allow_conservative_full_panel=allow_conservative_full_panel,
+            )
+        return require_reference_ready_visual_evidence(
+            evidence,
+            allow_conservative_full_panel=allow_conservative_full_panel,
+        )
     except VisualEvidenceError as exc:
         if exc.code == "visual.balloon_mask_unknown":
             raise
@@ -556,6 +567,7 @@ def candidate_is_feasible(
     allow_source_resolution_warning: bool = False,
     review_aggressive_crop: bool = False,
     blank_target_fraction: float | None = None,
+    allow_conservative_full_panel: bool = False,
 ) -> tuple[bool, FramingTelemetry]:
     """Evaluate one static crop against the hard reference framing contract.
 
@@ -563,7 +575,10 @@ def candidate_is_feasible(
     review upscale policy. It never relaxes lineage, balloon, protected
     region, or blank-space constraints.
     """
-    parsed = _reference_evidence(evidence)
+    parsed = _reference_evidence(
+        evidence,
+        allow_conservative_full_panel=allow_conservative_full_panel,
+    )
     source_width, source_height = source_size
     target_width, target_height = target_size
     left, top, right, bottom = crop_box
@@ -583,6 +598,32 @@ def candidate_is_feasible(
             "visual.panel_lineage_unavailable",
             "framing candidate does not match its panel source",
         )
+    if is_conservative_full_panel_visual_evidence(parsed) and (
+        not allow_conservative_full_panel
+        or crop_box != (0, 0, source_width, source_height)
+    ):
+        telemetry = FramingTelemetry(
+            contract_version=parsed.contract_version,
+            detector_version=border_mask.detector_version,
+            mask_sha256=border_mask.mask_sha256,
+            crop_box=crop_box,
+            base_zoom=1.0,
+            source_resolution_zoom_cap=1.0,
+            protected_region_zoom_cap=1.0,
+            edge_connected_blank_fraction=_mask_crop_fraction(border_mask, crop_box),
+            non_discardable_low_information_fraction=border_mask.non_discardable_low_information_fraction,
+            protected_retained_fraction=1.0,
+            balloon_mask_intersection_ratio=0.0,
+            subject_coverage=1.0,
+            face_coverage=1.0,
+            action_coverage=1.0,
+            effect_coverage=1.0,
+            continuity_context_coverage=1.0,
+            mask_confidence=parsed.mask_confidence,
+            mask_source=parsed.evidence_source,
+            rejection_code="visual.conservative_full_panel_requires_full_source",
+        )
+        return False, telemetry
     source_cap = min(
         source_width / max(1.0, target_width / 1.15),
         source_height / max(1.0, target_height / 1.15),
@@ -690,9 +731,13 @@ def build_color_agnostic_border_mask(
     evidence: PanelVisualEvidence | Any,
     *,
     grid_long_edge: int = 256,
+    allow_conservative_full_panel: bool = False,
 ) -> BorderMaskResult:
     """Build deterministic source-area masks for reference framing telemetry."""
-    evidence = _reference_evidence(evidence)
+    evidence = _reference_evidence(
+        evidence,
+        allow_conservative_full_panel=allow_conservative_full_panel,
+    )
     if image.width <= 0 or image.height <= 0 or grid_long_edge <= 0:
         raise ValueError("visual.mask_dimensions_invalid")
     scale = grid_long_edge / max(image.width, image.height)

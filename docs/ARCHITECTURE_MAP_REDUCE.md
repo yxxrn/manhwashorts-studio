@@ -1030,3 +1030,16 @@ branch now attaches the same `BLOCKED` ledger as the exception path. V5 used
 41 canonical regions / 37 assets / 24 groups, 13 requests, first dispatch
 32.515s, preparation 170.591s, total 581.553s, and remains rejected
 diagnostic evidence; its empty old funnel is not semantically reconstructed.
+
+## 2026-08-24 — visual admission/recovery invariant
+
+The visual stage now has a panel-local recovery boundary: a valid row is
+persisted immediately, malformed or unknown rows are retried by panel ID, and
+whole-chunk reduction remains reserved for transport-level failure. A source
+with no safe cut is a reconciled full-height scene, preserving source lineage
+and requiring viewport/pan downstream. Unknown balloon geometry may become
+`conservative_full_panel_v1` only after bounded targeted retry; the typed
+record is still `unknown`, and the renderer/planner require an explicit review
+flag plus the exact full-source ROI. All ordinary default and publication
+paths remain fail-closed. The current phase5b runtime has no encrypted provider
+profile, so its resume consumed zero provider requests and produced no media.

@@ -88,7 +88,7 @@ def test_reconciled_segmentation_checkpoint_restores_without_provider_call():
     assert restored.status == "RECONCILED"
 
 
-def test_review_only_override_checkpoint_restores_with_audited_hash():
+def test_no_safe_cut_checkpoint_restores_with_audited_hash():
     module = _module()
     source = _input(module, "review-checkpoint-source", _strip_bytes(gutters=False))
 
@@ -101,15 +101,11 @@ def test_review_only_override_checkpoint_restores_with_audited_hash():
         }
 
     initial = module.reconcile_sources((source,), boundary_assessor=assessor)
-    assert initial.status == "NEEDS_REVIEW"
-    overridden = module.apply_review_only_overrides(
-        initial,
-        actor_id="review-test",
-        reason="test-only audited review checkpoint",
-    )
-    restored = module.restore_cached_reconciliation((source,), overridden.as_dict())
+    assert initial.status == "RECONCILED"
+    assert initial.reports[0].review_code == "segmentation.tall_scene_retained"
+    restored = module.restore_cached_reconciliation((source,), initial.as_dict())
 
-    assert restored.as_dict() == overridden.as_dict()
+    assert restored.as_dict() == initial.as_dict()
     assert restored.status == "RECONCILED"
 
 
@@ -235,10 +231,26 @@ def test_artwork_connected_strip_without_separator_becomes_needs_review():
         original_checksum="b" * 64,
     )
 
-    assert result.status == "NEEDS_REVIEW"
-    assert result.review_code == "segmentation.ambiguous_boundary"
+    assert result.status == "RECONCILED"
+    assert result.review_code == "segmentation.tall_scene_retained"
     assert result.spans == ((0, 2200),)
     assert result.report["actionable_reason"]
+
+
+def test_normal_no_safe_cut_retains_one_canonical_tall_scene():
+    module = _module()
+
+    result = module.reconcile_strip(
+        _strip_bytes(gutters=False),
+        source_asset_id="normal-tall-scene",
+        original_checksum="b" * 64,
+    )
+
+    assert result.status == "RECONCILED"
+    assert result.review_code == "segmentation.tall_scene_retained"
+    assert result.spans == ((0, 2200),)
+    assert result.report["coverage_complete"] is True
+    assert result.report["actionable_reason"] == "viewport_pan_required"
 
 
 def test_provider_boundary_outside_source_is_rejected_before_selection():
@@ -412,9 +424,10 @@ def test_provider_protected_region_rejects_a_boundary_crossing_face():
         boundary_assessor=assessor,
     )
 
-    assert result.status == "NEEDS_REVIEW"
-    assert result.review_code == "segmentation.protected_boundary"
+    assert result.status == "RECONCILED"
+    assert result.review_code == "segmentation.tall_scene_retained"
     assert result.rejected_cuts
+    assert result.rejected_cuts[0]["reason"] == "segmentation.protected_boundary"
 
 
 def test_provider_request_contains_overlapping_tiles_and_candidate_boundaries():
@@ -553,8 +566,10 @@ def test_provider_sparse_cuts_cannot_hide_an_oversized_terminal_scene():
         boundary_assessor=assessor,
     )
 
-    assert result.status == "NEEDS_REVIEW"
-    assert result.review_code == "segmentation.ambiguous_boundary"
+    assert result.status == "RECONCILED"
+    assert result.review_code == "segmentation.tall_scene_retained"
+    assert result.spans == ((0, 8_000),)
+    assert result.rejected_cuts
 
 
 def test_provider_tiles_have_bounded_encoded_size_and_explicit_format():
@@ -624,7 +639,7 @@ def test_partial_source_family_is_reconstructed_before_boundary_review():
     assert result.reports[0].height == 2200
 
 
-def test_partial_artwork_connected_source_family_needs_review_before_visual_stage():
+def test_partial_artwork_connected_source_family_retains_tall_scene_before_visual_stage():
     module = _module()
     full = _strip_bytes(gutters=False, height=2200)
     full_checksum = hashlib.sha256(full).hexdigest()
@@ -643,8 +658,8 @@ def test_partial_artwork_connected_source_family_needs_review_before_visual_stag
 
     result = module.reconcile_sources(tuple(reversed(pieces)))
 
-    assert result.status == "NEEDS_REVIEW"
-    assert result.reports[0].review_code == "segmentation.ambiguous_boundary"
+    assert result.status == "RECONCILED"
+    assert result.reports[0].review_code == "segmentation.tall_scene_retained"
     assert result.reports[0].spans == ((0, 2200),)
 
 

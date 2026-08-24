@@ -693,6 +693,8 @@ def _make_result(
         "actionable_reason": (
             "confirm a boundary or explicitly approve one canonical tall scene"
             if status == "NEEDS_REVIEW"
+            else "viewport_pan_required"
+            if review_code == "segmentation.tall_scene_retained"
             else "none"
         ),
     }
@@ -872,11 +874,6 @@ def reconcile_strip(
         for left, right in zip(boundaries, boundaries[1:], strict=False)
     ) and len(selected) >= max(1, ceil(height / max_segment_px) - 1) and len(selected) <= max_parts - 1 and len(set(selected)) == len(selected)
     if not valid_partition:
-        review_code = (
-            "segmentation.protected_boundary"
-            if any(item["reason"] == "segmentation.protected_boundary" for item in rejected)
-            else "segmentation.ambiguous_boundary"
-        )
         return _make_result(
             source_asset_id=source_asset_id,
             source_checksum=checksum,
@@ -884,10 +881,10 @@ def reconcile_strip(
             height=height,
             spans=((0, height),),
             candidates=candidates,
-            selected_cuts=tuple(selected),
+            selected_cuts=(),
             rejected_cuts=tuple(rejected),
-            status="NEEDS_REVIEW",
-            review_code=review_code,
+            status="RECONCILED",
+            review_code="segmentation.tall_scene_retained",
             detector_version=SEGMENTATION_VERSION,
             payload_sha256=payload_sha256,
             provider_assessment=provider_assessment,
@@ -1144,7 +1141,7 @@ def restore_cached_reconciliation(
             or raw.get("width") != width
             or raw.get("height") != height
             or raw.get("status") != "RECONCILED"
-            or raw.get("review_code") != ""
+            or raw.get("review_code") not in ("", "segmentation.tall_scene_retained")
             or raw.get("detector_version") != SEGMENTATION_VERSION
             or raw.get("payload_sha256") != hashlib.sha256(payload).hexdigest()
         ):
@@ -1228,7 +1225,7 @@ def restore_cached_reconciliation(
             selected_cuts=selected_cuts,
             rejected_cuts=tuple(dict(item) for item in rejected_raw),
             status="RECONCILED",
-            review_code="",
+            review_code=str(raw.get("review_code") or ""),
             detector_version=SEGMENTATION_VERSION,
             payload_sha256=hashlib.sha256(payload).hexdigest(),
             provider_assessment=dict(provider_assessment) if provider_assessment is not None else None,

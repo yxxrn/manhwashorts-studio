@@ -108,6 +108,7 @@ class VisualEvidenceError(ValueError):
 
 
 VISUAL_EVIDENCE_PROMPT_VERSION = "balloon-free-visual-evidence-v1"
+CONSERVATIVE_FULL_PANEL_EVIDENCE_SOURCE = "conservative_full_panel_v1"
 
 
 def load_visual_evidence_instruction() -> tuple[str, str, str]:
@@ -451,6 +452,51 @@ def unknown_visual_evidence(*, panel_id: str, source_asset_id: str, source_order
     return replace(evidence, evidence_hash=visual_evidence_hash(evidence))
 
 
+def conservative_full_panel_visual_evidence(
+    *, panel_id: str, source_asset_id: str, source_order: int, reason: str
+) -> PanelVisualEvidence:
+    """Mark unknown geometry for an audited, whole-panel conservative render.
+
+    This does not claim that balloon geometry is known.  Downstream callers
+    must explicitly opt into the conservative whole-panel contract; default
+    reference crop/planner gates continue to reject ordinary ``unknown``
+    evidence.
+    """
+
+    if not isinstance(reason, str) or not reason.strip():
+        raise _visual_error(
+            "visual.evidence_invalid",
+            "conservative fallback requires a non-empty reason",
+        )
+    evidence = unknown_visual_evidence(
+        panel_id=panel_id,
+        source_asset_id=source_asset_id,
+        source_order=source_order,
+        reason=reason,
+    )
+    candidate = replace(
+        evidence,
+        evidence_source=CONSERVATIVE_FULL_PANEL_EVIDENCE_SOURCE,
+        mask_reason=f"conservative whole-panel fallback: {reason.strip()}",
+        evidence_hash="",
+    )
+    return replace(candidate, evidence_hash=visual_evidence_hash(candidate))
+
+
+def is_conservative_full_panel_visual_evidence(
+    evidence: PanelVisualEvidence | Mapping[str, Any],
+) -> bool:
+    """Return true only for the explicit unknown-geometry fallback record."""
+
+    parsed = evidence if isinstance(evidence, PanelVisualEvidence) else parse_panel_visual_evidence(evidence)
+    validate_panel_visual_evidence(parsed)
+    return (
+        parsed.evidence_source == CONSERVATIVE_FULL_PANEL_EVIDENCE_SOURCE
+        and parsed.balloon_mask_status == "unknown"
+        and not parsed.balloon_regions
+    )
+
+
 def ensure_panel_visual_evidence(
     observation: Mapping[str, Any] | None,
     *,
@@ -486,12 +532,17 @@ def ensure_panel_visual_evidence(
 
 def require_reference_ready_visual_evidence(
     evidence: PanelVisualEvidence | Mapping[str, Any],
+    *,
+    allow_conservative_full_panel: bool = False,
 ) -> PanelVisualEvidence:
     """Reject unknown geometry only when a reference crop consumes the record."""
 
     parsed = evidence if isinstance(evidence, PanelVisualEvidence) else parse_panel_visual_evidence(evidence)
     validate_panel_visual_evidence(parsed)
-    if parsed.balloon_mask_status == "unknown":
+    if parsed.balloon_mask_status == "unknown" and not (
+        allow_conservative_full_panel
+        and is_conservative_full_panel_visual_evidence(parsed)
+    ):
         raise _visual_error("visual.balloon_mask_unknown", "reference framing requires known balloon geometry")
     return parsed
 

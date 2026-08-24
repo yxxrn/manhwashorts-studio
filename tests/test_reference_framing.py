@@ -393,6 +393,46 @@ def test_detector_public_boundary_rejects_unknown_and_malformed_evidence():
         framing_analysis.build_color_agnostic_border_mask(image, None)
 
 
+def test_conservative_unknown_geometry_accepts_only_full_panel_roi():
+    from app.services import framing_analysis, visual_scoring
+
+    image = Image.new("RGB", (160, 240), (64, 64, 64))
+    evidence = visual_scoring.conservative_full_panel_visual_evidence(
+        panel_id="panel-conservative",
+        source_asset_id="asset-conservative",
+        source_order=1,
+        reason="targeted geometry retry remained unknown",
+    )
+    mask = framing_analysis.build_color_agnostic_border_mask(
+        image,
+        evidence,
+        grid_long_edge=64,
+        allow_conservative_full_panel=True,
+    )
+
+    accepted, telemetry = framing_analysis.candidate_is_feasible(
+        (0, 0, 80, 240),
+        evidence,
+        mask,
+        image.size,
+        image.size,
+        allow_conservative_full_panel=True,
+    )
+    assert accepted is False
+    assert telemetry.rejection_code == "visual.conservative_full_panel_requires_full_source"
+
+    accepted, telemetry = framing_analysis.candidate_is_feasible(
+        (0, 0, 160, 240),
+        evidence,
+        mask,
+        image.size,
+        image.size,
+        allow_conservative_full_panel=True,
+    )
+    assert accepted is True
+    assert telemetry.mask_source == "conservative_full_panel_v1"
+
+
 def test_reference_preparation_rejects_blank_gutter_and_preserves_focused_artwork(tmp_path):
     from app.services import reference_profile, render
 

@@ -192,6 +192,22 @@ def section_evidence_maps(script: object) -> tuple[dict[str, tuple[str, ...]], d
     return evidence, citations, beats
 
 
+def enumerate_conservative_full_panel_roi_alternatives(
+    panel_size: tuple[int, int],
+) -> tuple[editorial_visual_planner.ReferenceROIAlternative, ...]:
+    """Return the sole ROI allowed for explicit unknown-geometry fallback."""
+
+    width, height = panel_size
+    return (
+        editorial_visual_planner.ReferenceROIAlternative(
+            kind="primary",
+            roi_label="conservative_full_panel",
+            crop_box=(0, 0, width, height),
+            focus=(0.5, 0.5, 0.5, 0.5),
+        ),
+    )
+
+
 def build_reference_panel_fallback_candidates(
     *,
     panel_regions: Sequence[object],
@@ -203,6 +219,7 @@ def build_reference_panel_fallback_candidates(
     profile: object,
     source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
     allow_missing_explicit: bool = False,
+    allow_conservative_full_panel: bool = False,
 ) -> tuple[editorial_visual_planner.ReferencePanelFallbackCandidate, ...]:
     """Build exact panel candidates without database or asset-level fallback."""
     ordered_regions = tuple(
@@ -250,10 +267,10 @@ def build_reference_panel_fallback_candidates(
             if not isinstance(raw_evidence, Mapping):
                 raise ReferenceReviewError("panel visual evidence is missing")
             evidence = visual_scoring.parse_panel_visual_evidence(raw_evidence)
-            if evidence.balloon_mask_status == "unknown":
-                # Preview relaxation: balloon-unknown panels cannot be framed
-                # and are never selected by the feasible ledger, so skip them
-                # here instead of failing the whole review build.
+            if evidence.balloon_mask_status == "unknown" and not (
+                allow_conservative_full_panel
+                and visual_scoring.is_conservative_full_panel_visual_evidence(evidence)
+            ):
                 continue
             # Blank-dominant panels (near-empty splash/title/corrupt crops) are
             # never frameable content. Skip them before feasibility so they
@@ -278,6 +295,7 @@ def build_reference_panel_fallback_candidates(
                 crop,
                 evidence,
                 grid_long_edge=int(profile.framing_mask_grid_long_edge),
+                allow_conservative_full_panel=allow_conservative_full_panel,
             )
             built.append(
                 editorial_visual_planner.ReferencePanelFallbackCandidate(
@@ -293,8 +311,10 @@ def build_reference_panel_fallback_candidates(
                     evidence_hash=evidence_hash,
                     eligible_sections=tuple(sorted(eligible_by_region[region_id])),
                     eligible_beats=tuple(sorted(beats_by_region[region_id])),
-                    roi_alternatives=enumerate_reference_roi_alternatives(
-                        expected_size, candidate, profile
+                    roi_alternatives=(
+                        enumerate_conservative_full_panel_roi_alternatives(expected_size)
+                        if visual_scoring.is_conservative_full_panel_visual_evidence(evidence)
+                        else enumerate_reference_roi_alternatives(expected_size, candidate, profile)
                     ),
                     panel_candidate=candidate,
                     source_upscale_manifest=(

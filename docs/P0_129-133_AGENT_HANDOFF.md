@@ -1809,3 +1809,18 @@ raised-error branch. V5 is not acceptance evidence: 41 regions / 37 assets /
 24 groups, 13 requests, first dispatch 32.515s, preparation 170.591s, total
 581.553s, and no terminal visual N/N. Start a fresh namespace after the new
 published SHA and inspect the actual blocked ledger; do not backfill v5.
+
+## 2026-08-24 local handoff — visual recovery boundary
+
+Local source/test checkpoint from `b8c52bd49a0b243d42d77dcbe8f3596f922334d8`:
+`tests/test_cloud_multimodal_mass_production.py` and
+`tests/test_strip_segmentation.py` pass with the new per-panel retry and
+`conservative_full_panel_v1` fallback. Framing/reference regressions also
+pass; conservative evidence is allowed only by an explicit flag and full
+panel ROI, while ordinary unknown evidence remains a hard failure. The
+phase5b operator resume was exercised through the real menu and exited safely,
+but stopped at `operator.provider_unavailable` because the isolated DB has no
+credential. Provider requests: zero. Do not edit or delete `final_test/`,
+`The Novel’s Extra/`, DB/WAL, caches, or private runtime data. Next action is
+to configure/reuse an encrypted provider profile in this local namespace,
+then resume the same job; do not repeat valid visual cache rows.

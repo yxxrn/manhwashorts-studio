@@ -2893,8 +2893,72 @@ class CloudStageRunner:
             )
         }
 
+        def visual_row_entry(
+            item: CloudPanelInput,
+            raw: Mapping[str, Any],
+        ) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], dict[str, Any]] | None]:
+            """Reconcile one row and return unknown geometry separately.
+
+            A row with valid semantic facts is retained even when its geometry
+            is unknown.  The caller retries that panel once within the normal
+            bounded attempt budget, then converts only that row to the typed
+            conservative whole-panel provenance.  Other schema/lineage errors
+            remain retryable panel failures and never contaminate valid rows.
+            """
+
+            if raw.get("panel_id") != item.panel_id:
+                raise CloudStageError(
+                    message=(
+                        f"cloud.panel_lineage_invalid: want={item.panel_id} "
+                        f"got={raw.get('panel_id')}"
+                    ),
+                    reviewable=True,
+                )
+            raw_visual = raw.get("visual_evidence")
+            if raw_visual is not None and not isinstance(raw_visual, Mapping):
+                raise CloudStageError("visual.evidence_invalid", reviewable=True)
+            if isinstance(raw_visual, Mapping) and raw_visual.get("evidence_hash"):
+                raise CloudStageError("cloud.provider_hash_forbidden")
+            visual = dict(raw_visual) if isinstance(raw_visual, Mapping) else None
+            if visual is not None:
+                visual.setdefault(
+                    "contract_version",
+                    visual_scoring.VISUAL_EVIDENCE_CONTRACT_VERSION,
+                )
+                visual.pop("evidence_hash", None)
+            merged, evidence = visual_scoring.ensure_panel_visual_evidence(
+                {**dict(raw), "visual_evidence": visual},
+                panel_id=item.panel_id,
+                source_asset_id=item.source_asset_id,
+                source_order=item.source_order,
+            )
+            source_values = {
+                evidence.evidence_source,
+                *(region.evidence_source for region in evidence.balloon_regions),
+            }
+            if any("ocr" in value.lower() for value in source_values):
+                raise CloudStageError("visual.balloon_geometry_invalid", reviewable=True)
+            evidence_json = visual_scoring.panel_visual_evidence_json(evidence)
+            merged["visual_evidence"] = evidence_json
+            if not _visual_observation_has_visible_facts(merged):
+                raise CloudStageError("cloud.visual_evidence_invalid")
+            entry = {
+                "panel_id": item.panel_id,
+                "source_asset_id": item.source_asset_id,
+                "source_order": item.source_order,
+                "source_checksum": item.source_checksum,
+                "observation": merged,
+                "visual_evidence": evidence_json,
+                "evidence_hash": evidence_json["evidence_hash"],
+            }
+            if evidence.balloon_mask_status == "unknown":
+                return None, (merged, evidence_json)
+            return entry, None
+
         def observe_chunk(chunk_index: int, chunk: Sequence[CloudPanelInput]) -> None:
-            # every error path reports + skips the chunk; never raises
+            # Every accepted row is checkpointed before only its own failed
+            # rows are retried.  Whole-request transport failures retain the
+            # existing bounded binary reduction path.
             nonlocal reconciled_by_id, unknown_failure_metadata
             chunk_cache_key = _visual_chunk_cache_key(
                 chunk,
@@ -2934,34 +2998,38 @@ class CloudStageRunner:
                 )
                 return
             chunk = tuple(live)
-            request_panels = []
-            for item in chunk:
-                provider_payload, provider_mime = _visual_provider_payload(item)
-                request_panels.append(
-                    {
-                        **item.descriptor(),
-                        "mime_type": provider_mime,
-                        "payload": provider_payload,
-                    }
-                )
-            request = VisionObservationRequest(
-                analysis_run_id=f"cloud-{_hash(source)[:24]}",
-                instruction_version=instruction_version,
-                instruction_sha256=instruction_sha256,
-                chunk_index=chunk_index,
-                panels=tuple(request_panels),
-                visual_instruction_version=prompt[0],
-                visual_instruction_sha256=prompt[1],
-            )
             retryable_visual_codes = {
                 "cloud.provider_response_invalid",
                 "cloud.panel_lineage_invalid",
                 "cloud.provider_hash_forbidden",
                 "cloud.visual_evidence_invalid",
+                "visual.evidence_invalid",
+                "visual.region_invalid",
+                "visual.lineage_invalid",
                 "visual.balloon_mask_unknown",
                 "visual.balloon_geometry_invalid",
             }
             for attempt in range(self.max_attempts):
+                current_chunk = tuple(chunk)
+                request_panels = []
+                for item in current_chunk:
+                    provider_payload, provider_mime = _visual_provider_payload(item)
+                    request_panels.append(
+                        {
+                            **item.descriptor(),
+                            "mime_type": provider_mime,
+                            "payload": provider_payload,
+                        }
+                    )
+                request = VisionObservationRequest(
+                    analysis_run_id=f"cloud-{_hash(source)[:24]}",
+                    instruction_version=instruction_version,
+                    instruction_sha256=instruction_sha256,
+                    chunk_index=chunk_index,
+                    panels=tuple(request_panels),
+                    visual_instruction_version=prompt[0],
+                    visual_instruction_sha256=prompt[1],
+                )
                 try:
                     attempt_request = replace(
                         request,
@@ -2971,71 +3039,39 @@ class CloudStageRunner:
                         lambda request=attempt_request: self.provider.observe(request),
                         request_stage="other",
                     )
-                    if not isinstance(raw_rows, list) or len(raw_rows) != len(chunk):
-                        raise CloudStageError("cloud.provider_response_invalid")
+                    rows_by_id: dict[str, Mapping[str, Any]] = {}
+                    if isinstance(raw_rows, list):
+                        for raw in raw_rows:
+                            if isinstance(raw, Mapping):
+                                panel_id = str(raw.get("panel_id", ""))
+                                if panel_id and panel_id not in rows_by_id:
+                                    rows_by_id[panel_id] = raw
                     chunk_reconciled: dict[str, dict[str, Any]] = {}
-                    for item, raw in zip(chunk, raw_rows, strict=True):
-                        if not isinstance(raw, Mapping) or raw.get("panel_id") != item.panel_id:
-                            raise CloudStageError(
-                                message=(
-                                    f"cloud.panel_lineage_invalid: want={item.panel_id} "
-                                    f"got={raw.get('panel_id') if isinstance(raw, Mapping) else type(raw).__name__}"
-                                ),
-                                reviewable=True,
-                            )
+                    unknown_rows: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+                    failed_rows: dict[str, str] = {}
+                    for index, item in enumerate(current_chunk):
+                        raw = (
+                            raw_rows[index]
+                            if isinstance(raw_rows, list) and len(raw_rows) == len(current_chunk)
+                            else rows_by_id.get(item.panel_id)
+                        )
+                        if not isinstance(raw, Mapping):
+                            failed_rows[item.panel_id] = "cloud.provider_response_invalid"
+                            continue
                         if item.panel_id in reconciled_by_id:
                             continue
-                        if item.panel_id in chunk_reconciled:
-                            raise CloudStageError("cloud.panel_lineage_invalid")
-                        raw_visual = raw.get("visual_evidence")
-                        if not isinstance(raw_visual, Mapping):
-                            raise CloudStageError(f"visual.balloon_mask_unknown:panel={item.panel_id}", reviewable=True)
-                        if raw_visual.get("evidence_hash"):
-                            raise CloudStageError("cloud.provider_hash_forbidden")
-                        visual = dict(raw_visual)
-                        visual.setdefault(
-                            "contract_version",
-                            visual_scoring.VISUAL_EVIDENCE_CONTRACT_VERSION,
-                        )
-                        visual.pop("evidence_hash", None)
                         try:
-                            merged, evidence = visual_scoring.ensure_panel_visual_evidence(
-                                {**dict(raw), "visual_evidence": visual},
-                                panel_id=item.panel_id,
-                                source_asset_id=item.source_asset_id,
-                                source_order=item.source_order,
-                            )
+                            entry, unknown = visual_row_entry(item, raw)
                         except visual_scoring.VisualEvidenceError as exc:
-                            raise CloudStageError(
-                                getattr(exc, "code", "cloud.visual_evidence_invalid")
-                            ) from None
-                        if evidence.balloon_mask_status == "unknown" and not self.allow_balloon_unknown:
-                            raise CloudStageError(
-                                "visual.balloon_mask_unknown",
-                                message=f"visual.balloon_mask_unknown: panel={item.panel_id}",
-                                reviewable=True,
-                            )
-                        source_values = {
-                            evidence.evidence_source,
-                            *(region.evidence_source for region in evidence.balloon_regions),
-                        }
-                        if any("ocr" in value.lower() for value in source_values):
-                            raise CloudStageError(
-                                "visual.balloon_geometry_invalid", reviewable=True
-                            )
-                        evidence_json = visual_scoring.panel_visual_evidence_json(evidence)
-                        merged["visual_evidence"] = evidence_json
-                        if not _visual_observation_has_visible_facts(merged):
-                            raise CloudStageError("cloud.visual_evidence_invalid")
-                        chunk_reconciled[item.panel_id] = {
-                            "panel_id": item.panel_id,
-                            "source_asset_id": item.source_asset_id,
-                            "source_order": item.source_order,
-                            "source_checksum": item.source_checksum,
-                            "observation": merged,
-                            "visual_evidence": evidence_json,
-                            "evidence_hash": evidence_json["evidence_hash"],
-                        }
+                            failed_rows[item.panel_id] = getattr(exc, "code", "cloud.visual_evidence_invalid")
+                            continue
+                        except CloudStageError as exc:
+                            failed_rows[item.panel_id] = exc.code
+                            continue
+                        if unknown is not None:
+                            unknown_rows[item.panel_id] = unknown
+                        elif entry is not None:
+                            chunk_reconciled[item.panel_id] = entry
                     with reconcile_lock:
                         reconciled_by_id.update(chunk_reconciled)
                     for _entry in chunk_reconciled.values():
@@ -3043,14 +3079,68 @@ class CloudStageRunner:
                         _entry["cache_identity_hash"] = panel_identity_by_id[panel_id]
                         _entry["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
                         _entry["chunk_cache_key"] = _visual_chunk_cache_key(
-                            chunk,
+                            current_chunk,
                             chunk_index=chunk_index,
                             batch_count=len(chunks),
                             model_identity=self.model_identity,
                             prompt=prompt,
                         )
                         self._checkpoint_append(checkpoint_scope, _entry)
-                    print(f"VISUAL_CHUNK_OK chunk={chunk_index} panels={len(chunk)}", file=sys.stderr, flush=True)
+                    pending_ids = tuple(dict.fromkeys((*unknown_rows, *failed_rows)))
+                    if pending_ids and attempt + 1 < self.max_attempts:
+                        chunk = tuple(item for item in current_chunk if item.panel_id in pending_ids)
+                        continue
+                    if unknown_rows:
+                        for item in current_chunk:
+                            if item.panel_id not in unknown_rows:
+                                continue
+                            merged, _unknown_json = unknown_rows[item.panel_id]
+                            conservative = visual_scoring.conservative_full_panel_visual_evidence(
+                                panel_id=item.panel_id,
+                                source_asset_id=item.source_asset_id,
+                                source_order=item.source_order,
+                                reason="provider geometry remained unknown after bounded targeted retry",
+                            )
+                            evidence_json = visual_scoring.panel_visual_evidence_json(conservative)
+                            merged = dict(merged)
+                            merged["visual_evidence"] = evidence_json
+                            entry = {
+                                "panel_id": item.panel_id,
+                                "source_asset_id": item.source_asset_id,
+                                "source_order": item.source_order,
+                                "source_checksum": item.source_checksum,
+                                "observation": merged,
+                                "visual_evidence": evidence_json,
+                                "evidence_hash": evidence_json["evidence_hash"],
+                                "fallback_mode": "conservative_full_panel_v1",
+                            }
+                            entry["cache_identity_hash"] = panel_identity_by_id[item.panel_id]
+                            entry["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
+                            entry["chunk_cache_key"] = _visual_chunk_cache_key(
+                                current_chunk,
+                                chunk_index=chunk_index,
+                                batch_count=len(chunks),
+                                model_identity=self.model_identity,
+                                prompt=prompt,
+                            )
+                            with reconcile_lock:
+                                reconciled_by_id[item.panel_id] = entry
+                            self._checkpoint_append(checkpoint_scope, entry)
+                            unknown_failure_metadata = unknown_failure_metadata or {
+                                "stage": "visual",
+                                "chunk_index": chunk_index,
+                                "panel_count": 1,
+                                "fallback_mode": "conservative_full_panel_v1",
+                            }
+                    if failed_rows:
+                        with reconcile_lock:
+                            skipped_codes.extend(code for code in failed_rows.values())
+                    print(
+                        f"VISUAL_CHUNK_OK chunk={chunk_index} panels={len(chunk_reconciled) + len(unknown_rows)} "
+                        f"retries={max(0, attempt)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                     return
                 except CloudStageError as exc:
                     if (
@@ -3058,30 +3148,6 @@ class CloudStageRunner:
                         and attempt + 1 < self.max_attempts
                     ):
                         continue
-                    if (
-                        exc.code == "visual.balloon_mask_unknown"
-                        and not self.allow_balloon_unknown
-                    ):
-                        with reconcile_lock:
-                            if unknown_failure_metadata is None:
-                                unknown_failure_metadata = {
-                                    "stage": "visual",
-                                    "chunk_index": chunk_index,
-                                    "panel_count": len(chunk),
-                                }
-                        if len(chunk) > 1:
-                            half = len(chunk) // 2
-                            for subchunk in (chunk[:half], chunk[half:]):
-                                observe_chunk(chunk_index, subchunk)
-                        else:
-                            with reconcile_lock:
-                                skipped_codes.append(exc.code)
-                            print(
-                                f"VISUAL_SKIP_PANEL panel={chunk[0].panel_id} code={exc.code}",
-                                file=sys.stderr,
-                                flush=True,
-                            )
-                        return
                     if exc.code == "cloud.provider_request_failed":
                         raise
                     # binary reduction: subdivide the failing chunk and retry the
@@ -3098,14 +3164,13 @@ class CloudStageRunner:
                             file=sys.stderr, flush=True,
                         )
                     return
-            if len(chunk) > 1:
-                half = len(chunk) // 2
-                for subchunk in (chunk[:half], chunk[half:]):
-                    observe_chunk(chunk_index, subchunk)
-            else:
+            for item in chunk:
+                with reconcile_lock:
+                    skipped_codes.append("cloud.provider_response_invalid")
                 print(
-                    f"VISUAL_SKIP_PANEL panel={chunk[0].panel_id} code=exhausted",
-                    file=sys.stderr, flush=True,
+                    f"VISUAL_SKIP_PANEL panel={item.panel_id} code=exhausted",
+                    file=sys.stderr,
+                    flush=True,
                 )
 
         with ThreadPoolExecutor(max_workers=VISUAL_PARALLEL_WORKERS) as executor:
@@ -10938,6 +11003,7 @@ class CloudBatchService:
                         reference_section_citations=section_citations,
                         reference_beats_by_section={},
                         review_source_root=Path(review_source_root or self.review_root or Path("final_test")),
+                        allow_conservative_full_panel=True,
                     )
                     _render_job, artifacts = pipeline.render_silent_review_preview(
                         db,

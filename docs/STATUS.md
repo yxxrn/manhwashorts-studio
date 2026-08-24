@@ -3066,3 +3066,18 @@ v5 namespace remains diagnostic only: 41 canonical / 37 assets / 24 groups,
 preparation 170.591s, total 581.553s, and
 `segmentation.ambiguous_boundary`. No funnel is inferred from its old summary.
 The next fresh run must verify the corrected metadata directly.
+
+## 2026-08-24 — local visual recovery boundary (source/test GREEN)
+
+The local recovery slice is green against parent `b8c52bd49a0b243d42d77dcbe8f3596f922334d8`:
+no-safe-cut sources remain one canonical tall scene with complete coverage;
+visual schema failures retry only the poison panel; and unknown geometry is
+preserved as `conservative_full_panel_v1` rather than dropped. The fallback is
+not a known-empty or known-balloon claim: downstream accepts it only through an
+explicit review flag, a full-source ROI, unchanged blank/lineage/protected
+checks, and `publish_allowed=false`. Default/publish-strict evidence gates
+still reject ordinary unknown geometry. Focused cloud, segmentation, visual
+evidence, framing, reference planner, Ruff, compileall, and diff-check passed.
+The real `phase5b-cold-v1` operator resume reached the supported menu but was
+blocked before any provider call because its isolated DB contains no provider
+credential; no MP4, TTS, or QC is claimed.

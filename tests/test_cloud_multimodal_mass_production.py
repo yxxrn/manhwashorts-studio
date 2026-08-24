@@ -1642,6 +1642,77 @@ def test_stage_runner_chunks_large_visual_requests_and_reconciles_full_order():
     assert len([call for call in provider.calls if call[0] == "visual"]) == 4
 
 
+def test_visual_schema_rejection_retries_only_poison_panel_and_keeps_valid_rows():
+    module = _module()
+
+    class _PartialSchemaProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.request_panel_ids = []
+            self.poisoned_once = False
+
+        def observe(self, request):
+            panel_ids = tuple(panel["panel_id"] for panel in request.panels)
+            self.request_panel_ids.append(panel_ids)
+            rows = super().observe(request)
+            if "chapter-a-panel-1" in panel_ids and not self.poisoned_once and len(panel_ids) > 1:
+                self.poisoned_once = True
+                for row in rows:
+                    if row["panel_id"] == "chapter-a-panel-1":
+                        row["visual_evidence"] = {"balloon_regions": "malformed"}
+            return rows
+
+    provider = _PartialSchemaProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        max_attempts=2,
+    )
+
+    result = runner.run_visual_evidence(_panels(module))
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in _panels(module))
+    assert provider.request_panel_ids == [
+        ("chapter-a-panel-0", "chapter-a-panel-1", "chapter-a-panel-2"),
+        ("chapter-a-panel-1",),
+    ]
+
+
+def test_unknown_geometry_is_admitted_only_as_audited_conservative_full_panel():
+    module = _module()
+
+    class _AlwaysUnknownOnePanel(_FakeProvider):
+        def observe(self, request):
+            rows = super().observe(request)
+            for row in rows:
+                if row["panel_id"] == "chapter-a-panel-1":
+                    row["visual_evidence"].update(
+                        {
+                            "balloon_mask_status": "unknown",
+                            "mask_confidence": 0.0,
+                            "evidence_source": "vision_geometry_unavailable",
+                            "mask_reason": "geometry is unavailable",
+                        }
+                    )
+            return rows
+
+    provider = _AlwaysUnknownOnePanel()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        max_attempts=1,
+    )
+
+    result = runner.run_visual_evidence(_panels(module))
+    unknown = next(
+        row for row in result.panels if row["panel_id"] == "chapter-a-panel-1"
+    )
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in _panels(module))
+    assert unknown["visual_evidence"]["balloon_mask_status"] == "unknown"
+    assert unknown["visual_evidence"]["evidence_source"] == "conservative_full_panel_v1"
+
+
 def test_live_visual_request_panel_cap_is_bounded_for_response_size():
     module = _module()
 
@@ -1733,21 +1804,22 @@ def test_small_non_jpeg_visual_provider_payload_is_normalized_for_endpoint():
     assert panel.payload == output.getvalue()
 
 
-def test_unknown_visual_geometry_blocks_before_story_mapping():
+def test_unknown_visual_geometry_uses_conservative_fallback_before_story_mapping():
     module = _module()
     provider = _FakeProvider(unknown_visual=True)
     runner = module.CloudStageRunner(provider=provider, model_identity=_identity(module))
 
-    with pytest.raises(module.CloudStageError) as caught:
-        runner.run_chapter(_panels(module))
+    result = runner.run_chapter(_panels(module))
 
-    assert caught.value.code == "visual.balloon_mask_unknown"
-    assert caught.value.safe_metadata == {
-        "stage": "visual",
-        "chunk_index": 0,
-        "panel_count": 3,
-    }
-    assert len([call for call in provider.calls if call[0] == "visual"]) >= 2
+    assert result.state == module.ChapterState.READY_TO_RENDER
+    assert result.visual.reconciled is True
+    assert result.visual.panel_ids == tuple(panel.panel_id for panel in _panels(module))
+    assert len([call for call in provider.calls if call[0] == "visual"]) == 2
+    assert all(
+        row.get("fallback_mode") == "conservative_full_panel_v1"
+        and row["visual_evidence"]["evidence_source"] == "conservative_full_panel_v1"
+        for row in result.visual.panels
+    )
 
 
 def test_unknown_visual_geometry_isolated_to_poison_panel():
@@ -1780,8 +1852,15 @@ def test_unknown_visual_geometry_isolated_to_poison_panel():
     result = runner.run_visual_evidence(_panels(module))
 
     assert result.reconciled is True
-    assert result.panel_ids == ("chapter-a-panel-0", "chapter-a-panel-2")
-    assert len([call for call in provider.calls if call[0] == "visual"]) == 5
+    assert result.panel_ids == (
+        "chapter-a-panel-0",
+        "chapter-a-panel-1",
+        "chapter-a-panel-2",
+    )
+    assert len([call for call in provider.calls if call[0] == "visual"]) == 1
+    fallback = result.panels[1]
+    assert fallback["fallback_mode"] == "conservative_full_panel_v1"
+    assert fallback["visual_evidence"]["evidence_source"] == "conservative_full_panel_v1"
 
 
 def test_transient_unknown_visual_response_is_retried_atomically():

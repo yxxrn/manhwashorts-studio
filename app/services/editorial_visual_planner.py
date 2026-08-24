@@ -766,11 +766,15 @@ def _reference_panel_attempt(
     used_rois: set[tuple[object, ...]],
     allow_source_resolution_warning: bool = False,
     review_aggressive_crop: bool = False,
+    allow_conservative_full_panel: bool = False,
 ) -> tuple[bool, object, dict]:
     evidence = candidate.visual_evidence
     entry_kind = phase_kind
     try:
-        ready = visual_scoring.require_reference_ready_visual_evidence(evidence)
+        ready = visual_scoring.require_reference_ready_visual_evidence(
+            evidence,
+            allow_conservative_full_panel=allow_conservative_full_panel,
+        )
     except visual_scoring.VisualEvidenceError as exc:
         if exc.code == "visual.balloon_mask_unknown":
             raise ReferencePlanningError(str(exc), exc.code) from exc
@@ -823,6 +827,7 @@ def _reference_panel_attempt(
             candidate.panel_size,
             (profile.final_width, profile.final_height),
             blank_target_fraction=profile.framing_blank_target_fraction,
+            allow_conservative_full_panel=allow_conservative_full_panel,
             **feasibility_kwargs,
         )
     except framing_analysis.VisualEvidenceError as exc:
@@ -901,6 +906,7 @@ def _feasible_roi_capacity(
     *,
     allow_source_resolution_warning: bool,
     review_aggressive_crop: bool = False,
+    allow_conservative_full_panel: bool = False,
 ) -> int:
     """Count exact feasible ROI alternatives for review cadence allocation."""
     source_manifest = candidate.source_upscale_manifest
@@ -917,7 +923,8 @@ def _feasible_roi_capacity(
     if review_aggressive_crop:
         feasibility_kwargs["review_aggressive_crop"] = True
     ready = visual_scoring.require_reference_ready_visual_evidence(
-        candidate.visual_evidence
+        candidate.visual_evidence,
+        allow_conservative_full_panel=allow_conservative_full_panel,
     )
     feasible = 0
     for roi in _ordered_roi_alternatives(candidate):
@@ -928,6 +935,7 @@ def _feasible_roi_capacity(
             candidate.panel_size,
             (profile.final_width, profile.final_height),
             blank_target_fraction=profile.framing_blank_target_fraction,
+            allow_conservative_full_panel=allow_conservative_full_panel,
             **feasibility_kwargs,
         )
         if accepted:
@@ -943,6 +951,7 @@ def _plan_reference_panel_candidates(
     allow_source_resolution_warning: bool = False,
     allow_review_cadence_adaptation: bool = False,
     allow_review_duration: bool = False,
+    allow_conservative_full_panel: bool = False,
 ) -> list[dict]:
     if not panel_candidates:
         raise ReferencePlanningError(
@@ -986,7 +995,8 @@ def _plan_reference_panel_candidates(
             )
         try:
             visual_scoring.require_reference_ready_visual_evidence(
-                candidate.visual_evidence
+                candidate.visual_evidence,
+                allow_conservative_full_panel=allow_conservative_full_panel,
             )
         except visual_scoring.VisualEvidenceError as exc:
             raise ReferencePlanningError(str(exc), exc.code) from exc
@@ -1025,6 +1035,7 @@ def _plan_reference_panel_candidates(
                 profile,
                 allow_source_resolution_warning=allow_source_resolution_warning,
                 review_aggressive_crop=allow_review_cadence_adaptation,
+                allow_conservative_full_panel=allow_conservative_full_panel,
             )
             for candidate in eligible_for_section
         ]
@@ -1099,6 +1110,7 @@ def _plan_reference_panel_candidates(
                     profile,
                     allow_source_resolution_warning=allow_source_resolution_warning,
                     review_aggressive_crop=allow_review_cadence_adaptation,
+                    allow_conservative_full_panel=allow_conservative_full_panel,
                 )
                 > len(used_rois.get(candidate.panel_id, set()))
             ]
@@ -1121,6 +1133,7 @@ def _plan_reference_panel_candidates(
                                 candidate,
                                 profile,
                                 allow_source_resolution_warning=allow_source_resolution_warning,
+                                allow_conservative_full_panel=allow_conservative_full_panel,
                             )
                             - len(used_rois.get(candidate.panel_id, set()))
                         ),
@@ -1166,6 +1179,7 @@ def _plan_reference_panel_candidates(
                     used_rois=used_rois.get(candidate.panel_id, set()),
                     allow_source_resolution_warning=allow_source_resolution_warning,
                     review_aggressive_crop=allow_review_cadence_adaptation,
+                    allow_conservative_full_panel=allow_conservative_full_panel,
                 )
                 attempts.append(entry)
                 if accepted:
@@ -1619,6 +1633,7 @@ def plan(
     allow_source_resolution_warning: bool = False,
     allow_review_cadence_adaptation: bool = False,
     allow_review_duration: bool = False,
+    allow_conservative_full_panel: bool = False,
 ) -> list[dict]:
     """Create a beat-aware, ROI-driven shot list before rendering."""
     span_list = list(spans)
@@ -1630,6 +1645,7 @@ def plan(
             allow_source_resolution_warning=allow_source_resolution_warning,
             allow_review_cadence_adaptation=allow_review_cadence_adaptation,
             allow_review_duration=allow_review_duration,
+            allow_conservative_full_panel=allow_conservative_full_panel,
         )
     if profile is not None:
         return _plan_reference(

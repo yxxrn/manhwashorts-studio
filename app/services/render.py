@@ -180,6 +180,7 @@ class RenderRequest:
     subtitle_contract: Mapping[str, Any] | None = None
     persisted_reference_framing: bool = False
     review_source_upscale_policy: str | None = None
+    allow_conservative_full_panel: bool = False
 
 
 @dataclass
@@ -561,6 +562,7 @@ def prepare_reference_frame(
     *,
     evidence: PanelVisualEvidence | Mapping[str, Any] | None = None,
     border_mask: framing_analysis.BorderMaskResult | None = None,
+    allow_conservative_full_panel: bool = False,
 ) -> PreparedFrame:
     """Select one static content-aware frame for the reference profile."""
     if profile is None:
@@ -576,7 +578,10 @@ def prepare_reference_frame(
             visual_scoring.validate_panel_visual_evidence(parsed_evidence)
         else:
             parsed_evidence = visual_scoring.parse_panel_visual_evidence(evidence)
-        parsed_evidence = visual_scoring.require_reference_ready_visual_evidence(parsed_evidence)
+        parsed_evidence = visual_scoring.require_reference_ready_visual_evidence(
+            parsed_evidence,
+            allow_conservative_full_panel=allow_conservative_full_panel,
+        )
     except visual_scoring.VisualEvidenceError as exc:
         code = (
             "visual.balloon_mask_unknown"
@@ -598,6 +603,7 @@ def prepare_reference_frame(
                     image,
                     parsed_evidence,
                     grid_long_edge=profile.framing_mask_grid_long_edge,
+                    allow_conservative_full_panel=allow_conservative_full_panel,
                 )
             elif border_mask.source_width != src_w or border_mask.source_height != src_h:
                 raise RenderError(
@@ -651,6 +657,7 @@ def prepare_reference_frame(
                     (src_w, src_h),
                     (width, height),
                     blank_target_fraction=profile.framing_blank_target_fraction,
+                    allow_conservative_full_panel=allow_conservative_full_panel,
                 )
                 last_telemetry = telemetry
                 if feasible:
@@ -1727,6 +1734,7 @@ def _prepare_exact_reference_frame(
     height: int,
     profile: ReferenceProfileConfig,
     allow_source_resolution_warning: bool = False,
+    allow_conservative_full_panel: bool = False,
 ) -> Path:
     """Prepare the persisted ROI exactly, without candidate search or reselection."""
     if scene.publish_allowed is not False:
@@ -1745,7 +1753,10 @@ def _prepare_exact_reference_frame(
             if isinstance(scene.visual_evidence, visual_scoring.PanelVisualEvidence)
             else visual_scoring.parse_panel_visual_evidence(scene.visual_evidence or {})
         )
-        evidence = visual_scoring.require_reference_ready_visual_evidence(evidence)
+        evidence = visual_scoring.require_reference_ready_visual_evidence(
+            evidence,
+            allow_conservative_full_panel=allow_conservative_full_panel,
+        )
         local_hash = visual_scoring.visual_evidence_hash(evidence)
     except visual_scoring.VisualEvidenceError as exc:
         code = (
@@ -1793,6 +1804,7 @@ def _prepare_exact_reference_frame(
             panel,
             evidence,
             grid_long_edge=profile.framing_mask_grid_long_edge,
+            allow_conservative_full_panel=allow_conservative_full_panel,
         )
     except (OSError, ValueError, visual_scoring.VisualEvidenceError) as exc:
         raise RenderError(
@@ -1855,6 +1867,7 @@ def _prepare_exact_reference_frame(
             panel_size,
             (width, height),
             blank_target_fraction=profile.framing_blank_target_fraction,
+            allow_conservative_full_panel=allow_conservative_full_panel,
             **feasibility_kwargs,
         )
     except visual_scoring.VisualEvidenceError as exc:
@@ -2208,7 +2221,14 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                     if isinstance(scene.visual_evidence, visual_scoring.PanelVisualEvidence)
                     else visual_scoring.parse_panel_visual_evidence(scene.visual_evidence)
                 )
-                scene_evidence = visual_scoring.require_reference_ready_visual_evidence(scene_evidence)
+                allow_conservative = bool(
+                    request.allow_conservative_full_panel
+                    and scene.publish_allowed is False
+                )
+                scene_evidence = visual_scoring.require_reference_ready_visual_evidence(
+                    scene_evidence,
+                    allow_conservative_full_panel=allow_conservative,
+                )
                 if request.silent_reference_review or request.persisted_reference_framing:
                     scene_border_mask = _reference_border_mask_from_mapping(scene.border_mask)
                 else:
@@ -2217,6 +2237,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                             panel_image,
                             scene_evidence,
                             grid_long_edge=request.profile.framing_mask_grid_long_edge,
+                            allow_conservative_full_panel=allow_conservative,
                         )
             except RenderError:
                 raise
@@ -2245,6 +2266,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             tuple(sorted(scene.disabled_effects)),
             _reference_canonical_json(scene.selected_roi) if request.silent_reference_review else "",
             _reference_canonical_json(scene.framing_telemetry) if request.silent_reference_review else "",
+            bool(request.allow_conservative_full_panel),
         )
         cached = prepared_cache.get(cache_key)
         if cached and cached.is_file():
@@ -2270,6 +2292,8 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                         == "review.low_source_resolution"
                     ):
                         exact_prepare_kwargs["allow_source_resolution_warning"] = True
+                    if request.allow_conservative_full_panel and scene.publish_allowed is False:
+                        exact_prepare_kwargs["allow_conservative_full_panel"] = True
                     _prepare_exact_reference_frame(**exact_prepare_kwargs)
                 else:
                     editorial_frame(

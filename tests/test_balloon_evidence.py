@@ -31,6 +31,7 @@ def test_typed_visual_evidence_boundary_exists():
         "parse_panel_visual_evidence",
         "validate_panel_visual_evidence",
         "require_reference_ready_visual_evidence",
+        "is_conservative_full_panel_visual_evidence",
         "panel_visual_evidence_json",
         "visual_evidence_hash",
         "ensure_panel_visual_evidence",
@@ -59,6 +60,26 @@ def test_unknown_visual_evidence_round_trips_but_blocks_reference_consumption():
     with pytest.raises(Exception) as caught:
         require_ready(parsed)
     assert "visual.balloon_mask_unknown" in str(caught.value)
+
+
+def test_conservative_full_panel_fallback_requires_explicit_opt_in():
+    fallback = visual_scoring.conservative_full_panel_visual_evidence(
+        panel_id="panel-fallback",
+        source_asset_id="asset-fallback",
+        source_order=4,
+        reason="geometry remained unknown after targeted retry",
+    )
+
+    assert visual_scoring.is_conservative_full_panel_visual_evidence(fallback)
+    with pytest.raises(Exception, match="visual\\.balloon_mask_unknown"):
+        visual_scoring.require_reference_ready_visual_evidence(fallback)
+    assert (
+        visual_scoring.require_reference_ready_visual_evidence(
+            fallback,
+            allow_conservative_full_panel=True,
+        )
+        == fallback
+    )
 
 
 def test_missing_visual_sidecar_is_persisted_as_explicit_unknown_with_lineage():

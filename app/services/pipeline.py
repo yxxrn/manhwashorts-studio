@@ -2403,6 +2403,7 @@ def _build_reference_panel_fallback_candidates(
     profile: object,
     source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
     allow_missing_explicit: bool = False,
+    allow_conservative_full_panel: bool = False,
 ) -> tuple[object, ...]:
     """Compatibility wrapper for the exact panel-keyed review builder."""
     try:
@@ -2416,6 +2417,7 @@ def _build_reference_panel_fallback_candidates(
             beats_by_section=beats_by_section,
             profile=profile,
             source_upscale_manifests_by_region_id=source_upscale_manifests_by_region_id,
+            allow_conservative_full_panel=allow_conservative_full_panel,
         )
     except reference_visual_review.ReferenceReviewError as exc:
         raise PipelineError(f"{exc.code}: {exc}") from exc
@@ -2434,6 +2436,7 @@ def _load_reference_panel_fallback_candidates(
     beats_by_section: Mapping[str, Sequence[str]] | None = None,
     review_source_root: Path | None = None,
     allow_persisted_panel_crop_fallback: bool = False,
+    allow_conservative_full_panel: bool = False,
 ) -> tuple[object, ...]:
     """Read each exact persisted panel crop before planner selection."""
     analysis = latest_analysis(db, project_id)
@@ -2600,6 +2603,7 @@ def _load_reference_panel_fallback_candidates(
             review_source_upscale_policy is not None
             or bool(skipped_panel_ids & cited_panel_ids)
         ),
+        allow_conservative_full_panel=allow_conservative_full_panel,
     )
 
 
@@ -2855,6 +2859,7 @@ def build_timeline(
     reference_section_citations: Mapping[str, Sequence[int]] | None = None,
     reference_beats_by_section: Mapping[str, Sequence[str]] | None = None,
     review_source_root: Path | None = None,
+    allow_conservative_full_panel: bool = False,
 ) -> list[TimelineScene]:
     """Derive scenes/cues from voice timing or explicit silent-review pacing."""
     project = get_project(db, project_id)
@@ -2938,10 +2943,24 @@ def build_timeline(
                 beats_by_section=reference_beats_by_section,
                 review_source_root=review_source_root,
                 allow_persisted_panel_crop_fallback=silent_reference_review,
+                **(
+                    {"allow_conservative_full_panel": True}
+                    if allow_conservative_full_panel
+                    else {}
+                ),
             )
         else:
             reference_candidates = _load_reference_panel_fallback_candidates(
-                db, project_id, script, images, profile
+                db,
+                project_id,
+                script,
+                images,
+                profile,
+                **(
+                    {"allow_conservative_full_panel": True}
+                    if allow_conservative_full_panel
+                    else {}
+                ),
             )
         candidate_registry = {
             str(candidate.panel_region_id): candidate
@@ -2961,6 +2980,11 @@ def build_timeline(
             ),
             allow_review_cadence_adaptation=silent_reference_review,
             allow_review_duration=silent_reference_review,
+            **(
+                {"allow_conservative_full_panel": True}
+                if allow_conservative_full_panel
+                else {}
+            ),
         )
     except editorial_visual_planner.ReferencePlanningError as exc:
         raise PipelineError(
@@ -4071,6 +4095,7 @@ def _build_silent_reference_request(
             if review_source_upscale_policy is not None
             else None
         ),
+        allow_conservative_full_panel=True,
     )
 
 
