@@ -8393,7 +8393,11 @@ class _StreamingVisualEvidenceSession:
         # Retry only the IDs omitted by a successful response.  A worker
         # runner is single-attempt; transport retry ownership stays in the
         # parent runner and is never multiplied by this loop.
-        retry_budget = 1 if self.runner.max_attempts > 1 else 0
+        # The stream worker deliberately performs one provider attempt per
+        # call.  The parent runner's configured attempt budget therefore owns
+        # the missing-only retry count; do not silently collapse max_attempts
+        # greater than two to one retry.
+        retry_budget = max(0, self.runner.max_attempts - 1)
         for attempt in range(1 + retry_budget):
             if not pending:
                 break

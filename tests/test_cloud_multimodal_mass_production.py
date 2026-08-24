@@ -7461,6 +7461,46 @@ def test_stream_finish_rejects_partial_final_batch_and_persists_metrics():
     ]
 
 
+def test_stream_retry_budget_honors_configured_attempts_for_missing_panel():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-retry-budget"))
+    )
+
+    class _EventuallyCompleteProvider(_FakeProvider):
+        def observe(self, request):
+            rows = super().observe(request)
+            if len(self.calls) <= 2:
+                return [
+                    row
+                    for row in rows
+                    if row.get("panel_id") != "stream-retry-budget-panel-2"
+                ]
+            return rows
+
+    provider = _EventuallyCompleteProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=3,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        stream.submit(panel)
+
+    result = stream.finish(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert len(provider.calls) == 3
+    assert runner.last_visual_stream_metrics["retry_count"] == 2
+
+
 def test_stream_abort_drains_workers_and_rejects_late_finish():
     module = _module()
     panels = tuple(
