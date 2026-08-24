@@ -48,7 +48,7 @@ def test_upload_persists_all_lineage_fields(auth_client, monkeypatch):
         coverage_map_hash="coverage-map-hash-a",
     )
     monkeypatch.setattr(
-        "app.routers.projects.ingest.ingest_upload_parts",
+        "app.routers.projects.ingest.ingest_upload_sources",
         lambda *args, **kwargs: [result],
     )
 
@@ -63,8 +63,8 @@ def test_upload_persists_all_lineage_fields(auth_client, monkeypatch):
         assert asset.source_bounds_json == {
             "x": 17,
             "y": 211,
-            "width": 903,
-            "height": 1207,
+            "width": 886,
+            "height": 996,
         }
         assert asset.strip_order == 13
         assert asset.region_order == 29
@@ -72,7 +72,7 @@ def test_upload_persists_all_lineage_fields(auth_client, monkeypatch):
         assert asset.coverage_map_hash == "coverage-map-hash-a"
 
 
-def test_upload_preserves_each_sliced_result_bounds_and_order(
+def test_upload_preserves_legacy_derived_result_bounds_and_order(
     auth_client, monkeypatch
 ):
     from app.db import SessionLocal
@@ -116,7 +116,7 @@ def test_upload_preserves_each_sliced_result_bounds_and_order(
         coverage_map_hash="coverage-map-hash-b",
     )
     monkeypatch.setattr(
-        "app.routers.projects.ingest.ingest_upload_parts",
+        "app.routers.projects.ingest.ingest_upload_sources",
         lambda *args, **kwargs: [first, second],
     )
 
@@ -146,7 +146,7 @@ def test_upload_preserves_each_sliced_result_bounds_and_order(
                 "coverage-map-hash-b",
             ),
             (
-                {"x": 0, "y": 4200, "width": 2048, "height": 4800},
+                {"x": 0, "y": 4200, "width": 2048, "height": 600},
                 7,
                 3,
                 "original-checksum-b",

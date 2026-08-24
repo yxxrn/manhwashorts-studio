@@ -549,7 +549,7 @@ def import_chapter_folder(
     order_index = 0
     try:
         for image_path in chapter.image_paths:
-            results = ingest.ingest_upload_parts(
+            results = ingest.ingest_upload_sources(
                 project.id,
                 image_path.name,
                 _image_mime_type(image_path),

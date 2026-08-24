@@ -262,7 +262,7 @@ async def upload_assets(
     for upload in files:
         data = await upload.read()
         try:
-            results = ingest.ingest_upload_parts(
+            results = ingest.ingest_upload_sources(
                 project.id, upload.filename or "upload", upload.content_type or "", data
             )
         except ingest.IngestError as exc:
@@ -302,8 +302,8 @@ async def upload_assets(
                 source_bounds_json={
                     "x": result.source_bounds[0],
                     "y": result.source_bounds[1],
-                    "width": result.source_bounds[2],
-                    "height": result.source_bounds[3],
+                    "width": result.source_bounds[2] - result.source_bounds[0],
+                    "height": result.source_bounds[3] - result.source_bounds[1],
                 },
                 strip_order=result.strip_order,
                 region_order=result.region_order,

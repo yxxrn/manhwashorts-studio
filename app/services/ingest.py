@@ -451,6 +451,31 @@ def _ingest_archive_parts(
     return assets
 
 
+def _ingest_archive_sources(
+    project_id: str, filename: str, data: bytes
+) -> list[IngestedAsset]:
+    """Ingest archive members as immutable source pages.
+
+    Canonical segmentation owns panel boundaries.  New upload/import paths must
+    therefore persist each original archive member once and must not turn
+    transient coarse strip tiles into ``SourceAsset`` rows.  The historical
+    ``_ingest_archive_parts`` path remains available for legacy callers and
+    databases that already contain derived slice assets.
+    """
+    images = _extract_archive_images(filename, data)
+    if not images:
+        raise IngestError(f"{filename}: archive contains no JPG, PNG, or WebP images")
+    assets: list[IngestedAsset] = []
+    for member_name, member_data in images:
+        try:
+            assets.append(ingest_image(project_id, member_name, member_data))
+        except IngestError:
+            continue
+    if not assets:
+        raise IngestError(f"{filename}: no usable images found in archive")
+    return assets
+
+
 def ingest_upload(project_id: str, filename: str, mime_type: str, data: bytes) -> IngestedAsset:
     """Dispatch on declared type, then verify against real content.
 
@@ -486,6 +511,29 @@ def ingest_upload_parts(
         return _ingest_archive_parts(project_id, filename, data)
     if _is_image(suffix, mime_type):
         return ingest_image_parts(project_id, filename, data)
+    if _is_audio(suffix, mime_type):
+        return [ingest_audio(project_id, filename, mime_type, data)]
+    if _is_document(suffix, mime_type):
+        return [ingest_document(project_id, filename, mime_type, data)]
+    raise _unsupported(filename)
+
+
+def ingest_upload_sources(
+    project_id: str, filename: str, mime_type: str, data: bytes
+) -> list[IngestedAsset]:
+    """Ingest new material without persisting derived coarse strip tiles.
+
+    This is the source-of-truth entrypoint used by the HTTP and operator
+    import paths.  Image bytes, checksum, dimensions, and full source bounds
+    are stored exactly once; source-space segmentation later creates the
+    canonical ``PanelRegion`` rows.  ``ingest_upload_parts`` is intentionally
+    retained as a compatibility API for legacy derived-slice data and tests.
+    """
+    suffix = Path(filename).suffix.lower()
+    if _is_archive(suffix):
+        return _ingest_archive_sources(project_id, filename, data)
+    if _is_image(suffix, mime_type):
+        return [ingest_image(project_id, filename, data)]
     if _is_audio(suffix, mime_type):
         return [ingest_audio(project_id, filename, mime_type, data)]
     if _is_document(suffix, mime_type):

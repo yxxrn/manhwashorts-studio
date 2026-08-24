@@ -298,8 +298,8 @@ def test_ingest_parts_still_rejects_a_fake_image():
         ingest.ingest_image_parts("proj-strip", "evil.jpg", b"#!/bin/sh\necho pwned\n" * 40)
 
 
-def test_upload_endpoint_expands_a_strip_and_keeps_order(client, declared_rights):
-    """End to end: one uploaded page becomes several ordered assets."""
+def test_upload_endpoint_persists_one_immutable_source_page(client, declared_rights):
+    """New uploads keep the page once; segmentation owns canonical panels."""
     assert client.post(
         "/api/auth/register",
         json={"email": "strip@example.com", "password": "strippass1234"},
@@ -317,10 +317,22 @@ def test_upload_endpoint_expands_a_strip_and_keeps_order(client, declared_rights
     )
     assert response.status_code == 201, response.text
     assets = response.json()
-    assert len(assets) > 1, "a tall page should expand into several panels"
+    assert len(assets) == 1
+    assert assets[0]["original_filename"] == "page.jpg"
+    from app.db import SessionLocal
+    from app.models import SourceAsset
 
-    # order_index must be dense and sequential: it decides scene assignment.
-    assert [a["order_index"] for a in assets] == list(range(len(assets)))
+    with SessionLocal() as db:
+        stored = db.get(SourceAsset, assets[0]["id"])
+        assert stored.source_bounds_json == {
+            "x": 0,
+            "y": 0,
+            "width": 720,
+            "height": 4372,
+        }
+
+    # Source order is dense; canonical PanelRegion order is derived later.
+    assert [a["order_index"] for a in assets] == [0]
 
 
 def test_upload_order_index_stays_dense_across_mixed_files(client, declared_rights):
@@ -346,5 +358,5 @@ def test_upload_order_index_stays_dense_across_mixed_files(client, declared_righ
     assert response.status_code == 201, response.text
     assets = response.json()
     assert [a["order_index"] for a in assets] == list(range(len(assets)))
-    # The flat panel is last, after every slice of the strip.
     assert assets[-1]["original_filename"] == "flat.jpg"
+    assert assets[0]["original_filename"] == "tall.jpg"

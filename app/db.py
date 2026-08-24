@@ -172,6 +172,10 @@ def safe_drop_all(metadata, bind: Engine) -> None:
     if os.environ.get("MS_TEST_MODE") != "1":
         raise RuntimeError("drop_all is disabled outside MS_TEST_MODE=1")
     url = str(bind.url)
-    if bind.url.get_backend_name() != "sqlite" or "/data/test_runs/" not in url:
+    # SQLAlchemy preserves Windows drive separators in ``sqlite:///`` URLs;
+    # normalize only for this guard so the same test-only protection works on
+    # Windows and POSIX without broadening which database may be dropped.
+    normalized_url = url.replace("\\", "/")
+    if bind.url.get_backend_name() != "sqlite" or "/data/test_runs/" not in normalized_url:
         raise RuntimeError(f"refusing destructive reset of non-test database: {url}")
     metadata.drop_all(bind=bind)
