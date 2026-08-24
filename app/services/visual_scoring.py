@@ -387,7 +387,7 @@ def _parse_balloon_region(raw: object) -> BalloonRegionEvidence:
     if not isinstance(raw, Mapping):
         raise _visual_error("visual.region_invalid", "balloon region is not an object")
     required = {"region_id", "kind", "normalized_bbox", "normalized_polygon", "confidence", "evidence_source", "mask_status"}
-    if set(raw) != required:
+    if not required.issubset(raw):
         raise _visual_error("visual.region_invalid", "balloon region keys are incomplete")
     return BalloonRegionEvidence(
         region_id=raw["region_id"],
@@ -404,7 +404,7 @@ def _parse_protected_region(raw: object) -> ProtectedRegionEvidence:
     if not isinstance(raw, Mapping):
         raise _visual_error("visual.region_invalid", "protected region is not an object")
     required = {"region_id", "kind", "normalized_bbox", "normalized_polygon", "confidence", "evidence_source", "required", "minimum_coverage"}
-    if set(raw) != required:
+    if not required.issubset(raw):
         raise _visual_error("visual.region_invalid", "protected region keys are incomplete")
     return ProtectedRegionEvidence(
         region_id=raw["region_id"],
@@ -428,8 +428,7 @@ def parse_panel_visual_evidence(raw: Mapping[str, Any]) -> PanelVisualEvidence:
             "contract_version", "panel_id", "source_asset_id", "source_order", "balloon_regions",
             "protected_regions", "balloon_mask_status", "mask_confidence", "evidence_source", "mask_reason",
         }
-        allowed = required | {"evidence_hash"}
-        if set(raw) != allowed and set(raw) != required:
+        if not required.issubset(raw):
             raise _visual_error("visual.evidence_invalid", "visual evidence keys are unexpected")
         if not isinstance(raw["balloon_regions"], (tuple, list)) or not isinstance(raw["protected_regions"], (tuple, list)):
             raise _visual_error("visual.evidence_invalid", "visual region collections are invalid")

@@ -82,6 +82,22 @@ def test_conservative_full_panel_fallback_requires_explicit_opt_in():
     )
 
 
+def test_visual_evidence_parser_ignores_untrusted_optional_fields():
+    evidence = visual_scoring.panel_visual_evidence_json(
+        visual_scoring.unknown_visual_evidence(
+            panel_id="panel-optional",
+            source_asset_id="asset-optional",
+            source_order=2,
+            reason="geometry unavailable",
+        )
+    )
+    evidence["provider_note"] = "ignored"
+    parsed = visual_scoring.parse_panel_visual_evidence(evidence)
+
+    assert parsed.panel_id == "panel-optional"
+    assert not hasattr(parsed, "provider_note")
+
+
 def test_missing_visual_sidecar_is_persisted_as_explicit_unknown_with_lineage():
     ensure = _boundary("ensure_panel_visual_evidence")
     assert ensure is not None

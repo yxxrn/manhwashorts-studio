@@ -929,7 +929,11 @@ def validate_visual_evidence_observation(
     """Validate untrusted provider visual geometry without hashing it."""
 
     try:
-        if not isinstance(observation, Mapping) or set(observation) != _PROVIDER_VISUAL_KEYS:
+        if (
+            not isinstance(observation, Mapping)
+            or not _PROVIDER_VISUAL_KEYS.issubset(observation)
+            or "evidence_hash" in observation
+        ):
             raise VisionResponseInvalid()
         if (
             observation.get("panel_id") != expected_panel_id
@@ -960,9 +964,9 @@ def validate_visual_evidence_observation(
             raise VisionResponseInvalid()
         region_ids: set[str] = set()
 
-        def validate_region(raw: Any, *, protected: bool) -> None:
+        def validate_region(raw: Any, *, protected: bool) -> dict[str, Any]:
             required_keys = _PROTECTED_REGION_KEYS if protected else _PROVIDER_REGION_KEYS
-            if not isinstance(raw, Mapping) or set(raw) != required_keys:
+            if not isinstance(raw, Mapping) or not required_keys.issubset(raw):
                 raise VisionResponseInvalid()
             region_id = raw.get("region_id")
             kind = raw.get("kind")
@@ -1023,11 +1027,14 @@ def validate_visual_evidence_observation(
                     raise VisionResponseInvalid()
             elif raw.get("mask_status") == "known_nonempty" and bbox is None and not polygon:
                 raise VisionResponseInvalid()
+            return {key: raw[key] for key in required_keys}
 
-        for region in balloon_regions:
-            validate_region(region, protected=False)
-        for region in protected_regions:
-            validate_region(region, protected=True)
+        normalized_balloon_regions = [
+            validate_region(region, protected=False) for region in balloon_regions
+        ]
+        normalized_protected_regions = [
+            validate_region(region, protected=True) for region in protected_regions
+        ]
 
         if status == "known_empty" and (
             balloon_regions or float(confidence) <= 0.0
@@ -1052,7 +1059,13 @@ def validate_visual_evidence_observation(
                 for region in balloon_regions
             ):
                 raise VisionResponseInvalid()
-        return dict(observation)
+        normalized = {
+            key: observation[key]
+            for key in sorted(_PROVIDER_VISUAL_KEYS)
+        }
+        normalized["balloon_regions"] = normalized_balloon_regions
+        normalized["protected_regions"] = normalized_protected_regions
+        return normalized
     except VisionResponseInvalid:
         raise
     except (KeyError, TypeError, ValueError):
@@ -1072,6 +1085,9 @@ def _validate_observations(
     requested_by_panel_id = {panel["panel_id"]: panel for panel in panels}
     requested_set = set(requested_by_panel_id)
     by_panel_id: dict[str, Mapping[str, Any]] = {}
+    required_observation_keys = _REQUIRED_OBSERVATION_KEYS | (
+        {"visual_evidence"} if require_visual_evidence else set()
+    )
     for observation in observations:
         if not isinstance(observation, Mapping):
             raise VisionResponseInvalid()
@@ -1080,13 +1096,11 @@ def _validate_observations(
             not isinstance(panel_id, str)
             or panel_id not in requested_set
             or panel_id in by_panel_id
-            or set(observation)
-            != _REQUIRED_OBSERVATION_KEYS
-            | ({"visual_evidence"} if require_visual_evidence else set())
+            or not required_observation_keys.issubset(observation)
             or any(
                 not isinstance(observation[key], list)
-                for key in observation
-                if key != "panel_id" and key != "visual_evidence"
+                for key in _REQUIRED_OBSERVATION_KEYS
+                if key != "panel_id"
             )
         ):
             raise VisionResponseInvalid()
@@ -1101,7 +1115,10 @@ def _validate_observations(
             )
         ):
             raise VisionResponseInvalid()
-        row = dict(observation)
+        row = {
+            key: observation[key]
+            for key in sorted(required_observation_keys)
+        }
         if require_visual_evidence:
             requested_panel = requested_by_panel_id[panel_id]
             row["visual_evidence"] = dict(

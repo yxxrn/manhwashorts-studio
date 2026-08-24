@@ -542,10 +542,6 @@ def _remove_required_and_add_foreign(response):
     response[0]["foreign_key"] = []
 
 
-def _add_unexpected_key(response):
-    response[0]["unexpected_key"] = []
-
-
 @pytest.mark.parametrize(
     "mutate",
     (
@@ -553,16 +549,41 @@ def _add_unexpected_key(response):
             _remove_required_and_add_foreign,
             id="missing-required-with-foreign-key",
         ),
-        pytest.param(_add_unexpected_key, id="otherwise-valid-with-unexpected-key"),
     ),
 )
-def test_observation_keys_must_match_exact_contract(mock_provider_url, mutate):
+def test_observation_missing_required_fields_still_fail_closed(mock_provider_url, mutate):
     module = _vision_module()
     import mock_provider
 
     response = copy.deepcopy(mock_provider.default_vision_response())
     mutate(response)
     _assert_invalid_response(module, mock_provider_url, json.dumps(response))
+
+
+def test_visual_observation_projects_optional_provider_fields_to_trusted_contract(
+    mock_provider_url,
+):
+    module = _vision_module()
+    import mock_provider
+
+    response = copy.deepcopy(mock_provider.default_visual_vision_response())
+    response[0]["provider_note"] = {"untrusted": True}
+    response[0]["visual_evidence"]["provider_geometry_note"] = "optional"
+    response[0]["visual_evidence"]["protected_regions"][0]["provider_region_note"] = "optional"
+    mock_provider.reset_vision_state()
+    mock_provider.set_vision_response_content(json.dumps(response))
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url=mock_provider_url,
+        model="mock-large",
+        api_key=mock_provider.GOOD_KEY,
+    )
+
+    observations = provider.observe(_visual_request(module)[0])
+
+    assert len(observations) == len(_panels())
+    assert "provider_note" not in observations[0]
+    assert "provider_geometry_note" not in observations[0]["visual_evidence"]
+    assert "provider_region_note" not in observations[0]["visual_evidence"]["protected_regions"][0]
 
 
 def test_response_order_is_deterministic_for_a_complete_request(mock_provider_url):
