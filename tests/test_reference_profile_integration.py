@@ -904,7 +904,7 @@ def test_task6_explicit_panel_path_calls_exact_feasibility_and_returns_lineage_l
     wrappers = _task6_wrappers(framing=framing)
     calls = []
 
-    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size):
+    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size, **_kwargs):
         calls.append(
             (
                 crop_box,
@@ -943,7 +943,7 @@ def test_task6_same_asset_panels_keep_evidence_and_masks_distinct(monkeypatch):
     wrappers = _task6_wrappers(22, framing=framing, shared=True)
     seen = []
 
-    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size):
+    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size, **_kwargs):
         seen.append((evidence.panel_id, border_mask.mask_sha256))
         return True, _task6_telemetry(framing, evidence, border_mask, crop_box)
 
@@ -981,7 +981,7 @@ def test_task6_fallback_ledger_uses_same_panel_alternatives_before_other_panel(m
     )
     attempts = []
 
-    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size):
+    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size, **_kwargs):
         attempts.append((evidence.panel_id, crop_box))
         telemetry = _task6_telemetry(framing, evidence, border_mask, crop_box)
         if evidence.panel_id == "panel-0" and len(attempts) == 1:
@@ -1094,7 +1094,7 @@ def test_task6_no_feasible_panel_fails_with_stable_visual_unavailable(monkeypatc
     framing = importlib.import_module("app.services.framing_analysis")
     wrappers = _task6_wrappers(framing=framing)
 
-    def reject_all(crop_box, evidence, border_mask, panel_size, target_size):
+    def reject_all(crop_box, evidence, border_mask, panel_size, target_size, **_kwargs):
         return False, replace(
             _task6_telemetry(framing, evidence, border_mask, crop_box),
             rejection_code="visual.balloon_mask_overlap",
@@ -1116,7 +1116,7 @@ def test_task6_same_asset_panels_fill_exact_capacity(monkeypatch):
     framing = __import__("app.services.framing_analysis", fromlist=["x"])
     wrappers = _task6_wrappers(count=20, framing=framing, shared=True)
 
-    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size, **_kwargs):
         return True, _task6_telemetry(framing, evidence, mask, crop_box)
 
     monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
@@ -1209,7 +1209,7 @@ def test_task6_enforces_same_panel_phase_order_and_reason(monkeypatch):
 
     first_attempt_state = {"done": False}
 
-    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size, **_kwargs):
         telemetry = _task6_telemetry(framing, evidence, mask, crop_box)
         if evidence.panel_id == "panel-0" and not first_attempt_state["done"]:
             if crop_box == (0, 0, 99, 200):
@@ -1245,7 +1245,7 @@ def test_task6_enforces_alternate_panel_phase_after_same_panel_attempts(monkeypa
 
     panel_zero_attempts = {"count": 0}
 
-    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size, **_kwargs):
         telemetry = _task6_telemetry(framing, evidence, mask, crop_box)
         if evidence.panel_id == "panel-0" and panel_zero_attempts["count"] < 3:
             panel_zero_attempts["count"] += 1
@@ -1276,7 +1276,7 @@ def test_task6_shot_contains_accepted_telemetry_and_selection_context(monkeypatc
     framing = __import__("app.services.framing_analysis", fromlist=["x"])
     wrappers = _task6_wrappers(count=21, framing=framing)
 
-    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size, **_kwargs):
         return True, _task6_telemetry(framing, evidence, mask, crop_box)
 
     monkeypatch.setattr(framing, "candidate_is_feasible", fake_feasibility)
@@ -1490,7 +1490,7 @@ def test_task6_alternate_panel_runs_all_roi_phases(monkeypatch):
     panel_zero_attempts = {"count": 0}
     panel_one_primary_failed = {"value": False}
 
-    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size):
+    def fake_feasibility(crop_box, evidence, mask, panel_size, target_size, **_kwargs):
         telemetry = _task6_telemetry(framing, evidence, mask, crop_box)
         if evidence.panel_id == "panel-0" and panel_zero_attempts["count"] < 3:
             panel_zero_attempts["count"] += 1
