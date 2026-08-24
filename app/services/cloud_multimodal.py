@@ -10973,6 +10973,7 @@ class CloudBatchService:
                     and record.error_code in {
                         "cloud.narrative_not_grounded",
                         "cloud.narrative_duration_out_of_range",
+                        "visual.narrative_repair_ungrounded",
                     }
                     and isinstance(record.stage_results.get("visual"), Mapping)
                     and isinstance(record.stage_results.get("story_map"), Mapping)
@@ -10981,6 +10982,15 @@ class CloudBatchService:
                     return record
                 initial_repair_result = None
                 partial_narration = getattr(self.runner, "_last_narration_result", None)
+                if partial_narration is None:
+                    persisted_narration = record.stage_results.get("narration")
+                    if isinstance(persisted_narration, Mapping):
+                        try:
+                            partial_narration = NarrationResult.from_dict(
+                                persisted_narration
+                            )
+                        except (KeyError, TypeError, ValueError):
+                            partial_narration = None
                 initial_visual = VisualStageResult.from_dict(record.stage_results["visual"])
                 initial_story_map = StoryMapResult.from_dict(record.stage_results["story_map"])
                 if (

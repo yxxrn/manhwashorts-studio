@@ -989,7 +989,11 @@ def test_review_preview_failure_code_keeps_subtitle_stable_code():
 
 @pytest.mark.parametrize(
     "failure_code",
-    ("cloud.narrative_not_grounded", "cloud.narrative_duration_out_of_range"),
+    (
+        "cloud.narrative_not_grounded",
+        "cloud.narrative_duration_out_of_range",
+        "visual.narrative_repair_ungrounded",
+    ),
 )
 def test_review_project_repairs_after_initial_narration_failure(monkeypatch, failure_code):
     module = _module()
@@ -1024,9 +1028,27 @@ def test_review_project_repairs_after_initial_narration_failure(monkeypatch, fai
         job_id="project-a",
         state=module.ChapterState.NEEDS_REVIEW,
         error_code=failure_code,
-        stage_results={"visual": visual.as_dict(), "story_map": story_map.as_dict()},
+        stage_results={
+            "visual": visual.as_dict(),
+            "story_map": story_map.as_dict(),
+        },
     )
     partial_narration = SimpleNamespace(visual_evidence_hash=visual.visual_evidence_hash)
+    persisted_narration = module.NarrationResult(
+        spoken_text="Persisted narration candidate.",
+        display_words=("PERSISTED", "NARRATION", "CANDIDATE"),
+        passages=(),
+        ending_kind="consequence",
+        word_count=120,
+        estimated_duration_s=52.17,
+        qc_report={"duration_contract": {"word_count": 120, "estimated_duration_s": 52.17}},
+        model_identity_hash="m" * 64,
+        prompt_version="vision-first-story-analyzer-v3",
+        prompt_sha256="n" * 64,
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    if failure_code == "visual.narrative_repair_ungrounded":
+        failed.stage_results["narration"] = persisted_narration.as_dict()
 
     class Store:
         def __init__(self):
@@ -1098,6 +1120,8 @@ def test_review_project_repairs_after_initial_narration_failure(monkeypatch, fai
     assert observed["script_row"] is None
     if failure_code == "cloud.narrative_duration_out_of_range":
         assert observed["result"].narration is partial_narration
+    elif failure_code == "visual.narrative_repair_ungrounded":
+        assert observed["result"].narration.spoken_text == persisted_narration.spoken_text
     else:
         assert observed["result"] is None
     assert observed["panel_ids"] == tuple(panel.panel_id for panel in panels)
