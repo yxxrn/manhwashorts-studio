@@ -692,6 +692,61 @@ def test_operator_review_run_passes_source_and_output_boundaries_to_service(tmp_
     ]
 
 
+def test_resume_jobs_preserves_review_only_boundary(monkeypatch, tmp_path):
+    cli = _cli_module()
+    captured = {}
+    run_options = object()
+    runner_factory = object()
+    output_root = tmp_path / "output"
+
+    monkeypatch.setattr(
+        cli,
+        "list_job_states",
+        lambda _state_dir: [
+            {
+                "job_id": "chapter-1",
+                "state": "NEEDS_REVIEW",
+                "error_code": "segmentation.protected_boundary",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "_cloud",
+        lambda: type("Cloud", (), {"resolve_cloud_runner": runner_factory})(),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_settings",
+        lambda: type("Settings", (), {"output_dir": output_root})(),
+    )
+
+    def fake_run_projects(_db, project_ids, **kwargs):
+        captured["project_ids"] = project_ids
+        captured["kwargs"] = kwargs
+        return [{"job_id": "chapter-1", "state": "REVIEW_PREVIEW_READY", "error_code": ""}]
+
+    monkeypatch.setattr(cli, "run_projects", fake_run_projects)
+    app = cli.OperatorCLI(
+        state_dir=tmp_path / "jobs",
+        review_dir=tmp_path / "review",
+        output_fn=lambda _message: None,
+    )
+    monkeypatch.setattr(app, "_run_options", lambda: run_options)
+
+    app.resume_jobs()
+
+    assert captured["project_ids"] == ["chapter-1"]
+    assert captured["kwargs"]["review_only_preview"] is True
+    assert (
+        captured["kwargs"]["review_source_upscale_policy"]
+        == "review_silent_source_upscale_v1"
+    )
+    assert captured["kwargs"]["review_output_dir"] == output_root
+    assert captured["kwargs"]["run_options"] is run_options
+    assert captured["kwargs"]["runner_factory"] is runner_factory
+
+
 def test_operator_run_projects_propagates_ctrl_c_without_converting_it_to_a_fake_failure():
     cli = _cli_module()
 
