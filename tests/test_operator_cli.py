@@ -206,6 +206,38 @@ def test_discover_chapter_folder_is_deterministic_and_rejects_non_images(tmp_pat
         cli.discover_chapter_folder(tmp_path)
 
 
+def test_discover_chapter_folder_ignores_comicinfo_sidecar_case_insensitively(tmp_path):
+    cli = _cli_module()
+    (tmp_path / "01.webp").write_bytes(b"image")
+    (tmp_path / "ComicInfo.XML").write_text("<ComicInfo />", encoding="utf-8")
+
+    chapter = cli.discover_chapter_folder(tmp_path)
+
+    assert [path.name for path in chapter.image_paths] == ["01.webp"]
+
+
+def test_discover_batch_folders_accepts_novel_extra_sidecars_but_rejects_unknown_files(tmp_path):
+    cli = _cli_module()
+    for name in ("Chapter 164", "Chapter 165", "Chapter 166", "Chapter 167"):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "001.webp").write_bytes(b"image")
+        (folder / "comicinfo.xml").write_text("<ComicInfo />", encoding="utf-8")
+
+    chapters = cli.discover_batch_folders(tmp_path)
+
+    assert [chapter.folder.name for chapter in chapters] == [
+        "Chapter 164",
+        "Chapter 165",
+        "Chapter 166",
+        "Chapter 167",
+    ]
+
+    (tmp_path / "Chapter 167" / "sidecar.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(cli.OperatorCliError, match="operator.unsupported_file"):
+        cli.discover_batch_folders(tmp_path)
+
+
 def test_chapter_manifest_is_stable_and_changes_when_source_bytes_change(tmp_path):
     cli = _cli_module()
     image = tmp_path / "01.png"

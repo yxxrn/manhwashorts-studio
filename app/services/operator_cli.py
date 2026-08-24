@@ -8,6 +8,7 @@ work.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import json
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 
 CLI_VERSION = "interactive-production-cli-v1"
 SUPPORTED_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
-_IGNORED_FOLDER_FILES = frozenset({".ds_store", "desktop.ini", "thumbs.db"})
+_IGNORED_FOLDER_FILES = frozenset({".ds_store", "desktop.ini", "thumbs.db", "comicinfo.xml"})
 _IMAGE_MIME_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -42,6 +43,53 @@ class OperatorCliError(RuntimeError):
         self.code = str(code)
         self.message = message.strip() or self.code
         super().__init__(f"{self.code}: {self.message}")
+
+
+_ENV_ASSIGNMENT_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+
+
+def load_operator_env(value: str | Path) -> None:
+    """Load an explicit, local ``MS_*`` env file without executing shell code."""
+
+    raw = str(value or "").strip().strip('"')
+    if not raw:
+        raise OperatorCliError("operator.env_file_invalid", "env file path is required")
+    path = Path(raw).expanduser()
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OperatorCliError("operator.env_file_invalid", "env file must be a regular file")
+        if os.name != "nt" and path.stat().st_mode & 0o077:
+            raise OperatorCliError("operator.env_file_invalid", "env file permissions are too broad")
+        text = path.read_text(encoding="utf-8")
+    except OperatorCliError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise OperatorCliError("operator.env_file_invalid", "env file cannot be read") from exc
+
+    values: dict[str, str] = {}
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = _ENV_ASSIGNMENT_RE.match(line)
+        if match is None or not match.group(1).startswith("MS_"):
+            raise OperatorCliError("operator.env_file_invalid", f"invalid assignment on line {line_number}")
+        name, encoded = match.groups()
+        if encoded[:1] in {"'", '"'}:
+            try:
+                decoded = ast.literal_eval(encoded)
+            except (SyntaxError, ValueError) as exc:
+                raise OperatorCliError("operator.env_file_invalid", f"invalid value on line {line_number}") from exc
+            if not isinstance(decoded, str):
+                raise OperatorCliError("operator.env_file_invalid", f"invalid value on line {line_number}")
+            values[name] = decoded
+        else:
+            if any(token in encoded for token in ("`", "$(", ";", "&&", "||")):
+                raise OperatorCliError("operator.env_file_invalid", f"shell syntax on line {line_number}")
+            values[name] = encoded.split(" #", 1)[0].strip()
+    if not values:
+        raise OperatorCliError("operator.env_file_invalid", "env file contains no MS_* settings")
+    os.environ.update(values)
 
 
 def _image_mime_type(path: Path) -> str:
@@ -1204,33 +1252,39 @@ class OperatorCLI:
 
 def main(argv: Sequence[str] | None = None) -> int:
     try:
-        from app.db import init_db
-
-        init_db()
-        state_dir = os.environ.get("MS_STATE_DIR", "data/cloud-multimodal-jobs")
-        review_dir = os.environ.get("MS_REVIEW_DIR", "data/segmentation-review")
+        parsed_args = None
         if argv:
             import argparse
 
             parser = argparse.ArgumentParser(prog="manhwashorts-operator")
             parser.add_argument("--mode", choices=("review", "production"), required=True)
+            parser.add_argument("--env-file", default="")
             parser.add_argument("--project-id", default="")
             parser.add_argument("--actor-id", default="")
             parser.add_argument("--approved-script-hash", default="")
             parser.add_argument("--approved-script-version", type=int)
-            args = parser.parse_args(list(argv))
-            if args.mode == "production":
-                if not args.project_id or not args.actor_id or not args.approved_script_hash or args.approved_script_version is None:
+            parsed_args = parser.parse_args(list(argv))
+            if parsed_args.env_file:
+                load_operator_env(parsed_args.env_file)
+
+        from app.db import init_db
+
+        init_db()
+        state_dir = os.environ.get("MS_STATE_DIR", "data/cloud-multimodal-jobs")
+        review_dir = os.environ.get("MS_REVIEW_DIR", "data/segmentation-review")
+        if parsed_args is not None:
+            if parsed_args.mode == "production":
+                if not parsed_args.project_id or not parsed_args.actor_id or not parsed_args.approved_script_hash or parsed_args.approved_script_version is None:
                     raise OperatorCliError(
                         "operator.approval_required",
                         "production requires project, actor, exact script hash, and version",
                     )
                 result = run_production(
                     None,
-                    args.project_id,
-                    actor_id=args.actor_id,
-                    approved_script_hash=args.approved_script_hash,
-                    approved_script_version=args.approved_script_version,
+                    parsed_args.project_id,
+                    actor_id=parsed_args.actor_id,
+                    approved_script_hash=parsed_args.approved_script_hash,
+                    approved_script_version=parsed_args.approved_script_version,
                 )
                 print(f"Production READY: {result['job_id']} {result['output']}")
                 return 0
@@ -1263,6 +1317,7 @@ __all__ = [
     "discover_chapter_folder",
     "fetch_models",
     "import_chapter_folder",
+    "load_operator_env",
     "list_job_states",
     "main",
     "normalize_endpoint",

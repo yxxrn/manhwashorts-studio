@@ -22,7 +22,19 @@ python scripts/bootstrap_operator_cli.py
 ```
 
 After the environment is ready, the cross-platform direct entrypoint remains
-`python scripts/run_operator_cli.py`. On first run, the bootstrap creates or
+`python scripts/run_operator_cli.py`. It forwards explicit arguments, so a
+non-interactive production invocation has the form:
+
+```text
+python scripts/run_operator_cli.py --mode production --env-file <private-ms-env.sh> --project-id <id> --actor-id <operator> --approved-script-hash <sha256> --approved-script-version <version>
+```
+
+`--env-file` is optional and accepts only a regular file containing safe
+`MS_*` assignments (with optional `export`); it is parsed without executing a
+shell, and its values are never printed. Missing, symlinked, malformed, or
+unknown assignments fail closed before application configuration is loaded.
+The private file must remain outside Git-tracked content (the local `data/`
+tree is ignored). On first run, the bootstrap creates or
 repairs the repository `.venv` in place and installs only the authoritative
 runtime `requirements.txt` (never `requirements-dev.txt`). It verifies
 SQLAlchemy, Pillow, FastAPI/Pydantic, cryptography/BYOK, and the operator
@@ -34,8 +46,9 @@ an in-place repair without deleting the venv.
 If no Python 3.11+ interpreter is found, install Python 3.11+ and retry. Offline,
 proxy, SSL, venv, and package failures have separate sanitized recovery codes;
 the venv is preserved and the success marker is not written after a failed
-install. The launcher passes no user arguments to the script, so paths and
-credentials are entered interactively.
+install. With no arguments, paths and credentials are entered interactively.
+Explicit arguments select review or production mode; production still requires
+the exact project, actor, approved script hash, and approved script version.
 
 ## Menu
 
@@ -82,7 +95,8 @@ confirmation because it can make a billable provider request. A model name
 alone never proves vision capability.
 
 For one chapter, paste or drag a folder path. Supported images are ordered by
-case-insensitive filename, then filename, and unsupported files reject the
+case-insensitive filename, then filename. The known `ComicInfo.xml` metadata
+sidecar is ignored case-insensitively; other unsupported files reject the
 folder. A confirmation is required before import and cloud calls. Batch mode
 uses direct child folders in the same deterministic order, displays request
 budget settings, and isolates each job. Existing ingest/segmentation,

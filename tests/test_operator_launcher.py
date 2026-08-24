@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import shutil
 import subprocess
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,7 @@ import pytest
 REPO_ROOT = Path(__file__).parents[1]
 CMD_PATH = REPO_ROOT / "run_operator.cmd"
 POWERSHELL_PATH = REPO_ROOT / "scripts" / "operator_launcher.ps1"
+PY_LAUNCHER = REPO_ROOT / "scripts" / "run_operator_cli.py"
 
 
 def _powershell_executable() -> str:
@@ -177,3 +181,119 @@ def test_launcher_source_validates_py_fallback_and_never_derives_py_from_install
     assert "test-pythoncandidate" in text
     assert "python311\\py" not in text
     assert "invoke-expression" not in text
+
+
+def test_python_launcher_forwards_all_command_line_arguments(monkeypatch):
+    received: list[str] = []
+    fake = types.ModuleType("app.services.operator_cli")
+    fake.main = lambda argv: received.extend(argv) or 0
+    monkeypatch.setitem(sys.modules, "app.services.operator_cli", fake)
+    monkeypatch.setattr(sys, "argv", [str(PY_LAUNCHER), "--mode", "production", "--project-id", "p1"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(PY_LAUNCHER), run_name="__main__")
+
+    assert exit_info.value.code == 0
+    assert received == ["--mode", "production", "--project-id", "p1"]
+
+
+def test_load_operator_env_accepts_shell_assignments_without_printing_values(monkeypatch, tmp_path, capsys):
+    import app.services.operator_cli as launcher
+
+    env_file = tmp_path / "private.env"
+    secret = "test-secret-never-printed"
+    env_file.write_text(
+        f"export MS_LLM_MODEL='grok-4.3'\nMS_LLM_API_KEY='{secret}'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("MS_LLM_MODEL", raising=False)
+    monkeypatch.delenv("MS_LLM_API_KEY", raising=False)
+
+    launcher.load_operator_env(env_file)
+
+    assert os.environ["MS_LLM_MODEL"] == "grok-4.3"
+    assert os.environ["MS_LLM_API_KEY"] == secret
+    assert secret not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("bad_path_kind", ["missing", "directory"])
+def test_load_operator_env_rejects_missing_or_non_file_paths(tmp_path, bad_path_kind):
+    import app.services.operator_cli as launcher
+
+    path = tmp_path / ("missing.env" if bad_path_kind == "missing" else "env-dir")
+    if bad_path_kind == "directory":
+        path.mkdir()
+
+    with pytest.raises(Exception, match="operator.env_file_invalid"):
+        launcher.load_operator_env(path)
+
+
+def test_load_operator_env_rejects_unknown_or_malformed_assignments(tmp_path):
+    import app.services.operator_cli as launcher
+
+    env_file = tmp_path / "unsafe.env"
+    env_file.write_text("NOT_A_SETTING = value\n", encoding="utf-8")
+
+    with pytest.raises(Exception, match="operator.env_file_invalid"):
+        launcher.load_operator_env(env_file)
+
+
+def test_main_loads_env_file_before_starting_review_mode(monkeypatch, tmp_path):
+    import app.db as db_module
+    import app.services.operator_cli as launcher
+
+    env_file = tmp_path / "private.env"
+    env_file.write_text("MS_LLM_MODEL='grok-4.3'\n", encoding="utf-8")
+    captured = {}
+
+    class FakeCLI:
+        def __init__(self, *, state_dir, review_dir):
+            captured["state_dir"] = state_dir
+            captured["review_dir"] = review_dir
+
+        def run(self):
+            captured["model"] = os.environ["MS_LLM_MODEL"]
+            return 0
+
+    monkeypatch.setattr(db_module, "init_db", lambda: None)
+    monkeypatch.setattr(launcher, "OperatorCLI", FakeCLI)
+
+    assert launcher.main(["--mode", "review", "--env-file", str(env_file)]) == 0
+    assert captured["model"] == "grok-4.3"
+
+
+def test_main_production_forwards_exact_approval_arguments(monkeypatch):
+    import app.db as db_module
+    import app.services.operator_cli as launcher
+
+    captured = {}
+
+    def fake_production(db, project_id, **kwargs):
+        captured.update(project_id=project_id, **kwargs)
+        return {"job_id": "job-1", "output": "data/output/video.mp4"}
+
+    monkeypatch.setattr(db_module, "init_db", lambda: None)
+    monkeypatch.setattr(launcher, "run_production", fake_production)
+
+    result = launcher.main(
+        [
+            "--mode",
+            "production",
+            "--project-id",
+            "project-1",
+            "--actor-id",
+            "operator-1",
+            "--approved-script-hash",
+            "a" * 64,
+            "--approved-script-version",
+            "7",
+        ]
+    )
+
+    assert result == 0
+    assert captured == {
+        "project_id": "project-1",
+        "actor_id": "operator-1",
+        "approved_script_hash": "a" * 64,
+        "approved_script_version": 7,
+    }
