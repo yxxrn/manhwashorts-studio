@@ -142,6 +142,12 @@ def resolve_panel_eligibility(
             if citations and not selected:
                 raise ReferenceReviewError("cited source order is unavailable")
         if not selected:
+            if allow_missing_explicit:
+                # Every explicit panel for this section was skipped by a local
+                # framing guard (e.g. sliver crops below the minimum height).
+                # The section cannot be mapped truthfully; omit it instead of
+                # failing the whole review render.
+                continue
             raise ReferenceReviewError(f"section {section} has no truthful panel mapping")
         for region in selected:
             region_id = str(region.id)

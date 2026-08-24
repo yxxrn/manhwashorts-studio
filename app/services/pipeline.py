@@ -2452,9 +2452,13 @@ def _load_reference_panel_fallback_candidates(
     # Order zero is front matter unless the persisted narration grounded
     # explicit claim evidence on it; dropping a cited panel here would make
     # the script's own evidence unresolvable at render time.
+    default_evidence, default_citations, default_beats = (
+        reference_visual_review.section_evidence_maps(script)
+    )
+    effective_evidence = section_evidence_panel_ids or default_evidence
     cited_panel_ids = {
         str(value)
-        for ids in (section_evidence_panel_ids or {}).values()
+        for ids in effective_evidence.values()
         for value in (ids or ())
     }
     regions = [
@@ -2469,6 +2473,7 @@ def _load_reference_panel_fallback_candidates(
     panel_crops: dict[str, Image.Image] = {}
     panel_candidates: dict[str, object] = {}
     panel_regions_for_builder: list[PanelRegion] = []
+    skipped_panel_ids: set[str] = set()
     source_upscale_manifests: dict[str, Mapping[str, Any]] = {}
     resolved_source_paths: dict[str, Path] = {}
     for region in regions:
@@ -2515,6 +2520,7 @@ def _load_reference_panel_fallback_candidates(
             # framed meaningfully; skip them instead of cropping garbage text.
             src_w, src_h = source_dimensions
             if bounds[0] >= src_w or bounds[1] >= src_h or bounds[2] <= 0 or bounds[3] <= 0:
+                skipped_panel_ids.add(str(region.panel_id))
                 continue
             clamped = (
                 max(0, bounds[0]),
@@ -2527,11 +2533,13 @@ def _load_reference_panel_fallback_candidates(
             if crop.size != (clamped[2] - clamped[0], clamped[3] - clamped[1]):
                 raise ValueError("panel crop dimensions changed")
             if crop.width < 32 or crop.height < 32:
+                skipped_panel_ids.add(str(region.panel_id))
                 continue
             # Extremely thin slices (segmentation artifacts that cut a single
             # panel into horizontal slivers) cannot frame meaningful content
             # and read as jarring close-ups. Skip them.
             if crop.height < 400:
+                skipped_panel_ids.add(str(region.panel_id))
                 continue
             prepared_crop = crop
             builder_region = region
@@ -2576,9 +2584,6 @@ def _load_reference_panel_fallback_candidates(
             # boundary, which raises visual.panel_lineage_unavailable. This keeps
             # pre-Task7 callers from receiving a source-path traceback.
             return ()
-    default_evidence, default_citations, default_beats = (
-        reference_visual_review.section_evidence_maps(script)
-    )
     return _build_reference_panel_fallback_candidates(
         panel_regions=panel_regions_for_builder or regions,
         panel_candidates_by_region_id=panel_candidates,
@@ -2588,7 +2593,13 @@ def _load_reference_panel_fallback_candidates(
         beats_by_section=beats_by_section or default_beats,
         profile=profile,
         source_upscale_manifests_by_region_id=source_upscale_manifests,
-        allow_missing_explicit=review_source_upscale_policy is not None,
+        # A cited panel the loader itself skipped as render-unready (degenerate
+        # bounds, sliver crop) must fall back to the section's other evidence
+        # instead of failing the whole lineage as a missing explicit id.
+        allow_missing_explicit=(
+            review_source_upscale_policy is not None
+            or bool(skipped_panel_ids & cited_panel_ids)
+        ),
     )
 
 

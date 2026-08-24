@@ -7474,6 +7474,7 @@ def test_panel_admission_failure_preserves_funnel_before_vision(monkeypatch):
     assert ledger["transitions"][-1]["to"] == "admitted_vision_panels"
     assert ledger["transitions"][-1]["output_count"] == 0
     assert ledger["transitions"][-1]["reason_code"] == "segmentation.ambiguous_boundary"
+    assert ledger["reduction_percentages"]["admitted_vision_panels"] == 100.0
 
 
 @pytest.mark.parametrize("failure_mode", ("raise", "status"))

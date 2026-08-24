@@ -1051,6 +1051,14 @@ def panel_admission_failure_ledger(
     counts = dict(ledger["counts"])
     counts["admitted_vision_panels"] = 0
     ledger["counts"] = counts
+    reductions = dict(ledger["reduction_percentages"])
+    raw_count = int(counts["raw_input_images"])
+    reductions["admitted_vision_panels"] = (
+        round((raw_count - counts["admitted_vision_panels"]) / raw_count * 100, 3)
+        if raw_count
+        else 0.0
+    )
+    ledger["reduction_percentages"] = reductions
     transitions = [dict(item) for item in ledger["transitions"]]
     if transitions:
         terminal = transitions[-1]
@@ -2451,6 +2459,9 @@ class CloudStageRunner:
                 if attempt + 1 < self.max_attempts:
                     base = min(8.0, 0.5 * (2**attempt))
                     time.sleep(base + random.uniform(0.0, base * 0.25))
+            except VisionCapabilityError as exc:
+                last_error = exc
+                break
         provider_error_code = str(getattr(last_error, "code", "") or "")
         provider_error_mapping = {
             "vision_response_invalid": "cloud.provider_response_invalid",
@@ -3358,7 +3369,11 @@ class CloudStageRunner:
                 except (CloudStageError, KeyError, TypeError, ValueError):
                     raise CloudStageError("cloud.panel_lineage_invalid") from None
         else:
-            ordered_panels = tuple(panels)
+            ordered_panels = tuple(
+                panel
+                for panel in panels
+                if str(panel.panel_id) in visual_by_id
+            )
 
         if tuple(panel.panel_id for panel in ordered_panels) != visual.panel_ids:
             raise CloudStageError("cloud.panel_lineage_invalid")
@@ -8906,11 +8921,24 @@ def _build_cached_prepared_manifest(
         asset = asset_by_id.get(asset_id)
         spans = report.get("spans")
         dimensions = report.get("source_dimensions")
-        if asset is None or not isinstance(spans, list) or not isinstance(dimensions, list) or len(dimensions) != 2:
+        if (
+            asset is None
+            or not isinstance(spans, list)
+            or (
+                not isinstance(dimensions, list)
+                and not (
+                    isinstance(report.get("width"), int)
+                    and isinstance(report.get("height"), int)
+                )
+            )
+        ):
             raise prepared_panel_manifest.PreparedPanelManifestError(
                 "segmentation report geometry is malformed"
             )
-        width, height = (int(dimensions[0]), int(dimensions[1]))
+        if isinstance(dimensions, list) and len(dimensions) == 2:
+            width, height = (int(dimensions[0]), int(dimensions[1]))
+        else:
+            width, height = (int(report["width"]), int(report["height"]))
         if width <= 0 or height <= 0:
             raise prepared_panel_manifest.PreparedPanelManifestError(
                 "segmentation report dimensions are invalid"
@@ -9504,11 +9532,16 @@ def _build_ephemeral_review_candidates(
     }
     ordered_panels = tuple(
         sorted(
-            (panel for panel in panels if int(panel.source_order) > 0),
+            (
+                panel
+                for panel in panels
+                if int(panel.source_order) > 0
+                and str(panel.panel_id) in visual_by_id
+            ),
             key=lambda panel: (int(panel.source_order), str(panel.panel_id)),
         )
     )
-    if not ordered_panels or any(panel.panel_id not in visual_by_id for panel in ordered_panels):
+    if not ordered_panels:
         raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
 
     beat_by_id = {
@@ -10236,13 +10269,17 @@ class CloudBatchService:
             raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
 
         images = pipeline.image_assets(pipeline.project_assets(db, project_id))
-        # The normal review entrypoint restores the exact prepared panel
-        # payloads from the durable manifest before this method runs. Reuse
-        # those bytes after persistence too: segmented SourceAsset rows may
-        # not contain the original-strip geometry needed by the DB crop
-        # loader. Keep the DB loader only for legacy callers that provide no
-        # prepared payloads at all.
-        if script_row is None or panels:
+        # The durable prepared manifest is metadata-only (no panel image
+        # bytes are retained), so after persistence the DB crop loader is the
+        # only source of real payload bytes; the ephemeral builder only works
+        # with the in-memory prepared panels that still carry payloads before
+        # the manifest round-trip.
+        _carries_payloads = any(
+            bool(getattr(panel, "payload", b"") or b"")
+            and not bool(getattr(panel, "metadata_only", False))
+            for panel in panels
+        )
+        if _carries_payloads:
             candidates, section_to_beats = _build_ephemeral_review_candidates(
                 panels,
                 current_visual,
