@@ -95,6 +95,62 @@ def test_zero_feasible_hook_is_explicitly_repairable_and_payload_is_panel_keyed(
     assert "visual_evidence_by_asset" not in payload
 
 
+def test_feasible_ledger_excludes_title_page_candidate_that_planner_rejects(monkeypatch):
+    """The repair ledger and reference planner must share title-page policy."""
+    module = _module()
+    candidate = SimpleNamespace(
+        panel_region_id="region-title",
+        panel_id="panel-title",
+        source_asset_id="asset-title",
+        source_order=0,
+        eligible_sections=("hook",),
+        eligible_beats=("beat-1",),
+        resolution_state="NATIVE",
+        visual_strengths={},
+        evidence_hash="e" * 64,
+        source_checksum="s" * 64,
+        panel_size=(1080, 1920),
+        border_mask=SimpleNamespace(
+            detector_version="color-agnostic-border-v1",
+            mask_sha256="m" * 64,
+        ),
+        roi_alternatives=(
+            SimpleNamespace(
+                kind="primary",
+                roi_label="panel_primary",
+                crop_box=(0, 0, 1080, 1920),
+            ),
+        ),
+        panel_candidate=SimpleNamespace(source_family="001__001"),
+        visual_evidence=SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        module.framing_analysis,
+        "candidate_is_feasible",
+        lambda *_args, **_kwargs: (True, _telemetry(module)),
+    )
+
+    ledger = module.build_feasible_visual_ledger(
+        (candidate,),
+        profile=SimpleNamespace(
+            final_width=1080,
+            final_height=1920,
+            framing_blank_target_fraction=0.25,
+        ),
+        model_identity_hash="model-hash",
+    )
+
+    assert ledger.entries == ()
+
+
+def test_non_title_first_panel_family_is_not_rejected_by_title_policy():
+    module = _module()
+
+    assert module.editorial_visual_planner.is_title_page_family(
+        "009__001", source_order=26
+    ) is False
+
+
 def test_repaired_narrative_must_reference_only_feasible_panel_ids():
     module = _module()
     ledger = module.FeasibleVisualLedger(

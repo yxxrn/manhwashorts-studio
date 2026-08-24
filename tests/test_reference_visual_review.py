@@ -315,7 +315,11 @@ def test_reference_timeline_passes_only_exact_panel_candidates_to_planner(monkey
     script = SimpleNamespace(id="script", sections=[{"section": "hook", "evidence_panel_ids": ["panel-a"]}])
     monkeypatch.setattr(pipeline, "get_project", lambda *_args: project)
     monkeypatch.setattr(pipeline, "current_script", lambda *_args: script)
-    monkeypatch.setattr(pipeline, "_script_for_media", lambda *_args: script)
+    monkeypatch.setattr(
+        pipeline,
+        "_script_for_media",
+        lambda *_args, **_kwargs: script,
+    )
     monkeypatch.setattr(pipeline, "audio_segments", lambda *_args: [segment])
     monkeypatch.setattr(pipeline, "project_assets", lambda *_args: [asset])
     monkeypatch.setattr(pipeline, "image_assets", lambda _assets: [asset])
@@ -356,7 +360,11 @@ def test_reference_planning_failure_happens_before_scene_deletion(monkeypatch):
     db = _TimelineDb()
     monkeypatch.setattr(pipeline, "get_project", lambda *_args: project)
     monkeypatch.setattr(pipeline, "current_script", lambda *_args: script)
-    monkeypatch.setattr(pipeline, "_script_for_media", lambda *_args: script)
+    monkeypatch.setattr(
+        pipeline,
+        "_script_for_media",
+        lambda *_args, **_kwargs: script,
+    )
     monkeypatch.setattr(pipeline, "audio_segments", lambda *_args: [segment])
     monkeypatch.setattr(pipeline, "project_assets", lambda *_args: [asset])
     monkeypatch.setattr(pipeline, "image_assets", lambda _assets: [asset])

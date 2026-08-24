@@ -702,10 +702,31 @@ def _roi_key(roi: ReferenceROIAlternative) -> tuple[object, ...]:
     return (roi.roi_label, roi.crop_box, roi.focus)
 
 
-def _is_title_page_family(source_family: str) -> bool:
-    # A chapter's page 1 ("129__001", "204__001") is the cover/title splash and
-    # must never be selected. Content strips are page 2 onward and stay usable.
+def _is_title_page_family(
+    source_family: str,
+    *,
+    source_order: int | None = None,
+) -> bool:
+    return is_title_page_family(source_family, source_order=source_order)
+
+
+def is_title_page_family(
+    source_family: str,
+    *,
+    source_order: int | None = None,
+) -> bool:
+    """Return whether a source family is reserved for title/front matter."""
+
+    # The immutable source order is authoritative for the current ingest layout:
+    # order 0 is front matter/title, while later ``page__001`` families can be
+    # ordinary first panels of a later source page and must remain eligible.
     parts = [part for part in str(source_family or "").split("__") if part]
+    if source_order == 0:
+        return True
+    if source_order is not None and source_order > 0:
+        return len(parts) == 3 and parts[1] == "002" and parts[2] == "001"
+    # Preserve the family-only fallback for callers that do not have the
+    # immutable source order available yet.
     if len(parts) == 2 and parts[-1] == "001":
         return True
     # A three-segment panel at page 2 panel 1 ("204__002__001") is a chapter
@@ -719,7 +740,8 @@ def _candidate_is_eligible(
     beat: str,
 ) -> bool:
     if _is_title_page_family(
-        str(getattr(getattr(candidate, "panel_candidate", None), "source_family", "") or "")
+        str(getattr(getattr(candidate, "panel_candidate", None), "source_family", "") or ""),
+        source_order=getattr(candidate, "source_order", None),
     ):
         return False
     # An exact candidate without any explicit section/beat provenance is not
@@ -1751,5 +1773,6 @@ __all__ = [
     "ReferenceROIAlternative",
     "ReferencePanelFallbackCandidate",
     "classify_source_text",
+    "is_title_page_family",
     "plan",
 ]

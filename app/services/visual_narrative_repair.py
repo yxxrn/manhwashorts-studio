@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.services import framing_analysis
+from app.services import editorial_visual_planner, framing_analysis
 
 REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v2"
 VISUAL_SECTION_REMAP_VERSION = "visual_section_remap_v1"
@@ -330,6 +330,18 @@ def build_feasible_visual_ledger(
         candidates,
         key=lambda item: (int(item.source_order), str(item.panel_id), str(item.panel_region_id)),
     ):
+        if editorial_visual_planner.is_title_page_family(
+            str(
+                getattr(
+                    getattr(candidate, "panel_candidate", None),
+                    "source_family",
+                    "",
+                )
+                or ""
+            ),
+            source_order=getattr(candidate, "source_order", None),
+        ):
+            continue
         manifest = getattr(candidate, "source_upscale_manifest", None)
         resolution_state = "NATIVE"
         if isinstance(manifest, Mapping):
