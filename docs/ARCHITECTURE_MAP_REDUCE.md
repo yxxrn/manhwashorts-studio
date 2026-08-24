@@ -1065,3 +1065,25 @@ simply different from canonical prepared order. Stream termination now checks
 exact submitted ID-set equality (while preserving duplicate/missing/foreign
 rejection) and delegates deterministic ordering to the existing merge step.
 This is a generic overlap-control fix, not a gate relaxation.
+
+## 2026-08-24 — bounded narration repair vectors
+
+The narration repair boundary now distinguishes grounded context size from
+the usual eight-position drafting shape. The prior builder/canonicalizer
+required eight positions even when editorial selection produced a valid
+five-passage, three-claim context; this caused a local
+`cloud.narrative_repair_position_selection_invalid` before provider repair.
+The canonical rule is now 4--8 trusted positions. If the story exposes fewer
+than eight trusted claims, the registry must retain every available claim; if
+more are available, the existing low-priority selection still caps the vector
+at eight. Provider output remains text-only and positional; local code owns
+all passage/claim/evidence lineage.
+
+The changed repair prompt is versioned
+`vision-first-story-analyzer-v3-targeted-position-repair-v9`; smaller vectors
+receive total-budget guidance without inventing positions or treating the
+eight-position per-slot target as a hard cap. Final shape, lineage, evidence
+closure, causal order, anti-dialogue-copy, 115--125 word, and 50--60 second
+validators remain fail-closed. The current phase5b visual/story stages are
+reused; this fix consumed no provider/TTS/render request and does not claim an
+artifact.

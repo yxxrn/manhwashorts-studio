@@ -1848,3 +1848,27 @@ completion/group order while the final canonical list was in prepared order.
 `cloud.panel_lineage_invalid`; a focused regression now validates exact ID-set
 equality and lets the existing merge restore canonical order. This preserves
 single-writer, duplicate/missing-ID, prepared identity, and coverage checks.
+
+## 2026-08-24 local narration-repair admission checkpoint
+
+Offline replay of the current `phase5b-cold-v1` durable state reproduced the
+first downstream blocker without a provider call. The persisted repair
+candidate is a valid out-of-range candidate (129 words / 56.09 seconds, five
+passages, three trusted claims) from the selected 15-panel story context. The
+position registry rejected it before repair because both the builder and its
+canonicalizer required eight positions even when the grounded story exposed
+fewer positions. The GREEN fix adds a four-position minimum (maximum remains
+eight), requires all available trusted claims when fewer than eight exist, and
+keeps the eight-position path unchanged. Prompt identity is versioned as
+`vision-first-story-analyzer-v3-targeted-position-repair-v9`; smaller trusted
+vectors receive distributed word-budget guidance rather than an artificial
+eight-position requirement.
+
+Strict gates are unchanged: exact positional shape/order, non-empty rewrite
+strings, trusted evidence closure and lineage, causal order, anti-dialogue
+copy, display derivation, 115--125 total words, and 50--60 seconds. Focused
+TDD and the affected cloud/segmentation/operator matrix are green; Ruff,
+compileall, and diff-check are green. No new provider/TTS/render request was
+made in this offline slice. The current job remains `NEEDS_REVIEW` at the
+narration boundary; resume the same namespace after publishing this
+checkpoint, reuse the valid visual/story stages, and do not re-run vision.

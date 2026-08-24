@@ -1845,3 +1845,25 @@ from final prepared order because source groups completed out of order. The
 stream finish fix accepts the exact submitted ID set and canonicalizes rows
 through `_merge_stream_visual_rows`; it does not accept missing, duplicate, or
 foreign rows. Publish this focused GREEN checkpoint before resuming the job.
+
+## 2026-08-24 local handoff — narration position admission
+
+The first downstream repair blocker is now reproduced and fixed offline. The
+durable selected candidate is 129 words / 56.09 seconds with five passages and
+three trusted claims over 15 selected panels. The previous position registry
+required eight positions at two separate local boundaries and raised
+`cloud.narrative_repair_position_selection_invalid` before provider repair.
+The published source fix accepts 4--8 positions, requires all available trusted
+claims when the story has fewer than eight, and retains strict lineage,
+evidence-closure, causal, anti-copy, 115--125 word, and 50--60 second gates.
+The repair prompt/cache identity is v9 because its smaller-vector guidance was
+changed.
+
+Offline proof: focused regression 5/5 and the affected matrix 251/251 green
+(cloud 182, segmentation 27, operator 42); Ruff/compileall/diff-check green,
+and zero provider/TTS/render requests in this slice. Runtime job
+`a49a1db9b7c74b83b28b926cfa106622` remains
+`NEEDS_REVIEW`; visual/story data is reusable and no media artifact exists.
+Fresh-agent resume: use the existing local environment variables and run the
+real operator menu resume for `data/phase5b-cold-v1`; do not repeat the 60-panel
+visual or story stages unless their current identity checks fail.

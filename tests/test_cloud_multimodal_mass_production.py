@@ -3887,7 +3887,7 @@ def test_narration_duration_failure_retains_candidate_for_visual_repair(monkeypa
     with pytest.raises(module.CloudStageError) as caught:
         runner.run_narration(visual, story_map, panels=panels)
 
-    assert caught.value.code == "cloud.narrative_repair_position_selection_invalid"
+    assert caught.value.code == "cloud.narrative_duration_out_of_range"
     assert runner._last_narration_result is invalid
 
 def test_repair_harness_uses_compact_candidate_context_without_normal_call():
@@ -4154,9 +4154,10 @@ def test_targeted_repair_prompt_requires_concise_position_drafting():
 def test_targeted_repair_prompt_targets_compact_eight_position_vector():
     module = _module()
     instruction = module.NARRATION_REPAIR_INSTRUCTION
-    assert "exactly 14 or 15 words per position, aiming for 15" in instruction
-    assert "never exceed 15 words in any single rewrite" in instruction
-    assert "trim redundant words rather than padding any position" in instruction
+    assert "usual eight-position vector" in instruction
+    assert "A smaller trusted vector is valid" in instruction
+    assert "without inventing positions or padding solely to reach eight" in instruction
+    assert "Per-position budgets remain drafting guidance, not hard caps" in instruction
 
 
 def test_targeted_repair_prompt_targets_safe_in_range_total():
@@ -4245,6 +4246,48 @@ def test_position_repair_preselection_is_deterministic_and_budgeted():
             story_map,
         )
     assert caught.value.code == "cloud.narrative_repair_position_order_invalid"
+
+
+def test_position_registry_accepts_five_grounded_passages_with_three_claims():
+    module = _module()
+    runner, candidate, visual, story_map = _immutable_slot_fixture(module)
+    claims = [dict(claim) for claim in story_map.claims[::2][:3]]
+    panel_ids = [str(panel_id) for panel_id in visual.panel_ids[:3]]
+    passages = tuple(
+        {
+            "passage_id": f"small-passage-{index}",
+            "editorial_role": "causal_turn",
+            "text": f"The grounded turn {index} changes what follows.",
+            "claim_ids": [claims[claim_index]["claim_id"]],
+            "evidence_panel_ids": [panel_ids[claim_index]],
+        }
+        for index, (claim_index, _) in enumerate(
+            ((0, 0), (0, 0), (1, 1), (2, 2), (2, 2))
+        )
+    )
+    small_candidate = replace(
+        candidate,
+        passages=passages,
+        evidence_graph={"claims": claims},
+        word_count=129,
+        estimated_duration_s=56.09,
+    )
+    small_story_map = replace(
+        story_map,
+        beats=tuple(story_map.beats[:3]),
+        causal_chain=tuple(story_map.causal_chain[:2]),
+        claims=tuple(claims),
+    )
+
+    registry = runner._build_narration_repair_position_registry(
+        small_candidate,
+        small_story_map,
+    )
+
+    assert len(registry["positions"]) == 5
+    assert len({row["passage_id"] for row in registry["positions"]}) == 5
+    assert len({claim_id for row in registry["positions"] for claim_id in row["claim_ids"]}) == 3
+    assert sum(row["word_budget"] for row in registry["positions"]) == 120
 
 
 def test_position_registry_maxima_cannot_exceed_final_word_bound():
@@ -5721,18 +5764,16 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-position-repair-v8"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v9"
     )
     assert len(repair_prompt_sha256) == 64
     assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text
     assert "revise it until the total is 115-125 words" in repair_prompt_text
     assert "never return a vector above 125 words" in repair_prompt_text
     assert "cannot repair larger responses" in repair_prompt_text
-    assert "never exceed 15 words in any single rewrite" in repair_prompt_text
-    assert "delete whole words whenever a position exceeds its 15-word cap" in (
-        repair_prompt_text
-    )
-    assert "exactly 14 or 15 words per position, aiming for 15" in repair_prompt_text
+    assert "usual eight-position vector" in repair_prompt_text
+    assert "A smaller trusted vector is valid" in repair_prompt_text
+    assert "without inventing positions or padding solely to reach eight" in repair_prompt_text
     assert repair_prompt_text != runner.prompts["narration"][2]
     assert provider.repair_payloads[0]["targeted_repair"]["failure_codes"] == [
         "cloud.narrative_duration_out_of_range",
@@ -6666,6 +6707,7 @@ def test_narration_targeted_repair_rejects_insufficient_position_registry(monkey
         story_spine=dict(output["narrative_outline"]["story_spine"]),
         visual_evidence_hash=visual.visual_evidence_hash,
     )
+    candidate = replace(candidate, passages=tuple(candidate.passages[:3]))
 
     class ScopeChangingProvider(_FakeProvider):
         def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
@@ -6705,7 +6747,7 @@ def test_narration_targeted_repair_rejects_insufficient_position_registry(monkey
     with pytest.raises(module.CloudStageError) as caught:
         runner.run_narration(visual, story_map, panels=panels)
 
-    assert caught.value.code == "cloud.narrative_repair_position_selection_invalid"
+    assert caught.value.code == "cloud.narrative_repair_slot_lineage_invalid"
 
 
 def test_narration_targeted_repair_canonicalizes_non_lineage_provider_drift():

@@ -3107,3 +3107,27 @@ the GREEN fix now requires exact submitted/canonical ID-set equality and lets
 the existing merge restore canonical order. Missing, duplicate, foreign, and
 identity-mismatched rows remain fail-closed. No story, narration, TTS, MP4, or
 QC artifact exists yet.
+
+## 2026-08-24 — narration repair position admission (source/test GREEN)
+
+An offline replay of the current local `phase5b-cold-v1` state reproduced
+`cloud.narrative_repair_position_selection_invalid` before any new provider
+request. The durable candidate had 129 words / 56.09 seconds, five grounded
+passages, and three trusted claims in the selected 15-panel context. The
+position builder and canonicalizer hard-coded an eight-position minimum, so a
+valid smaller grounded context could never reach the repair request. The
+minimal fix accepts 4--8 trusted positions, preserves all available trusted
+claims when fewer than eight exist, and versions the changed repair prompt as
+`vision-first-story-analyzer-v3-targeted-position-repair-v9`. Per-position
+budgets remain guidance; final total-word and duration gates remain strict.
+
+Evidence before resume: the exact new 5-position/3-claim regression and the
+existing 8-position, prompt, budget, and insufficient-lineage tests passed
+(5/5); the complete affected matrix collected and passed 251 tests (cloud
+multimodal 182, strip-segmentation 27, operator 42); Ruff, compileall, and
+`git diff --check` passed. No provider, TTS, or
+render request was consumed by the offline replay. The job is still
+`NEEDS_REVIEW` at the narration boundary with visual/story stages persisted
+(60 visual panels and 60 story panel IDs); no MP4, audio, or QC artifact is
+claimed. After publishing, resume the same job and reuse valid visual/story
+state; do not restart vision.

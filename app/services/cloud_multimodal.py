@@ -83,6 +83,7 @@ NARRATION_MICRO_COMPACTION_MIN_WORDS = 126
 NARRATION_MICRO_COMPACTION_MAX_WORDS = 130
 NARRATION_REPAIR_POSITION_MIN_WORDS = 7
 NARRATION_REPAIR_POSITION_WORD_SLACK = 8
+NARRATION_REPAIR_POSITION_MIN_COUNT = 4
 NARRATION_REPAIR_POSITION_MAX_COUNT = 8
 NARRATION_REPAIR_POSITION_MAX_SHARE = 0.25
 NARRATION_REPAIR_POSITION_DOMINANCE_FLOOR = 24
@@ -250,16 +251,17 @@ NARRATION_REPAIR_INSTRUCTION = (
     "enforces the exact vector shape and order, non-empty strings, trusted "
     "lineage, causal order, total 115-125 words, and 50-60 seconds; it rejects "
     "only a pathological single-position share. Target approximately 120 total "
-    "words; exactly 120 is guidance. For the eight-position vector, write "
-    "exactly 14 or 15 words per position, aiming for 15, and never exceed 15 "
-    "words in any single rewrite; trim redundant words rather than padding any "
-    "position. Count every rewrite "
+    "words; exactly 120 is guidance. For the usual eight-position vector, aim "
+    "for roughly 14 or 15 words per position. A smaller trusted vector is "
+    "valid when the grounded candidate has fewer positions: distribute the "
+    "115-125 total naturally across the supplied positions, without inventing "
+    "positions or padding solely to reach eight. Per-position budgets remain "
+    "drafting guidance, not hard caps. Count every rewrite "
     "before returning. Aim for 118 "
     "total words so natural variation stays inside the accepted range; exactly "
     "120 is guidance only. Before returning JSON, recount the complete vector "
     "word by word and revise it until the total is 115-125 words; never return "
-    "a vector above 125 words and delete whole words whenever a position "
-    "exceeds its 15-word cap. The local compactor is only a narrow safety net "
+    "a vector above 125 words. The local compactor is only a narrow safety net "
     "for 126-130 and "
     "cannot repair larger responses. "
     "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
@@ -5192,7 +5194,7 @@ class CloudStageRunner:
                     reviewable=True,
                 ) from None
             canonical_positions.append(position)
-        if not 8 <= len(canonical_positions) <= 12:
+        if not NARRATION_REPAIR_POSITION_MIN_COUNT <= len(canonical_positions) <= NARRATION_REPAIR_POSITION_MAX_COUNT:
             raise CloudStageError(
                 "cloud.narrative_repair_position_selection_invalid",
                 reviewable=True,
@@ -5213,7 +5215,16 @@ class CloudStageRunner:
         selected_claim_ids = {
             claim_id for item in canonical_positions for claim_id in item.claim_ids
         }
-        if not 8 <= len(selected_claim_ids) <= 12:
+        available_claim_ids = {
+            str(claim.get("claim_id", ""))
+            for claim in story_map.claims
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        minimum_selected_claims = min(
+            NARRATION_REPAIR_POSITION_MAX_COUNT,
+            len(available_claim_ids),
+        )
+        if not minimum_selected_claims <= len(selected_claim_ids) <= 12:
             raise CloudStageError(
                 "cloud.narrative_repair_position_selection_invalid",
                 reviewable=True,
@@ -5266,7 +5277,7 @@ class CloudStageRunner:
         *,
         prompt: tuple[str, str, str] | None = None,
     ) -> dict[str, Any]:
-        """Select 8-12 trusted claim positions before any provider request."""
+        """Select 4-8 trusted claim positions before any provider request."""
 
         slots = self._build_narration_repair_slots(candidate, story_map)
         candidate_claims = {
@@ -5323,7 +5334,7 @@ class CloudStageRunner:
                         word_budget=1,
                     )
                 )
-        if len(all_positions) < 8:
+        if len(all_positions) < NARRATION_REPAIR_POSITION_MIN_COUNT:
             raise CloudStageError(
                 "cloud.narrative_repair_position_selection_invalid",
                 reviewable=True,
@@ -6986,7 +6997,7 @@ class CloudStageRunner:
             "target_duration_max_s": 60.0,
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v8"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v9"
         repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
         repair_prompt = (
             repair_prompt_version,
