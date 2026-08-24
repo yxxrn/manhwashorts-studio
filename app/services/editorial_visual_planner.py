@@ -59,6 +59,85 @@ def _review_transition_family(rank: int) -> str:
     return ("fade", "slide_left", "slide_right")[rank % 3]
 
 
+def _review_candidate_priority_key(
+    candidate: object,
+    usage_counts: Mapping[str, int],
+) -> tuple[object, ...]:
+    """Prefer an unused grounded panel while retaining source chronology."""
+
+    panel_id = str(getattr(candidate, "panel_id", ""))
+    return (
+        1 if usage_counts.get(panel_id, 0) > 0 else 0,
+        *_review_candidate_order_key(candidate),
+    )
+
+
+def _ordered_review_roi_alternatives(
+    alternatives: Sequence[ReferenceROIAlternative],
+) -> tuple[ReferenceROIAlternative, ...]:
+    """Try measured low-blank ROIs first for the review-only path."""
+
+    return tuple(
+        sorted(
+            alternatives,
+            key=lambda roi: (
+                roi.edge_blank_fraction is None,
+                float(roi.edge_blank_fraction)
+                if roi.edge_blank_fraction is not None
+                else 1.0,
+                _REFERENCE_ROI_KIND_ORDER[roi.kind],
+                roi.roi_label,
+                roi.crop_box,
+                roi.focus,
+            ),
+        )
+    )
+
+
+def _review_transition_schedule(
+    shots: Sequence[Mapping[str, object]],
+) -> dict[int, str]:
+    """Place a sparse, visible transition schedule across the review timeline.
+
+    Section boundaries remain preferred, but long sections also receive evenly
+    spaced transitions.  The review-only ceiling is deliberately sparse so
+    transitions remain editorial accents instead of a continuous effect.
+    """
+
+    if len(shots) < 2:
+        return {}
+    boundaries = list(range(1, len(shots)))
+    preferred = [
+        index
+        for index in boundaries
+        if shots[index].get("section") != shots[index - 1].get("section")
+    ]
+    count = min(
+        len(boundaries),
+        max(1, math.ceil(len(boundaries) * 0.25)),
+    )
+    selected: list[int] = []
+    for index in preferred:
+        if len(selected) >= count:
+            break
+        selected.append(index)
+    for rank in range(1, count + 1):
+        if len(selected) >= count:
+            break
+        ideal = round(rank * len(shots) / (count + 1))
+        candidate = min(
+            (index for index in boundaries if index not in selected),
+            key=lambda index: (abs(index - ideal), index),
+            default=None,
+        )
+        if candidate is not None:
+            selected.append(candidate)
+    return {
+        index: _review_transition_family(rank)
+        for rank, index in enumerate(sorted(selected))
+    }
+
+
 def _review_candidate_order_key(candidate: object) -> tuple[object, ...]:
     """Keep review selection in immutable source chronology."""
 
@@ -1187,7 +1266,9 @@ def _plan_reference_panel_candidates(
             # chapters. Sort eligible panels by immutable source order first;
             # source family and IDs only break deterministic ties.
             eligible.sort(
-                key=_review_candidate_order_key
+                key=lambda candidate: _review_candidate_priority_key(
+                    candidate, uses
+                )
             )
             eligible = [
                 candidate
@@ -1204,7 +1285,11 @@ def _plan_reference_panel_candidates(
             if allow_review_cadence_adaptation:
                 # Keep the chapter-ordered sequence for silent review; capacity
                 # only breaks ties after source order is fixed.
-                eligible.sort(key=_review_candidate_order_key)
+                eligible.sort(
+                    key=lambda candidate: _review_candidate_priority_key(
+                        candidate, uses
+                    )
+                )
             else:
                 eligible.sort(
                     key=lambda candidate: (
@@ -1236,14 +1321,19 @@ def _plan_reference_panel_candidates(
         for candidate in eligible:
             previous_uses = uses.get(candidate.panel_id, 0)
             is_preferred = candidate.panel_id == preferred_candidate.panel_id
+            roi_alternatives = _ordered_review_roi_alternatives(
+                candidate.roi_alternatives
+            ) if allow_review_cadence_adaptation else _ordered_roi_alternatives(
+                candidate
+            )
             if is_preferred:
                 roi_plan = tuple(
-                    (roi, roi.kind) for roi in _ordered_roi_alternatives(candidate)
+                    (roi, roi.kind) for roi in roi_alternatives
                 )
             else:
                 roi_plan = tuple(
                     (roi, "alternate_panel")
-                    for roi in _ordered_roi_alternatives(candidate)
+                    for roi in roi_alternatives
                 )
             accepted_attempts: list[
                 tuple[float, object, object, object, str]
@@ -1427,33 +1517,7 @@ def _plan_reference_panel_candidates(
         # its panel/ROI identity during exact lineage binding. Reassert a
         # bounded visible transition after that selection so a base ``cut``
         # cannot silently erase review-edit intent.
-        boundaries = [
-            index
-            for index in range(1, len(selected_shots))
-            if (
-                selected_shots[index].get("section")
-                != selected_shots[index - 1].get("section")
-                or selected_shots[index].get("panel_id")
-                != selected_shots[index - 1].get("panel_id")
-            )
-        ]
-        fade_budget = min(
-            len(boundaries),
-            max(1, int(len(selected_shots) * (1.0 - profile.hard_cut_ratio_min))),
-        )
-        priority_sections = {"twist", "cta", "cliffhanger"}
-        transition_boundaries = {
-            index: _review_transition_family(rank)
-            for rank, index in enumerate(
-                sorted(
-                    boundaries,
-                    key=lambda index: (
-                        selected_shots[index].get("section") not in priority_sections,
-                        index,
-                    ),
-                )[:fade_budget]
-            )
-        }
+        transition_boundaries = _review_transition_schedule(selected_shots)
         for index, shot in enumerate(selected_shots):
             shot["transition"] = (
                 "none"
@@ -1571,28 +1635,7 @@ def _plan_reference(
         )
 
     if allow_review_cadence_adaptation and len(shots) > 1:
-        boundaries = [
-            index
-            for index in range(1, len(shots))
-            if shots[index].get("section") != shots[index - 1].get("section")
-        ]
-        fade_budget = min(
-            len(boundaries),
-            max(1, int(len(shots) * (1.0 - profile.hard_cut_ratio_min))),
-        )
-        priority_sections = {"twist", "cta", "cliffhanger"}
-        review_transition_boundaries = {
-            index: _review_transition_family(rank)
-            for rank, index in enumerate(
-                sorted(
-                    boundaries,
-                    key=lambda index: (
-                        shots[index].get("section") not in priority_sections,
-                        index,
-                    ),
-                )[:fade_budget]
-            )
-        }
+        review_transition_boundaries = _review_transition_schedule(shots)
     else:
         review_transition_boundaries = {}
 

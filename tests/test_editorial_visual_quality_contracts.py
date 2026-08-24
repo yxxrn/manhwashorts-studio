@@ -68,6 +68,71 @@ def test_reference_planner_uses_profile_independent_density_target():
     assert editorial_visual_planner._review_visual_shot_target(51.3, 8) == 8
 
 
+def test_reference_planner_prioritizes_unused_panel_before_reuse():
+    from app.services import editorial_visual_planner
+
+    reused = SimpleNamespace(
+        panel_id="panel-a",
+        panel_region_id="region-a",
+        source_order=1,
+    )
+    unused = SimpleNamespace(
+        panel_id="panel-b",
+        panel_region_id="region-b",
+        source_order=2,
+    )
+
+    ordered = sorted(
+        (reused, unused),
+        key=lambda candidate: editorial_visual_planner._review_candidate_priority_key(
+            candidate,
+            {"panel-a": 1},
+        ),
+    )
+
+    assert [candidate.panel_id for candidate in ordered] == ["panel-b", "panel-a"]
+
+
+def test_reference_roi_order_prefers_lower_measured_edge_blank_in_review():
+    from app.services import editorial_visual_planner
+
+    high_blank = editorial_visual_planner.ReferenceROIAlternative(
+        kind="primary",
+        roi_label="primary",
+        crop_box=(0, 0, 100, 100),
+        focus=(0.2, 0.5, 0.2, 0.5),
+        edge_blank_fraction=0.07,
+    )
+    low_blank = editorial_visual_planner.ReferenceROIAlternative(
+        kind="alternate_roi",
+        roi_label="alternate",
+        crop_box=(10, 0, 100, 100),
+        focus=(0.8, 0.5, 0.8, 0.5),
+        edge_blank_fraction=0.0,
+    )
+
+    ordered = editorial_visual_planner._ordered_review_roi_alternatives(
+        (high_blank, low_blank)
+    )
+
+    assert [roi.roi_label for roi in ordered] == ["alternate", "primary"]
+
+
+def test_reference_transition_schedule_spreads_short_visible_transitions():
+    from app.services import editorial_visual_planner
+
+    shots = [
+        {"section": "hook" if index < 6 else "twist"}
+        for index in range(12)
+    ]
+
+    transitions = editorial_visual_planner._review_transition_schedule(shots)
+
+    assert len(transitions) >= 2
+    assert all(index > 0 for index in transitions)
+    assert len(transitions) <= 3
+
+
 def test_review_candidate_order_is_source_chronological_not_family_lexical():
     from app.services import editorial_visual_planner
 
