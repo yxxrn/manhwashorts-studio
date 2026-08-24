@@ -328,6 +328,62 @@ def test_provider_position_alias_is_normalized_only_for_exact_candidates():
         )
 
 
+def test_invalid_provider_coordinate_gets_one_sanitized_repair_attempt():
+    module = _module()
+    feedback: list[dict | None] = []
+
+    def assessor(request):
+        feedback.append(request.validation_feedback)
+        if len(feedback) == 1:
+            return {
+                "source_asset_id": request.source_asset_id,
+                "source_checksum": request.source_checksum,
+                "random_sampling": False,
+                "boundaries": [
+                    {
+                        "y": request.height + 1,
+                        "accepted": True,
+                        "confidence": 0.99,
+                        "reason": "invalid first response",
+                        "protected_regions": [],
+                    }
+                ],
+            }
+        return {
+            "source_asset_id": request.source_asset_id,
+            "source_checksum": request.source_checksum,
+            "random_sampling": False,
+            "boundaries": [
+                {
+                    "y": candidate.position,
+                    "accepted": True,
+                    "confidence": 0.99,
+                    "reason": "provider separator",
+                    "protected_regions": [],
+                }
+                for candidate in request.candidates
+            ],
+        }
+
+    result = module.reconcile_strip(
+        _strip_bytes(),
+        source_asset_id="coordinate-repair",
+        original_checksum="r" * 64,
+        boundary_assessor=assessor,
+        provider_retry_attempts=2,
+    )
+
+    assert result.status == "RECONCILED"
+    assert result.selected_cuts
+    assert feedback[0] is None
+    assert feedback[1] == {
+        "code": "segmentation.provider_coordinate_invalid",
+        "field": "boundaries[].y",
+        "constraint": "must_echo_one_supplied_candidate_position",
+        "attempt": 1,
+    }
+
+
 def test_provider_hash_and_lineage_are_rejected_as_untrusted():
     module = _module()
 

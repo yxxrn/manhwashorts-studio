@@ -3081,3 +3081,17 @@ evidence, framing, reference planner, Ruff, compileall, and diff-check passed.
 The real `phase5b-cold-v1` operator resume reached the supported menu but was
 blocked before any provider call because its isolated DB contains no provider
 credential; no MP4, TTS, or QC is claimed.
+
+## 2026-08-24 — local boundary-repair checkpoint
+
+The real local phase5b resume used the configured encrypted BYOK profile and
+one explicit capability probe; it did not print or persist the key value.
+The subsequent review run wrote 64 checkpoint rows for 51 unique panel IDs,
+then ended safely at `segmentation.provider_coordinate_invalid` with five
+sanitized review entries (`provider_request_failed` x3,
+`protected_boundary` x1, coordinate-invalid x1). No story, narration, TTS,
+MP4, or QC artifact exists. A focused GREEN fix now retries only malformed
+boundary coordinate/geometry/response shapes once with a field-level
+sanitized hint and keeps the strict validator; repeated invalid coordinates
+remain hard failures. Operator credential confirmation/status output no longer
+prints a key hint.

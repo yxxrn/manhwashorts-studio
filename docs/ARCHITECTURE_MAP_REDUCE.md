@@ -1043,3 +1043,17 @@ record is still `unknown`, and the renderer/planner require an explicit review
 flag plus the exact full-source ROI. All ordinary default and publication
 paths remain fail-closed. The current phase5b runtime has no encrypted provider
 profile, so its resume consumed zero provider requests and produced no media.
+
+## 2026-08-24 — boundary response repair invariant
+
+The local operator path has now verified the configured encrypted BYOK profile
+with one explicit capability probe. A review resume persisted 64 checkpoint
+rows (51 unique panel IDs) before a source-boundary response failed closed as
+`segmentation.provider_coordinate_invalid`; the sanitized job review queue
+also recorded three provider-request failures and one protected-boundary
+entry. `_assess_with_retry` now repairs only provider response shape errors
+with one field-level sanitized hint (`boundaries[].y`, geometry collection, or
+required boundary list), without accepting out-of-candidate coordinates or
+changing lineage/protected/coverage gates. The operator no longer exposes the
+credential key hint in setup, connection, or status output. No story/narration,
+TTS, render, or QC artifact is claimed yet.

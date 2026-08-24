@@ -1084,7 +1084,7 @@ class OperatorCLI:
                         "operator.credential_save_failed",
                         safe_error_text(exc, secret=api_key),
                     ) from None
-                self._print(f"Verified and encrypted credential {row.key_hint}; {len(models)} model(s) available.")
+                self._print(f"Verified and encrypted credential; {len(models)} model(s) available.")
                 self._print("Next: choose menu 3 to select a listed model and optionally test visual capability.")
         finally:
             del api_key
@@ -1098,7 +1098,7 @@ class OperatorCLI:
             if row is None:
                 raise OperatorCliError("operator.credential_missing", "set up a cloud provider first")
             refreshed, result = credentials.refresh_models(db, workspace.id, row.id, user.id)
-            self._print(f"Connection: {'verified' if result.ok else 'blocked'}; models={len(result.models)}; key={refreshed.key_hint}")
+            self._print(f"Connection: {'verified' if result.ok else 'blocked'}; models={len(result.models)}")
             if not result.ok:
                 self._print(f"Reason: {safe_error_text(RuntimeError(result.message))}")
 
@@ -1225,7 +1225,7 @@ class OperatorCLI:
                 if not rows:
                     self._print("Cloud provider: not configured (offline menu remains available).")
                 for row in rows:
-                    self._print(f"Cloud provider: {row.provider} {row.key_hint} status={row.status} model={row.model or 'not selected'}")
+                    self._print(f"Cloud provider: {row.provider} status={row.status} model={row.model or 'not selected'}")
         except OperatorCliError as exc:
             self._print(f"Cloud provider: {exc.code}; {exc.message}")
 

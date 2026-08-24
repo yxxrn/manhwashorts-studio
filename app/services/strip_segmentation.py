@@ -15,7 +15,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from math import ceil, isfinite
 from pathlib import Path
 from typing import Any
@@ -79,6 +79,7 @@ class BoundaryRequest:
     candidates: tuple[BoundaryCandidate, ...]
     tiles: tuple[dict[str, Any], ...]
     detector_version: str = strips.COLOR_AGNOSTIC_DETECTOR_VERSION
+    validation_feedback: Mapping[str, Any] | None = None
 
     def as_payload(self) -> dict[str, Any]:
         # Raw tile bytes are request content, not JSON metadata.  The adapter
@@ -88,7 +89,7 @@ class BoundaryRequest:
             {key: value for key, value in tile.items() if key != "payload"}
             for tile in self.tiles
         ]
-        return {
+        payload = {
             "contract_version": BOUNDARY_PROMPT_VERSION,
             "source_asset_id": self.source_asset_id,
             "source_checksum": self.source_checksum,
@@ -98,6 +99,9 @@ class BoundaryRequest:
             "overlapping_source_tiles": metadata_tiles,
             "random_sampling": False,
         }
+        if self.validation_feedback is not None:
+            payload["validation_feedback"] = dict(self.validation_feedback)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -498,16 +502,48 @@ def _assess_with_retry(
     request: BoundaryRequest,
     attempts: int,
 ) -> dict[str, Any]:
-    """Validate one provider response.
+    """Validate one provider response with bounded schema repair.
 
-    Transport retry ownership lives in the provider adapter/runner.  Keeping
-    this boundary single-shot prevents nested retry multiplication and ensures
-    schema, lineage, and geometry failures are permanent for this source.
-    ``attempts`` remains an API-compatible argument for older callers.
+    Transport retry ownership lives in the provider adapter/runner.  This
+    layer retries only a malformed response with a sanitized field-level
+    hint; lineage, hash, sampling, and transport failures remain hard at this
+    boundary.  A repaired response still has to pass the unchanged strict
+    validator.
     """
-    del attempts
-    raw = boundary_assessor(request)
-    return _validate_provider_assessment(raw, request)
+
+    repairable = {
+        "segmentation.provider_coordinate_invalid": {
+            "field": "boundaries[].y",
+            "constraint": "must_echo_one_supplied_candidate_position",
+        },
+        "segmentation.provider_geometry_invalid": {
+            "field": "boundaries[].protected_regions",
+            "constraint": "must_be_a_list_of_source_space_regions",
+        },
+        "segmentation.provider_response_invalid": {
+            "field": "boundaries",
+            "constraint": "must_be_a_list_with_required_boundary_fields",
+        },
+    }
+    total_attempts = max(1, int(attempts))
+    current_request = request
+    for attempt in range(total_attempts):
+        raw = boundary_assessor(current_request)
+        try:
+            return _validate_provider_assessment(raw, current_request)
+        except StripSegmentationError as exc:
+            feedback = repairable.get(exc.code)
+            if feedback is None or attempt + 1 >= total_attempts:
+                raise
+            current_request = replace(
+                request,
+                validation_feedback={
+                    "code": exc.code,
+                    **feedback,
+                    "attempt": attempt + 1,
+                },
+            )
+    raise AssertionError("unreachable boundary assessment retry state")
 
 
 def _safe_provider_error(exc: Exception) -> tuple[str, bool, dict[str, Any]]:

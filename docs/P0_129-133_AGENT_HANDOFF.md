@@ -1824,3 +1824,16 @@ credential. Provider requests: zero. Do not edit or delete `final_test/`,
 `The Novel’s Extra/`, DB/WAL, caches, or private runtime data. Next action is
 to configure/reuse an encrypted provider profile in this local namespace,
 then resume the same job; do not repeat valid visual cache rows.
+
+## 2026-08-24 local resume — boundary repair
+
+The isolated phase5b DB now contains an encrypted provider profile selected via
+the real operator flow. One capability-probe request succeeded. The next
+resume stopped cleanly with `segmentation.provider_coordinate_invalid` after
+64 visual checkpoint rows / 51 unique panel IDs; the review queue contained
+three provider-request failures, one protected-boundary item, and the
+coordinate-invalid item. No downstream stage or media ran. The next resume
+must reuse valid current checkpoints and retry only the failed source
+boundary; do not restart visual work or call story/TTS/render before exact
+segmentation terminal accounting. The source/test fix is a bounded sanitized
+shape-repair retry, with hard rejection preserved after the retry.

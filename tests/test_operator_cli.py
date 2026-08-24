@@ -431,6 +431,7 @@ def test_setup_provider_uses_hidden_key_and_existing_byok_boundary(monkeypatch):
     assert captured["fetched_key"] == secret
     assert captured["api_key"] == secret
     assert secret not in "\n".join(output)
+    assert "sk-...3456" not in "\n".join(output)
     assert secret not in str(captured.get("models", ""))
 
 

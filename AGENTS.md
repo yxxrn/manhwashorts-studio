@@ -1830,3 +1830,13 @@ evidence/framing/reference suites, Ruff, compileall, and diff-check. The
 phase5b resume is not yet a production artifact: its isolated DB has no
 provider credential, so no provider request was consumed. Protected inputs and
 runtime data remain untracked.
+
+The subsequent local phase5b operator run configured the provider only through
+the encrypted BYOK boundary and consumed one explicit capability-probe request;
+no key value or provider payload is retained in source/docs. The review resume
+persisted 51 unique panel IDs across 64 checkpoint rows, then stopped at
+`segmentation.provider_coordinate_invalid` with five review entries. The
+published follow-up retries only malformed boundary/geometry/response shapes
+once with a sanitized field-level hint; repeated invalid coordinates still
+fail closed. Operator setup/connection/status output no longer prints the
+credential key hint. No MP4, TTS, story, or QC artifact is claimed.
