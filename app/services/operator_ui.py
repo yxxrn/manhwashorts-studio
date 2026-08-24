@@ -105,6 +105,7 @@ def render_menu(
         "5) Run batch parent folder",
         "6) Resume failed/pending jobs",
         "7) View status/review blockers",
+        "8) Run explicitly approved production",
         "0) Exit / Keluar",
     ]
     return "\n".join(lines)

@@ -1376,30 +1376,77 @@ def approved_script_row(db: Session, project_id: str) -> ScriptVersion | None:
     ).first()
 
 
+def _script_content_hash(script: ScriptVersion) -> str:
+    """Hash the exact script payload used by downstream media stages.
+
+    Approval metadata is deliberately excluded: recording an approval must not
+    change the identity that was approved.  Conversely, changing any spoken
+    section, hook choice, generator, or version produces a new identity.
+    """
+
+    payload = {
+        "version": int(script.version),
+        "generator": str(script.generator or ""),
+        "sections": script.sections or [],
+        "hook_options": script.hook_options or [],
+        "selected_hook": int(script.selected_hook or 0),
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _script_requires_explicit_approval(script: ScriptVersion) -> bool:
+    """Return whether an evidence-generated script needs operator approval.
+
+    Evidence generators are versioned and will evolve.  Matching one literal
+    version (the old ``vision_evidence_v2`` contract) silently bypasses review
+    for newer evidence contracts, so the category and metadata are authoritative.
+    """
+
+    generator = str(script.generator or "").strip().casefold()
+    metadata = script.editorial_metadata if isinstance(script.editorial_metadata, Mapping) else {}
+    return (
+        generator.startswith("vision_evidence_")
+        or generator.startswith("evidence_")
+        or metadata.get("approval_required") is True
+        or metadata.get("evidence_generated") is True
+        or metadata.get("human_review_required") is True
+    )
+
+
 def current_script(db: Session, project_id: str) -> ScriptVersion | None:
-    """The script the pipeline should act on: approved if any, else latest."""
-    return approved_script_row(db, project_id) or latest_script_row(db, project_id)
+    """The newest script; media must never silently fall back to an older one."""
+    return latest_script_row(db, project_id)
 
 
 def _script_for_media(db: Session, project_id: str) -> ScriptVersion:
-    """Return the current script only when a vision draft is explicitly approved."""
+    """Return the newest script only when its approval contract is satisfied."""
     latest = latest_script_row(db, project_id)
     if latest is None:
         raise PipelineError("generate a script first")
-    if latest.generator == "vision_evidence_v2":
-        approved = approved_script_row(db, project_id)
-        if (
-            latest.approved_at is None
-            or not latest.approved_by
-            or approved is None
-            or approved.id != latest.id
-        ):
-            raise PipelineError("latest evidence-backed script must be explicitly approved")
+    if not _script_requires_explicit_approval(latest):
         return latest
-    current = current_script(db, project_id)
-    if current is None:
-        raise PipelineError("generate a script first")
-    return current
+    approved_hash = (latest.editorial_metadata or {}).get("approved_script_hash")
+    expected_hash = _script_content_hash(latest)
+    legacy_v2_approval = (
+        str(latest.generator or "").casefold() == "vision_evidence_v2"
+        and not approved_hash
+        and "approved_script_version" not in (latest.editorial_metadata or {})
+    )
+    if (
+        latest.approved_at is None
+        or not latest.approved_by
+        or (
+            not legacy_v2_approval
+            and (
+                approved_hash != expected_hash
+                or (latest.editorial_metadata or {}).get("approved_script_version")
+                != latest.version
+            )
+        )
+    ):
+        raise PipelineError("latest evidence-backed script must be explicitly approved")
+    return latest
 
 
 def all_scripts(db: Session, project_id: str) -> list[ScriptVersion]:
@@ -2034,6 +2081,9 @@ def approve_script(
         raise PipelineError("an editorial review actor is required")
     if editorial_review_confirmed is not True:
         raise PipelineError("explicit editorial review confirmation is required")
+    latest_script = latest_script_row(db, script.project_id)
+    if latest_script is None or latest_script.id != script.id:
+        raise PipelineError("only the latest script version can be approved")
     metadata = script.editorial_metadata if isinstance(script.editorial_metadata, Mapping) else {}
     analysis = latest_analysis(db, script.project_id)
     if analysis is None or analysis.state != "SCRIPT_DRAFT":
@@ -2153,11 +2203,14 @@ def approve_script(
 
     script.approved_at = _now()
     script.approved_by = actor_id
+    approved_hash = _script_content_hash(script)
     script.editorial_metadata = {
         **metadata,
         "human_review_required": True,
         "editorial_review_confirmed": True,
         "editorial_review_actor": actor_id,
+        "approved_script_hash": approved_hash,
+        "approved_script_version": script.version,
     }
     analysis.state = "SCRIPT_APPROVED"
     audit(db, "script.approve", "script_version", script.id, actor_id, version=script.version)
@@ -3486,6 +3539,166 @@ def enqueue_render(
     return job
 
 
+def _audio_stage_ready(db: Session, script: ScriptVersion) -> bool:
+    spoken_sections = [
+        str(section.get("text", "")).strip()
+        for section in (script.sections or [])
+        if isinstance(section, Mapping) and str(section.get("text", "")).strip()
+    ]
+    segments = audio_segments(db, script.id)
+    return (
+        bool(spoken_sections)
+        and len(segments) == len(spoken_sections)
+        and [segment.order_index for segment in segments] == list(range(len(segments)))
+        and all(
+            segment.storage_key
+            and storage.exists(segment.storage_key)
+            and float(segment.duration) > 0.0
+            and isinstance(segment.word_timings, list)
+            for segment in segments
+        )
+    )
+
+
+def _timeline_stage_ready(db: Session, project_id: str) -> bool:
+    scenes = project_scenes(db, project_id)
+    cues = project_cues(db, project_id)
+    return bool(scenes and cues and all(scene.end_time > scene.start_time for scene in scenes))
+
+
+def _render_stage_ready(
+    db: Session, project_id: str, script_hash: str
+) -> RenderJob | None:
+    """Return an idempotent final artifact only when its exact script is known."""
+
+    script = latest_script_row(db, project_id)
+    metadata = script.editorial_metadata if script and isinstance(script.editorial_metadata, Mapping) else {}
+    production = metadata.get("production") if isinstance(metadata.get("production"), Mapping) else {}
+    job_id = production.get("render_job_id")
+    if production.get("script_hash") != script_hash or not isinstance(job_id, str) or not job_id:
+        return None
+    job = db.get(RenderJob, job_id)
+    if job is None or job.kind != "final" or job.status != JobStatus.SUCCEEDED:
+        return None
+    if not job.output_key or not Path(job.output_key).is_file():
+        return None
+    return job
+
+
+def run_production(
+    db: Session,
+    project_id: str,
+    *,
+    actor_id: str = "",
+    approved_script_hash: str = "",
+    approved_script_version: int | None = None,
+    speed: float = 1.15,
+    provider_name: str | None = None,
+    encoder: str = "auto",
+    profile: str = "Auto",
+) -> RenderJob:
+    """Run the explicit, local production path through post-render QC.
+
+    This is intentionally separate from the review-only cloud workflow.  The
+    caller must provide the hash and version that the operator approved.  Each
+    boundary is durable and re-used only when it still belongs to that exact
+    script; a changed script therefore cannot inherit an older voice, timeline,
+    or render artifact.
+    """
+
+    if not actor_id.strip():
+        raise PipelineError("production operator identity is required")
+    script = _script_for_media(db, project_id)
+    script_hash = _script_content_hash(script)
+    if (
+        str(approved_script_hash).strip() != script_hash
+        or approved_script_version is None
+        or int(approved_script_version) != int(script.version)
+    ):
+        raise PipelineError("production approval does not match the latest script")
+
+    metadata = dict(script.editorial_metadata or {})
+    production = dict(metadata.get("production") or {})
+    if production.get("script_hash") != script_hash:
+        # A new script invalidates every downstream boundary.  Old rows/files
+        # remain audit evidence, but are never selected for this run.
+        production = {"script_hash": script_hash, "script_version": script.version}
+
+    existing = _render_stage_ready(db, project_id, script_hash)
+    if existing is not None:
+        results = run_quality_checks(db, project_id, job=existing, actor_id=actor_id)
+        if any(result.blocking for result in results):
+            raise PipelineError("post-render QC failed for the existing artifact")
+        return existing
+
+    if not _audio_stage_ready(db, script):
+        generate_voiceover(
+            db,
+            project_id,
+            speed=speed,
+            provider_name=provider_name,
+            actor_id=actor_id,
+        )
+    production["audio_script_hash"] = script_hash
+    metadata["production"] = production
+    script.editorial_metadata = metadata
+    db.flush()
+    # Commit each successful boundary so an interrupted production run resumes
+    # from the last completed stage rather than repeating provider work.
+    db.commit()
+
+    if not _timeline_stage_ready(db, project_id):
+        build_timeline(db, project_id, actor_id=actor_id)
+    production["timeline_script_hash"] = script_hash
+    metadata["production"] = production
+    script.editorial_metadata = metadata
+    db.flush()
+    db.commit()
+
+    preflight = run_quality_checks(db, project_id, actor_id=actor_id)
+    if any(result.blocking for result in preflight):
+        raise PipelineError(
+            "pre-render QC failed: "
+            + "; ".join(result.message for result in preflight if result.blocking)[:1000]
+        )
+
+    job = enqueue_render(
+        db,
+        project_id,
+        kind="final",
+        actor_id=actor_id,
+        encoder=encoder,
+        profile=profile,
+    )
+    job = execute_render(db, job.id)
+    if job.status != JobStatus.SUCCEEDED:
+        raise PipelineError(f"final render failed: {job.error_message or job.error_code}")
+
+    postflight = run_quality_checks(db, project_id, job=job, actor_id=actor_id)
+    if any(result.blocking for result in postflight):
+        raise PipelineError(
+            "post-render QC failed: "
+            + "; ".join(result.message for result in postflight if result.blocking)[:1000]
+        )
+    production.update(
+        {
+            "script_hash": script_hash,
+            "script_version": script.version,
+            "render_job_id": job.id,
+            "post_render_qc": "passed",
+        }
+    )
+    metadata["production"] = production
+    script.editorial_metadata = metadata
+    db.flush()
+    db.commit()
+    return job
+
+
+# Alias retained for callers that describe this boundary as a production run.
+production_run = run_production
+
+
 def latest_render(db: Session, project_id: str, kind: str = "final") -> RenderJob | None:
     return db.scalars(
         select(RenderJob)
@@ -4463,7 +4676,20 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
     except (OSError, ValueError):
         pass
     audit(db, "editorial.qc", "render_job", job.id, qc=qc.as_dict())
-    project.status = ProjectStatus.READY if qc.qc_pass else ProjectStatus.REVIEW
+    # A rendered file is not a successful production artifact until the
+    # independent post-render report passes.  Keep the bytes for diagnosis,
+    # but mark the job failed so callers cannot mistake a queued/encoded file
+    # for a releasable video.
+    if qc.qc_pass:
+        job.status = JobStatus.SUCCEEDED
+        job.stage = "done"
+        project.status = ProjectStatus.READY
+    else:
+        job.status = JobStatus.FAILED
+        job.stage = "post-render-qc-blocked"
+        job.error_code = "render.qc_blocked"
+        job.error_message = "; ".join(qc.failures)[:1000]
+        project.status = ProjectStatus.REVIEW
     project.error_message = "" if qc.qc_pass else "; ".join(qc.failures)
     audit(
         db, "render.succeeded" if qc.qc_pass else "render.qc_blocked", "render_job", job.id,

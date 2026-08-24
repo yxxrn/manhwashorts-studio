@@ -779,6 +779,52 @@ def run_projects(
         return rows
 
 
+def run_production(
+    db: Any,
+    project_id: str,
+    *,
+    actor_id: str,
+    approved_script_hash: str,
+    approved_script_version: int,
+    speed: float = 1.15,
+    provider_name: str | None = None,
+    encoder: str = "auto",
+    profile: str = "Auto",
+) -> dict[str, Any]:
+    """Explicit production entrypoint; review jobs never reach this path."""
+
+    if not str(approved_script_hash).strip():
+        raise OperatorCliError(
+            "operator.approval_required",
+            "provide the exact approved script hash and version",
+        )
+    try:
+        with _db_context(db, lambda: _session_scope()()) as run_db:
+            job = _pipeline().run_production(
+                run_db,
+                project_id,
+                actor_id=actor_id,
+                approved_script_hash=approved_script_hash,
+                approved_script_version=int(approved_script_version),
+                speed=speed,
+                provider_name=provider_name,
+                encoder=encoder,
+                profile=profile,
+            )
+            return {
+                "project_id": project_id,
+                "job_id": job.id,
+                "state": str(job.status),
+                "output": job.output_key,
+                "checksum": job.checksum,
+            }
+    except OperatorCliError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - adapter must not leak provider data
+        code = str(getattr(exc, "code", "") or "operator.production_blocked")
+        raise OperatorCliError(code, safe_error_text(exc)) from None
+
+
 def resolve_operator_context(db: Any) -> tuple[User, Workspace]:
     return ensure_local_operator_context(db)
 
@@ -919,6 +965,7 @@ class OperatorCLI:
                     "5": self.import_and_run_batch,
                     "6": self.resume_jobs,
                     "7": self.show_status,
+                    "8": self.production_one,
                 }
                 handler = handlers.get(choice)
                 if handler is None:
@@ -1116,7 +1163,7 @@ class OperatorCLI:
 
     def show_status(self) -> None:
         credentials = _credentials()
-        self._print("Review-only workflow: voice/TTS/audio/publication are disabled.")
+        self._print("Cloud import remains review-only; production requires menu 8 and exact approval hash/version.")
         self._print("Jobs:")
         for row in list_job_states(self.state_dir):
             self._print(f"- {row['job_id']}: {row['state']} {row['error_code']}")
@@ -1131,14 +1178,63 @@ class OperatorCLI:
         except OperatorCliError as exc:
             self._print(f"Cloud provider: {exc.code}; {exc.message}")
 
+    def production_one(self) -> None:
+        """Run only an explicitly approved script through final post-render QC."""
 
-def main() -> int:
+        project_id = self._ask("Project id: ")
+        script_hash = self._ask("Exact approved script hash: ")
+        version_text = self._ask("Exact approved script version: ")
+        try:
+            version = int(version_text)
+        except ValueError as exc:
+            raise OperatorCliError("operator.approval_invalid", "script version must be an integer") from exc
+        actor_id = self._ask("Operator id: ")
+        if not self._confirm("Run production (TTS, timeline, render, and post-render QC)?"):
+            raise OperatorCliError("operator.cancelled", "operator cancelled before production")
+        with self._db() as db:
+            result = run_production(
+                db,
+                project_id,
+                actor_id=actor_id,
+                approved_script_hash=script_hash,
+                approved_script_version=version,
+            )
+        self._print(f"Production READY: {result['job_id']} {result['output']}")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     try:
         from app.db import init_db
 
         init_db()
         state_dir = os.environ.get("MS_STATE_DIR", "data/cloud-multimodal-jobs")
         review_dir = os.environ.get("MS_REVIEW_DIR", "data/segmentation-review")
+        if argv:
+            import argparse
+
+            parser = argparse.ArgumentParser(prog="manhwashorts-operator")
+            parser.add_argument("--mode", choices=("review", "production"), required=True)
+            parser.add_argument("--project-id", default="")
+            parser.add_argument("--actor-id", default="")
+            parser.add_argument("--approved-script-hash", default="")
+            parser.add_argument("--approved-script-version", type=int)
+            args = parser.parse_args(list(argv))
+            if args.mode == "production":
+                if not args.project_id or not args.actor_id or not args.approved_script_hash or args.approved_script_version is None:
+                    raise OperatorCliError(
+                        "operator.approval_required",
+                        "production requires project, actor, exact script hash, and version",
+                    )
+                result = run_production(
+                    None,
+                    args.project_id,
+                    actor_id=args.actor_id,
+                    approved_script_hash=args.approved_script_hash,
+                    approved_script_version=args.approved_script_version,
+                )
+                print(f"Production READY: {result['job_id']} {result['output']}")
+                return 0
+            return OperatorCLI(state_dir=state_dir, review_dir=review_dir).run()
         return OperatorCLI(state_dir=state_dir, review_dir=review_dir).run()
     except KeyboardInterrupt:
         print("Interrupted safely; durable job checkpoints were not deleted.")
@@ -1176,6 +1272,7 @@ __all__ = [
     "resolve_operator_context",
     "run_capability_probe",
     "run_projects",
+    "run_production",
     "read_operator_secret",
     "safe_error_text",
     "select_model",
