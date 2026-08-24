@@ -7163,6 +7163,32 @@ def test_stream_session_uses_bounded_backpressure_and_one_writer():
     assert runner.last_visual_stream_metrics["request_count"] == len(provider.calls)
 
 
+def test_stream_finish_accepts_out_of_order_source_group_submission():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-source-groups"))
+    )
+    provider = _FakeProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=1,
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in (panels[2], panels[0], panels[1]):
+        stream.submit(panel)
+
+    result = stream.finish(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+
+
 def test_stream_checkpoint_reuses_panel_identity_when_batch_position_changes(tmp_path):
     module = _module()
     base = _panels(module, "stream-reuse")

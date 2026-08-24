@@ -3095,3 +3095,15 @@ boundary coordinate/geometry/response shapes once with a field-level
 sanitized hint and keeps the strict validator; repeated invalid coordinates
 remain hard failures. Operator credential confirmation/status output no longer
 prints a key hint.
+
+## 2026-08-24 — local stream-order checkpoint
+
+The coordinate-repair resume progressed to 108 checkpoint rows / 61 unique
+IDs and then failed at `cloud.panel_lineage_invalid`. A no-provider preflight
+reproduced the cause: 60 canonical panels were valid and uniquely ordered,
+but incremental source-group callbacks submitted the same IDs in a different
+order. The stream finish boundary incorrectly required tuple-order equality;
+the GREEN fix now requires exact submitted/canonical ID-set equality and lets
+the existing merge restore canonical order. Missing, duplicate, foreign, and
+identity-mismatched rows remain fail-closed. No story, narration, TTS, MP4, or
+QC artifact exists yet.

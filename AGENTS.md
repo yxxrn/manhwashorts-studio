@@ -1840,3 +1840,11 @@ published follow-up retries only malformed boundary/geometry/response shapes
 once with a sanitized field-level hint; repeated invalid coordinates still
 fail closed. Operator setup/connection/status output no longer prints the
 credential key hint. No MP4, TTS, story, or QC artifact is claimed.
+
+The next resume reached 108 checkpoint rows / 61 unique IDs, then exposed a
+second generic defect: source-group callbacks submitted all 60 real panels in
+completion/group order while the final canonical list was in prepared order.
+`finish()` incorrectly required tuple equality and returned
+`cloud.panel_lineage_invalid`; a focused regression now validates exact ID-set
+equality and lets the existing merge restore canonical order. This preserves
+single-writer, duplicate/missing-ID, prepared identity, and coverage checks.

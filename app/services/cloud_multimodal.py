@@ -8475,7 +8475,9 @@ class _StreamingVisualEvidenceSession:
         if self._writer_error is not None:
             raise self._writer_error
         ordered = CloudStageRunner._ordered_panels(tuple(panels))
-        if tuple(item.panel_id for item in ordered) != tuple(item.panel_id for item in self._submitted):
+        submitted_ids = tuple(item.panel_id for item in self._submitted)
+        ordered_ids = tuple(item.panel_id for item in ordered)
+        if len(submitted_ids) != len(ordered_ids) or set(submitted_ids) != set(ordered_ids):
             raise CloudStageError("cloud.panel_lineage_invalid")
         submitted_ids = {item.panel_id for item in ordered}
         terminal_ids = set(self._accepted) | self._missing

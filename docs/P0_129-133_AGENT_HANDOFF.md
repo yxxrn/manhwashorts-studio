@@ -1837,3 +1837,11 @@ must reuse valid current checkpoints and retry only the failed source
 boundary; do not restart visual work or call story/TTS/render before exact
 segmentation terminal accounting. The source/test fix is a bounded sanitized
 shape-repair retry, with hard rejection preserved after the retry.
+
+The next resume reached 108 visual checkpoint rows / 61 unique IDs before
+`cloud.panel_lineage_invalid`. Offline preflight proved all 60 prepared panels
+were unique and contiguous; only the incremental submission order differed
+from final prepared order because source groups completed out of order. The
+stream finish fix accepts the exact submitted ID set and canonicalizes rows
+through `_merge_stream_visual_rows`; it does not accept missing, duplicate, or
+foreign rows. Publish this focused GREEN checkpoint before resuming the job.

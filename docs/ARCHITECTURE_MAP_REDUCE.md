@@ -1057,3 +1057,11 @@ required boundary list), without accepting out-of-candidate coordinates or
 changing lineage/protected/coverage gates. The operator no longer exposes the
 credential key hint in setup, connection, or status output. No story/narration,
 TTS, render, or QC artifact is claimed yet.
+
+The next real resume exposed `cloud.panel_lineage_invalid` after 108
+checkpoint rows / 61 unique IDs. The prepared-panel preflight was 60/60 with
+unique `source_order` and `prepared_order`; source-group completion order was
+simply different from canonical prepared order. Stream termination now checks
+exact submitted ID-set equality (while preserving duplicate/missing/foreign
+rejection) and delegates deterministic ordering to the existing merge step.
+This is a generic overlap-control fix, not a gate relaxation.
