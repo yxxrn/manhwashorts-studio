@@ -14,6 +14,11 @@ The latest exact predicate is `visual.repair_chronology`; only non-hook
 citations are required to be nondecreasing by source order, so a later
 evidence-backed hook remains valid at position zero.
 
+Resume now reuses a persisted repaired narration when its feasible-panel and
+missing-section validators pass, rather than issuing a duplicate visual-repair
+request. The validators remain authoritative and invalid persisted state still
+falls through to bounded repair.
+
 ## Frozen release-candidate gate - 2026-08-23
 
 The corrected production wall-clock gate is `<=90` minutes from ingestion

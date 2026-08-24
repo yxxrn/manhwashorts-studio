@@ -10231,6 +10231,49 @@ def _materialize_metadata_only_panels(
     return tuple(materialized)
 
 
+def _durable_visual_repair_covers_missing_sections(
+    narration: NarrationResult,
+    *,
+    ledger: visual_narrative_repair.FeasibleVisualLedger,
+    section_to_beats: Mapping[str, Sequence[str]],
+    missing_sections: Sequence[str],
+) -> bool:
+    """Return whether a persisted narration already satisfies visual repair scope."""
+
+    if not missing_sections:
+        return True
+    try:
+        claims = narration.evidence_graph.get("claims", ())
+        passages = tuple(dict(item) for item in narration.passages)
+        if not isinstance(claims, (list, tuple)):
+            return False
+        allowed_claim_ids = {
+            str(claim.get("claim_id", ""))
+            for claim in claims
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        visual_narrative_repair.validate_repaired_panel_references(
+            {"claims": list(claims), "passages": list(passages)},
+            ledger=ledger,
+            allowed_claim_ids=allowed_claim_ids,
+        )
+        visual_narrative_repair.validate_repaired_section_visual_coverage(
+            passages,
+            ledger=ledger,
+            section_to_beats=section_to_beats,
+            missing_sections=missing_sections,
+        )
+    except (
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        visual_narrative_repair.VisualNarrativeRepairError,
+    ):
+        return False
+    return True
+
+
 class CloudBatchService:
     def __init__(
         self,
@@ -10568,7 +10611,18 @@ class CloudBatchService:
             allow_source_resolution_warning=bool(policy.allow_low_source_resolution_warning),
         )
         missing = visual_narrative_repair.missing_visual_sections(ledger, section_to_beats)
-        if not missing and current_narration is not None:
+        if current_narration is not None and (
+            not missing
+            or (
+                result is not None
+                and _durable_visual_repair_covers_missing_sections(
+                    current_narration,
+                    ledger=ledger,
+                    section_to_beats=section_to_beats,
+                    missing_sections=missing,
+                )
+            )
+        ):
             return result, ledger, missing
         if not ledger.entries:
             raise CloudStageError("visual.visual_unavailable", reviewable=True)

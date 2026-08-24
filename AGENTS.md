@@ -14,6 +14,11 @@ sanitized predicate is `visual.repair_chronology`; non-hook citations must be
 nondecreasing by source order, while a later hook remains allowed at position
 zero.
 
+The persisted 121-word repair is now reused on resume only after the same
+feasible-panel and missing-section validators pass. This removes duplicate
+repair calls without accepting stale or ungrounded citations; invalid state
+still enters the bounded provider repair path.
+
 ## Cached visual-stage metadata reuse - 2026-08-23
 
 Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.

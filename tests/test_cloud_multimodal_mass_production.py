@@ -167,6 +167,62 @@ def test_visual_repair_failure_classifies_safe_predicate_and_targets_retry_feedb
     assert "repaired section still" not in str(metadata)
 
 
+def test_durable_visual_repair_result_is_reused_when_feasible_sections_are_covered():
+    module = _module()
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    entry = repair.FeasibleVisualRecord(
+        panel_region_id="region-safe",
+        panel_id="panel-safe",
+        source_asset_id="asset-safe",
+        source_order=10,
+        eligible_sections=(),
+        eligible_beats=("beat-safe",),
+        resolution_state="UPSCALED",
+        feasible_rois=(
+            {
+                "kind": "primary",
+                "roi_label": "primary",
+                "crop_box": [0, 0, 1080, 1920],
+                "telemetry": {},
+            },
+        ),
+        visual_strengths={"edge_connected_blank_fraction": 0.0},
+        evidence_hash="e" * 64,
+        detector_version="detector-v1",
+        mask_sha256="m" * 64,
+        panel_size=(1080, 1920),
+    )
+    ledger = repair.FeasibleVisualLedger(
+        entries=(entry,), model_identity_hash="model-hash"
+    )
+    narration = SimpleNamespace(
+        evidence_graph={
+            "claims": [
+                {"claim_id": "claim-safe", "evidence_panel_ids": ["panel-safe"]}
+            ]
+        },
+        passages=(
+            {
+                "passage_id": "p1",
+                "claim_ids": ["claim-safe"],
+                "evidence_panel_ids": ["panel-safe"],
+            },
+            {
+                "passage_id": "p2",
+                "claim_ids": ["claim-safe"],
+                "evidence_panel_ids": ["panel-safe"],
+            },
+        ),
+    )
+
+    assert module._durable_visual_repair_covers_missing_sections(
+        narration,
+        ledger=ledger,
+        section_to_beats={"hook": ("beat-safe",), "setup": ("beat-safe",)},
+        missing_sections=("hook",),
+    ) is True
+
+
 def test_invalid_visual_repair_cache_does_not_bypass_bounded_provider_path(monkeypatch):
     module = _module()
     repair = importlib.import_module("app.services.visual_narrative_repair")

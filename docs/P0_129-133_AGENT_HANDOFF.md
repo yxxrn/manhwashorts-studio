@@ -13,6 +13,11 @@ provider request. The latest predicate is `visual.repair_chronology`; the
 repair feedback now states the non-hook source-order invariant explicitly.
 Preserve the job DB, caches, inputs, and credentials.
 
+The durable narration is now checked for feasible-panel and missing-section
+coverage before another repair request. A valid persisted repair is reused;
+invalid lineage remains fail-closed. This local fix consumed no provider/TTS
+request and does not claim a preview artifact.
+
 ## Frozen release-candidate gate - 2026-08-23
 
 The corrected end-to-end wall-clock limit is `<=90` minutes from ingestion to

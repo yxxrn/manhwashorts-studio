@@ -20,6 +20,13 @@ the next retry guidance explicitly requires non-hook citations to be
 nondecreasing by `source_order`, while allowing a later dramatic hook at
 position zero.
 
+The subsequent local state audit found that the persisted 121-word repair was
+being re-requested on resume because the review branch did not revalidate its
+already-persisted feasible-section coverage. The new GREEN boundary reuses it
+only after the existing panel-reference and missing-section validators pass;
+invalid citations still trigger repair. No provider request was made by this
+fix and no render artifact is claimed.
+
 ## Review resume preserves segmentation safety mode - 2026-08-24
 
 Menu 6 (`Resume failed/pending jobs`) previously omitted the explicit
