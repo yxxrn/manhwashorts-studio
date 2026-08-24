@@ -11094,13 +11094,10 @@ class CloudBatchService:
                 try:
                     from app.services import pipeline
 
-                    ledger_entries = tuple(
-                        getattr(ledger, "entries", ())
-                        or tuple((ledger.as_dict() or {}).get("entries", ()))
-                    )
                     # Ledger entries are beat-keyed; the planner matches the
-                    # script section names. Map every section to the panels of
-                    # its beats that passed every framing gate.
+                    # script section names. Prefer explicit feasible panel IDs
+                    # persisted by visual repair; fall back to beat eligibility
+                    # for sections that did not need a cross-beat remap.
                     section_names = tuple(
                         str(section.get("section", ""))
                         for section in (getattr(script_row, "sections", ()) or ())
@@ -11117,23 +11114,11 @@ class CloudBatchService:
                         for section in story_map_row.panel_ids
                         if section
                     }
-                    section_panel_ids: dict[str, list[str]] = {}
-                    for section, beat_ids in section_to_beats.items():
-                        allowed = set(beat_ids)
-                        for entry in ledger_entries:
-                            if not allowed.intersection(
-                                str(value) for value in entry.eligible_beats
-                            ):
-                                continue
-                            if str(entry.panel_id) not in section_panel_ids.setdefault(
-                                str(section), []
-                            ):
-                                section_panel_ids[str(section)].append(str(entry.panel_id))
-                    section_panel_ids = {
-                        str(section): tuple(panel_ids)
-                        for section, panel_ids in section_panel_ids.items()
-                        if panel_ids
-                    }
+                    section_panel_ids = _review_section_panel_ids(
+                        script_row,
+                        ledger,
+                        section_to_beats,
+                    )
                     # Citations stay as persisted source orders; the planner
                     # resolves them to regions and re-runs every framing gate.
                     section_citations = {
@@ -11221,6 +11206,66 @@ class CloudBatchService:
                 record.review_queue.append(review_entry)
             self.store.save(record)
             return record
+
+
+def _review_section_panel_ids(
+    script_row: Any,
+    ledger: visual_narrative_repair.FeasibleVisualLedger,
+    section_to_beats: Mapping[str, Sequence[str]],
+) -> dict[str, tuple[str, ...]]:
+    """Map review sections to feasible cited panels without losing remaps.
+
+    A visual repair may move a section's evidence to a later causal beat when
+    its original panels have no safe ROI.  The persisted script is the trusted
+    source for that explicit remap; beat eligibility remains the deterministic
+    fallback for sections that did not need one.
+    """
+
+    entries = tuple(getattr(ledger, "entries", ()) or ())
+    feasible_ids = {
+        str(entry.get("panel_id", ""))
+        if isinstance(entry, Mapping)
+        else str(getattr(entry, "panel_id", ""))
+        for entry in entries
+    }
+    by_section: dict[str, tuple[str, ...]] = {}
+    for raw_section in tuple(getattr(script_row, "sections", ()) or ()):
+        if not isinstance(raw_section, Mapping):
+            continue
+        section = str(raw_section.get("section", "")).strip()
+        if not section:
+            continue
+        explicit = raw_section.get("evidence_panel_ids") or ()
+        explicit_ids = (
+            tuple(dict.fromkeys(str(value) for value in explicit if str(value).strip()))
+            if isinstance(explicit, Sequence) and not isinstance(explicit, (str, bytes))
+            else ()
+        )
+        selected = tuple(panel_id for panel_id in explicit_ids if panel_id in feasible_ids)
+        if not selected:
+            allowed_beats = {str(value) for value in section_to_beats.get(section, ())}
+            fallback: list[str] = []
+            for entry in entries:
+                panel_id = (
+                    str(entry.get("panel_id", ""))
+                    if isinstance(entry, Mapping)
+                    else str(getattr(entry, "panel_id", ""))
+                )
+                eligible_beats = (
+                    entry.get("eligible_beats", ())
+                    if isinstance(entry, Mapping)
+                    else getattr(entry, "eligible_beats", ())
+                )
+                if (
+                    panel_id
+                    and allowed_beats.intersection(str(value) for value in eligible_beats)
+                    and panel_id not in fallback
+                ):
+                    fallback.append(panel_id)
+            selected = tuple(fallback)
+        if selected:
+            by_section[section] = selected
+    return by_section
 
 
 def review_only_render_gate(result: ChapterResult | ChapterJobRecord) -> ReviewOnlyRenderGate:

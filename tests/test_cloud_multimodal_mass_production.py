@@ -1179,6 +1179,57 @@ def test_review_repair_forwards_persisted_panel_crop_fallback(monkeypatch):
     assert observed["allow_conservative_full_panel"] is True
 
 
+def test_review_render_map_uses_repaired_feasible_panel_ids_across_beats():
+    """A repaired section may cite a safe panel from a later causal beat."""
+    module = _module()
+    from types import SimpleNamespace
+
+    ledger = SimpleNamespace(
+        entries=(
+            SimpleNamespace(
+                panel_id="safe-later",
+                eligible_beats=("beat-2",),
+            ),
+            SimpleNamespace(
+                panel_id="safe-middle",
+                eligible_beats=("beat-3",),
+            ),
+        )
+    )
+    script = SimpleNamespace(
+        sections=(
+            {
+                "section": "hook",
+                "evidence_panel_ids": ["safe-later"],
+            },
+            {
+                "section": "setup",
+                "evidence_panel_ids": ["stale-original"],
+            },
+            {
+                "section": "cta",
+                "evidence_panel_ids": ["safe-middle"],
+            },
+        )
+    )
+
+    observed = module._review_section_panel_ids(
+        script,
+        ledger,
+        {
+            "hook": ("beat-1",),
+            "setup": ("beat-2",),
+            "cta": ("beat-5",),
+        },
+    )
+
+    assert observed == {
+        "hook": ("safe-later",),
+        "setup": ("safe-later",),
+        "cta": ("safe-middle",),
+    }
+
+
 def test_persisted_review_reuses_exact_prepared_panel_payloads(monkeypatch):
     """A durable script must not force review back through segmented DB bytes."""
     module = _module()
