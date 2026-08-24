@@ -2225,8 +2225,9 @@ def _visual_narrative_repair_retry_feedback(
         )
     if predicate == "visual.repair_chronology":
         return (
-            "keep the first passage as the hook and all later feasible citations in source "
-            "order; do not place an earlier panel after a later one"
+            "keep the first passage as the hook; for positions 1 onward use feasible "
+            "citations in nondecreasing source_order. The hook may be later, but do not "
+            "place an earlier panel after a later non-hook panel"
         )
     if value == "cloud.narrative_not_grounded" and failed_field == "passage_evidence":
         return (

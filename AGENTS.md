@@ -9,7 +9,10 @@ visual-narrative repair requests, and failed closed as
 panels, 10 ROIs, and 2 missing sections; no TTS/render/MP4 exists. The current
 unpublished patch adds only non-prose predicate classification and targeted
 retry feedback for that boundary. Do not repeat visual/story work or issue a
-new provider request until this patch is tested and published.
+new provider request until this patch is tested and published. The latest
+sanitized predicate is `visual.repair_chronology`; non-hook citations must be
+nondecreasing by source order, while a later hook remains allowed at position
+zero.
 
 ## Cached visual-stage metadata reuse - 2026-08-23
 

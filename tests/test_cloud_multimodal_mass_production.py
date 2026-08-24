@@ -158,6 +158,12 @@ def test_visual_repair_failure_classifies_safe_predicate_and_targets_retry_feedb
         "visual.narrative_repair_ungrounded",
         failed_predicate=metadata["failed_predicate"],
     )
+    chronology_feedback = module._visual_narrative_repair_retry_feedback(
+        "visual.narrative_repair_ungrounded",
+        failed_predicate="visual.repair_chronology",
+    )
+    assert "nondecreasing source_order" in chronology_feedback
+    assert "hook may be later" in chronology_feedback
     assert "repaired section still" not in str(metadata)
 
 

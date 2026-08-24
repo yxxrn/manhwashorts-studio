@@ -15,7 +15,10 @@ never stores provider prose or relaxes feasible-panel, grounding, chronology,
 duration, or QC gates. Focused cloud/visual tests, Ruff, and compileall pass;
 this instrumentation is not yet published. Before another provider attempt,
 publish this checkpoint and use the durable predicate to target the smallest
-repair contract boundary.
+repair contract boundary. The latest predicate is `visual.repair_chronology`;
+the next retry guidance explicitly requires non-hook citations to be
+nondecreasing by `source_order`, while allowing a later dramatic hook at
+position zero.
 
 ## Review resume preserves segmentation safety mode - 2026-08-24
 

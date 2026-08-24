@@ -10,6 +10,9 @@ now classifies local repair predicates into sanitized metadata and provides
 targeted retry guidance while retaining all strict grounding, lineage,
 chronology, duration, and visual gates. The instrumentation patch must be
 published before another provider request; no TTS/render/MP4 is claimed.
+The latest exact predicate is `visual.repair_chronology`; only non-hook
+citations are required to be nondecreasing by source order, so a later
+evidence-backed hook remains valid at position zero.
 
 ## Frozen release-candidate gate - 2026-08-23
 

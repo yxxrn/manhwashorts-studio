@@ -9,7 +9,9 @@ visual-narrative repair requests and ended `NEEDS_REVIEW` with
 panels, 10 feasible ROIs, 2 missing visual sections. TTS/render/MP4 have not
 run. The next source checkpoint classifies the exact failed local repair
 predicate without retaining response prose, then republishes before any new
-provider request. Preserve the job DB, caches, inputs, and credentials.
+provider request. The latest predicate is `visual.repair_chronology`; the
+repair feedback now states the non-hook source-order invariant explicitly.
+Preserve the job DB, caches, inputs, and credentials.
 
 ## Frozen release-candidate gate - 2026-08-23
 
