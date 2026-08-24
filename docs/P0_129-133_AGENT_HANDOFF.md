@@ -1,5 +1,16 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Visual-repair predicate checkpoint - 2026-08-24
+
+At published `1d21a65071df78020863f45196caa40fc14ee0e2`, the warm job reused
+60/60 visual and 60/60 story rows. It consumed three bounded
+visual-narrative repair requests and ended `NEEDS_REVIEW` with
+`visual.narrative_repair_ungrounded`. Sanitized durable scope: 5 feasible
+panels, 10 feasible ROIs, 2 missing visual sections. TTS/render/MP4 have not
+run. The next source checkpoint classifies the exact failed local repair
+predicate without retaining response prose, then republishes before any new
+provider request. Preserve the job DB, caches, inputs, and credentials.
+
 ## Frozen release-candidate gate - 2026-08-23
 
 The corrected end-to-end wall-clock limit is `<=90` minutes from ingestion to

@@ -1,5 +1,16 @@
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
+## Current local visual-repair checkpoint - 2026-08-24
+
+Published baseline: `1d21a65071df78020863f45196caa40fc14ee0e2`.
+The latest real resume reused 60/60 visual and story rows, made three bounded
+visual-narrative repair requests, and failed closed as
+`visual.narrative_repair_ungrounded`. Durable scope metadata records 5 feasible
+panels, 10 ROIs, and 2 missing sections; no TTS/render/MP4 exists. The current
+unpublished patch adds only non-prose predicate classification and targeted
+retry feedback for that boundary. Do not repeat visual/story work or issue a
+new provider request until this patch is tested and published.
+
 ## Cached visual-stage metadata reuse - 2026-08-23
 
 Rollback parent: `c3243aae75eacfe7ac5732f36e334272f853b42f`.

@@ -143,6 +143,24 @@ def test_visual_repair_analyzer_failure_keeps_only_field_count_and_guides_retry(
     )
 
 
+def test_visual_repair_failure_classifies_safe_predicate_and_targets_retry_feedback():
+    module = _module()
+
+    metadata = module._visual_narrative_repair_error_metadata(
+        "repaired section still has no feasible visual citation",
+        code="visual.narrative_repair_ungrounded",
+    )
+
+    assert metadata == {
+        "failed_predicate": "visual.repair_missing_section_without_feasible_citation",
+    }
+    assert "missing section" in module._visual_narrative_repair_retry_feedback(
+        "visual.narrative_repair_ungrounded",
+        failed_predicate=metadata["failed_predicate"],
+    )
+    assert "repaired section still" not in str(metadata)
+
+
 def test_invalid_visual_repair_cache_does_not_bypass_bounded_provider_path(monkeypatch):
     module = _module()
     repair = importlib.import_module("app.services.visual_narrative_repair")

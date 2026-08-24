@@ -1,5 +1,16 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Visual-repair predicate checkpoint - 2026-08-24
+
+The latest warm normal-entrypoint attempt reused 60/60 visual and story
+results, then exhausted three bounded visual-narrative repair attempts. It
+failed closed as `visual.narrative_repair_ungrounded`; the durable ledger
+metadata is 5 feasible panels, 10 ROIs, and 2 missing sections. This boundary
+now classifies local repair predicates into sanitized metadata and provides
+targeted retry guidance while retaining all strict grounding, lineage,
+chronology, duration, and visual gates. The instrumentation patch must be
+published before another provider request; no TTS/render/MP4 is claimed.
+
 ## Frozen release-candidate gate - 2026-08-23
 
 The corrected production wall-clock gate is `<=90` minutes from ingestion

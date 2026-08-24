@@ -1,5 +1,22 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## 2026-08-24 - Visual-repair predicate checkpoint
+
+The published smaller-position registry fix is `1d21a65071df78020863f45196caa40fc14ee0e2`.
+The real warm resume reused 60/60 visual and 60/60 story rows, then made three
+bounded visual-narrative repair requests and ended `NEEDS_REVIEW` with
+`visual.narrative_repair_ungrounded`. The durable repair scope was 5 feasible
+panels, 10 feasible ROIs, and 2 missing visual sections; no TTS, render, or
+accepted MP4 resulted.
+
+The next local boundary adds sanitized `failed_predicate` metadata for visual
+repair validation failures and sends predicate-specific retry guidance. It
+never stores provider prose or relaxes feasible-panel, grounding, chronology,
+duration, or QC gates. Focused cloud/visual tests, Ruff, and compileall pass;
+this instrumentation is not yet published. Before another provider attempt,
+publish this checkpoint and use the durable predicate to target the smallest
+repair contract boundary.
+
 ## Review resume preserves segmentation safety mode - 2026-08-24
 
 Menu 6 (`Resume failed/pending jobs`) previously omitted the explicit

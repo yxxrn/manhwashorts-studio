@@ -2141,6 +2141,51 @@ def _visual_narrative_repair_analyzer_metadata(
     }
 
 
+def _visual_narrative_repair_error_metadata(
+    message: str,
+    *,
+    code: str,
+) -> dict[str, str]:
+    """Classify visual-repair failures without retaining provider/error prose."""
+
+    lowered = str(message).casefold()
+    predicates = (
+        ("repair claim is malformed", "visual.repair_claim_malformed"),
+        ("repair claim is unsupported", "visual.repair_claim_unsupported"),
+        ("repair claim cites an infeasible panel", "visual.repair_claim_infeasible_panel"),
+        ("repair has no claims", "visual.repair_claims_empty"),
+        ("repair passage is malformed", "visual.repair_passage_malformed"),
+        ("repair passage evidence is incomplete", "visual.repair_passage_evidence_incomplete"),
+        ("repair passage cites unsupported evidence", "visual.repair_passage_unsupported_evidence"),
+        ("repair chronology is not ordered", "visual.repair_chronology"),
+        ("repair claim evidence is incomplete", "visual.repair_claim_evidence_incomplete"),
+        ("repair passage text is incomplete", "visual.repair_passage_text_incomplete"),
+        ("repaired passages are malformed", "visual.repair_sections_malformed"),
+        ("repaired passages do not cover every section", "visual.repair_sections_count"),
+        ("repaired passages omit a missing section", "visual.repair_missing_section_omitted"),
+        (
+            "repaired section still has no feasible visual citation",
+            "visual.repair_missing_section_without_feasible_citation",
+        ),
+    )
+    for marker, predicate in predicates:
+        if marker in lowered:
+            return {"failed_predicate": predicate}
+    if code == "cloud.narrative_qc_blocked":
+        predicate = "narrative_quality_gate"
+    elif code == "cloud.narrative_duration_out_of_range":
+        predicate = "narration_duration_contract"
+    elif code == "cloud.provider_response_invalid":
+        predicate = "provider_response_shape"
+    elif code == "cloud.narrative_not_grounded":
+        predicate = "analyzer_contract_invalid"
+    elif code == "visual.narrative_repair_ungrounded":
+        predicate = "visual.repair_contract"
+    else:
+        predicate = str(code).strip() or "visual.repair_contract"
+    return {"failed_predicate": predicate}
+
+
 def _narrative_grounding_error(field: str, count: int) -> CloudStageError:
     return CloudStageError(
         "cloud.narrative_not_grounded",
@@ -2153,10 +2198,36 @@ def _visual_narrative_repair_retry_feedback(
     code: str,
     *,
     failed_field: str | None = None,
+    failed_predicate: str | None = None,
 ) -> str:
     """Return bounded, non-content guidance for one rejected repair attempt."""
 
     value = str(code)
+    predicate = str(failed_predicate or "")
+    if predicate == "visual.repair_missing_section_without_feasible_citation":
+        return (
+            "ensure every missing section has at least one feasible panel citation; "
+            "replace stale citations with feasible panels and keep all passages grounded"
+        )
+    if predicate == "visual.repair_missing_section_omitted":
+        return (
+            "return enough ordered passages to cover every missing visual section, with "
+            "non-empty claims and feasible panel citations"
+        )
+    if predicate in {
+        "visual.repair_passage_evidence_incomplete",
+        "visual.repair_passage_unsupported_evidence",
+        "visual.repair_claim_evidence_incomplete",
+    }:
+        return (
+            "for every passage, cite its existing claim IDs and complete feasible evidence; "
+            "do not omit or add panel references"
+        )
+    if predicate == "visual.repair_chronology":
+        return (
+            "keep the first passage as the hook and all later feasible citations in source "
+            "order; do not place an earlier panel after a later one"
+        )
     if value == "cloud.narrative_not_grounded" and failed_field == "passage_evidence":
         return (
             "for every returned passage, include each referenced claim ID's complete "
@@ -7827,9 +7898,29 @@ class CloudStageRunner:
                     ),
                 )
             except visual_narrative_repair.VisualNarrativeRepairError as exc:
-                error = CloudStageError(exc.code, reviewable=exc.reviewable)
+                error = CloudStageError(
+                    exc.code,
+                    reviewable=exc.reviewable,
+                    safe_metadata=_visual_narrative_repair_error_metadata(
+                        str(exc),
+                        code=exc.code,
+                    ),
+                )
             except CloudStageError as exc:
-                error = exc
+                safe_metadata = dict(exc.safe_metadata)
+                safe_metadata.setdefault(
+                    "failed_predicate",
+                    _visual_narrative_repair_error_metadata(
+                        str(exc),
+                        code=exc.code,
+                    )["failed_predicate"],
+                )
+                error = CloudStageError(
+                    exc.code,
+                    str(exc),
+                    reviewable=exc.reviewable,
+                    safe_metadata=safe_metadata,
+                )
             if error.code not in retryable_codes or attempt + 1 >= visual_narrative_repair.MAX_REPAIR_ATTEMPTS:
                 safe_metadata = dict(getattr(error, "safe_metadata", {}) or {})
                 safe_metadata.update(
@@ -7848,6 +7939,7 @@ class CloudStageRunner:
             retry_feedback = _visual_narrative_repair_retry_feedback(
                 error.code,
                 failed_field=str(error.safe_metadata.get("failed_field", "")) or None,
+                failed_predicate=str(error.safe_metadata.get("failed_predicate", "")) or None,
             )
         raise CloudStageError("visual.narrative_repair_bounded", reviewable=True)
 
