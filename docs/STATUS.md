@@ -1,5 +1,25 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## Review resume preserves segmentation safety mode - 2026-08-24
+
+Menu 6 (`Resume failed/pending jobs`) previously omitted the explicit
+`review_only_preview` execution boundary even though the operator UI remained
+review-only. A resumed job therefore skipped the existing review-only
+reconciliation that retains provider-confirmed cuts while leaving protected or
+ambiguous artwork contiguous, and repeatedly stopped at
+`segmentation.protected_boundary`.
+
+RED reproduced the missing argument at commit `eab666c`; GREEN forwards the
+review flag, silent-review upscale policy, and review output directory. The
+focused operator/segmentation/cloud matrix is 245 passed, with Ruff, compileall,
+and diff-check clean. A real resume from 18 durable source checkpoints passed
+the former segmentation blocker and entered streaming vision. It then failed
+at the distinct `cloud.panel_lineage_invalid` gate after multiple provider
+responses were rejected as `cloud.provider_response_invalid` or
+`visual.balloon_mask_unknown`. No video, narration, TTS, render, or QC success
+is claimed. Next work belongs to the provider-response/visual-evidence boundary;
+the protected-boundary gate must not be weakened.
+
 ## Frozen release-candidate gate - 2026-08-23
 
 The production wall-clock limit is corrected to `<=90` minutes from chapter

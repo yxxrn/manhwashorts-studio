@@ -40,4 +40,4 @@ installed in the repository environment; no coverage percentage is claimed.
 ## Merge evidence
 
 - RED checkpoint: `eab666c8223d082708fc4eee1472207d0408f99f`
-- GREEN checkpoint: recorded by the following fix commit.
+- GREEN checkpoint: `446283291bb3064fbfcead50d44d892b5954a7c2`.
