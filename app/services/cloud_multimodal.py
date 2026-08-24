@@ -5292,11 +5292,17 @@ class CloudStageRunner:
         selected_claim_ids = {
             claim_id for item in canonical_positions for claim_id in item.claim_ids
         }
-        available_claim_ids = {
+        story_claim_ids = {
             str(claim.get("claim_id", ""))
             for claim in story_map.claims
             if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
         }
+        candidate_claim_ids = {
+            str(claim.get("claim_id", ""))
+            for claim in candidate.evidence_graph.get("claims", ())
+            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        }
+        available_claim_ids = story_claim_ids & candidate_claim_ids
         minimum_selected_claims = min(
             NARRATION_REPAIR_POSITION_MAX_COUNT,
             len(available_claim_ids),

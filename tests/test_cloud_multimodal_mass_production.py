@@ -4496,6 +4496,41 @@ def test_position_registry_accepts_five_grounded_passages_with_three_claims():
     assert sum(row["word_budget"] for row in registry["positions"]) == 120
 
 
+def test_position_registry_uses_candidate_claim_scope_not_all_story_claims():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    passages = []
+    retained_claims = []
+    for index, original in enumerate(candidate.passages[:5]):
+        passage = dict(original)
+        claim_ids = list(original["claim_ids"] if index < 2 else original["claim_ids"][:1])
+        passage["claim_ids"] = claim_ids
+        passages.append(passage)
+        retained_claims.extend(claim_ids)
+    candidate_claims = [
+        dict(claim)
+        for claim in candidate.evidence_graph["claims"]
+        if claim["claim_id"] in set(retained_claims)
+    ]
+    candidate_with_seven_claims = replace(
+        candidate,
+        passages=tuple(passages),
+        evidence_graph={"claims": candidate_claims},
+    )
+    story_claims = tuple(dict(claim) for claim in story_map.claims[:10])
+    story_with_ten_claims = replace(story_map, claims=story_claims)
+
+    registry = runner._build_narration_repair_position_registry(
+        candidate_with_seven_claims,
+        story_with_ten_claims,
+    )
+
+    assert len(registry["positions"]) == 7
+    assert len({claim_id for row in registry["positions"] for claim_id in row["claim_ids"]}) == 7
+    assert len({row["passage_id"] for row in registry["positions"]}) == 5
+    assert sum(row["word_budget"] for row in registry["positions"]) == 120
+
+
 def test_position_registry_maxima_cannot_exceed_final_word_bound():
     module = _module()
     runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
