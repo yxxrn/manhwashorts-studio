@@ -2113,6 +2113,23 @@ def test_unknown_visual_geometry_gets_targeted_singleton_repair_before_fallback(
     assert repaired["visual_evidence"]["balloon_mask_status"] != "unknown"
 
 
+def test_unattempted_conservative_visual_cache_is_not_reused():
+    module = _module()
+    panel = _panels(module)[0]
+    row = {
+        "panel_id": panel.panel_id,
+        "source_asset_id": panel.source_asset_id,
+        "source_order": panel.source_order,
+        "source_checksum": panel.source_checksum,
+        "observation": {"visible_facts": ["a grounded fact"]},
+        "fallback_mode": "conservative_full_panel_v1",
+    }
+
+    assert module._visual_cached_row_is_reusable(row, panel) is False
+    row["targeted_geometry_repair_attempted"] = True
+    assert module._visual_cached_row_is_reusable(row, panel) is True
+
+
 def test_transient_unknown_visual_response_is_retried_atomically():
     module = _module()
     provider = _FakeProvider(transient_unknown_count=1)

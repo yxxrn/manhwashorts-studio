@@ -3259,6 +3259,7 @@ class CloudStageRunner:
                                 "visual_evidence": evidence_json,
                                 "evidence_hash": evidence_json["evidence_hash"],
                                 "fallback_mode": "conservative_full_panel_v1",
+                                "targeted_geometry_repair_attempted": True,
                             }
                             entry["cache_identity_hash"] = panel_identity_by_id[item.panel_id]
                             entry["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
@@ -9471,6 +9472,15 @@ def _visual_cached_row_is_reusable(
     """Validate cached lineage plus the shared analyzer's fact prerequisite."""
 
     if panel is None:
+        return False
+    if (
+        row.get("fallback_mode") == "conservative_full_panel_v1"
+        and row.get("targeted_geometry_repair_attempted") is not True
+    ):
+        # Older review rows were admitted after the multi-panel response left
+        # geometry unknown. Revisit each such row exactly once through the
+        # singleton geometry boundary; once that bounded attempt is recorded,
+        # the conservative fallback is a stable, auditable cache result.
         return False
     return (
         str(row.get("panel_id", "")) == panel.panel_id
