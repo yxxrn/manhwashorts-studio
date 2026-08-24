@@ -1205,6 +1205,9 @@ class OperatorCLI:
             review_dir=self.review_dir,
             runner_factory=cloud_multimodal.resolve_cloud_runner,
             run_options=self._run_options(),
+            review_only_preview=True,
+            review_source_upscale_policy="review_silent_source_upscale_v1",
+            review_output_dir=_settings().output_dir,
         )
         for row in rows:
             self._print(f"{row['job_id']}: {row['state']} {row['error_code']}")
