@@ -118,6 +118,74 @@ def test_panel_candidate_builder_fans_out_integer_citation_by_source_order():
     assert all("hook" in candidate.eligible_sections for candidate in result)
 
 
+def test_review_only_unknown_geometry_uses_conservative_full_panel_when_facts_exist():
+    region = _region("panel-unknown", "region-unknown", "asset-a", 3, (0, 0, 100, 200), "asset-a-checksum")
+    unknown = visual_scoring.unknown_visual_evidence(
+        panel_id="panel-unknown",
+        source_asset_id="asset-a",
+        source_order=3,
+        reason="provider geometry was unavailable",
+    )
+    region.observation_json = {
+        "visible_facts": ["a figure stands near a gate"],
+        "visual_evidence": visual_scoring.panel_visual_evidence_json(unknown),
+    }
+    candidates = {"region-unknown": _candidate("asset-a", 3, "unknown")}
+    crops = {"region-unknown": _crop((40, 60, 100), True)}
+
+    assert pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=(region,),
+        panel_candidates_by_region_id=candidates,
+        panel_crops_by_region_id=crops,
+        section_evidence_panel_ids={"hook": ("panel-unknown",)},
+        section_citations={},
+        beats_by_section={"hook": ("action",)},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    ) == ()
+
+    result = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=(region,),
+        panel_candidates_by_region_id=candidates,
+        panel_crops_by_region_id=crops,
+        section_evidence_panel_ids={"hook": ("panel-unknown",)},
+        section_citations={},
+        beats_by_section={"hook": ("action",)},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        allow_conservative_full_panel=True,
+    )
+
+    assert len(result) == 1
+    assert result[0].visual_evidence.evidence_source == "conservative_full_panel_v1"
+    assert [roi.roi_label for roi in result[0].roi_alternatives] == ["conservative_full_panel"]
+
+
+def test_review_only_unknown_geometry_without_visible_facts_stays_excluded():
+    region = _region("panel-unknown", "region-unknown", "asset-a", 3, (0, 0, 100, 200), "asset-a-checksum")
+    unknown = visual_scoring.unknown_visual_evidence(
+        panel_id="panel-unknown",
+        source_asset_id="asset-a",
+        source_order=3,
+        reason="provider geometry was unavailable",
+    )
+    region.observation_json = {
+        "visible_facts": [],
+        "visual_evidence": visual_scoring.panel_visual_evidence_json(unknown),
+    }
+
+    result = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=(region,),
+        panel_candidates_by_region_id={"region-unknown": _candidate("asset-a", 3, "unknown")},
+        panel_crops_by_region_id={"region-unknown": _crop((40, 60, 100), True)},
+        section_evidence_panel_ids={"hook": ("panel-unknown",)},
+        section_citations={},
+        beats_by_section={"hook": ("action",)},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        allow_conservative_full_panel=True,
+    )
+
+    assert result == ()
+
+
 def test_reference_loader_excludes_order_zero_front_matter_before_candidate_build(monkeypatch):
     import io
 

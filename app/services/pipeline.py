@@ -2704,6 +2704,7 @@ def _bind_reference_panel_regions(
                 candidate_registry=candidate_registry,
                 regions=regions,
                 assets=images,
+                allow_conservative_full_panel=review_source_upscale_policy is not None,
             )
         except reference_visual_review.ReferenceReviewError as exc:
             raise PipelineError(f"{exc.code}: {exc}") from exc

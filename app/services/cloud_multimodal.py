@@ -9891,6 +9891,7 @@ def _build_ephemeral_review_candidates(
             profile=profile,
             source_upscale_manifests_by_region_id=upscale_manifests,
             allow_missing_explicit=True,
+            allow_conservative_full_panel=review_source_upscale_policy is not None,
         )
     except reference_visual_review.ReferenceReviewError as exc:
         import traceback as _tb

@@ -276,11 +276,12 @@ def build_reference_panel_fallback_candidates(
             )
             if not isinstance(raw_evidence, Mapping):
                 raise ReferenceReviewError("panel visual evidence is missing")
-            evidence = visual_scoring.parse_panel_visual_evidence(raw_evidence)
-            if evidence.balloon_mask_status == "unknown" and not (
-                allow_conservative_full_panel
-                and visual_scoring.is_conservative_full_panel_visual_evidence(evidence)
-            ):
+            evidence = _review_ready_evidence(
+                region,
+                visual_scoring.parse_panel_visual_evidence(raw_evidence),
+                allow_conservative_full_panel=allow_conservative_full_panel,
+            )
+            if evidence is None:
                 continue
             # Blank-dominant panels (near-empty splash/title/corrupt crops) are
             # never frameable content. Skip them before feasibility so they
@@ -367,13 +368,68 @@ def _panel_is_blank_dominant(crop) -> bool:
         return False
 
 
-def validated_visual_snapshot(region: object) -> dict[str, Any]:
+def _has_visible_facts(observation: object) -> bool:
+    if not isinstance(observation, Mapping):
+        return False
+    values = observation.get("visible_facts")
+    if not isinstance(values, list) or not values:
+        return False
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            continue
+        if isinstance(value, Mapping) and any(
+            isinstance(candidate, str) and candidate.strip()
+            for candidate in value.values()
+        ):
+            continue
+        return False
+    return True
+
+
+def _review_ready_evidence(
+    region: object,
+    evidence: visual_scoring.PanelVisualEvidence,
+    *,
+    allow_conservative_full_panel: bool,
+) -> visual_scoring.PanelVisualEvidence | None:
+    if evidence.balloon_mask_status != "unknown":
+        return evidence
+    if visual_scoring.is_conservative_full_panel_visual_evidence(evidence):
+        return evidence if allow_conservative_full_panel else None
+    if not allow_conservative_full_panel:
+        return None
+    observation = getattr(region, "observation_json", None)
+    if not isinstance(observation, Mapping) or not _has_visible_facts(observation):
+        return None
+    return visual_scoring.conservative_full_panel_visual_evidence(
+        panel_id=str(getattr(region, "panel_id", "")),
+        source_asset_id=str(getattr(region, "source_asset_id", "")),
+        source_order=int(getattr(region, "source_order", -1)),
+        reason="provider geometry remained unknown; review-only whole-panel fallback",
+    )
+
+
+def validated_visual_snapshot(
+    region: object,
+    *,
+    allow_conservative_full_panel: bool = False,
+) -> dict[str, Any]:
     observation = getattr(region, "observation_json", None)
     raw = observation.get("visual_evidence") if isinstance(observation, Mapping) else None
     if not isinstance(raw, Mapping):
         raise ReferenceReviewError("panel visual evidence is missing")
     try:
         evidence = visual_scoring.parse_panel_visual_evidence(raw)
+        evidence = _review_ready_evidence(
+            region,
+            evidence,
+            allow_conservative_full_panel=allow_conservative_full_panel,
+        )
+        if evidence is None:
+            raise visual_scoring.VisualEvidenceError(
+                "visual.balloon_mask_unknown",
+                "review framing requires known or explicit conservative geometry",
+            )
         if (
             evidence.panel_id != region.panel_id
             or evidence.source_asset_id != region.source_asset_id
@@ -393,6 +449,7 @@ def bind_reference_panel_shots(
     candidate_registry: Mapping[str, object],
     regions: Sequence[object],
     assets: Sequence[object],
+    allow_conservative_full_panel: bool = False,
 ) -> list[dict[str, Any]]:
     """Validate and bind planner-selected exact panels without database access."""
     by_region = {str(region.id): region for region in regions}
@@ -425,7 +482,10 @@ def bind_reference_panel_shots(
                 and region.source_asset_checksum != asset_checksum
             ):
                 raise ValueError("planner panel lineage does not match persisted region")
-            snapshot = validated_visual_snapshot(region)
+            snapshot = validated_visual_snapshot(
+                region,
+                allow_conservative_full_panel=allow_conservative_full_panel,
+            )
             if _canonical(snapshot) != _canonical(
                 visual_scoring.panel_visual_evidence_json(candidate.visual_evidence)
             ):
