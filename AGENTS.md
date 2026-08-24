@@ -1,3 +1,27 @@
+# CURRENT LOCAL VIDEO 1 HANDOFF - 2026-08-24
+
+## Published feasible-ledger title-policy checkpoint
+
+Published source/test fix: `9654b9ad5e38434dccef824e0102a1396394683c` (parent
+`bde9c363b1260a6b97a20cfc560da2dfa1c889a0`). The durable local job
+`a49a1db9b7c74b83b28b926cfa106622` remains `NEEDS_REVIEW` with
+`visual.visual_unavailable`; no provider, TTS, render, or MP4 claim is made.
+
+The reproduced local defect was a title-family predicate shared inconsistently
+by the planner and feasible-visual ledger: every `page__001` family was
+treated as title material, so valid source order 26 (`009__001`) was removed.
+The canonical policy now uses immutable `source_order`: order 0 is front
+matter, later two-segment `page__001` families remain eligible, and the
+explicit three-segment title-splash form remains excluded. The ledger and
+planner use the same policy. The focused affected matrix is 113 passed,
+171 deselected, 21 warnings; Ruff, compileall, and diff-check passed.
+
+The read-only durable preflight after publication found 50 candidates and 5
+feasible entries at source orders 20, 22, 26, 40, and 43, with only `hook` and
+`cta` missing. Resume the existing job through the normal operator CLI; do not
+repeat valid visual/story stages or stage the protected `final_test/` and
+`The Novel’s Extra/` input trees.
+
 # CURRENT ORACLE REPAIR HANDOFF - 2026-08-21
 
 ## Current local visual-repair checkpoint - 2026-08-24

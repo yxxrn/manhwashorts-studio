@@ -1,5 +1,23 @@
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
+## Feasible-ledger title-policy checkpoint - 2026-08-24
+
+Published commit `9654b9ad5e38434dccef824e0102a1396394683c` is a narrow local
+fix for job `a49a1db9b7c74b83b28b926cfa106622`. The planner and feasible ledger
+now share an order-aware title policy: source order 0 is excluded as front
+matter, later two-segment `page__001` families are eligible, and the known
+three-segment title splash remains excluded. This corrects the prior loss of
+valid order 26 (`009__001`).
+
+The read-only preflight produced 50 candidates and 5 feasible entries at
+orders 20, 22, 26, 40, and 43; only `hook` and `cta` remain uncovered. The
+focused matrix is 113 passed / 171 deselected / 21 warnings, with Ruff,
+compileall, and diff-check clean. Runtime state remains
+`NEEDS_REVIEW`/`visual.visual_unavailable`; no provider, TTS, render, or MP4
+artifact has been accepted. Resume from the existing job with the normal
+operator CLI after confirming no duplicate process; do not redo valid
+visual/story stages or alter protected runtime/input data.
+
 ## Visual-repair predicate checkpoint - 2026-08-24
 
 At published `1d21a65071df78020863f45196caa40fc14ee0e2`, the warm job reused

@@ -1,5 +1,21 @@
 # FOLLOW-UP GREEN CHECKPOINT - 2026-08-20
 
+## Feasible-ledger/planner title-policy invariant - 2026-08-24
+
+Published `9654b9ad5e38434dccef824e0102a1396394683c` closes a local review
+boundary mismatch without changing visual gates. Title eligibility is derived
+from immutable source order when available: order 0 is front matter; a later
+two-segment `page__001` family is not title material; the explicit
+three-segment title-splash form remains excluded. Both the reference planner
+and `build_feasible_visual_ledger` call the same public predicate, so a panel
+cannot be feasible in one stage and silently disappear in the other.
+
+For the durable Video 1 job, the offline preflight measured 50 candidate
+records and 5 feasible records at source orders 20, 22, 26, 40, and 43, with
+`hook` and `cta` still missing. This checkpoint consumed no provider/TTS/render
+request and does not claim an artifact; the next operation is the normal
+cached-job review resume.
+
 ## Visual-repair predicate checkpoint - 2026-08-24
 
 The latest warm normal-entrypoint attempt reused 60/60 visual and story

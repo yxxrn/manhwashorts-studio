@@ -1,5 +1,25 @@
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
+## 2026-08-24 - Feasible-ledger title-policy fix published
+
+Commit `9654b9ad5e38434dccef824e0102a1396394683c` fixes a local admission
+discrepancy in the visual-aware review path. The planner's title-family rule
+previously rejected every `page__001` family; for this job that incorrectly
+removed valid source order 26 (`009__001`) from the feasible ledger. The
+source-order-aware rule rejects order 0 front matter, preserves later
+two-segment first-panel families, and keeps the explicit three-segment title
+splash rejection. Planner and ledger now share the same predicate.
+
+Offline preflight on job
+`a49a1db9b7c74b83b28b926cfa106622` found 50 candidates and 5 feasible entries
+(orders 20, 22, 26, 40, 43); missing sections are `hook` and `cta`. The
+affected matrix passed 113 tests with 171 deselected and 21 deprecation
+warnings; Ruff, compileall, and `git diff --check` passed. This is a source
+boundary checkpoint only: the job is still `NEEDS_REVIEW` with
+`visual.visual_unavailable`, and no provider/TTS/render/MP4/QC success is
+claimed. Next action is one normal existing-job resume using cached
+visual/story state and the current review policy.
+
 ## 2026-08-24 - Visual-repair predicate checkpoint
 
 The published smaller-position registry fix is `1d21a65071df78020863f45196caa40fc14ee0e2`.
