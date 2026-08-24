@@ -16,8 +16,11 @@ from dataclasses import dataclass
 from typing import Any
 
 MANIFEST_VERSION = "prepared-panel-manifest-v2"
+COMPACT_MANIFEST_VERSION = "prepared-panel-manifest-v3"
+PREVIOUS_MANIFEST_VERSION = MANIFEST_VERSION
 LEGACY_MANIFEST_VERSION = "prepared-panel-manifest-v1"
 PAYLOAD_MARKER_PREFIX = b"prepared-panel-manifest-v2:"
+COMPACT_PAYLOAD_MARKER_PREFIX = b"prepared-panel-manifest-v3:"
 
 
 class PreparedPanelManifestError(ValueError):
@@ -217,6 +220,134 @@ class PreparedPanelManifest:
             ),
             "manifest_hash": self.manifest_hash,
         }
+
+
+def _canonical_panel_ref(raw: Mapping[str, Any], identity_hash: str, source_identity: str) -> dict[str, Any]:
+    """Return the one canonical, payload-free identity used by derived stages."""
+
+    required = (
+        "panel_id",
+        "source_asset_id",
+        "source_order",
+        "source_checksum",
+        "panel_bounds",
+        "source_dimensions",
+    )
+    if any(key not in raw for key in required):
+        raise PreparedPanelManifestError("canonical panel reference is incomplete")
+    ref = {
+        key: (list(raw[key]) if key in {"panel_bounds", "source_dimensions"} else raw[key])
+        for key in required
+    }
+    ref.update(
+        {
+            "prepared_order": int(raw.get("prepared_order", 0)),
+            "identity_hash": _require_hash(identity_hash, f"panel {raw['panel_id']} identity hash"),
+            "source_identity_hash": _require_hash(source_identity, "source identity hash"),
+            "strip_region_id": str(raw.get("strip_region_id", raw["panel_id"])),
+            "coverage_map_version": str(raw.get("coverage_map_version", "")),
+            "coverage_map_hash": str(raw.get("coverage_map_hash", "")),
+            "segmentation_version": str(raw.get("segmentation_version", "")),
+            "source_family": str(raw.get("source_family", "")),
+        }
+    )
+    return ref
+
+
+def build_compact_manifest_from_descriptors(
+    panel_descriptors: Sequence[Mapping[str, Any]],
+    segmentation_state: Mapping[str, Any],
+    *,
+    panel_identity_hashes: Sequence[str],
+    source_identity_hash: str,
+    source_assets: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build the v3 metadata-only manifest used by new cloud runs.
+
+    Full segmentation reports and feasible-ledger decisions remain durable in
+    their own stage outputs.  This manifest is only the ordered join key for
+    materialization: current source fingerprint, segmentation dependency, and
+    canonical panel references.  Legacy v1/v2 manifests are still accepted by
+    ``validate_manifest``.
+    """
+
+    if not isinstance(segmentation_state, Mapping):
+        raise PreparedPanelManifestError("segmentation state is malformed")
+    source_identity = _require_hash(source_identity_hash, "source identity hash")
+    hashes = tuple(
+        _require_hash(value, "panel identity hash") for value in panel_identity_hashes
+    )
+    if len(hashes) != len(panel_descriptors):
+        raise PreparedPanelManifestError("panel identity count does not match descriptors")
+    assets = _normalize_assets(source_assets)
+    refs = tuple(
+        _canonical_panel_ref(raw, hashes[index], source_identity)
+        for index, raw in enumerate(panel_descriptors)
+    )
+    normalized_refs = tuple(_normalize_panel_descriptors(
+        [
+            {
+                **ref,
+                "identity_descriptor_hash": ref["identity_hash"],
+                "identity_payload_checksum": ref["identity_hash"],
+            }
+            for ref in refs
+        ],
+        require_prepared_order=True,
+    ))
+    for ref in normalized_refs:
+        asset = next((item for item in assets if item["source_asset_id"] == ref["source_asset_id"]), None)
+        if asset is None or asset["source_checksum"] != ref["source_checksum"]:
+            raise PreparedPanelManifestError("panel source asset identity mismatch")
+    source_fingerprint = _hash(assets)
+    dependency_hash = _hash(dict(segmentation_state))
+    core = {
+        "manifest_version": COMPACT_MANIFEST_VERSION,
+        "source_asset_fingerprint": source_fingerprint,
+        "segmentation_dependency_hash": dependency_hash,
+        "canonical_panel_refs": [dict(item) for item in refs],
+        "source_identity_hash": source_identity,
+    }
+    aggregate_hash = _hash(core)
+    return {
+        **core,
+        "aggregate_hash": aggregate_hash,
+        "manifest_hash": aggregate_hash,
+    }
+
+
+def build_compact_manifest(
+    panels: Sequence[Any],
+    segmentation_state: Mapping[str, Any],
+    *,
+    source_assets: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build a v3 manifest from CloudPanelInput-like canonical references."""
+
+    descriptors = []
+    hashes = []
+    for index, panel in enumerate(panels):
+        descriptor = dict(panel.descriptor())
+        descriptor["prepared_order"] = int(getattr(panel, "prepared_order", None) or index)
+        descriptor["identity_descriptor_hash"] = str(
+            getattr(panel, "identity_descriptor_hash", "")
+            or getattr(panel, "identity_payload_checksum", "")
+            or getattr(panel, "payload_checksum", "")
+        )
+        descriptor["identity_payload_checksum"] = descriptor["identity_descriptor_hash"]
+        descriptor["source_identity_hash"] = str(getattr(panel, "source_identity_hash", ""))
+        descriptors.append(descriptor)
+        hashes.append(descriptor["identity_descriptor_hash"])
+    source_identity = str(getattr(panels[0], "source_identity_hash", "")) if panels else ""
+    if not source_identity:
+        source_identity = _hash(hashes)
+    return build_compact_manifest_from_descriptors(
+        descriptors,
+        segmentation_state,
+        panel_identity_hashes=hashes,
+        source_identity_hash=source_identity,
+        source_assets=source_assets,
+    )
 
 
 def build_manifest(
@@ -505,7 +636,72 @@ def validate_manifest(value: Mapping[str, Any]) -> PreparedPanelManifest:
         raise PreparedPanelManifestError("prepared manifest version is unsupported")
     if value.get("manifest_version") == LEGACY_MANIFEST_VERSION:
         value = migrate_legacy_manifest(value)
-    if value.get("manifest_version") != MANIFEST_VERSION:
+    if value.get("manifest_version") == COMPACT_MANIFEST_VERSION:
+        return _validate_compact_manifest(value)
+    if value.get("manifest_version") == MANIFEST_VERSION:
+        return _validate_v2_manifest(value)
+    raise PreparedPanelManifestError("prepared manifest version is unsupported")
+
+
+def _validate_compact_manifest(value: Mapping[str, Any]) -> PreparedPanelManifest:
+    """Validate v3 without trusting duplicated legacy stage state."""
+
+    source_fingerprint = str(value.get("source_asset_fingerprint", ""))
+    _require_hash(source_fingerprint, "source asset fingerprint")
+    source_identity_hash = _require_hash(value.get("source_identity_hash"), "source identity hash")
+    dependency_hash = _require_hash(
+        value.get("segmentation_dependency_hash"),
+        "segmentation dependency hash",
+    )
+    raw_refs = value.get("canonical_panel_refs")
+    if not isinstance(raw_refs, list):
+        raise PreparedPanelManifestError("canonical panel references are malformed")
+    descriptors: list[dict[str, Any]] = []
+    hashes: list[str] = []
+    for raw in raw_refs:
+        if not isinstance(raw, Mapping):
+            raise PreparedPanelManifestError("canonical panel reference is malformed")
+        identity_hash = _require_hash(raw.get("identity_hash"), "panel identity hash")
+        descriptor = dict(raw)
+        descriptor["identity_descriptor_hash"] = identity_hash
+        descriptor["identity_payload_checksum"] = identity_hash
+        descriptor["source_identity_hash"] = source_identity_hash
+        descriptors.append(descriptor)
+        hashes.append(identity_hash)
+    panels = tuple(_normalize_panel_descriptors(descriptors, require_prepared_order=True))
+    if any(panel["identity_descriptor_hash"] != hashes[index] for index, panel in enumerate(panels)):
+        raise PreparedPanelManifestError("panel identity hash does not match manifest")
+    core = {
+        "manifest_version": COMPACT_MANIFEST_VERSION,
+        "source_asset_fingerprint": source_fingerprint,
+        "segmentation_dependency_hash": dependency_hash,
+        "canonical_panel_refs": [dict(item) for item in raw_refs],
+        "source_identity_hash": source_identity_hash,
+    }
+    aggregate_hash = _require_hash(value.get("aggregate_hash"), "aggregate hash")
+    manifest_hash = _require_hash(value.get("manifest_hash"), "manifest hash")
+    if aggregate_hash != _hash(core) or manifest_hash != aggregate_hash:
+        raise PreparedPanelManifestError("prepared manifest hash mismatch")
+    return PreparedPanelManifest(
+        manifest_version=COMPACT_MANIFEST_VERSION,
+        source_asset_fingerprint=source_fingerprint,
+        source_assets=(),
+        panel_descriptors=panels,
+        panel_identity_hashes=tuple(hashes),
+        source_identity_hash=source_identity_hash,
+        segmentation_state={
+            "status": "RECONCILED",
+            "segmentation_dependency_hash": dependency_hash,
+        },
+        feasible_visual_ledger=None,
+        manifest_hash=manifest_hash,
+    )
+
+
+def _validate_v2_manifest(value: Mapping[str, Any]) -> PreparedPanelManifest:
+    """Read the pre-v3 writer without making it the new persistence format."""
+
+    if value.get("manifest_version") != PREVIOUS_MANIFEST_VERSION:
         raise PreparedPanelManifestError("prepared manifest version is unsupported")
     (
         source_assets,
@@ -554,7 +750,12 @@ def restore_cloud_panels(manifest: PreparedPanelManifest, panel_type: type[Any])
             descriptor.get("identity_payload_checksum")
             or descriptor["identity_descriptor_hash"]
         )
-        marker = PAYLOAD_MARKER_PREFIX + payload_checksum.encode("ascii")
+        marker_prefix = (
+            COMPACT_PAYLOAD_MARKER_PREFIX
+            if manifest.manifest_version == COMPACT_MANIFEST_VERSION
+            else PAYLOAD_MARKER_PREFIX
+        )
+        marker = marker_prefix + payload_checksum.encode("ascii")
         restored.append(
             panel_type(
                 panel_id=descriptor["panel_id"],
@@ -611,12 +812,16 @@ def require_source_assets_match(
 
 __all__ = [
     "MANIFEST_VERSION",
+    "COMPACT_MANIFEST_VERSION",
     "LEGACY_MANIFEST_VERSION",
     "PAYLOAD_MARKER_PREFIX",
+    "COMPACT_PAYLOAD_MARKER_PREFIX",
     "PreparedPanelManifest",
     "PreparedPanelManifestError",
     "build_manifest",
     "build_manifest_from_descriptors",
+    "build_compact_manifest",
+    "build_compact_manifest_from_descriptors",
     "migrate_legacy_manifest",
     "require_source_assets_match",
     "restore_cloud_panels",

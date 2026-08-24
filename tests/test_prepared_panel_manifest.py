@@ -205,12 +205,14 @@ def test_cached_visual_stage_accepts_metadata_only_manifest_without_provider_cal
         },
     )
     cached = cloud.VisualStageResult(
-        panels=(
-            {
-                "panel_id": "panel-0",
-                "source_asset_id": "asset-0",
-                "source_order": 0,
-            },
+            panels=(
+                {
+                    "panel_id": "panel-0",
+                    "source_asset_id": "asset-0",
+                    "source_order": 0,
+                    "source_checksum": panels[0].source_checksum,
+                    "observation": {"visible_facts": ["cached fact"]},
+                },
         ),
         source_hash="v" * 64,
         model_identity_hash=identity.identity_hash,
@@ -549,3 +551,47 @@ def test_legacy_prepared_manifest_migrates_metadata_only_without_source_relabeli
     assert migrated["manifest_version"] == manifest_module.MANIFEST_VERSION
     assert [item["source_order"] for item in migrated["panel_descriptors"]] == [0, 1, 3, 4]
     assert [item["prepared_order"] for item in migrated["panel_descriptors"]] == [0, 1, 2, 3]
+
+
+def test_compact_manifest_uses_canonical_refs_and_dependency_hash_only():
+    manifest_module, cloud = _modules()
+    panels = _panels(cloud)
+    descriptors = []
+    hashes = _identity_hashes(cloud, panels)
+    for index, panel in enumerate(panels):
+        descriptor = dict(panel.descriptor())
+        descriptor["prepared_order"] = index
+        descriptor["identity_descriptor_hash"] = hashes[index]
+        descriptor["identity_payload_checksum"] = hashes[index]
+        descriptors.append(descriptor)
+    segmentation = {"status": "RECONCILED", "reports": [{"asset": "a"}]}
+    manifest = manifest_module.build_compact_manifest_from_descriptors(
+        descriptors,
+        segmentation,
+        panel_identity_hashes=hashes,
+        source_identity_hash="b" * 64,
+        source_assets=_source_assets(),
+    )
+
+    assert manifest["manifest_version"] == manifest_module.COMPACT_MANIFEST_VERSION
+    assert "canonical_panel_refs" in manifest
+    assert "segmentation_dependency_hash" in manifest
+    for forbidden in ("source_assets", "panel_descriptors", "panel_identity_hashes", "segmentation_state", "feasible_visual_ledger"):
+        assert forbidden not in manifest
+    validated = manifest_module.validate_manifest(manifest)
+    assert validated.panel_identity_hashes == hashes
+    assert validated.segmentation_state["segmentation_dependency_hash"] == manifest["segmentation_dependency_hash"]
+
+
+def test_compact_manifest_rejects_stale_dependency_hash():
+    manifest_module, cloud = _modules()
+    panels = _panels(cloud)
+    manifest = manifest_module.build_compact_manifest(
+        panels,
+        {"status": "RECONCILED"},
+        source_assets=_source_assets(),
+    )
+    stale = json.loads(json.dumps(manifest))
+    stale["segmentation_dependency_hash"] = "f" * 64
+    with pytest.raises(manifest_module.PreparedPanelManifestError):
+        manifest_module.validate_manifest(stale)

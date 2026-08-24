@@ -442,3 +442,40 @@ def test_repair_prompt_specifies_distributed_claim_evidence_binding():
     assert "enough feasible panel ids" in prompt
     assert "section capacity" in prompt
     assert "118-124 lexical words" in prompt
+
+
+def test_feasible_render_plan_is_deterministic_and_shared_by_repair_payload():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(
+            _entry(module, panel_id="panel-b", order=20, blank=0.2),
+            _entry(module, panel_id="panel-a", order=10, blank=0.0),
+        ),
+        model_identity_hash="model-hash",
+    )
+    first = module.FeasibleRenderPlan.from_ledger(ledger)
+    second = module.FeasibleRenderPlan.from_ledger(module.FeasibleVisualLedger.from_dict(ledger.as_dict()))
+
+    assert first.plan_hash == second.plan_hash
+    assert first.panel_ids == ("panel-a", "panel-b")
+    assert first.as_dict()["contract_version"] == "feasible-render-plan-v1"
+    payload = module.build_repair_payload(
+        narration={"passages": []},
+        story_map={"beats": []},
+        ledger=ledger,
+        section_to_beats={},
+    )
+    assert payload["feasible_render_plan"]["plan_hash"] == first.plan_hash
+
+
+def test_feasible_render_plan_fails_closed_on_stale_lineage():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(entries=(_entry(module),), model_identity_hash="model-hash")
+    plan = module.FeasibleRenderPlan.from_ledger(ledger)
+    with pytest.raises(module.VisualNarrativeRepairError):
+        plan.validate_current_panel(
+            "panel-safe",
+            source_asset_id="wrong-asset",
+            source_checksum="source",
+            evidence_hash="e" * 64,
+        )

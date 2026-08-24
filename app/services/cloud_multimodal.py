@@ -7497,6 +7497,7 @@ class CloudStageRunner:
             section_to_beats=section_to_beats,
             feasible_observations=feasible_observations,
         )
+        render_plan = visual_narrative_repair.FeasibleRenderPlan.from_ledger(ledger)
         source = {
             "visual_source_hash": visual.source_hash,
             "story_map_hash": story_map.story_map_hash,
@@ -7504,6 +7505,7 @@ class CloudStageRunner:
             "missing_sections": payload["missing_sections"],
             "ledger_hash": ledger.ledger_hash,
             "section_to_beats": payload["section_to_beats"],
+            "render_plan_hash": render_plan.plan_hash,
         }
         key = visual_narrative_repair.repair_cache_key(
             ledger=ledger,
@@ -7692,6 +7694,7 @@ class CloudStageRunner:
                         "repair_contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
                         "visual_section_remap_v1": list(remaps),
                         "feasible_ledger_hash": ledger.ledger_hash,
+                        "feasible_render_plan_hash": render_plan.plan_hash,
                         "repaired_sections": list(visual_narrative_repair.missing_visual_sections(ledger, section_to_beats)),
                     },
                     model_identity_hash=self.model_identity.identity_hash,
@@ -8854,13 +8857,12 @@ def _build_project_prepared_manifest(
     feasible_visual_ledger: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_assets = _project_source_asset_metadata(db, project_id)
-    return prepared_panel_manifest.build_manifest(
-        panels,
+    return prepared_panel_manifest.build_compact_manifest_from_descriptors(
+        [panel.descriptor() for panel in panels],
         segmentation_state,
         panel_identity_hashes=_visual_panel_identity_hashes(tuple(panels)),
         source_identity_hash=_visual_source_hash(tuple(panels)),
         source_assets=source_assets,
-        feasible_visual_ledger=feasible_visual_ledger,
     )
 
 
@@ -9037,7 +9039,7 @@ def _build_cached_prepared_manifest(
                 "metadata_only": True,
             }
         )
-    return prepared_panel_manifest.build_manifest_from_descriptors(
+    return prepared_panel_manifest.build_compact_manifest_from_descriptors(
         descriptors,
         segmentation_state,
         panel_identity_hashes=identity_hashes,
@@ -9050,6 +9052,8 @@ def _restore_project_prepared_manifest(
     db: Any,
     project_id: str,
     raw_manifest: Mapping[str, Any],
+    *,
+    segmentation_state: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[CloudPanelInput, ...], dict[str, Any]]:
     manifest = prepared_panel_manifest.validate_manifest(raw_manifest)
     prepared_panel_manifest.require_source_assets_match(
@@ -9061,7 +9065,16 @@ def _restore_project_prepared_manifest(
         raise prepared_panel_manifest.PreparedPanelManifestError(
             "prepared panel source identity mismatch"
         )
-    return panels, dict(manifest.segmentation_state)
+    restored_segmentation = dict(manifest.segmentation_state)
+    if manifest.manifest_version == prepared_panel_manifest.COMPACT_MANIFEST_VERSION:
+        dependency_hash = str(restored_segmentation.get("segmentation_dependency_hash", ""))
+        if segmentation_state is not None and _hash(dict(segmentation_state)) != dependency_hash:
+            raise prepared_panel_manifest.PreparedPanelManifestError(
+                "segmentation dependency hash mismatch"
+            )
+        if segmentation_state is not None:
+            restored_segmentation = dict(segmentation_state)
+    return panels, restored_segmentation
 
 
 def _visual_panel_chunks(
@@ -10382,11 +10395,27 @@ class CloudBatchService:
                         visual_stage,
                         cached_segmentation,
                     )
-                prepared = _restore_project_prepared_manifest(
-                    db,
-                    project_id,
-                    manifest_raw,
-                )
+                try:
+                    prepared = _restore_project_prepared_manifest(
+                        db,
+                        project_id,
+                        manifest_raw,
+                        segmentation_state=(
+                            cached_segmentation
+                            if isinstance(cached_segmentation, Mapping)
+                            else None
+                        ),
+                    )
+                except TypeError as exc:
+                    # Keep small test/integration adapters written for the
+                    # pre-v3 two-argument helper source-compatible.
+                    if "segmentation_state" not in str(exc):
+                        raise
+                    prepared = _restore_project_prepared_manifest(
+                        db,
+                        project_id,
+                        manifest_raw,
+                    )
                 record.stage_results["prepared_panel_manifest"] = manifest_raw
                 self.store.save(record)
                 manifest_loaded = True
@@ -10697,6 +10726,10 @@ class CloudBatchService:
                     if ledger is None:
                         raise CloudStageError("visual.narrative_repair_stale_ledger", reviewable=True)
                     record.stage_results["feasible_visual_ledger"] = ledger.as_dict()
+                    if isinstance(ledger, visual_narrative_repair.FeasibleVisualLedger):
+                        record.stage_results["feasible_render_plan"] = (
+                            visual_narrative_repair.FeasibleRenderPlan.from_ledger(ledger).as_dict()
+                        )
                     record.stage_results["visual_repair"] = {
                         "contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
                         "missing_sections": list(missing_sections),

@@ -67,6 +67,7 @@ class FeasibleVisualRecord:
     detector_version: str
     mask_sha256: str
     panel_size: tuple[int, int]
+    source_asset_checksum: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +84,7 @@ class FeasibleVisualRecord:
             "detector_version": self.detector_version,
             "mask_sha256": self.mask_sha256,
             "panel_size": list(self.panel_size),
+            "source_asset_checksum": self.source_asset_checksum,
         }
 
     @classmethod
@@ -102,6 +104,7 @@ class FeasibleVisualRecord:
                 detector_version=str(value["detector_version"]),
                 mask_sha256=str(value["mask_sha256"]),
                 panel_size=tuple(int(item) for item in value["panel_size"]),
+                source_asset_checksum=str(value.get("source_asset_checksum", "")),
             )
         except (KeyError, TypeError, ValueError):
             raise VisualNarrativeRepairError("visual ledger entry is malformed", "visual.narrative_repair_stale_ledger") from None
@@ -150,6 +153,165 @@ class FeasibleVisualLedger:
         if value.get("contract_version") != REPAIR_CONTRACT_VERSION or value.get("ledger_hash") != ledger.ledger_hash:
             raise VisualNarrativeRepairError("visual ledger hash is stale", "visual.narrative_repair_stale_ledger")
         return ledger
+
+
+@dataclass(frozen=True)
+class FeasibleRenderPanel:
+    """Canonical panel reference and the single ROI decision for rendering."""
+
+    panel_id: str
+    panel_region_id: str
+    source_asset_id: str
+    source_order: int
+    source_asset_checksum: str
+    panel_size: tuple[int, int]
+    selected_roi: tuple[tuple[str, Any], ...]
+    evidence_hash: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "panel_id": self.panel_id,
+            "panel_region_id": self.panel_region_id,
+            "source_asset_id": self.source_asset_id,
+            "source_order": self.source_order,
+            "source_asset_checksum": self.source_asset_checksum,
+            "panel_size": list(self.panel_size),
+            "selected_roi": dict(self.selected_roi),
+            "evidence_hash": self.evidence_hash,
+        }
+
+
+@dataclass(frozen=True)
+class FeasibleRenderPlan:
+    """Immutable feasibility output shared by repair, planning, and render.
+
+    The plan contains references and one already-approved ROI per panel.  It
+    never contains image bytes or a second panel identity model.  Render code
+    may validate current bytes against these references, but must not perform
+    another feasibility search.
+    """
+
+    ledger_hash: str
+    panels: tuple[FeasibleRenderPanel, ...]
+    plan_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        ordered = tuple(sorted(self.panels, key=lambda item: (item.source_order, item.panel_id)))
+        if len({item.panel_id for item in ordered}) != len(ordered):
+            raise VisualNarrativeRepairError(
+                "render plan contains duplicate panel references",
+                "visual.narrative_repair_stale_ledger",
+            )
+        object.__setattr__(self, "panels", ordered)
+        object.__setattr__(self, "plan_hash", _hash({
+            "contract_version": "feasible-render-plan-v1",
+            "ledger_hash": self.ledger_hash,
+            "panels": [item.as_dict() for item in ordered],
+        }))
+
+    @classmethod
+    def from_ledger(cls, ledger: FeasibleVisualLedger) -> FeasibleRenderPlan:
+        panels: list[FeasibleRenderPanel] = []
+        for entry in ledger.entries:
+            if not entry.feasible_rois:
+                continue
+            selected = min(
+                entry.feasible_rois,
+                key=lambda roi: (
+                    float(dict(roi.get("telemetry", {})).get("edge_connected_blank_fraction", 1.0)),
+                    -float(dict(roi.get("telemetry", {})).get("protected_retained_fraction", 0.0)),
+                    str(roi.get("kind", "")),
+                    str(roi.get("roi_label", "")),
+                    tuple(int(value) for value in roi.get("crop_box", ())),
+                ),
+            )
+            panels.append(
+                FeasibleRenderPanel(
+                    panel_id=entry.panel_id,
+                    panel_region_id=entry.panel_region_id,
+                    source_asset_id=entry.source_asset_id,
+                    source_order=entry.source_order,
+                    source_asset_checksum=entry.source_asset_checksum,
+                    panel_size=entry.panel_size,
+                    selected_roi=tuple(sorted(dict(selected).items(), key=lambda item: item[0])),
+                    evidence_hash=entry.evidence_hash,
+                )
+            )
+        return cls(ledger_hash=ledger.ledger_hash, panels=tuple(panels))
+
+    @property
+    def panel_ids(self) -> tuple[str, ...]:
+        return tuple(item.panel_id for item in self.panels)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "contract_version": "feasible-render-plan-v1",
+            "ledger_hash": self.ledger_hash,
+            "plan_hash": self.plan_hash,
+            "panels": [item.as_dict() for item in self.panels],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> FeasibleRenderPlan:
+        try:
+            if value.get("contract_version") != "feasible-render-plan-v1":
+                raise ValueError("unsupported render plan")
+            panels = tuple(
+                FeasibleRenderPanel(
+                    panel_id=str(item["panel_id"]),
+                    panel_region_id=str(item["panel_region_id"]),
+                    source_asset_id=str(item["source_asset_id"]),
+                    source_order=int(item["source_order"]),
+                    source_asset_checksum=str(item.get("source_asset_checksum", "")),
+                    panel_size=tuple(int(part) for part in item["panel_size"]),
+                    selected_roi=tuple(sorted(dict(item["selected_roi"]).items())),
+                    evidence_hash=str(item["evidence_hash"]),
+                )
+                for item in value["panels"]
+            )
+            plan = cls(ledger_hash=str(value["ledger_hash"]), panels=panels)
+        except (KeyError, TypeError, ValueError):
+            raise VisualNarrativeRepairError(
+                "render plan is malformed",
+                "visual.narrative_repair_stale_ledger",
+            ) from None
+        if str(value.get("plan_hash", "")) != plan.plan_hash:
+            raise VisualNarrativeRepairError(
+                "render plan hash is stale",
+                "visual.narrative_repair_stale_ledger",
+            )
+        return plan
+
+    def require_panel(self, panel_id: str) -> FeasibleRenderPanel:
+        for item in self.panels:
+            if item.panel_id == str(panel_id):
+                return item
+        raise VisualNarrativeRepairError(
+            "render plan panel reference is not feasible",
+            "visual.narrative_repair_ungrounded",
+        )
+
+    def validate_current_panel(
+        self,
+        panel_id: str,
+        *,
+        source_asset_id: str,
+        source_checksum: str,
+        evidence_hash: str,
+    ) -> None:
+        """Validate current materialized lineage without recomputing ROI."""
+
+        panel = self.require_panel(panel_id)
+        if panel.source_asset_id != str(source_asset_id) or panel.evidence_hash != str(evidence_hash):
+            raise VisualNarrativeRepairError(
+                "render plan lineage is stale",
+                "visual.narrative_repair_stale_ledger",
+            )
+        if panel.source_asset_checksum and panel.source_asset_checksum != str(source_checksum):
+            raise VisualNarrativeRepairError(
+                "render plan source checksum is stale",
+                "visual.narrative_repair_stale_ledger",
+            )
 
 
 def build_feasible_visual_ledger(
@@ -228,6 +390,7 @@ def build_feasible_visual_ledger(
                 detector_version=str(candidate.border_mask.detector_version),
                 mask_sha256=str(candidate.border_mask.mask_sha256),
                 panel_size=tuple(int(value) for value in candidate.panel_size),
+                source_asset_checksum=str(getattr(candidate, "source_checksum", "")),
             )
         )
     return FeasibleVisualLedger(entries=tuple(built), model_identity_hash=model_identity_hash)
@@ -528,9 +691,11 @@ def build_repair_payload(
     feasible_observations: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     missing = missing_visual_sections(ledger, section_to_beats)
+    render_plan = FeasibleRenderPlan.from_ledger(ledger)
     return {
         "repair_contract_version": REPAIR_CONTRACT_VERSION,
         "feasible_ledger": ledger.as_dict(),
+        "feasible_render_plan": render_plan.as_dict(),
         "feasible_panel_ids": list(ledger.feasible_panel_ids),
         "feasible_by_beat": {
             beat: [entry.panel_id for entry in ledger.entries if beat in entry.eligible_beats]
@@ -691,6 +856,8 @@ def repair_cache_key(
 
 
 __all__ = [
+    "FeasibleRenderPanel",
+    "FeasibleRenderPlan",
     "FeasibleVisualLedger",
     "FeasibleVisualRecord",
     "MAX_REPAIR_ATTEMPTS",
