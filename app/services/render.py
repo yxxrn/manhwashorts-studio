@@ -36,6 +36,7 @@ from app.services import (
     encoders,
     framing_analysis,
     motion_director,
+    reference_profile,
     subtitle_karaoke,
     visual_scoring,
 )
@@ -47,6 +48,20 @@ if TYPE_CHECKING:
 
 _SECTION_TRANSITION_MIN = 0.12
 _SECTION_TRANSITION_MAX = 0.18
+_XFADE_TRANSITIONS = {
+    "fade": "fade",
+    "dissolve": "fade",
+    "slide_left": "slideleft",
+    "slide_right": "slideright",
+    "wipe_left": "wipeleft",
+    "wipe_right": "wiperight",
+}
+
+
+def _xfade_transition_name(transition: str | None) -> str | None:
+    """Map a closed editorial transition vocabulary to FFmpeg xfade."""
+
+    return _XFADE_TRANSITIONS.get(str(transition or "").strip().lower())
 
 
 class RenderError(RuntimeError):
@@ -798,14 +813,17 @@ def _motion_filter(
     profile: ReferenceProfileConfig | None = None,
 ) -> str:
     """Build one smooth, bounded crop trajectory with even coordinates."""
-    frames = max(2, int(round(duration * fps)))
-    last = frames - 1
     static = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
     safe_effect = motion_director.safe_camera_curve(effect)
     if safe_effect == "static":
         return static
 
     # Interpolate between ranked ROIs. Smoothstep never reverses direction.
+    # The scene clip is rendered at one fixed fps and trimmed with the same
+    # frame count, so the local frame index is deterministic across concat and
+    # avoids timestamp rounding differences between FFmpeg filter stages.
+    frames = max(2, int(round(duration * fps)))
+    last = frames - 1
     progress = f"(n/{last})"
     smooth = f"({progress}*{progress}*(3-2*{progress}))"
     fx = f"((1-{smooth})*{max(0.05, min(0.95, focus_x))}+{smooth}*{max(0.05, min(0.95, focus_end_x))})"
@@ -939,12 +957,10 @@ def render_scene_clip(
     )
     vf = f"{motion},{_procedural_effect(scene.motion_mode, scene.motion_intensity, profile)},format=yuv420p"
 
-    # The Shot Director owns transition intent. Do not fade every clip: that
-    # creates a black flash between ROI cuts and makes the edit feel mechanical.
-    if scene.transition == "fade":
-        fade = min(_SECTION_TRANSITION_MAX, max(_SECTION_TRANSITION_MIN, duration / 4))
-        if fade > 0.05:
-            vf += f",fade=t=in:st=0:d={fade:.2f}"
+    # Transition intent is applied once, at the frame boundary in
+    # ``join_scene_clips``. Applying an incoming fade here as well would
+    # double-darken the first transition frames and make the effect harder to
+    # see while also changing the source motion.
 
     # VAAPI encodes from GPU surfaces, so the chain must end with an upload.
     vf = encoders.apply_filter_suffix(selection, vf)
@@ -986,9 +1002,15 @@ def join_scene_clips(
     selection = encoder or encoders.select()
     durations = [scene.duration for scene in scenes]
     frame_counts = [max(1, int(round(duration * fps))) for duration in durations]
+    transition_names = [
+        _xfade_transition_name(
+            scenes[index + 1].transition if index + 1 < len(scenes) else None
+        )
+        for index in range(len(scenes))
+    ]
     transitions = [
         min(max(1, int(round(_SECTION_TRANSITION_MAX * fps))), frame_counts[index], frame_counts[index + 1])
-        if index + 1 < len(scenes) and scenes[index + 1].transition == "fade"
+        if transition_names[index] is not None
         else 0
         for index in range(len(scenes))
     ]
@@ -1014,13 +1036,14 @@ def join_scene_clips(
             tail = f"tail{index}"
             head = f"head{index + 1}"
             transition = f"transition{index}"
+            transition_name = transition_names[index] or "fade"
             graph.extend(
                 [
                     f"[{index}:v]trim=start_frame={frame_count - after}:end_frame={frame_count},"
                     f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p,setsar=1[{tail}]",
                     f"[{index + 1}:v]trim=start_frame=0:end_frame={after},"
                     f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p,setsar=1[{head}]",
-                    f"[{tail}][{head}]xfade=transition=fade:duration={after / fps:.6f}:"
+                    f"[{tail}][{head}]xfade=transition={transition_name}:duration={after / fps:.6f}:"
                     f"offset=0[{transition}]",
                 ]
             )
@@ -1907,8 +1930,32 @@ def _prepare_exact_reference_frame(
                     "visual.panel_lineage_unavailable: reference telemetry ROI is stale",
                     code="visual.panel_lineage_unavailable",
                 )
+    panel_crop = panel.crop(crop_box)
+    pixel_edge_blank_fraction = framing_analysis.color_agnostic_edge_blank_fractions(
+        panel_crop
+    )["max_edge_blank_fraction"]
+    if (
+        pixel_edge_blank_fraction
+        > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+    ):
+        raise RenderError(
+            "visual.blank_infeasible: persisted reference ROI retains a visible edge blank",
+            code="visual.blank_infeasible",
+        )
+    persisted_pixel_edge = (
+        persisted_selected.get("pixel_edge_blank_fraction")
+        if isinstance(persisted_selected, Mapping)
+        else None
+    )
+    if persisted_pixel_edge is not None and _reference_canonical_json(
+        round(float(persisted_pixel_edge), 6)
+    ) != _reference_canonical_json(round(float(pixel_edge_blank_fraction), 6)):
+        raise RenderError(
+            "visual.panel_lineage_unavailable: reference ROI pixel edge telemetry is stale",
+            code="visual.panel_lineage_unavailable",
+        )
     output_size = (_reference_even(round(width * 1.15)), _reference_even(round(height * 1.15)))
-    prepared = panel.crop(crop_box).resize(output_size, Image.Resampling.LANCZOS)
+    prepared = panel_crop.resize(output_size, Image.Resampling.LANCZOS)
     dest.parent.mkdir(parents=True, exist_ok=True)
     prepared.save(dest, "JPEG", quality=94)
     return dest
@@ -1976,6 +2023,15 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
             compact = dict(attempt)
             compact.pop("border_mask", None)
             attempts.append(compact)
+        trajectory = motion_director.sample_camera_curve(
+            scene.camera_curve,
+            16,
+            scene.focus_x,
+            scene.focus_y,
+            scene.focus_end_x,
+            scene.focus_end_y,
+        )
+        transition_name = _xfade_transition_name(scene.transition)
         shots.append(
             {
                 "order_index": index,
@@ -1996,8 +2052,13 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
                 "motion_mode": scene.motion_mode,
                 "motion_intensity": scene.motion_intensity,
                 "camera_curve": scene.camera_curve,
+                "focus_x": scene.focus_x,
+                "focus_y": scene.focus_y,
+                "focus_end_x": scene.focus_end_x,
+                "focus_end_y": scene.focus_end_y,
+                "motion_trajectory": trajectory,
                 "transition": scene.transition,
-                "transition_duration_s": 0.18 if scene.transition == "fade" else 0.0,
+                "transition_duration_s": _SECTION_TRANSITION_MAX if transition_name else 0.0,
                 "reason": scene.motion_reason,
                 "rejection_code": None,
             }

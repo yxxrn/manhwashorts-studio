@@ -37,7 +37,11 @@ def _box(value: object) -> tuple[int, int, int, int]:
 
 
 def enumerate_reference_roi_alternatives(
-    panel_size: tuple[int, int], candidate: object, profile: object
+    panel_size: tuple[int, int],
+    candidate: object,
+    profile: object,
+    *,
+    image: Image.Image | None = None,
 ) -> tuple[editorial_visual_planner.ReferenceROIAlternative, ...]:
     """Build deduplicated panel-local ROI phases using render's box geometry."""
     from app.services import render
@@ -75,12 +79,18 @@ def enumerate_reference_roi_alternatives(
             end_x,
             end_y,
         )
+        edge_blank_fraction = None
+        if image is not None:
+            edge_blank_fraction = framing_analysis.color_agnostic_edge_blank_fractions(
+                image.crop(crop_box)
+            )["max_edge_blank_fraction"]
         alternatives.append(
             editorial_visual_planner.ReferenceROIAlternative(
                 kind=kind,
                 roi_label=label,
                 crop_box=crop_box,
                 focus=focus_tuple,
+                edge_blank_fraction=edge_blank_fraction,
             )
         )
 
@@ -314,7 +324,12 @@ def build_reference_panel_fallback_candidates(
                     roi_alternatives=(
                         enumerate_conservative_full_panel_roi_alternatives(expected_size)
                         if visual_scoring.is_conservative_full_panel_visual_evidence(evidence)
-                        else enumerate_reference_roi_alternatives(expected_size, candidate, profile)
+                        else enumerate_reference_roi_alternatives(
+                            expected_size,
+                            candidate,
+                            profile,
+                            image=crop,
+                        )
                     ),
                     panel_candidate=candidate,
                     source_upscale_manifest=(

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models import PanelRegion, ScriptVersion, SourceAsset, StoryAnalysis, SubtitleCue
+from app.services import reference_profile
 from app.services import render as render_service
 
 PROVENANCE = "codex_cloud_multimodal_review_v1"
@@ -33,6 +35,157 @@ class ReviewPreviewError(RuntimeError):
     def __init__(self, code: str, message: str = "review preview artifact failed") -> None:
         self.code = code
         super().__init__(message)
+
+
+def review_visual_density_contract(
+    total_duration: float,
+    available_visuals: int,
+) -> dict[str, float | int]:
+    """Expose the shared duration/availability cadence contract to review QC."""
+
+    try:
+        return reference_profile.review_visual_density_contract(
+            total_duration, available_visuals
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ReviewPreviewError("review.visual_density_measurement_invalid") from exc
+
+
+def _frame_edge_blank_metrics(image: Image.Image) -> dict[str, float]:
+    """Expose the shared color-agnostic framing metric to review QC."""
+
+    from app.services.framing_analysis import color_agnostic_edge_blank_fractions
+
+    return color_agnostic_edge_blank_fractions(image)
+
+
+def _frame_edge_blank_audit(frame_paths: Sequence[Path]) -> dict[str, object]:
+    per_frame: list[dict[str, float]] = []
+    try:
+        for path in frame_paths:
+            with Image.open(path) as image:
+                per_frame.append(_frame_edge_blank_metrics(image))
+    except (OSError, ValueError, TypeError) as exc:
+        raise ReviewPreviewError("review.blank_edge_measurement_failed") from exc
+    per_edge_max = {
+        side: round(max((item[side] for item in per_frame), default=0.0), 6)
+        for side in ("left", "right", "top", "bottom")
+    }
+    return {
+        "per_frame_edge_blank_fractions": per_frame,
+        "frame_edge_blank_fractions": per_edge_max,
+        "max_frame_edge_blank_fraction": max(per_edge_max.values(), default=0.0),
+    }
+
+
+def _audit_motion_trajectory(
+    samples: Sequence[Sequence[float]],
+) -> dict[str, int | float]:
+    """Reject reversing or discontinuous normalized camera trajectories."""
+
+    normalized: list[tuple[float, float, float]] = []
+    try:
+        for sample in samples:
+            if len(sample) != 3:
+                raise ValueError("camera sample must contain x, y, scale")
+            values = tuple(float(value) for value in sample)
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError("camera sample is non-finite")
+            normalized.append(values)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ReviewPreviewError("review.motion_jitter") from exc
+    if len(normalized) < 2:
+        raise ReviewPreviewError("review.motion_jitter")
+    deltas = [
+        tuple(right[index] - left[index] for index in range(3))
+        for left, right in zip(normalized, normalized[1:], strict=False)
+    ]
+    direction_reversals = 0
+    for axis in range(3):
+        signs = [
+            1 if delta[axis] > 1e-9 else -1
+            for delta in deltas
+            if abs(delta[axis]) > 1e-9
+        ]
+        direction_reversals += sum(
+            left != right for left, right in zip(signs, signs[1:], strict=False)
+        )
+    max_step = max(
+        (max(abs(delta[axis]) for axis in range(3)) for delta in deltas),
+        default=0.0,
+    )
+    violations = direction_reversals + sum(
+        max(abs(delta[axis]) for axis in range(3))
+        > reference_profile.REVIEW_MOTION_MAX_NORMALIZED_STEP
+        for delta in deltas
+    )
+    result = {
+        "sample_count": len(normalized),
+        "max_normalized_step": round(max_step, 6),
+        "direction_reversals": direction_reversals,
+        "jitter_violations": int(violations),
+    }
+    if violations:
+        raise ReviewPreviewError("review.motion_jitter")
+    return result
+
+
+def _image_difference(left_path: Path, right_path: Path) -> float:
+    with Image.open(left_path) as left, Image.open(right_path) as right:
+        left_small = left.convert("L").resize((64, 114))
+        right_small = right.convert("L").resize((64, 114))
+        return round(float(ImageStat.Stat(ImageChops.difference(left_small, right_small)).mean[0]), 4)
+
+
+def _audit_transition_pixels(
+    frame_paths: Sequence[Path],
+    shots: Sequence[Mapping[str, object]],
+    *,
+    duration: float,
+) -> dict[str, object]:
+    """Prove each planned non-cut transition changes rendered pixels."""
+
+    if len(frame_paths) < 3 or duration <= 0.0:
+        raise ReviewPreviewError("review.transition_measurement_missing")
+    planned: list[dict[str, object]] = []
+    try:
+        for shot in shots[1:]:
+            transition = str(shot.get("transition", "cut") or "cut")
+            if transition in {"cut", "none"}:
+                continue
+            boundary = float(shot.get("start_time", 0.0))
+            index = max(
+                1,
+                min(
+                    len(frame_paths) - 2,
+                    round(boundary / duration * (len(frame_paths) - 1)),
+                ),
+            )
+            difference = _image_difference(
+                frame_paths[index - 1], frame_paths[index + 1]
+            )
+            planned.append(
+                {
+                    "transition": transition,
+                    "frame_index": index,
+                    "pixel_diff": difference,
+                }
+            )
+    except (OSError, ValueError, TypeError, OverflowError) as exc:
+        raise ReviewPreviewError("review.transition_measurement_failed") from exc
+    visible = [
+        item
+        for item in planned
+        if float(item["pixel_diff"]) >= reference_profile.REVIEW_MIN_TRANSITION_PIXEL_DIFF
+    ]
+    result = {
+        "planned_transition_count": len(planned),
+        "visible_transition_count": len(visible),
+        "transition_pixel_diffs": planned,
+    }
+    if len(visible) != len(planned):
+        raise ReviewPreviewError("review.transition_not_visible")
+    return result
 
 
 def _measured_subtitle_qc(
@@ -146,7 +299,8 @@ def _measured_visual_qc(
     transition_count = sum(
         1
         for shot in shots[1:]
-        if isinstance(shot, Mapping) and shot.get("transition") == "fade"
+        if isinstance(shot, Mapping)
+        and str(shot.get("transition", "cut") or "cut") not in {"cut", "none"}
     )
     audit.setdefault("unique_visuals", len(visual_keys))
     audit.setdefault("available_visuals", max(len(visual_keys), available_capacity))
@@ -154,14 +308,51 @@ def _measured_visual_qc(
     audit.setdefault("motion_mode_distribution", dict(sorted(mode_counts.items())))
     audit.setdefault("reuse_streak_max", reuse_streak)
     audit.setdefault("transition_count", transition_count)
-    if float(audit.get("max_unchanged_hold_s", 0.0)) > 4.0:
+    if float(
+        audit.get("max_frame_edge_blank_fraction", 0.0)
+    ) > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
+        raise ReviewPreviewError("review.blank_edge_visible")
+    trajectory_reports: list[dict[str, int | float]] = []
+    for shot in shots:
+        if not isinstance(shot, Mapping):
+            continue
+        trajectory = shot.get("motion_trajectory")
+        if trajectory:
+            trajectory_reports.append(_audit_motion_trajectory(trajectory))
+    if trajectory_reports:
+        trajectory_audit = {
+            "shot_count": len(trajectory_reports),
+            "jitter_violations": sum(
+                int(item["jitter_violations"]) for item in trajectory_reports
+            ),
+            "direction_reversals": sum(
+                int(item["direction_reversals"]) for item in trajectory_reports
+            ),
+            "max_normalized_step": max(
+                float(item["max_normalized_step"]) for item in trajectory_reports
+            ),
+        }
+        audit.setdefault("motion_trajectory_audit", trajectory_audit)
+        if int(trajectory_audit["jitter_violations"]) > 0:
+            raise ReviewPreviewError("review.motion_jitter")
+    transition_audit = audit.get("transition_pixel_audit")
+    if isinstance(transition_audit, Mapping) and int(
+        transition_audit.get("visible_transition_count", 0)
+    ) < int(transition_audit.get("planned_transition_count", 0)):
+        raise ReviewPreviewError("review.transition_not_visible")
+    if float(audit.get("max_unchanged_hold_s", 0.0)) > reference_profile.REVIEW_MAX_UNCHANGED_HOLD_SECONDS:
         raise ReviewPreviewError("review.visual_hold_excessive")
-    required_visuals = min(
-        int(audit.get("available_visuals", len(visual_keys))),
-        max(4, int(round(total_duration / 5.5))) if total_duration >= 45.0 else 4,
+    density = review_visual_density_contract(
+        total_duration,
+        max(
+            len(visual_keys),
+            int(audit.get("available_visuals", len(visual_keys))),
+        ),
     )
+    audit["visual_density_contract"] = density
+    required_visuals = int(density["minimum_required_visuals"])
     if len(shots) >= 4 and len(visual_keys) < required_visuals:
-        raise ReviewPreviewError("review.visual_diversity_insufficient")
+        raise ReviewPreviewError("review.visual_density_insufficient")
     if int(audit.get("reuse_streak_max", reuse_streak)) > 2:
         raise ReviewPreviewError("review.visual_reuse_streak_excessive")
     if len(shots) >= 4 and int(audit.get("motion_mode_diversity", len(modes))) < 4:
@@ -276,7 +467,13 @@ def _frame_motion_audit(frame_paths: list[Path], duration: float) -> dict[str, o
     }
 
 
-def _render_audit(output: Path, root: Path, duration: float) -> tuple[Path, Path, str, dict[str, object]]:
+def _render_audit(
+    output: Path,
+    root: Path,
+    duration: float,
+    *,
+    shots: Sequence[Mapping[str, object]] = (),
+) -> tuple[Path, Path, str, dict[str, object]]:
     """Create ffprobe, blackdetect, and a deterministic 69-frame contact sheet."""
 
     root.mkdir(parents=True, exist_ok=True)
@@ -368,7 +565,15 @@ def _render_audit(output: Path, root: Path, duration: float) -> tuple[Path, Path
         raise
     except (OSError, ValueError, render_service.RenderError) as exc:
         raise ReviewPreviewError("review.contact_sheet_failed") from exc
-    return root / "ffprobe.json", contact_sheet, root / "blackdetect.txt", _frame_motion_audit(paths, duration)
+    frame_audit = _frame_motion_audit(paths, duration)
+    frame_audit.update(_frame_edge_blank_audit(paths))
+    if shots:
+        frame_audit["transition_pixel_audit"] = _audit_transition_pixels(
+            paths,
+            shots,
+            duration=duration,
+        )
+    return root / "ffprobe.json", contact_sheet, root / "blackdetect.txt", frame_audit
 
 
 def write_review_preview_bundle(
@@ -510,8 +715,16 @@ def write_review_preview_bundle(
     else:
         sidecar = {"shots": [], "publish_allowed": False}
     measured_subtitle = _measured_subtitle_qc(sidecar, subtitle_contract or {})
+    shots_for_audit = sidecar.get("shots", [])
+    if not isinstance(shots_for_audit, list):
+        shots_for_audit = []
     ffprobe_path, contact_sheet, blackdetect_path, frame_motion = _render_audit(
-        output, output_dir, float(result.duration)
+        output,
+        output_dir,
+        float(result.duration),
+        shots=tuple(
+            item for item in shots_for_audit if isinstance(item, Mapping)
+        ),
     )
     sidecar_for_qc = dict(sidecar)
     sidecar_for_qc["visual_motion_audit"] = frame_motion

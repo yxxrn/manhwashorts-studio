@@ -15,6 +15,7 @@ from app.services import (
     director,
     framing_analysis,
     motion_director,
+    reference_profile,
     review_source_upscale,
     visual_scoring,
 )
@@ -40,6 +41,40 @@ _REFERENCE_ROI_KIND_ORDER = {
     "aggressive_crop": 3,
 }
 _REFERENCE_ROI_KINDS = frozenset(_REFERENCE_ROI_KIND_ORDER)
+
+
+def _review_visual_shot_target(total_duration: float, available_visuals: int) -> int:
+    """Prefer one grounded visual every three to four seconds in review."""
+
+    return int(
+        reference_profile.review_visual_density_contract(
+            total_duration, available_visuals
+        )["target_visuals"]
+    )
+
+
+def _review_transition_family(rank: int) -> str:
+    """Choose a short, deterministic visible transition family."""
+
+    return ("fade", "slide_left", "slide_right")[rank % 3]
+
+
+def _review_candidate_order_key(candidate: object) -> tuple[object, ...]:
+    """Keep review selection in immutable source chronology."""
+
+    return (
+        int(getattr(candidate, "source_order", 0)),
+        str(
+            getattr(
+                getattr(candidate, "panel_candidate", None),
+                "source_family",
+                "",
+            )
+            or ""
+        ),
+        str(getattr(candidate, "panel_id", "")),
+        str(getattr(candidate, "panel_region_id", "")),
+    )
 
 
 class ReferencePlanningError(RuntimeError):
@@ -382,6 +417,7 @@ class ReferenceROIAlternative:
     roi_label: str
     crop_box: tuple[int, int, int, int]
     focus: tuple[float, float, float, float]
+    edge_blank_fraction: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, str) or not self.kind.strip():
@@ -426,6 +462,16 @@ class ReferenceROIAlternative:
         ):
             raise ReferencePlanningError(
                 "ROI focus must contain four normalized values",
+                "visual.panel_lineage_unavailable",
+            )
+        if self.edge_blank_fraction is not None and not (
+            isinstance(self.edge_blank_fraction, (int, float))
+            and not isinstance(self.edge_blank_fraction, bool)
+            and math.isfinite(float(self.edge_blank_fraction))
+            and 0.0 <= float(self.edge_blank_fraction) <= 1.0
+        ):
+            raise ReferencePlanningError(
+                "ROI edge blank fraction is invalid",
                 "visual.panel_lineage_unavailable",
             )
 
@@ -871,6 +917,22 @@ def _reference_panel_attempt(
         else telemetry.get("rejection_code")
     )
     accepted = bool(feasible)
+    pixel_edge_blank_fraction = roi.edge_blank_fraction
+    if (
+        accepted
+        and pixel_edge_blank_fraction is not None
+        and float(pixel_edge_blank_fraction)
+        > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+    ):
+        telemetry = _telemetry_json(telemetry)
+        telemetry.update(
+            {
+                "pixel_edge_blank_fraction": float(pixel_edge_blank_fraction),
+                "rejection_code": "visual.blank_infeasible",
+            }
+        )
+        accepted = False
+        rejection = "visual.blank_infeasible"
     code = None if accepted else rejection or "visual.visual_unavailable"
     entry = {
         "attempt_order": attempt_order,
@@ -1122,14 +1184,10 @@ def _plan_reference_panel_candidates(
         if allow_review_cadence_adaptation:
             # Silent review must follow the chapter/source order (204 -> 205 ->
             # 206) so the narration timeline does not jump backwards across
-            # chapters. Sort eligible panels by their source family first, then
-            # page order; the planner then picks the earliest unused panel.
+            # chapters. Sort eligible panels by immutable source order first;
+            # source family and IDs only break deterministic ties.
             eligible.sort(
-                key=lambda candidate: (
-                    str(getattr(getattr(candidate, "panel_candidate", None), "source_family", "") or ""),
-                    candidate.source_order,
-                    candidate.panel_id,
-                )
+                key=_review_candidate_order_key
             )
             eligible = [
                 candidate
@@ -1145,15 +1203,8 @@ def _plan_reference_panel_candidates(
             ]
             if allow_review_cadence_adaptation:
                 # Keep the chapter-ordered sequence for silent review; capacity
-                # only breaks ties within the same source family.
-                eligible.sort(
-                    key=lambda candidate: (
-                        str(getattr(getattr(candidate, "panel_candidate", None), "source_family", "") or ""),
-                        candidate.source_order,
-                        candidate.panel_id,
-                        candidate.panel_region_id,
-                    )
-                )
+                # only breaks ties after source order is fixed.
+                eligible.sort(key=_review_candidate_order_key)
             else:
                 eligible.sort(
                     key=lambda candidate: (
@@ -1282,6 +1333,7 @@ def _plan_reference_panel_candidates(
                     "roi_label": roi.roi_label,
                     "crop_box": list(roi.crop_box),
                     "focus": list(roi.focus),
+                    "pixel_edge_blank_fraction": roi.edge_blank_fraction,
                 },
                 "candidate_count": len(eligible),
                 "selection_context": {
@@ -1344,6 +1396,7 @@ def _plan_reference_panel_candidates(
                     "roi_label": roi.roi_label,
                     "crop_box": list(roi.crop_box),
                     "focus": list(roi.focus),
+                    "pixel_edge_blank_fraction": roi.edge_blank_fraction,
                 },
                 "roi_label": roi.roi_label,
                 "focus_x": roi.focus[0],
@@ -1389,22 +1442,23 @@ def _plan_reference_panel_candidates(
             max(1, int(len(selected_shots) * (1.0 - profile.hard_cut_ratio_min))),
         )
         priority_sections = {"twist", "cta", "cliffhanger"}
-        fade_boundaries = set(
-            sorted(
-                boundaries,
-                key=lambda index: (
-                    selected_shots[index].get("section") not in priority_sections,
-                    index,
-                ),
-            )[:fade_budget]
-        )
+        transition_boundaries = {
+            index: _review_transition_family(rank)
+            for rank, index in enumerate(
+                sorted(
+                    boundaries,
+                    key=lambda index: (
+                        selected_shots[index].get("section") not in priority_sections,
+                        index,
+                    ),
+                )[:fade_budget]
+            )
+        }
         for index, shot in enumerate(selected_shots):
             shot["transition"] = (
                 "none"
                 if index == 0
-                else "fade"
-                if index in fade_boundaries
-                else "cut"
+                else transition_boundaries.get(index, "cut")
             )
     return selected_shots
 
@@ -1434,23 +1488,22 @@ def _plan_reference(
             f"{profile.profile_id} requires duration between "
             f"{duration_min_s:.1f} and {duration_max_s:.1f} seconds"
         )
-    if allow_review_cadence_adaptation:
-        # Review cadence may exceed the production shot cap when the narration
-        # duration requires more shots to stay inside the mean-duration band;
-        # the feasible panel capacity still bounds it below.
-        nominal_target = max(
-            profile.shot_min,
-            round(total_duration / _REFERENCE_SHOT_INTERVAL_SECONDS),
-        )
-    else:
-        nominal_target = max(
-            profile.shot_min,
-            min(profile.shot_max, round(total_duration / _REFERENCE_SHOT_INTERVAL_SECONDS)),
-        )
-    target = nominal_target
     capacity = len(candidates) * profile.max_canonical_panel_uses
     if max_shots_by_section is not None:
         capacity = min(capacity, sum(max_shots_by_section.values()))
+    if allow_review_cadence_adaptation:
+        # Review cadence is evidence-driven: prefer three-to-four seconds per
+        # genuinely available visual, while never inventing capacity.
+        nominal_target = _review_visual_shot_target(total_duration, capacity)
+    else:
+        nominal_target = max(
+            profile.shot_min,
+            min(
+                profile.shot_max,
+                round(total_duration / _REFERENCE_SHOT_INTERVAL_SECONDS),
+            ),
+        )
+    target = nominal_target
     cadence_adapted = False
     if capacity < target:
         if not allow_review_cadence_adaptation:
@@ -1517,7 +1570,6 @@ def _plan_reference(
             f"{profile.profile_id} planned {len(shots)} shots; expected {target}"
         )
 
-    review_fade_boundaries: set[int] = set()
     if allow_review_cadence_adaptation and len(shots) > 1:
         boundaries = [
             index
@@ -1529,15 +1581,20 @@ def _plan_reference(
             max(1, int(len(shots) * (1.0 - profile.hard_cut_ratio_min))),
         )
         priority_sections = {"twist", "cta", "cliffhanger"}
-        review_fade_boundaries = set(
-            sorted(
-                boundaries,
-                key=lambda index: (
-                    shots[index].get("section") not in priority_sections,
-                    index,
-                ),
-            )[:fade_budget]
-        )
+        review_transition_boundaries = {
+            index: _review_transition_family(rank)
+            for rank, index in enumerate(
+                sorted(
+                    boundaries,
+                    key=lambda index: (
+                        shots[index].get("section") not in priority_sections,
+                        index,
+                    ),
+                )[:fade_budget]
+            )
+        }
+    else:
+        review_transition_boundaries = {}
 
     if cadence_adapted:
         warning = "visual.cadence_adapted_to_feasible_capacity"
@@ -1603,9 +1660,7 @@ def _plan_reference(
             shot["transition"] = (
                 "none"
                 if absolute_index == 0
-                else "fade"
-                if absolute_index in review_fade_boundaries
-                else "cut"
+                else review_transition_boundaries.get(absolute_index, "cut")
             )
             reasons = list(shot.get("alignment_reasons", ()))
             valid = (

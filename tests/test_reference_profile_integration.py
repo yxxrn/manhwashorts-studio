@@ -841,6 +841,7 @@ def test_task6_panel_keyed_types_are_frozen_and_exact():
         "roi_label",
         "crop_box",
         "focus",
+        "edge_blank_fraction",
     )
     assert tuple(candidate_type.__dataclass_fields__) == (
         "source_asset_id",

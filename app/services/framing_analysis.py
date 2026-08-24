@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from math import floor
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageStat
 
 from app.services.visual_scoring import (
     PanelVisualEvidence,
@@ -27,6 +27,48 @@ from app.services.visual_scoring import (
 )
 
 DETECTOR_VERSION = "COLOR_AGNOSTIC_BALLOON_FREE_V1:grid256:structure4"
+
+
+def color_agnostic_edge_blank_fractions(image: Image.Image) -> dict[str, float]:
+    """Measure contrastive near-uniform edge bands for a concrete crop.
+
+    The detector does not assume white or black gutters.  A band is only
+    considered blank when it is locally flat *and* contrasts with the central
+    image content, which avoids rejecting a continuous sky/wall region merely
+    because it has low texture.
+    """
+
+    sample = image.convert("RGB").resize((64, 114), Image.Resampling.BILINEAR)
+    width, height = sample.size
+    band = max(2, round(min(width, height) * 0.08))
+    inner = sample.crop((band, band, width - band, height - band))
+    inner_mean = ImageStat.Stat(inner).mean
+    boxes = {
+        "left": (0, 0, band, height),
+        "right": (width - band, 0, width, height),
+        "top": (0, 0, width, band),
+        "bottom": (0, height - band, width, height),
+    }
+    fractions: dict[str, float] = {}
+    for side, box in boxes.items():
+        edge = sample.crop(box)
+        line_boxes = (
+            [(x, 0, x + 1, height) for x in range(edge.width)]
+            if side in {"left", "right"}
+            else [(0, y, width, y + 1) for y in range(edge.height)]
+        )
+        blank_lines = 0
+        for line_box in line_boxes:
+            stats = ImageStat.Stat(edge.crop(line_box))
+            mean_delta = sum(
+                (left - right) ** 2
+                for left, right in zip(stats.mean, inner_mean, strict=True)
+            ) ** 0.5
+            if max(stats.stddev) <= 18.0 and mean_delta >= 20.0:
+                blank_lines += 1
+        fractions[side] = round(blank_lines / max(1, len(line_boxes)), 6)
+    fractions["max_edge_blank_fraction"] = max(fractions.values(), default=0.0)
+    return fractions
 
 
 def detector_contract_matches(contract_version: str, detector_version: str) -> bool:
