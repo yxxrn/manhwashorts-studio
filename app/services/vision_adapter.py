@@ -851,7 +851,13 @@ def _build_payload(
         metadata["visual_instruction_version"] = request.visual_instruction_version
         metadata["visual_instruction_sha256"] = request.visual_instruction_sha256
     if request.visual_instruction_version is not None:
-        _, _, visual_prompt = visual_scoring.load_visual_evidence_instruction()
+        if (
+            request.visual_instruction_version
+            == visual_scoring.VISUAL_EVIDENCE_REPAIR_PROMPT_VERSION
+        ):
+            _, _, visual_prompt = visual_scoring.load_visual_evidence_repair_instruction()
+        else:
+            _, _, visual_prompt = visual_scoring.load_visual_evidence_instruction()
         legacy_fields = ", ".join(sorted(_REQUIRED_OBSERVATION_KEYS))
         instruction = (
             f"{visual_prompt.rstrip()}\n\n"

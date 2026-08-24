@@ -1,0 +1,15 @@
+This is a bounded semantic repair request for a panel whose previous observation
+was structurally valid but had no usable visible_facts. Re-inspect the supplied
+image itself and return the same exact observation and visual_evidence schema.
+
+For every panel that contains visible artwork, visible_facts MUST contain at least one
+short, cautious, third-person fact grounded in what is visibly
+present: a subject, action, setting, composition, object, or visible effect.
+Do not use an empty placeholder, repeat an uncertainty as a fact, or copy text
+from a speech balloon. Keep dialogue_or_ocr separate, preserve uncertainty,
+and do not invent names, identities, relationships, motives, or events.
+
+If the image genuinely contains no story-bearing artwork, preserve that
+uncertainty and return no invented fact; local reconciliation will fail closed
+instead of manufacturing evidence. Preserve every supplied lineage field and
+all strict balloon/protected-region geometry rules exactly.

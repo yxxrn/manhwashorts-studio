@@ -1821,6 +1821,45 @@ def test_visual_schema_rejection_retries_only_poison_panel_and_keeps_valid_rows(
     ]
 
 
+def test_empty_semantic_row_uses_versioned_single_panel_repair():
+    module = _module()
+
+    class _EmptyThenSemanticRepair(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.request_panel_ids = []
+            self.request_prompt_versions = []
+
+        def observe(self, request):
+            self.request_panel_ids.append(tuple(panel["panel_id"] for panel in request.panels))
+            self.request_prompt_versions.append(request.visual_instruction_version)
+            rows = super().observe(request)
+            if request.visual_instruction_version == "balloon-free-visual-evidence-v1":
+                for row in rows:
+                    if row["panel_id"] == "chapter-a-panel-1":
+                        row["visible_facts"] = []
+            return rows
+
+    provider = _EmptyThenSemanticRepair()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        max_attempts=2,
+    )
+
+    result = runner.run_visual_evidence(_panels(module))
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in _panels(module))
+    assert provider.request_panel_ids == [
+        ("chapter-a-panel-0", "chapter-a-panel-1", "chapter-a-panel-2"),
+        ("chapter-a-panel-1",),
+    ]
+    assert provider.request_prompt_versions == [
+        "balloon-free-visual-evidence-v1",
+        "balloon-free-visual-evidence-repair-v1",
+    ]
+
+
 def test_unknown_geometry_is_admitted_only_as_audited_conservative_full_panel():
     module = _module()
 

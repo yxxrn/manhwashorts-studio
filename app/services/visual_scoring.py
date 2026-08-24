@@ -108,6 +108,7 @@ class VisualEvidenceError(ValueError):
 
 
 VISUAL_EVIDENCE_PROMPT_VERSION = "balloon-free-visual-evidence-v1"
+VISUAL_EVIDENCE_REPAIR_PROMPT_VERSION = "balloon-free-visual-evidence-repair-v1"
 CONSERVATIVE_FULL_PANEL_EVIDENCE_SOURCE = "conservative_full_panel_v1"
 
 
@@ -128,6 +129,27 @@ def load_visual_evidence_instruction() -> tuple[str, str, str]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n") + "\n"
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return VISUAL_EVIDENCE_PROMPT_VERSION, digest, normalized
+
+
+def load_visual_evidence_repair_instruction() -> tuple[str, str, str]:
+    """Load the bounded semantic-facts repair instruction and digest."""
+
+    _base_version, _base_digest, base = load_visual_evidence_instruction()
+    prompt_path = (
+        Path(__file__).resolve().parents[1]
+        / "prompts"
+        / "balloon_free_visual_evidence_repair_v1.txt"
+    )
+    try:
+        suffix = prompt_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise _visual_error(
+            "visual.prompt_missing", "the visual evidence repair instruction is unavailable"
+        ) from exc
+    normalized_suffix = suffix.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    normalized = base.rstrip("\n") + "\n\n" + normalized_suffix + "\n"
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return VISUAL_EVIDENCE_REPAIR_PROMPT_VERSION, digest, normalized
 
 
 @dataclass(frozen=True)

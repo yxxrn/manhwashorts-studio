@@ -2914,6 +2914,7 @@ class CloudStageRunner:
     def run_visual_evidence(self, panels: Sequence[CloudPanelInput]) -> VisualStageResult:
         ordered = self._ordered_panels(panels)
         prompt = self.prompts["visual"]
+        repair_prompt = visual_scoring.load_visual_evidence_repair_instruction()
         source = list(_visual_panel_identities(ordered))
         key = _cache_key("visual", source, self.model_identity, prompt)
         cached_reusable: dict[str, dict[str, Any]] = {}
@@ -3101,8 +3102,12 @@ class CloudStageRunner:
                     instruction_sha256=instruction_sha256,
                     chunk_index=chunk_index,
                     panels=tuple(request_panels),
-                    visual_instruction_version=prompt[0],
-                    visual_instruction_sha256=prompt[1],
+                    visual_instruction_version=(
+                        prompt[0] if attempt == 0 else repair_prompt[0]
+                    ),
+                    visual_instruction_sha256=(
+                        prompt[1] if attempt == 0 else repair_prompt[1]
+                    ),
                 )
                 try:
                     attempt_request = replace(

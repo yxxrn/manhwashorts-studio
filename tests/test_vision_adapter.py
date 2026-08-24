@@ -84,6 +84,31 @@ def _visual_request(module):
     return request, version, digest, text
 
 
+def test_versioned_visual_semantic_repair_prompt_requires_grounded_facts():
+    module = _vision_module()
+    scoring = importlib.import_module("app.services.visual_scoring")
+    loader = getattr(scoring, "load_visual_evidence_repair_instruction", None)
+    assert callable(loader), "visual_semantic_repair_prompt_missing"
+    version, digest, text = loader()
+    request = module.VisionObservationRequest(
+        analysis_run_id="run-vision-repair-001",
+        instruction_version="vision-first-story-analyzer-v1",
+        instruction_sha256="a" * 64,
+        chunk_index=0,
+        panels=_panels()[:1],
+        visual_instruction_version=version,
+        visual_instruction_sha256=digest,
+    )
+    body = module._build_payload(request, request.panels, "mock-large")
+    rendered = _body_text(body)
+
+    assert version == "balloon-free-visual-evidence-repair-v1"
+    assert len(digest) == 64
+    assert text.strip() in rendered
+    assert "visible_facts" in rendered
+    assert "at least one" in rendered.lower()
+
+
 def _body_parts(body):
     parts = []
     for message in body.get("messages", []):
