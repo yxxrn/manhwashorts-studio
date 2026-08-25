@@ -3904,6 +3904,38 @@ def test_resume_reindexes_execution_order_after_quarantining_panel():
     assert [panel.prepared_order for panel in filtered] == [0, 1]
 
 
+def test_resume_reindex_preserves_cached_visual_identity_for_admitted_rows():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, prefix="resume-cache-id"))
+    )
+    rows = [
+        {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "source_checksum": panel.source_checksum,
+            "cache_identity_hash": module._visual_panel_identity_hash(panel, index),
+            "cache_identity_version": module.VISUAL_CACHE_IDENTITY_VERSION,
+            "observation": {"visible_facts": ["grounded fact"]},
+        }
+        for index, panel in enumerate(panels)
+    ]
+    cached_visual = {"panels": [rows[0], rows[2]]}
+    filtered = module._panels_for_cached_visual_stage(panels, cached_visual)
+
+    merged = module._merge_stream_visual_rows(
+        ({"rows": [rows[0], rows[2]]},),
+        filtered,
+    )
+
+    assert [row["panel_id"] for row in merged] == [
+        panels[0].panel_id,
+        panels[2].panel_id,
+    ]
+
+
 def test_visual_repair_normalizes_panel_ids_alias_before_grounding_validation():
     repair = importlib.import_module("app.services.visual_narrative_repair")
     record = repair.FeasibleVisualRecord(

@@ -10553,9 +10553,26 @@ def _panels_for_cached_visual_stage(
     # ``source_order`` remains the immutable reading-order lineage and may
     # contain gaps after panel-local quarantine.  ``prepared_order`` is the
     # execution order for this admitted subset, so rebuild it contiguously
-    # without changing any source/crop/payload identity.
+    # without changing any source/crop/payload identity.  Freeze the visual
+    # cache identity from the original prepared slot before changing that
+    # derived subset order; quarantining a sibling must not invalidate an
+    # already accepted provider row.
+    original_indices = {
+        panel.panel_id: index for index, panel in enumerate(ordered)
+    }
     return tuple(
-        replace(panel, prepared_order=index)
+        replace(
+            panel,
+            prepared_order=index,
+            identity_descriptor_hash=_visual_panel_identity_hash(
+                panel,
+                (
+                    panel.prepared_order
+                    if panel.prepared_order is not None
+                    else original_indices[panel.panel_id]
+                ),
+            ),
+        )
         for index, panel in enumerate(filtered)
     )
 
