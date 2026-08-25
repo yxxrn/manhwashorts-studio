@@ -10548,7 +10548,16 @@ def _panels_for_cached_visual_stage(
     if not cached_ids:
         return ordered
     filtered = tuple(panel for panel in ordered if str(panel.panel_id) in cached_ids)
-    return filtered if filtered else ordered
+    if not filtered:
+        return ordered
+    # ``source_order`` remains the immutable reading-order lineage and may
+    # contain gaps after panel-local quarantine.  ``prepared_order`` is the
+    # execution order for this admitted subset, so rebuild it contiguously
+    # without changing any source/crop/payload identity.
+    return tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(filtered)
+    )
 
 
 def _visual_panel_ids_requiring_materialization(
