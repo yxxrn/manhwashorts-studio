@@ -145,11 +145,17 @@ def test_build_render_request_carries_selected_reference_profile(monkeypatch, tm
         original_width=8,
         original_height=6,
     )
-    evidence = visual_scoring.unknown_visual_evidence(
+    evidence = visual_scoring.PanelVisualEvidence(
+        contract_version=visual_scoring.VISUAL_EVIDENCE_CONTRACT_VERSION,
         panel_id="panel-reference",
         source_asset_id=asset.id,
         source_order=1,
-        reason="provider geometry is unavailable for this render-surface fixture",
+        balloon_regions=(),
+        protected_regions=(),
+        balloon_mask_status="known_empty",
+        mask_confidence=1.0,
+        evidence_source="test_fixture",
+        mask_reason="render-surface fixture affirmatively contains no speech balloons",
     )
     evidence_json = visual_scoring.panel_visual_evidence_json(evidence)
     region = PanelRegion(

@@ -10550,6 +10550,11 @@ def _panels_for_cached_visual_stage(
     filtered = tuple(panel for panel in ordered if str(panel.panel_id) in cached_ids)
     if not filtered:
         return ordered
+    # A full visual result has not quarantined anything. Preserve the exact
+    # prepared inputs so streaming a successful visual stage cannot mutate
+    # prepared_order or cache identity before run_job sees them.
+    if len(filtered) == len(ordered):
+        return ordered
     # ``source_order`` remains the immutable reading-order lineage and may
     # contain gaps after panel-local quarantine.  ``prepared_order`` is the
     # execution order for this admitted subset, so rebuild it contiguously

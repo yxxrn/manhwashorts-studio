@@ -60,6 +60,8 @@ def _probe_launcher(repo_root: Path) -> dict[str, object]:
 
 
 def _probe_cmd(cmd_path: Path, cwd: Path) -> subprocess.CompletedProcess[str]:
+    if shutil.which("cmd.exe") is None:
+        pytest.skip("Windows cmd.exe is unavailable in this verification environment")
     environment = os.environ.copy()
     environment["OPERATOR_CLI_LAUNCHER_PROBE"] = "1"
     return subprocess.run(
@@ -142,6 +144,8 @@ def test_actual_cmd_dispatch_handles_path_with_spaces(tmp_path):
 
 
 def test_actual_cmd_normal_mode_reaches_mock_bootstrap_in_space_path(tmp_path):
+    if shutil.which("cmd.exe") is None:
+        pytest.skip("Windows cmd.exe is unavailable in this verification environment")
     if shutil.which("python.exe") is None and shutil.which("python") is None:
         pytest.skip("Python is unavailable for the disposable launcher smoke")
 
@@ -206,6 +210,8 @@ def test_load_operator_env_accepts_shell_assignments_without_printing_values(mon
         f"export MS_LLM_MODEL='grok-4.3'\nMS_LLM_API_KEY='{secret}'\n",
         encoding="utf-8",
     )
+    if os.name != "nt":
+        env_file.chmod(0o600)
     monkeypatch.delenv("MS_LLM_MODEL", raising=False)
     monkeypatch.delenv("MS_LLM_API_KEY", raising=False)
 
@@ -244,6 +250,8 @@ def test_main_loads_env_file_before_starting_review_mode(monkeypatch, tmp_path):
 
     env_file = tmp_path / "private.env"
     env_file.write_text("MS_LLM_MODEL='grok-4.3'\n", encoding="utf-8")
+    if os.name != "nt":
+        env_file.chmod(0o600)
     captured = {}
 
     class FakeCLI:

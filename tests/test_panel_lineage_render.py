@@ -12,13 +12,19 @@ import pytest
 from PIL import Image
 
 
-def _unknown_evidence(panel_id: str, asset_id: str, source_order: int) -> dict:
+def _review_ready_evidence(panel_id: str, asset_id: str, source_order: int) -> dict:
     scoring = importlib.import_module("app.services.visual_scoring")
-    evidence = scoring.unknown_visual_evidence(
+    evidence = scoring.PanelVisualEvidence(
+        contract_version=scoring.VISUAL_EVIDENCE_CONTRACT_VERSION,
         panel_id=panel_id,
         source_asset_id=asset_id,
         source_order=source_order,
-        reason="provider geometry is unavailable for this test panel",
+        balloon_regions=(),
+        protected_regions=(),
+        balloon_mask_status="known_empty",
+        mask_confidence=1.0,
+        evidence_source="test_fixture",
+        mask_reason="test fixture affirmatively contains no speech balloon geometry",
     )
     return scoring.panel_visual_evidence_json(evidence)
 
@@ -47,7 +53,7 @@ def _region(
     width: int = 4,
     height: int = 3,
 ) -> SimpleNamespace:
-    evidence = _unknown_evidence(panel_id, asset_id, source_order)
+    evidence = _review_ready_evidence(panel_id, asset_id, source_order)
     return SimpleNamespace(
         id=region_id,
         story_analysis_id="analysis-1",
@@ -217,7 +223,7 @@ def test_timeline_scene_and_transport_records_expose_panel_lineage_fields():
     assert transport_fields <= {field.name for field in fields(render.SceneInput)}
 
 
-def test_reference_binding_uses_panel_evidence_and_preserves_unknown_snapshot(monkeypatch):
+def test_reference_binding_uses_panel_evidence_and_preserves_snapshot(monkeypatch):
     pipeline = importlib.import_module("app.services.pipeline")
     asset = _asset("asset-3")
     region = _region("region-3", "panel-3", asset.id, 3)
@@ -231,7 +237,7 @@ def test_reference_binding_uses_panel_evidence_and_preserves_unknown_snapshot(mo
     assert bound[0]["panel_region_id"] == region.id
     assert bound[0]["panel_id"] == region.panel_id
     assert bound[0]["panel_bounds"] == (0, 0, 4, 3)
-    assert bound[0]["visual_evidence"]["balloon_mask_status"] == "unknown"
+    assert bound[0]["visual_evidence"]["balloon_mask_status"] == "known_empty"
 
 
 def test_integer_citation_is_source_order_not_asset_id(monkeypatch):
