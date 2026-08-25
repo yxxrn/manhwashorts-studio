@@ -62,7 +62,11 @@ VISUAL_STREAM_QUEUE_SIZE = 8
 VISUAL_STREAM_WAVE_PANEL_TARGET = 32
 STORY_MAP_CHUNK_STEP = 180
 STORY_MAP_COVERAGE_FALLBACK_STEP = 60
-STORY_MAP_COVERAGE_MIN_STEP = 30
+# Some configured multimodal models still omit grounded panel references in a
+# 30-panel response.  Keep the fallback bounded, but allow one smaller split
+# before failing closed rather than treating a recoverable coverage omission as
+# a project-level story failure.
+STORY_MAP_COVERAGE_MIN_STEP = 15
 NARRATION_CHUNK_STEP = 180
 NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30

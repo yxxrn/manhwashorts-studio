@@ -3581,7 +3581,64 @@ def test_story_map_reduces_incomplete_60_panel_chunk_to_30_without_dropping_cove
     result = runner.run_story_map(visual)
 
     assert result.panel_ids == tuple(panel.panel_id for panel in panels)
-    assert sorted(provider.story_sizes) == [1, 30, 30, 60, 61]
+    assert sorted(provider.story_sizes) == [1, 15, 15, 15, 15, 60, 61]
+
+
+def test_story_map_reduces_provider_partial_coverage_below_current_minimum(tmp_path):
+    module = _module()
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"small-fallback-panel-{index:03d}",
+            source_asset_id=f"small-fallback-asset-{index:03d}",
+            source_order=index + 1,
+            mime_type="image/png",
+            payload=f"small-fallback-payload-{index}".encode(),
+        )
+        for index in range(31)
+    )
+    visual = module.VisualStageResult(
+        panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
+        source_hash="small-fallback-source",
+        model_identity_hash=_identity(module).identity_hash,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="v" * 64,
+    )
+
+    class IncompleteUntilSmallProvider(_FakeProvider):
+        def __post_init__(self):
+            super().__post_init__()
+            self.story_sizes = []
+
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage == "story_map":
+                self.story_sizes.append(len(payload["panel_ids"]))
+            result = super().complete_json(
+                stage=stage,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                prompt_text=prompt_text,
+                payload=payload,
+            )
+            if stage == "story_map" and len(payload["panel_ids"]) > 15:
+                for beat in result["beats"]:
+                    beat["panel_ids"] = [payload["panel_ids"][0]]
+                for claim in result["claims"]:
+                    claim["panel_ids"] = [payload["panel_ids"][0]]
+            return result
+
+    provider = IncompleteUntilSmallProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "small-fallback-cache"),
+        max_attempts=1,
+    )
+
+    result = runner.run_story_map(visual)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert sorted(provider.story_sizes) == [1, 15, 15, 31]
+    assert max(provider.story_sizes) == 31
 
 
 def test_narration_uses_one_final_reduce_call_after_editorial_selection(tmp_path):
