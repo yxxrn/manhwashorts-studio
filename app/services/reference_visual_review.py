@@ -101,6 +101,27 @@ def enumerate_reference_roi_alternatives(
     add("aggressive_crop", "panel_aggressive_2", (float(primary_focus[0]), float(primary_focus[1])), 0.45, travel=(-0.08, 0.05))
     add("aggressive_crop", "panel_aggressive_3", (float(primary_focus[0]), float(primary_focus[1])), 0.32, travel=(0.06, -0.04))
     add("aggressive_crop", "panel_aggressive_4", (float(primary_focus[0]), float(primary_focus[1])), 0.24, travel=(-0.05, -0.03))
+
+    # A provider focal point is often too sparse for a very tall page: it can
+    # land in a quiet gutter even when another viewport on the same immutable
+    # panel is frameable.  Add a small, deterministic content scan so the
+    # existing blank/balloon/protected feasibility gate can choose a safer
+    # window.  These are still panel-local ROIs with the same evidence and
+    # lineage; the scan never admits a crop by itself.
+    if image is not None and panel_size[1] > panel_size[0]:
+        scan_x = (0.20, 0.50, 0.80)
+        scan_y = (0.14, 0.38, 0.62, 0.86)
+        for row, focus_y in enumerate(scan_y):
+            for column, focus_x in enumerate(scan_x):
+                travel_x = 0.04 if focus_x < 0.5 else -0.04
+                travel_y = 0.03 if focus_y < 0.5 else -0.03
+                add(
+                    "alternate_roi",
+                    f"content_scan_{row:02d}_{column:02d}",
+                    (focus_x, focus_y),
+                    1.0,
+                    travel=(travel_x, travel_y),
+                )
     return tuple(alternatives)
 
 

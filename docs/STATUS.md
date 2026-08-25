@@ -1,3 +1,25 @@
+# LOCAL CODE CHECKPOINT - 2026-08-25
+
+The current local-only source change adds an explicit panel-admission failure
+scope to the streaming visual path. A singleton/schema/geometry/feasibility
+failure that is locally attributable to one panel is persisted as a terminal
+`panel_local_reject` record with panel/source/cache identity, bounded attempt
+count, stable reason code, and no provider prose. Valid sibling rows continue
+to the downstream stages; a later resume reuses the terminal record without a
+new call for that hash. Lineage, payload/checksum, auth/config, transport, and
+unknown failure classes remain project hard stops. A partial result is accepted
+only when every input is accepted or explicitly quarantined; unresolved rows
+still fail closed. If quarantine leaves no feasible visual capacity, the
+project-level code is `visual.capacity_insufficient` with sanitized counts and
+missing sections.
+
+This is a code/test checkpoint only. No provider, TTS, render, FFmpeg, cold
+benchmark, or production-readiness claim is made. The protected untracked
+inputs `final_test/` and `The Novel’s Extra/` remain outside Git. Focused
+stream tests (20), the affected cloud file (195), reference-review tests (42),
+Ruff, compileall, and `git diff --check` are the current local evidence before
+the atomic commit.
+
 # FRESH BOUNDED RETRY RESULT - 2026-08-21
 
 ## 2026-08-24 - Feasible-ledger title-policy fix published

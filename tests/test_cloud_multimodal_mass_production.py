@@ -1203,6 +1203,80 @@ def test_review_repair_forwards_persisted_panel_crop_fallback(monkeypatch):
     assert observed["allow_conservative_full_panel"] is True
 
 
+def test_review_repair_persisted_loader_maps_sections_to_story_beats(monkeypatch):
+    """Persisted candidates must be eligible by narration section and beat."""
+    module = _module()
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    pipeline = importlib.import_module("app.services.pipeline")
+    reference_profile = importlib.import_module("app.services.reference_profile")
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+
+    class Database:
+        def get(self, *_args):
+            return SimpleNamespace(template="reference_matched_shorts_v2")
+
+    monkeypatch.setattr(
+        reference_profile,
+        "resolve_reference_profile",
+        lambda _template: SimpleNamespace(),
+    )
+    monkeypatch.setattr(pipeline, "project_assets", lambda *_args: ())
+    monkeypatch.setattr(pipeline, "image_assets", lambda *_args: ())
+    monkeypatch.setattr(
+        pipeline,
+        "latest_analysis",
+        lambda *_args: SimpleNamespace(
+            panel_regions=(SimpleNamespace(panel_id="panel-1", source_order=1),)
+        ),
+    )
+    observed = {}
+
+    def fake_load(*_args, **kwargs):
+        observed.update(kwargs)
+        return (SimpleNamespace(panel_id="panel-1"),)
+
+    monkeypatch.setattr(pipeline, "_load_reference_panel_fallback_candidates", fake_load)
+    monkeypatch.setattr(
+        repair,
+        "default_section_to_beats",
+        lambda *_args: {"hook": ("beat-1",)},
+    )
+    monkeypatch.setattr(
+        repair,
+        "build_feasible_visual_ledger",
+        lambda *_args, **_kwargs: SimpleNamespace(entries=("entry",)),
+    )
+    monkeypatch.setattr(repair, "missing_visual_sections", lambda *_args: ())
+
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.runner = SimpleNamespace(
+        model_identity=SimpleNamespace(identity_hash="m" * 64),
+    )
+    result = SimpleNamespace(
+        visual=SimpleNamespace(),
+        story_map=SimpleNamespace(
+            beats=({"beat_id": "beat-1", "panel_ids": ["panel-1"]},),
+        ),
+        narration=SimpleNamespace(),
+    )
+
+    outcome = service._repair_review_narrative(
+        Database(),
+        "project-a",
+        SimpleNamespace(sections=({"section": "hook"},)),
+        (),
+        result,
+        review_source_upscale_policy="review_silent_source_upscale_v1",
+        review_source_root=Path("/review"),
+    )
+
+    assert outcome[0] is result
+    assert observed["section_evidence_panel_ids"] == {"hook": ("panel-1",)}
+    assert observed["beats_by_section"] == {"hook": ("beat-1",)}
+
+
 def test_review_render_map_uses_repaired_feasible_panel_ids_across_beats():
     """A repaired section may cite a safe panel from a later causal beat."""
     module = _module()
@@ -7639,6 +7713,144 @@ def test_stream_finish_rejects_partial_final_batch_and_persists_metrics():
     assert runner.last_visual_stream_metrics["missing_panel_ids"] == [
         "stream-partial-panel-2"
     ]
+
+
+def test_visual_panel_failure_scope_quarantines_local_errors_but_keeps_integrity_hard():
+    module = _module()
+
+    assert module._classify_visual_failure(
+        "cloud.provider_response_invalid", singleton=True
+    ) == "panel_local_reject"
+    assert module._classify_visual_failure(
+        "cloud.provider_response_invalid"
+    ) == "project_hard_stop"
+    assert module._classify_visual_failure(
+        "cloud.panel_coverage_incomplete", singleton=True
+    ) == "project_hard_stop"
+    assert module._classify_visual_failure(
+        "visual.balloon_mask_unknown", singleton=True
+    ) == "panel_local_reject"
+    assert module._classify_visual_failure(
+        "visual.blank_infeasible", singleton=True
+    ) == "panel_local_reject"
+    assert module._classify_visual_failure(
+        "cloud.panel_lineage_invalid", singleton=True
+    ) == "project_hard_stop"
+    assert module._classify_visual_failure(
+        "cloud.provider_request_failed", singleton=True
+    ) == "project_hard_stop"
+
+
+def test_stream_quarantines_terminal_panel_local_failure_and_reuses_checkpoint(
+    tmp_path,
+):
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-quarantine"))
+    )
+    poison_id = panels[-1].panel_id
+
+    class _PoisonPanelProvider(_FakeProvider):
+        def observe(self, request):
+            rows = super().observe(request)
+            for row in rows:
+                if row.get("panel_id") == poison_id:
+                    row["visible_facts"] = []
+            return rows
+
+    provider = _PoisonPanelProvider()
+    checkpoint = tmp_path / "visual_checkpoints.jsonl"
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+        visual_checkpoint_path=checkpoint,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        stream.submit(panel)
+
+    result = stream.finish(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels[:-1])
+    assert [item["panel_id"] for item in result.rejected_panels] == [poison_id]
+    assert result.rejected_panels[0]["failure_scope"] == "panel_local_reject"
+    assert result.rejected_panels[0]["terminal_status"] == "rejected"
+    assert runner.last_visual_stream_metrics["missing_panel_count"] == 0
+    assert runner.last_visual_stream_metrics["rejected_panel_count"] == 1
+    assert runner.last_visual_stream_metrics["rejected_panel_ids"] == [poison_id]
+    assert any(
+        json.loads(line)["panel_id"] == poison_id
+        and json.loads(line)["terminal_status"] == "rejected"
+        for line in checkpoint.read_text(encoding="utf-8").splitlines()
+    )
+
+    round_trip = module.VisualStageResult.from_dict(result.as_dict())
+    assert round_trip.rejected_panels == result.rejected_panels
+
+    calls_before_resume = len(provider.calls)
+    resumed_runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+        visual_checkpoint_path=checkpoint,
+    )
+    resumed_stream = resumed_runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        resumed_stream.submit(panel)
+    resumed = resumed_stream.finish(panels)
+
+    assert resumed.panel_ids == result.panel_ids
+    assert [item["panel_id"] for item in resumed.rejected_panels] == [poison_id]
+    assert len(provider.calls) == calls_before_resume
+
+
+def test_stream_merge_accepts_only_explicitly_quarantined_subset():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-quarantine-merge"))
+    )
+    rows = []
+    for index, panel in enumerate(panels[:-1]):
+        row = _visual_row(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+            }
+        )
+        row.update(
+            {
+                "source_checksum": panel.source_checksum,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+                "cache_identity_hash": module._visual_panel_identity_hash(panel, index),
+                "cache_identity_version": module.VISUAL_CACHE_IDENTITY_VERSION,
+            }
+        )
+        rows.append(row)
+
+    merged = module._merge_stream_visual_rows(
+        ({"rows": rows},),
+        panels,
+        rejected_panel_ids=(panels[-1].panel_id,),
+    )
+
+    assert tuple(row["panel_id"] for row in merged) == tuple(
+        panel.panel_id for panel in panels[:-1]
+    )
 
 
 def test_stream_metrics_preserve_sanitized_visual_failure_predicate():

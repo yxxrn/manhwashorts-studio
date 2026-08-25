@@ -1179,6 +1179,8 @@ class VisualStageResult:
     reconciled: bool = True
     cache_identity_version: str = "legacy-descriptor-v1"
     panel_identity_hashes: tuple[str, ...] = ()
+    rejected_panels: tuple[dict[str, Any], ...] = ()
+    panel_attempt_ledger: tuple[dict[str, Any], ...] = ()
 
     @property
     def panel_ids(self) -> tuple[str, ...]:
@@ -1196,7 +1198,11 @@ class VisualStageResult:
         })
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self) | {"panels": [dict(item) for item in self.panels]}
+        return asdict(self) | {
+            "panels": [dict(item) for item in self.panels],
+            "rejected_panels": [dict(item) for item in self.rejected_panels],
+            "panel_attempt_ledger": [dict(item) for item in self.panel_attempt_ledger],
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> VisualStageResult:
@@ -1212,6 +1218,16 @@ class VisualStageResult:
             ),
             panel_identity_hashes=tuple(
                 str(item) for item in value.get("panel_identity_hashes", ())
+            ),
+            rejected_panels=tuple(
+                dict(item)
+                for item in value.get("rejected_panels", ())
+                if isinstance(item, Mapping)
+            ),
+            panel_attempt_ledger=tuple(
+                dict(item)
+                for item in value.get("panel_attempt_ledger", ())
+                if isinstance(item, Mapping)
             ),
         )
 
@@ -8231,14 +8247,56 @@ def _stream_validate_row(
     return dict(row)
 
 
+def _stream_validate_rejection(
+    record: Mapping[str, Any],
+    panel: CloudPanelInput,
+    *,
+    expected_identity_hash: str,
+) -> dict[str, Any]:
+    """Validate a terminal panel-local checkpoint before reusing it."""
+
+    try:
+        panel_id = str(record.get("panel_id", ""))
+        source_order = int(record.get("source_order", -1))
+        attempt_count = int(record.get("attempt_count", 0))
+    except (TypeError, ValueError):
+        raise CloudStageError("cloud.visual_stream_row_invalid") from None
+    rejection_code = str(record.get("rejection_code", ""))
+    predicate = str(record.get("failure_predicate", ""))
+    if (
+        panel_id != panel.panel_id
+        or str(record.get("source_asset_id", "")) != panel.source_asset_id
+        or source_order != int(panel.source_order)
+        or str(record.get("source_checksum", "")) != panel.source_checksum
+        or str(record.get("cache_identity_hash", "")) != expected_identity_hash
+        or str(record.get("cache_identity_version", "")) != VISUAL_CACHE_IDENTITY_VERSION
+        or str(record.get("stream_checkpoint_version", "")) != VISUAL_STREAM_VERSION
+        or str(record.get("terminal_status", "")) != "rejected"
+        or str(record.get("failure_scope", "")) != "panel_local_reject"
+        or attempt_count < 1
+        or _classify_visual_failure(
+            rejection_code,
+            singleton=True,
+            predicate=predicate,
+        ) != "panel_local_reject"
+    ):
+        raise CloudStageError("cloud.visual_stream_row_invalid")
+    return dict(record)
+
+
 def _merge_stream_visual_rows(
     events: Sequence[Mapping[str, Any]],
     panels: Sequence[CloudPanelInput],
+    *,
+    rejected_panel_ids: Sequence[str] = (),
 ) -> tuple[dict[str, Any], ...]:
     """Validate worker rows and restore canonical panel order."""
 
     ordered = CloudStageRunner._ordered_panels(tuple(panels))
     expected = {panel.panel_id: panel for panel in ordered}
+    rejected = {str(panel_id) for panel_id in rejected_panel_ids}
+    if not rejected.issubset(expected):
+        raise CloudStageError("cloud.visual_stream_row_invalid")
     expected_hashes = {
         panel.panel_id: _visual_panel_identity_hash(panel, index)
         for index, panel in enumerate(ordered)
@@ -8266,7 +8324,9 @@ def _merge_stream_visual_rows(
     except (TypeError, ValueError):
         raise CloudStageError("cloud.visual_stream_row_invalid") from None
     missing = tuple(
-        panel.panel_id for panel in ordered if panel.panel_id not in merged
+        panel.panel_id
+        for panel in ordered
+        if panel.panel_id not in merged and panel.panel_id not in rejected
     )
     if missing:
         raise CloudStageError(
@@ -8278,7 +8338,11 @@ def _merge_stream_visual_rows(
                 "missing_panel_count": len(missing),
             },
         )
-    return tuple(merged[panel.panel_id] for panel in ordered)
+    return tuple(
+        merged[panel.panel_id]
+        for panel in ordered
+        if panel.panel_id in merged
+    )
 
 
 def _stream_percentile(values: Sequence[float], percentile: float) -> float | None:
@@ -8302,6 +8366,100 @@ def _stream_error_category(code: str) -> str:
     if "provider_request_failed" in lowered:
         return "transient_failure"
     return "other_failure"
+
+
+# A provider/schema/geometry defect can be terminal for one panel without
+# being a project integrity failure.  Keep this list explicit: unknown codes,
+# transport failures, and lineage/payload failures remain hard stops.
+_PANEL_LOCAL_REJECT_CODES = frozenset(
+    {
+        "cloud.provider_response_invalid",
+        "cloud.visual_evidence_invalid",
+        "visual.evidence_invalid",
+        "visual.region_invalid",
+        "visual.balloon_mask_unknown",
+        "visual.balloon_geometry_invalid",
+        "visual.blank_infeasible",
+        "visual.crop_infeasible",
+        "visual.roi_infeasible",
+        "visual.protected_subject_coverage",
+        "visual.protected_face_coverage",
+        "visual.protected_action_coverage",
+        "visual.protected_effect_coverage",
+        "visual.protected_continuity_context_coverage",
+        "visual.source_resolution_insufficient",
+    }
+)
+_PANEL_LOCAL_REJECT_PREDICATES = frozenset(
+    {
+        "provider_response_invalid",
+        "visible_facts_nonempty",
+        "visible_facts_item",
+        "observation_mapping",
+        "visual_validator",
+        "balloon_mask_unknown",
+        "balloon_geometry_unknown",
+        "blank_infeasible",
+        "crop_infeasible",
+        "roi_infeasible",
+        "protected_region_coverage",
+    }
+)
+_PROJECT_HARD_STOP_CODES = frozenset(
+    {
+        "cloud.panel_lineage_invalid",
+        "cloud.visual_stream_row_invalid",
+        "cloud.panel_payload_invalid",
+        "cloud.panel_checksum_invalid",
+        "cloud.prepared_manifest_invalid",
+        "cloud.prepared_manifest_requires_materialization",
+        "cloud.provider_request_failed",
+        "cloud.provider_auth_invalid",
+        "cloud.model_identity_invalid",
+        "cloud.prompt_identity_mismatch",
+        "cloud.source_checksum_invalid",
+    }
+)
+
+
+def _classify_visual_failure(
+    code: str,
+    *,
+    singleton: bool = False,
+    predicate: str | None = None,
+) -> str:
+    """Classify a visual failure without turning integrity errors into rejects."""
+
+    normalized = str(code or "").strip()
+    if normalized in _PROJECT_HARD_STOP_CODES:
+        return "project_hard_stop"
+    if normalized in _PANEL_LOCAL_REJECT_CODES and singleton:
+        return "panel_local_reject"
+    if (
+        singleton
+        and normalized == "cloud.panel_coverage_incomplete"
+        and str(predicate or "") in _PANEL_LOCAL_REJECT_PREDICATES
+    ):
+        return "panel_local_reject"
+    return "project_hard_stop"
+
+
+def _panel_local_rejection_code(code: str, predicate: str | None = None) -> str:
+    """Return a stable non-prose reason code for one quarantined panel."""
+
+    normalized = str(code or "").strip()
+    if normalized in _PANEL_LOCAL_REJECT_CODES:
+        return normalized
+    predicate_code = str(predicate or "").strip()
+    if predicate_code in {"visible_facts_nonempty", "visible_facts_item", "observation_mapping", "visual_validator"}:
+        return "cloud.visual_evidence_invalid"
+    if predicate_code in {"balloon_mask_unknown", "balloon_geometry_unknown"}:
+        return "visual.balloon_mask_unknown"
+    if predicate_code in {"blank_infeasible", "crop_infeasible", "roi_infeasible"}:
+        return "visual.blank_infeasible"
+    if predicate_code == "protected_region_coverage":
+        return "visual.protected_subject_coverage"
+    return "cloud.visual_evidence_invalid"
 
 
 class _FixedVisualConcurrency:
@@ -8461,6 +8619,8 @@ class _StreamingVisualEvidenceSession:
         self._batches: dict[int, tuple[CloudPanelInput, ...]] = {}
         self._next_batch_index = 0
         self._accepted: dict[str, dict[str, Any]] = {}
+        self._rejected: dict[str, dict[str, Any]] = {}
+        self._attempt_ledger: dict[str, dict[str, Any]] = {}
         self._missing: set[str] = set()
         self._failure_codes: list[str] = []
         self._failure_predicates: dict[str, int] = {}
@@ -8553,7 +8713,10 @@ class _StreamingVisualEvidenceSession:
             for index, panel in enumerate(batch)
         }
         accepted: dict[str, dict[str, Any]] = {}
+        rejected: dict[str, dict[str, Any]] = {}
         seeded_ids: list[str] = []
+        seeded_rejected_ids: list[str] = []
+        attempts_by_id = {panel.panel_id: 0 for panel in batch}
         for panel in batch:
             seeded = self._checkpoint_seed.get(panel.panel_id)
             if not isinstance(seeded, Mapping):
@@ -8563,16 +8726,26 @@ class _StreamingVisualEvidenceSession:
             ):
                 continue
             try:
-                accepted[panel.panel_id] = _stream_validate_row(
-                    seeded,
-                    panel,
-                    expected_identity_hash=identity_by_id[panel.panel_id],
-                )
+                if seeded.get("terminal_status") == "rejected":
+                    rejected[panel.panel_id] = _stream_validate_rejection(
+                        seeded,
+                        panel,
+                        expected_identity_hash=identity_by_id[panel.panel_id],
+                    )
+                    seeded_rejected_ids.append(panel.panel_id)
+                else:
+                    accepted[panel.panel_id] = _stream_validate_row(
+                        seeded,
+                        panel,
+                        expected_identity_hash=identity_by_id[panel.panel_id],
+                    )
+                    seeded_ids.append(panel.panel_id)
             except CloudStageError:
                 continue
-            seeded_ids.append(panel.panel_id)
         pending = tuple(
-            panel for panel in batch if panel.panel_id not in accepted
+            panel
+            for panel in batch
+            if panel.panel_id not in accepted and panel.panel_id not in rejected
         )
         error_code = ""
         categories: dict[str, int] = {}
@@ -8588,6 +8761,8 @@ class _StreamingVisualEvidenceSession:
         for attempt in range(1 + retry_budget):
             if not pending:
                 break
+            for panel in pending:
+                attempts_by_id[panel.panel_id] += 1
             try:
                 result = worker_runner.run_visual_evidence(pending)
                 rows = {
@@ -8616,11 +8791,67 @@ class _StreamingVisualEvidenceSession:
                 retries += 1
         if pending and not error_code:
             error_code = "cloud.panel_coverage_incomplete"
+        if len(pending) == 1:
+            panel = pending[0]
+            predicate = next(
+                iter(worker_runner.last_visual_failure_predicates),
+                "",
+            )
+            if _classify_visual_failure(
+                error_code,
+                singleton=True,
+                predicate=predicate,
+            ) == "panel_local_reject":
+                rejection_code = _panel_local_rejection_code(
+                    error_code,
+                    predicate,
+                )
+                rejected[panel.panel_id] = {
+                    "panel_id": panel.panel_id,
+                    "source_asset_id": panel.source_asset_id,
+                    "source_order": panel.source_order,
+                    "source_checksum": panel.source_checksum,
+                    "cache_identity_hash": identity_by_id[panel.panel_id],
+                    "cache_identity_version": VISUAL_CACHE_IDENTITY_VERSION,
+                    "stream_checkpoint_version": VISUAL_STREAM_VERSION,
+                    "terminal_status": "rejected",
+                    "failure_scope": "panel_local_reject",
+                    "rejection_code": rejection_code,
+                    "reason_code": rejection_code,
+                    "failure_predicate": predicate or rejection_code,
+                    "attempt_count": max(1, attempts_by_id[panel.panel_id]),
+                }
+        terminal_ledger = []
+        for panel in batch:
+            panel_id = panel.panel_id
+            if panel_id in accepted:
+                status = "accepted"
+                attempt_count = attempts_by_id[panel_id]
+            elif panel_id in rejected:
+                status = "rejected"
+                attempt_count = int(rejected[panel_id]["attempt_count"])
+            else:
+                status = "missing"
+                attempt_count = attempts_by_id[panel_id]
+            terminal_ledger.append(
+                {
+                    "panel_id": panel_id,
+                    "cache_identity_hash": identity_by_id[panel_id],
+                    "attempt_count": int(attempt_count),
+                    "terminal_status": status,
+                }
+            )
         return {
             "batch_index": batch_index,
             "rows": list(accepted.values()),
             "seeded_ids": tuple(seeded_ids),
-            "missing_ids": tuple(panel.panel_id for panel in pending),
+            "seeded_rejected_ids": tuple(seeded_rejected_ids),
+            "rejected": list(rejected.values()),
+            "missing_ids": tuple(
+                panel.panel_id
+                for panel in pending
+                if panel.panel_id not in rejected
+            ),
             "error_code": error_code,
             "retry_count": retries,
             "request_count": worker_runner.request_count,
@@ -8628,6 +8859,7 @@ class _StreamingVisualEvidenceSession:
             "estimated_cost_usd": worker_runner.estimated_cost_usd,
             "categories": categories,
             "failure_predicates": dict(worker_runner.last_visual_failure_predicates),
+            "attempt_ledger": terminal_ledger,
         }
 
     def _worker_loop(self, worker_index: int) -> None:
@@ -8711,6 +8943,9 @@ class _StreamingVisualEvidenceSession:
             for index, panel in enumerate(batch)
         }
         seeded_ids = {str(panel_id) for panel_id in event.get("seeded_ids", ())}
+        seeded_rejected_ids = {
+            str(panel_id) for panel_id in event.get("seeded_rejected_ids", ())
+        }
         chunk_key = _stream_visual_chunk_cache_key(
             batch,
             chunk_index=batch_index,
@@ -8742,8 +8977,59 @@ class _StreamingVisualEvidenceSession:
                     clean["stream_checkpoint_version"] = VISUAL_STREAM_VERSION
                     self.runner._checkpoint_append(self._checkpoint_scope, clean)
                 self._accepted[panel_id] = clean
+            raw_rejections = event.get("rejected", ())
+            if not isinstance(raw_rejections, (list, tuple)):
+                raise CloudStageError("cloud.visual_stream_row_invalid")
+            for raw_rejection in raw_rejections:
+                if not isinstance(raw_rejection, Mapping):
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                panel_id = str(raw_rejection.get("panel_id", ""))
+                panel = expected.get(panel_id)
+                if panel is None or panel_id in self._accepted or panel_id in self._rejected:
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                clean_rejection = _stream_validate_rejection(
+                    raw_rejection,
+                    panel,
+                    expected_identity_hash=expected_hashes[panel_id],
+                )
+                clean_rejection["chunk_cache_key"] = chunk_key
+                if panel_id not in seeded_rejected_ids:
+                    self.runner._checkpoint_append(
+                        self._checkpoint_scope,
+                        clean_rejection,
+                    )
+                self._rejected[panel_id] = clean_rejection
             for panel_id in event.get("missing_ids", ()):
-                self._missing.add(str(panel_id))
+                panel_id = str(panel_id)
+                if (
+                    panel_id not in expected
+                    or panel_id in self._accepted
+                    or panel_id in self._rejected
+                ):
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                self._missing.add(panel_id)
+            raw_attempts = event.get("attempt_ledger", ())
+            if not isinstance(raw_attempts, (list, tuple)):
+                raise CloudStageError("cloud.visual_stream_row_invalid")
+            for raw_attempt in raw_attempts:
+                if not isinstance(raw_attempt, Mapping):
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                panel_id = str(raw_attempt.get("panel_id", ""))
+                if panel_id not in expected:
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                try:
+                    attempt_count = int(raw_attempt.get("attempt_count", -1))
+                except (TypeError, ValueError):
+                    raise CloudStageError("cloud.visual_stream_row_invalid") from None
+                if (
+                    str(raw_attempt.get("cache_identity_hash", ""))
+                    != expected_hashes[panel_id]
+                    or attempt_count < 0
+                    or str(raw_attempt.get("terminal_status", ""))
+                    not in {"accepted", "rejected", "missing"}
+                ):
+                    raise CloudStageError("cloud.visual_stream_row_invalid")
+                self._attempt_ledger[panel_id] = dict(raw_attempt)
             if event.get("error_code"):
                 self._failure_codes.append(str(event["error_code"]))
         except CloudStageError as exc:
@@ -8778,8 +9064,9 @@ class _StreamingVisualEvidenceSession:
         if len(submitted_ids) != len(ordered_ids) or set(submitted_ids) != set(ordered_ids):
             raise CloudStageError("cloud.panel_lineage_invalid")
         submitted_ids = {item.panel_id for item in ordered}
-        terminal_ids = set(self._accepted) | self._missing
-        self._missing.update(submitted_ids - terminal_ids)
+        terminal_ids = set(self._accepted) | set(self._rejected) | self._missing
+        unresolved = submitted_ids - terminal_ids
+        self._missing.update(unresolved)
         if self._missing:
             metrics = self._controller.snapshot()
             metrics.update(
@@ -8790,12 +9077,19 @@ class _StreamingVisualEvidenceSession:
                     "accepted_panel_count": len(self._accepted),
                     "missing_panel_count": len(self._missing),
                     "missing_panel_ids": sorted(self._missing),
+                    "rejected_panel_count": len(self._rejected),
+                    "rejected_panel_ids": sorted(self._rejected),
                     "request_count": self.runner.request_count,
                     "request_counts": dict(self.runner.request_counts),
                     "retry_count": self._retry_count_total,
                     "max_queue_depth": self._max_queue_depth,
                     "terminal_failure_codes": sorted(set(self._failure_codes)),
                     "visual_failure_predicates": dict(self._failure_predicates),
+                    "panel_attempt_ledger": [
+                        dict(self._attempt_ledger[panel.panel_id])
+                        for panel in ordered
+                        if panel.panel_id in self._attempt_ledger
+                    ],
                 }
             )
             self.runner.last_visual_stream_metrics = metrics
@@ -8808,14 +9102,46 @@ class _StreamingVisualEvidenceSession:
                     "missing_panel_count": len(self._missing),
                 },
             )
-        rows = _merge_stream_visual_rows(
-            ({"rows": list(self._accepted.values())},),
-            ordered,
+        accepted_ordered = tuple(
+            panel for panel in ordered if panel.panel_id in self._accepted
         )
-        if not rows:
-            code = self._failure_codes[0] if self._failure_codes else "cloud.panel_coverage_incomplete"
-            raise CloudStageError(code, reviewable=code.startswith("visual."))
-        source = list(_visual_panel_identities(ordered))
+        if not accepted_ordered:
+            metrics = self._controller.snapshot()
+            metrics.update(
+                {
+                    "contract_version": VISUAL_STREAM_VERSION,
+                    "writer_count": self.writer_thread_count,
+                    "submitted_panel_count": len(ordered),
+                    "accepted_panel_count": 0,
+                    "missing_panel_count": 0,
+                    "missing_panel_ids": [],
+                    "rejected_panel_count": len(self._rejected),
+                    "rejected_panel_ids": sorted(self._rejected),
+                    "request_count": self.runner.request_count,
+                    "request_counts": dict(self.runner.request_counts),
+                    "retry_count": self._retry_count_total,
+                    "max_queue_depth": self._max_queue_depth,
+                    "terminal_failure_codes": sorted(set(self._failure_codes)),
+                    "visual_failure_predicates": dict(self._failure_predicates),
+                    "panel_attempt_ledger": [
+                        dict(self._attempt_ledger[panel.panel_id])
+                        for panel in ordered
+                        if panel.panel_id in self._attempt_ledger
+                    ],
+                }
+            )
+            self.runner.last_visual_stream_metrics = metrics
+            raise CloudStageError(
+                "visual.capacity_insufficient",
+                reviewable=True,
+                safe_metadata={
+                    "submitted_panel_count": len(ordered),
+                    "accepted_panel_count": 0,
+                    "rejected_panel_count": len(self._rejected),
+                },
+            )
+        rows = tuple(self._accepted[panel.panel_id] for panel in accepted_ordered)
+        source = list(_visual_panel_identities(accepted_ordered))
         prompt = self.runner.prompts["visual"]
         result = VisualStageResult(
             panels=rows,
@@ -8824,7 +9150,20 @@ class _StreamingVisualEvidenceSession:
             prompt_version=prompt[0],
             prompt_sha256=prompt[1],
             cache_identity_version=VISUAL_CACHE_IDENTITY_VERSION,
-            panel_identity_hashes=_visual_panel_identity_hashes(ordered),
+            panel_identity_hashes=tuple(
+                str(self._accepted[panel.panel_id].get("cache_identity_hash", ""))
+                for panel in accepted_ordered
+            ),
+            rejected_panels=tuple(
+                self._rejected[panel.panel_id]
+                for panel in ordered
+                if panel.panel_id in self._rejected
+            ),
+            panel_attempt_ledger=tuple(
+                self._attempt_ledger[panel.panel_id]
+                for panel in ordered
+                if panel.panel_id in self._attempt_ledger
+            ),
         )
         key = _cache_key("visual", source, self.runner.model_identity, prompt)
         if self.runner.cache is not None:
@@ -8838,11 +9177,18 @@ class _StreamingVisualEvidenceSession:
                 "accepted_panel_count": len(rows),
                 "missing_panel_count": len(self._missing),
                 "missing_panel_ids": sorted(self._missing),
+                "rejected_panel_count": len(self._rejected),
+                "rejected_panel_ids": sorted(self._rejected),
                 "request_count": self.runner.request_count,
                 "request_counts": dict(self.runner.request_counts),
                 "retry_count": self._retry_count_total,
                 "max_queue_depth": self._max_queue_depth,
                 "visual_failure_predicates": dict(self._failure_predicates),
+                "panel_attempt_ledger": [
+                    dict(self._attempt_ledger[panel.panel_id])
+                    for panel in ordered
+                    if panel.panel_id in self._attempt_ledger
+                ],
             }
         )
         self.runner.last_visual_stream_metrics = metrics
@@ -10543,6 +10889,11 @@ class CloudBatchService:
                 merged_rows = _merge_stream_visual_rows(
                     ({"rows": list(precomputed_visual.panels)},),
                     ordered,
+                    rejected_panel_ids=tuple(
+                        str(item.get("panel_id", ""))
+                        for item in precomputed_visual.rejected_panels
+                        if isinstance(item, Mapping)
+                    ),
                 )
                 merged_ids = tuple(str(row["panel_id"]) for row in merged_rows)
                 if merged_ids != precomputed_visual.panel_ids:
@@ -10563,7 +10914,23 @@ class CloudBatchService:
                     raise KeyError("stale_visual_cache")
                 visual = VisualStageResult.from_dict(migrated_visual)
                 ordered_ids = tuple(panel.panel_id for panel in ordered)
-                if visual.panel_ids != ordered_ids or any(
+                rejected_ids = {
+                    str(item.get("panel_id", ""))
+                    for item in visual.rejected_panels
+                    if isinstance(item, Mapping)
+                }
+                partial_cached_visual = bool(rejected_ids) and (
+                    set(visual.panel_ids) | rejected_ids == set(ordered_ids)
+                    and not set(visual.panel_ids).intersection(rejected_ids)
+                )
+                if partial_cached_visual:
+                    merged_rows = _merge_stream_visual_rows(
+                        ({"rows": list(visual.panels)},),
+                        ordered,
+                        rejected_panel_ids=tuple(rejected_ids),
+                    )
+                    visual = replace(visual, panels=merged_rows)
+                elif visual.panel_ids != ordered_ids or any(
                     not _visual_cached_row_is_reusable(row, panel)
                     for row, panel in zip(visual.panels, ordered, strict=False)
                 ):
@@ -10795,14 +11162,23 @@ class CloudBatchService:
                 for region in (getattr(analysis, "panel_regions", ()) or ())
                 if int(region.source_order) > 0
             }
-            beat_panel_ids = {
-                str(beat["beat_id"]): tuple(
-                    str(panel_id)
-                    for panel_id in beat["panel_ids"]
-                    if str(panel_id) in eligible_panel_ids
-                )
+            beat_by_id = {
+                str(beat["beat_id"]): beat
                 for beat in current_story_map.beats
+                if isinstance(beat, Mapping) and str(beat.get("beat_id", "")).strip()
             }
+            section_evidence_panel_ids = {}
+            for section, beat_ids in section_to_beats.items():
+                panel_ids: list[str] = []
+                for beat_id in beat_ids:
+                    beat = beat_by_id.get(str(beat_id))
+                    if beat is None:
+                        continue
+                    for panel_id in beat.get("panel_ids", ()):
+                        panel_id = str(panel_id)
+                        if panel_id in eligible_panel_ids and panel_id not in panel_ids:
+                            panel_ids.append(panel_id)
+                section_evidence_panel_ids[str(section)] = tuple(panel_ids)
             candidates = pipeline._load_reference_panel_fallback_candidates(
                 db,
                 project_id,
@@ -10810,9 +11186,9 @@ class CloudBatchService:
                 images,
                 profile,
                 review_source_upscale_policy=policy,
-                section_evidence_panel_ids=beat_panel_ids,
-                section_citations=dict.fromkeys(beat_panel_ids, ()),
-                beats_by_section={beat_id: (beat_id,) for beat_id in beat_panel_ids},
+                section_evidence_panel_ids=section_evidence_panel_ids,
+                section_citations=dict.fromkeys(section_to_beats, ()),
+                beats_by_section=section_to_beats,
                 allow_persisted_panel_crop_fallback=policy is not None,
                 review_source_root=review_source_root,
                 allow_conservative_full_panel=policy is not None,
@@ -10839,6 +11215,35 @@ class CloudBatchService:
         ):
             return result, ledger, missing
         if not ledger.entries:
+            rejected = tuple(
+                item
+                for item in getattr(current_visual, "rejected_panels", ())
+                if isinstance(item, Mapping)
+            )
+            if rejected:
+                raise CloudStageError(
+                    "visual.capacity_insufficient",
+                    reviewable=True,
+                    safe_metadata={
+                        "accepted_panel_count": len(current_visual.panels),
+                        "rejected_panel_count": len(rejected),
+                        "rejected_panel_ids": sorted(
+                            str(item.get("panel_id", ""))
+                            for item in rejected
+                            if str(item.get("panel_id", "")).strip()
+                        ),
+                        "rejection_codes": sorted(
+                            {
+                                str(item.get("rejection_code", ""))
+                                for item in rejected
+                                if str(item.get("rejection_code", "")).strip()
+                            }
+                        ),
+                        "feasible_panel_count": len(ledger.entries),
+                        "missing_sections": list(missing),
+                        "failure_predicate": "no_feasible_visual_ledger_entries",
+                    },
+                )
             raise CloudStageError("visual.visual_unavailable", reviewable=True)
         repaired = self.runner.run_visual_narrative_repair(
             current_visual,

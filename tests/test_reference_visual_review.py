@@ -186,6 +186,31 @@ def test_review_only_unknown_geometry_without_visible_facts_stays_excluded():
     assert result == ()
 
 
+def test_roi_enumeration_adds_deterministic_content_scan_alternatives():
+    from app.services import reference_visual_review
+
+    image = Image.new("RGB", (100, 800), (220, 220, 220))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((8, 300, 92, 470), fill=(35, 70, 120))
+    candidate = _candidate("asset-a", 3, "scan")
+
+    first = reference_visual_review.enumerate_reference_roi_alternatives(
+        (100, 800),
+        candidate,
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        image=image,
+    )
+    second = reference_visual_review.enumerate_reference_roi_alternatives(
+        (100, 800),
+        candidate,
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        image=image,
+    )
+
+    assert first == second
+    assert any(roi.roi_label.startswith("content_scan_") for roi in first)
+
+
 def test_reference_loader_excludes_order_zero_front_matter_before_candidate_build(monkeypatch):
     import io
 
