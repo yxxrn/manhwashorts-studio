@@ -8780,6 +8780,10 @@ class _StreamingVisualEvidenceSession:
             for panel in pending:
                 attempts_by_id[panel.panel_id] += 1
             try:
+                # A worker handles multiple batches over its lifetime.  Do not
+                # let a predicate from a previous batch classify a new
+                # transport/coverage failure as panel-local.
+                worker_runner.last_visual_failure_predicates = {}
                 result = worker_runner.run_visual_evidence(pending)
                 rows = {
                     str(row.get("panel_id", "")): dict(row)
@@ -8807,6 +8811,44 @@ class _StreamingVisualEvidenceSession:
                 retries += 1
         if pending and not error_code:
             error_code = "cloud.panel_coverage_incomplete"
+        predicates = tuple(worker_runner.last_visual_failure_predicates)
+        local_predicate = predicates[0] if len(predicates) == 1 else ""
+        local_code = (
+            not error_code
+            or error_code == "cloud.panel_coverage_incomplete"
+            or error_code in _PANEL_LOCAL_REJECT_CODES
+        )
+        if pending and local_code and local_predicate in _PANEL_LOCAL_REJECT_PREDICATES:
+            rejection_code = _panel_local_rejection_code(
+                error_code,
+                local_predicate,
+            )
+            if (
+                _classify_visual_failure(
+                    rejection_code,
+                    singleton=True,
+                    predicate=local_predicate,
+                )
+                == "panel_local_reject"
+            ):
+                for panel in pending:
+                    rejected[panel.panel_id] = {
+                        "panel_id": panel.panel_id,
+                        "source_asset_id": panel.source_asset_id,
+                        "source_order": panel.source_order,
+                        "source_checksum": panel.source_checksum,
+                        "cache_identity_hash": identity_by_id[panel.panel_id],
+                        "cache_identity_version": VISUAL_CACHE_IDENTITY_VERSION,
+                        "stream_checkpoint_version": VISUAL_STREAM_VERSION,
+                        "terminal_status": "rejected",
+                        "failure_scope": "panel_local_reject",
+                        "rejection_code": rejection_code,
+                        "reason_code": rejection_code,
+                        "failure_predicate": local_predicate,
+                        "attempt_count": max(1, attempts_by_id[panel.panel_id]),
+                    }
+                error_code = rejection_code
+                pending = ()
         if len(pending) == 1:
             panel = pending[0]
             predicate = next(

@@ -7897,7 +7897,7 @@ def test_stream_metrics_preserve_sanitized_visual_failure_predicate():
     with pytest.raises(module.CloudStageError) as caught:
         stream.finish(panels)
 
-    assert caught.value.code == "cloud.panel_coverage_incomplete"
+    assert caught.value.code == "visual.capacity_insufficient"
     assert runner.last_visual_stream_metrics["visual_failure_predicates"] == {
         "visible_facts_nonempty": len(panels)
     }
@@ -7940,6 +7940,48 @@ def test_stream_targets_singleton_repair_for_batch_rows_without_visible_facts():
     assert runner.last_visual_stream_metrics["visual_failure_predicates"] == {
         "visible_facts_nonempty": len(panels)
     }
+
+
+def test_stream_quarantines_multiple_terminal_panel_local_failures_after_singleton_repair():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-multi-quarantine"))
+    )
+    poison_ids = {panels[-2].panel_id, panels[-1].panel_id}
+
+    class _PoisonSiblingsProvider(_FakeProvider):
+        def observe(self, request):
+            rows = super().observe(request)
+            for row in rows:
+                if row.get("panel_id") in poison_ids:
+                    row["visible_facts"] = []
+            return rows
+
+    provider = _PoisonSiblingsProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        stream.submit(panel)
+
+    result = stream.finish(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels[:-2])
+    assert [item["panel_id"] for item in result.rejected_panels] == [
+        panel.panel_id for panel in panels[-2:]
+    ]
+    assert runner.last_visual_stream_metrics["missing_panel_count"] == 0
+    assert runner.last_visual_stream_metrics["rejected_panel_count"] == 2
+    assert len(provider.calls) == 1 + len(poison_ids)
 
 
 def test_stream_retry_budget_honors_configured_attempts_for_missing_panel():

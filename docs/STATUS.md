@@ -1,5 +1,23 @@
 # LOCAL CODE CHECKPOINT - 2026-08-25
 
+## 2026-08-25 - multi-panel visual quarantine fix
+
+The fresh aggregate run `426a15ac705c427a9a62bd1aef7097ba` reached the
+normal visual terminal boundary in about 37 minutes but did not produce a
+preview. Its sanitized stream metrics were 169 submitted, 113 accepted, 55
+missing, and 1 terminal reject across 354 provider requests and 29 retries at
+four workers/peak in-flight four; the dominant predicate was
+`visible_facts_nonempty` (67). The root cause was local: the streaming worker
+left multiple panel-local schema failures in `missing` after their bounded
+singleton repairs, so `finish()` raised `cloud.panel_coverage_incomplete`
+instead of recording terminal quarantine. The fix resets per-worker
+predicates between batches and emits validated `panel_local_reject` records
+for a batch only when the current failure predicate is singular and explicitly
+panel-local. Transport, auth, checksum, lineage, and unknown failures remain
+hard stops; if all panels are quarantined, the project fails with
+`visual.capacity_insufficient`. This run remains a failed benchmark attempt;
+the next action is a same-namespace visual resume reusing valid checkpoints.
+
 ## 2026-08-25 - bounded visual concurrency checkpoint
 
 The first aggregate cold attempt on the published aggregate SHA started at
