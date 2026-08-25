@@ -3134,6 +3134,7 @@ class CloudStageRunner:
                     chunk_reconciled: dict[str, dict[str, Any]] = {}
                     unknown_rows: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
                     failed_rows: dict[str, str] = {}
+                    failed_predicates_by_id: dict[str, str] = {}
                     for index, item in enumerate(current_chunk):
                         raw = (
                             raw_rows[index]
@@ -3142,6 +3143,7 @@ class CloudStageRunner:
                         )
                         if not isinstance(raw, Mapping):
                             failed_rows[item.panel_id] = "cloud.provider_response_invalid"
+                            failed_predicates_by_id[item.panel_id] = "provider_response_invalid"
                             continue
                         if item.panel_id in reconciled_by_id:
                             continue
@@ -3149,13 +3151,16 @@ class CloudStageRunner:
                             entry, unknown = visual_row_entry(item, raw)
                         except visual_scoring.VisualEvidenceError as exc:
                             failed_rows[item.panel_id] = getattr(exc, "code", "cloud.visual_evidence_invalid")
-                            failure_predicates[getattr(exc, "code", "visual_validator")] = (
-                                failure_predicates.get(getattr(exc, "code", "visual_validator"), 0) + 1
+                            predicate = getattr(exc, "code", "visual_validator")
+                            failed_predicates_by_id[item.panel_id] = predicate
+                            failure_predicates[predicate] = (
+                                failure_predicates.get(predicate, 0) + 1
                             )
                             continue
                         except CloudStageError as exc:
                             failed_rows[item.panel_id] = exc.code
                             predicate = str(exc.safe_metadata.get("failed_predicate", exc.code))
+                            failed_predicates_by_id[item.panel_id] = predicate
                             failure_predicates[predicate] = failure_predicates.get(predicate, 0) + 1
                             continue
                         if unknown is not None:
@@ -3180,6 +3185,80 @@ class CloudStageRunner:
                     if pending_ids and attempt + 1 < self.max_attempts:
                         chunk = tuple(item for item in current_chunk if item.panel_id in pending_ids)
                         continue
+                    semantic_repair_ids = tuple(
+                        item.panel_id
+                        for item in current_chunk
+                        if (
+                            item.panel_id in failed_rows
+                            and failed_predicates_by_id.get(item.panel_id)
+                            == "visible_facts_nonempty"
+                        )
+                    )
+                    if semantic_repair_ids:
+                        # A batched response can omit semantic facts when the
+                        # provider spreads attention across several panels.
+                        # Retry only those rows as singleton semantic repairs;
+                        # the normal row validator remains authoritative.
+                        for item in current_chunk:
+                            if item.panel_id not in semantic_repair_ids:
+                                continue
+                            try:
+                                provider_payload, provider_mime = _visual_provider_payload(item)
+                                targeted_request = VisionObservationRequest(
+                                    analysis_run_id=(
+                                        f"{request.analysis_run_id}-semantic-"
+                                        f"{chunk_index}-{item.source_order}"
+                                    ),
+                                    instruction_version=instruction_version,
+                                    instruction_sha256=instruction_sha256,
+                                    chunk_index=chunk_index,
+                                    panels=(
+                                        {
+                                            **item.descriptor(),
+                                            "mime_type": provider_mime,
+                                            "payload": provider_payload,
+                                        },
+                                    ),
+                                    visual_instruction_version=repair_prompt[0],
+                                    visual_instruction_sha256=repair_prompt[1],
+                                )
+                                targeted_rows = self._call(
+                                    lambda targeted_request=targeted_request: self.provider.observe(
+                                        targeted_request
+                                    ),
+                                    request_stage="other",
+                                )
+                                target_raw = None
+                                if isinstance(targeted_rows, list):
+                                    for raw in targeted_rows:
+                                        if isinstance(raw, Mapping) and str(
+                                            raw.get("panel_id", "")
+                                        ) == item.panel_id:
+                                            target_raw = raw
+                                            break
+                                if not isinstance(target_raw, Mapping):
+                                    continue
+                                target_entry, target_unknown = visual_row_entry(item, target_raw)
+                                if target_entry is None or target_unknown is not None:
+                                    continue
+                                target_entry["cache_identity_hash"] = panel_identity_by_id[item.panel_id]
+                                target_entry["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
+                                target_entry["chunk_cache_key"] = _visual_chunk_cache_key(
+                                    current_chunk,
+                                    chunk_index=chunk_index,
+                                    batch_count=len(chunks),
+                                    model_identity=self.model_identity,
+                                    prompt=prompt,
+                                )
+                                with reconcile_lock:
+                                    reconciled_by_id[item.panel_id] = target_entry
+                                self._checkpoint_append(checkpoint_scope, target_entry)
+                                failed_rows.pop(item.panel_id, None)
+                                failed_predicates_by_id.pop(item.panel_id, None)
+                            except (CloudStageError, visual_scoring.VisualEvidenceError):
+                                # Keep this row missing; semantic repair never
+                                # converts an invalid response into evidence.
+                                continue
                     if unknown_rows:
                         # A multi-panel response can be semantically valid but
                         # omit balloon geometry because the provider's visual

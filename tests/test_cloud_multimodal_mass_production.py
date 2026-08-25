@@ -7657,6 +7657,45 @@ def test_stream_metrics_preserve_sanitized_visual_failure_predicate():
     }
 
 
+def test_stream_targets_singleton_repair_for_batch_rows_without_visible_facts():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-singleton-repair"))
+    )
+
+    class _BatchNeedsSingletonRepairProvider(_FakeProvider):
+        def observe(self, request):
+            rows = super().observe(request)
+            if len(request.panels) > 1:
+                for row in rows:
+                    row["visible_facts"] = []
+            return rows
+
+    provider = _BatchNeedsSingletonRepairProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        stream.submit(panel)
+
+    result = stream.finish(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert len(provider.calls) == 1 + len(panels)
+    assert runner.last_visual_stream_metrics["visual_failure_predicates"] == {
+        "visible_facts_nonempty": len(panels)
+    }
+
+
 def test_stream_retry_budget_honors_configured_attempts_for_missing_panel():
     module = _module()
     panels = tuple(
