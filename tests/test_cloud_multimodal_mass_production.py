@@ -79,6 +79,19 @@ def _boundary_request(module):
     )
 
 
+def test_visual_parallel_worker_setting_is_bounded_and_environment_driven(monkeypatch):
+    module = _module()
+
+    monkeypatch.setenv("MS_VISUAL_PARALLEL_WORKERS", "4")
+    assert module._configured_visual_parallel_workers() == 4
+    monkeypatch.setenv("MS_VISUAL_PARALLEL_WORKERS", "0")
+    assert module._configured_visual_parallel_workers() == 1
+    monkeypatch.setenv("MS_VISUAL_PARALLEL_WORKERS", "99")
+    assert module._configured_visual_parallel_workers() == 32
+    monkeypatch.setenv("MS_VISUAL_PARALLEL_WORKERS", "invalid")
+    assert module._configured_visual_parallel_workers() == 8
+
+
 def test_visual_repair_failure_metadata_is_sanitized_and_counts_feasible_scope():
     module = _module()
     repair = importlib.import_module("app.services.visual_narrative_repair")

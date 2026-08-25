@@ -1,5 +1,18 @@
 # LOCAL CODE CHECKPOINT - 2026-08-25
 
+## 2026-08-25 - bounded visual concurrency checkpoint
+
+The first aggregate cold attempt on the published aggregate SHA started at
+`2026-08-25T06:37:17Z`, created a new project, and was stopped at the
+10-minute no-durable-progress watchdog after partial visual checkpoint rows;
+it did not produce a preview and is not a benchmark pass. The preserved
+diagnostic showed the resolver used eight visual workers while the configured
+provider was waiting on I/O. The resolver now accepts the bounded
+`MS_VISUAL_PARALLEL_WORKERS` setting (1..32, default 8) so the next frozen run
+can use four workers without changing schema, lineage, retry, or QC gates.
+The new setting has a focused RED/GREEN regression. The next run must use a
+new SHA/runtime namespace and record this failed cold attempt separately.
+
 ## 2026-08-25 - multi-chapter batch aggregation boundary
 
 The normal operator batch menu now creates one aggregate project and one

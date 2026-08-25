@@ -278,6 +278,22 @@ EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
 EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT = 4
 STAGE_PARALLEL_WORKERS = 4
+DEFAULT_VISUAL_PARALLEL_WORKERS = 8
+MAX_VISUAL_PARALLEL_WORKERS = 32
+
+
+def _configured_visual_parallel_workers(explicit: int | None = None) -> int:
+    """Resolve a bounded visual worker count without changing validation gates."""
+
+    raw = explicit if explicit is not None else os.environ.get(
+        "MS_VISUAL_PARALLEL_WORKERS",
+        str(DEFAULT_VISUAL_PARALLEL_WORKERS),
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_VISUAL_PARALLEL_WORKERS
+    return max(1, min(MAX_VISUAL_PARALLEL_WORKERS, value))
 _REVIEW_ERROR_CODE_PATTERN = re.compile(
     r"\b(?:cloud|visual|reference|review|subtitle|render|ffmpeg|encoder|quality|audio|timeline|media)\.[a-z0-9_.-]+\b"
 )
@@ -11931,6 +11947,7 @@ def resolve_cloud_runner(
     min_request_interval_s: float = 0.0,
     estimated_cost_per_request: float = 0.0,
     allow_balloon_unknown: bool = False,
+    visual_parallel_workers: int | None = None,
 ) -> CloudStageRunner:
     """Resolve only a verified BYOK multimodal credential; never local fallback."""
 
@@ -11966,6 +11983,7 @@ def resolve_cloud_runner(
         min_request_interval_s=min_request_interval_s,
         estimated_cost_per_request=estimated_cost_per_request,
         allow_balloon_unknown=allow_balloon_unknown,
+        visual_parallel_workers=_configured_visual_parallel_workers(visual_parallel_workers),
     )
 
 
