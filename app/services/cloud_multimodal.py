@@ -2110,7 +2110,11 @@ def _safe_narration_contract_diagnostic(
         field, count = "claim_evidence", claim_count
     elif "script_passages" in lowered or "script passage" in lowered or "four to six passages" in lowered:
         field, count = "script_passages", passage_count
-    elif "ending_kind" in lowered:
+    elif (
+        "open_question ending" in lowered
+        or "ending must be evidence-grounded" in lowered
+        or "ending_kind" in lowered
+    ):
         field, count = "ending_kind", 1
     elif "story_spine" in lowered:
         field, count = "story_spine", 6
@@ -2244,6 +2248,18 @@ def _visual_narrative_repair_retry_feedback(
         return (
             "return four to six complete passages with exact passage keys, unique IDs, "
             "existing claim IDs, and non-empty feasible evidence_panel_ids"
+        )
+    if value == "cloud.narrative_not_grounded" and failed_field == "ending_kind":
+        return (
+            "use open_question only when the final passage is an evidence-grounded "
+            "question ending with ?; otherwise choose consequence or cliffhanger and "
+            "do not end the final passage with a question mark"
+        )
+    if value == "cloud.narrative_repair_micro_compaction_unavailable":
+        return (
+            "return 4-6 grounded chronological passages at 118-122 lexical words; "
+            "do not rely on contraction compaction or generic filler, and preserve "
+            "existing claim IDs and feasible panel evidence"
         )
     if value in {
         "visual.narrative_repair_ungrounded",

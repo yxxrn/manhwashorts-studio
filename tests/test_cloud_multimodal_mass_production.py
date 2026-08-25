@@ -5484,6 +5484,27 @@ def test_narration_contract_diagnostic_keeps_only_field_and_count():
     assert "private" not in diagnostic
 
 
+def test_visual_repair_retry_feedback_targets_ending_and_compaction_contracts():
+    module = _module()
+
+    metadata = module._visual_narrative_repair_analyzer_metadata(
+        "open_question ending must be evidence-grounded and end with ?",
+        {"script_passages": [{}]},
+    )
+
+    assert metadata["failed_field"] == "ending_kind"
+    ending_feedback = module._visual_narrative_repair_retry_feedback(
+        "cloud.narrative_not_grounded",
+        failed_field=metadata["failed_field"],
+    )
+    assert "consequence" in ending_feedback
+    compaction_feedback = module._visual_narrative_repair_retry_feedback(
+        "cloud.narrative_repair_micro_compaction_unavailable",
+    )
+    assert "118-122" in compaction_feedback
+    assert "do not rely on contraction" in compaction_feedback
+
+
 def test_unmapped_repair_claims_report_only_safe_field_and_count():
     module = _module()
     story_map = module.StoryMapResult(
