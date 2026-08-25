@@ -238,6 +238,62 @@ def test_discover_batch_folders_accepts_novel_extra_sidecars_but_rejects_unknown
         cli.discover_batch_folders(tmp_path)
 
 
+def test_aggregate_manifest_uses_natural_chapter_page_order_and_checksum(tmp_path):
+    cli = _cli_module()
+    for chapter_name, page_names in (
+        ("Chapter 10", ("2.png", "10.png")),
+        ("Chapter 2", ("10.png", "2.png")),
+    ):
+        chapter = tmp_path / chapter_name
+        chapter.mkdir()
+        for page_name in page_names:
+            (chapter / page_name).write_bytes(f"{chapter_name}/{page_name}".encode())
+
+    chapters = cli.discover_batch_folders(tmp_path)
+    manifest = cli.aggregate_chapter_manifest(chapters)
+
+    assert [chapter.folder.name for chapter in chapters] == ["Chapter 2", "Chapter 10"]
+    assert [(entry.chapter_name, entry.page_name) for entry in manifest.entries] == [
+        ("Chapter 2", "2.png"),
+        ("Chapter 2", "10.png"),
+        ("Chapter 10", "2.png"),
+        ("Chapter 10", "10.png"),
+    ]
+    assert manifest.manifest_sha256
+    assert manifest == cli.aggregate_chapter_manifest(chapters)
+
+
+def test_batch_menu_runs_one_aggregate_project(monkeypatch, tmp_path):
+    cli = _cli_module()
+    chapters = tuple(
+        cli.ChapterFolder(tmp_path / name, (tmp_path / name / "01.png",))
+        for name in ("Chapter 2", "Chapter 10")
+    )
+    captured = {}
+
+    class Cloud:
+        resolve_cloud_runner = object()
+
+    monkeypatch.setattr(cli, "discover_batch_folders", lambda _value: chapters)
+    monkeypatch.setattr(cli, "_cloud", lambda: Cloud())
+    monkeypatch.setattr(cli, "_settings", lambda: type("Settings", (), {"output_dir": tmp_path / "out"})())
+    monkeypatch.setattr(cli, "import_aggregate_chapters", lambda *_args, **_kwargs: cli.ImportedChapter("aggregate-id", True, 2, "manifest"))
+    monkeypatch.setattr(cli, "run_projects", lambda _db, project_ids, **kwargs: captured.update(project_ids=project_ids, kwargs=kwargs) or [{"job_id": "aggregate-id", "state": "REVIEW_PREVIEW_READY", "error_code": ""}])
+    monkeypatch.setattr(cli, "resolve_operator_context", lambda _db: (type("User", (), {"id": "user"})(), type("Workspace", (), {"id": "workspace"})()))
+    app = cli.OperatorCLI(
+        input_fn=lambda _prompt: "y",
+        output_fn=lambda _message: None,
+        db_factory=lambda: type("Db", (), {"__enter__": lambda self: self, "__exit__": lambda self, *_args: False})(),
+    )
+    monkeypatch.setattr(app, "_run_options", lambda: cli.RunOptions())
+    monkeypatch.setattr(app, "_confirm", lambda _prompt: True)
+
+    app.import_and_run_batch()
+
+    assert captured["project_ids"] == ["aggregate-id"]
+    assert captured["kwargs"]["review_source_root"] == tmp_path
+
+
 def test_chapter_manifest_is_stable_and_changes_when_source_bytes_change(tmp_path):
     cli = _cli_module()
     image = tmp_path / "01.png"

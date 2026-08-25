@@ -1,5 +1,17 @@
 # LOCAL CODE CHECKPOINT - 2026-08-25
 
+## 2026-08-25 - multi-chapter batch aggregation boundary
+
+The normal operator batch menu now creates one aggregate project and one
+downstream review job for the ordered child chapters. Chapter/page/source order
+is natural-numeric and persisted through a checksummed aggregate manifest,
+source-family lineage, per-asset metadata, and the append-only audit record.
+The batch parent is passed to review-source resolution recursively, so all
+chapter originals remain checksum-verified. This fixes the prior behavior that
+created one independent story/job per chapter. The aggregate contract has
+focused RED/GREEN coverage; no cold benchmark or provider/render run has
+started on this checkpoint.
+
 The current local-only source change adds an explicit panel-admission failure
 scope to the streaming visual path. A singleton/schema/geometry/feasibility
 failure that is locally attributable to one panel is persisted as a terminal

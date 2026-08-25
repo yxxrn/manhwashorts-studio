@@ -191,6 +191,34 @@ class ChapterManifest:
 
 
 @dataclass(frozen=True)
+class AggregateManifestEntry:
+    chapter_index: int
+    chapter_name: str
+    page_index: int
+    page_name: str
+    source_order: int
+    checksum: str
+    size_bytes: int
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "chapter_index": self.chapter_index,
+            "chapter_name": self.chapter_name,
+            "page_index": self.page_index,
+            "page_name": self.page_name,
+            "source_order": self.source_order,
+            "checksum": self.checksum,
+            "size_bytes": self.size_bytes,
+        }
+
+
+@dataclass(frozen=True)
+class AggregateChapterManifest:
+    entries: tuple[AggregateManifestEntry, ...]
+    manifest_sha256: str
+
+
+@dataclass(frozen=True)
 class ImportedChapter:
     project_id: str
     created: bool
@@ -451,6 +479,15 @@ def select_model(
     raise OperatorCliError("operator.model_unavailable", "choose a model returned by the provider")
 
 
+def _natural_name_key(value: str) -> tuple[tuple[tuple[int, object], ...], str]:
+    parts = re.split(r"(\d+)", str(value))
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in parts
+        if part
+    ), str(value)
+
+
 def discover_chapter_folder(value: str | Path) -> ChapterFolder:
     """Resolve one direct child folder containing supported images in stable order."""
 
@@ -462,7 +499,10 @@ def discover_chapter_folder(value: str | Path) -> ChapterFolder:
         raise OperatorCliError("operator.chapter_folder_invalid", "folder path cannot be resolved") from exc
     if not folder.is_dir():
         raise OperatorCliError("operator.chapter_folder_invalid", "choose an existing directory")
-    children = sorted((item for item in folder.iterdir() if item.is_file()), key=lambda item: (item.name.casefold(), item.name))
+    children = sorted(
+        (item for item in folder.iterdir() if item.is_file()),
+        key=lambda item: _natural_name_key(item.name),
+    )
     unsupported = [item.name for item in children if item.name.casefold() not in _IGNORED_FOLDER_FILES and item.suffix.casefold() not in SUPPORTED_IMAGE_SUFFIXES]
     if unsupported:
         raise OperatorCliError("operator.unsupported_file", f"unsupported file in chapter folder: {unsupported[0]}")
@@ -482,7 +522,10 @@ def discover_batch_folders(value: str | Path) -> tuple[ChapterFolder, ...]:
         raise OperatorCliError("operator.batch_folder_invalid", "parent path cannot be resolved") from exc
     if not parent.is_dir():
         raise OperatorCliError("operator.batch_folder_invalid", "choose an existing parent directory")
-    children = sorted((item for item in parent.iterdir() if item.is_dir()), key=lambda item: (item.name.casefold(), item.name))
+    children = sorted(
+        (item for item in parent.iterdir() if item.is_dir()),
+        key=lambda item: _natural_name_key(item.name),
+    )
     chapters = tuple(discover_chapter_folder(child) for child in children)
     if not chapters:
         raise OperatorCliError("operator.batch_empty", "parent has no chapter folders")
@@ -499,6 +542,44 @@ def chapter_manifest(chapter: ChapterFolder) -> ChapterManifest:
         entries.append((path.name, hashlib.sha256(data).hexdigest(), len(data)))
     canonical = json.dumps(entries, ensure_ascii=True, separators=(",", ":"))
     return ChapterManifest(tuple(entries), hashlib.sha256(canonical.encode("utf-8")).hexdigest())
+
+
+def aggregate_chapter_manifest(
+    chapters: Sequence[ChapterFolder],
+) -> AggregateChapterManifest:
+    """Create one deterministic manifest for an ordered multi-chapter story."""
+
+    if not chapters:
+        raise OperatorCliError("operator.batch_empty", "parent has no chapter folders")
+    entries: list[AggregateManifestEntry] = []
+    source_order = 0
+    for chapter_index, chapter in enumerate(chapters):
+        for page_index, path in enumerate(chapter.image_paths):
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                raise OperatorCliError("operator.chapter_read_failed", f"cannot read {path.name}") from exc
+            entries.append(
+                AggregateManifestEntry(
+                    chapter_index=chapter_index,
+                    chapter_name=chapter.folder.name,
+                    page_index=page_index,
+                    page_name=path.name,
+                    source_order=source_order,
+                    checksum=hashlib.sha256(data).hexdigest(),
+                    size_bytes=len(data),
+                )
+            )
+            source_order += 1
+    canonical = json.dumps(
+        [entry.as_dict() for entry in entries],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return AggregateChapterManifest(
+        tuple(entries),
+        hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    )
 
 
 def _manifest_source_keys(manifest: ChapterManifest) -> set[tuple[str, str]]:
@@ -629,6 +710,129 @@ def import_chapter_folder(
             ingest.storage.delete(key)
         raise OperatorCliError("operator.chapter_import_failed", safe_error_text(exc)) from None
     return ImportedChapter(project.id, True, order_index, manifest.manifest_sha256)
+
+
+def _aggregate_source_family(chapter_index: int, page_index: int) -> str:
+    return f"{chapter_index:04d}__{page_index:06d}"
+
+
+def _existing_project_for_aggregate_manifest(
+    db: Any,
+    workspace_id: str,
+    manifest: AggregateChapterManifest,
+) -> Project | None:
+    from sqlalchemy import select
+
+    Project, _SourceAsset, _User, _Workspace = _models()
+    pipeline = _pipeline()
+    expected = {
+        (_aggregate_source_family(entry.chapter_index, entry.page_index), entry.checksum)
+        for entry in manifest.entries
+    }
+    projects = db.scalars(
+        select(Project).where(Project.workspace_id == workspace_id).order_by(Project.created_at)
+    ).all()
+    for project in projects:
+        assets = [
+            asset
+            for asset in pipeline.project_assets(db, project.id)
+            if str(getattr(asset.type, "value", asset.type)) == "image"
+        ]
+        actual = {
+            (str(asset.source_family or ""), str(asset.original_checksum or asset.checksum or ""))
+            for asset in assets
+        }
+        if actual == expected and actual:
+            return project
+    return None
+
+
+def import_aggregate_chapters(
+    db: Any,
+    chapters: Sequence[ChapterFolder],
+    *,
+    workspace_id: str,
+    actor_id: str,
+) -> ImportedChapter:
+    """Import ordered chapters into one project and one downstream story job."""
+
+    ingest = _ingest()
+    pipeline = _pipeline()
+    Project, _SourceAsset, _User, _Workspace = _models()
+    ordered_chapters = tuple(chapters)
+    manifest = aggregate_chapter_manifest(ordered_chapters)
+    existing = _existing_project_for_aggregate_manifest(db, workspace_id, manifest)
+    if existing is not None:
+        assets = pipeline.project_assets(db, existing.id)
+        return ImportedChapter(existing.id, False, len(assets), manifest.manifest_sha256)
+
+    root = ordered_chapters[0].folder.parent
+    project = Project(
+        workspace_id=workspace_id,
+        title=root.name[:200],
+        chapter=f"{ordered_chapters[0].folder.name}..{ordered_chapters[-1].folder.name}"[:60],
+        content_type="chapter_recap",
+        target_duration=int(_settings().default_target_seconds),
+        status="draft",
+    )
+    db.add(project)
+    db.flush()
+    created_keys: list[str] = []
+    asset_order = 0
+    entry_index = 0
+    try:
+        for chapter_index, chapter in enumerate(ordered_chapters):
+            for page_index, image_path in enumerate(chapter.image_paths):
+                entry = manifest.entries[entry_index]
+                entry_index += 1
+                results = ingest.ingest_upload_sources(
+                    project.id,
+                    image_path.name,
+                    _image_mime_type(image_path),
+                    image_path.read_bytes(),
+                )
+                for result in results:
+                    asset = _asset_from_ingested(project.id, result, asset_order)
+                    asset_order += 1
+                    asset.source_family = _aggregate_source_family(chapter_index, page_index)
+                    asset.source_family_manual = True
+                    asset.source_name = chapter.folder.name
+                    quality = dict(asset.panel_quality or {})
+                    quality["aggregate_lineage"] = {
+                        "manifest_sha256": manifest.manifest_sha256,
+                        "chapter_index": chapter_index,
+                        "chapter_name": chapter.folder.name,
+                        "page_index": page_index,
+                        "page_name": image_path.name,
+                        "source_order": entry.source_order,
+                        "source_checksum": entry.checksum,
+                    }
+                    asset.panel_quality = quality
+                    created_keys.append(asset.storage_key)
+                    db.add(asset)
+        if asset_order == 0 or entry_index != len(manifest.entries):
+            raise OperatorCliError("operator.batch_empty", "no images were ingested")
+        pipeline.audit(
+            db,
+            "operator.aggregate_import",
+            "project",
+            project.id,
+            actor_id,
+            manifest_sha256=manifest.manifest_sha256,
+            chapter_count=len(ordered_chapters),
+            page_count=len(manifest.entries),
+            entries=[entry.as_dict() for entry in manifest.entries],
+        )
+        db.flush()
+    except OperatorCliError:
+        for key in created_keys:
+            ingest.storage.delete(key)
+        raise
+    except Exception as exc:  # noqa: BLE001 - keep CLI failure sanitized
+        for key in created_keys:
+            ingest.storage.delete(key)
+        raise OperatorCliError("operator.aggregate_import_failed", safe_error_text(exc)) from None
+    return ImportedChapter(project.id, True, asset_order, manifest.manifest_sha256)
 
 
 def _capability_png() -> bytes:
@@ -1142,6 +1346,21 @@ class OperatorCLI:
             self._print(f"Project {'reused' if not imported.created else 'created'}: {imported.project_id}")
             return imported
 
+    def _import_aggregate(self, chapters: Sequence[ChapterFolder]) -> ImportedChapter:
+        with self._db() as db:
+            user, workspace = resolve_operator_context(db)
+            imported = import_aggregate_chapters(
+                db,
+                chapters,
+                workspace_id=workspace.id,
+                actor_id=user.id,
+            )
+            self._print(
+                f"Aggregate project {'reused' if not imported.created else 'created'}: "
+                f"{imported.project_id}; chapters={len(chapters)}; assets={imported.image_count}"
+            )
+            return imported
+
     def import_and_run_one(self) -> None:
         cloud_multimodal = _cloud()
         chapter = discover_chapter_folder(self._ask("Paste/drag one chapter folder: "))
@@ -1170,21 +1389,17 @@ class OperatorCLI:
         options = self._run_options()
         if not self._confirm("Import and run this batch with the configured request budget?"):
             raise OperatorCliError("operator.cancelled", "operator cancelled before provider calls")
-        imported = [self._import_one(chapter) for chapter in chapters]
-        source_roots = {
-            item.project_id: chapter.folder
-            for chapter, item in zip(chapters, imported, strict=True)
-        }
+        imported = self._import_aggregate(chapters)
         rows = run_projects(
             None,
-            [item.project_id for item in imported],
+            [imported.project_id],
             state_dir=self.state_dir,
             review_dir=self.review_dir,
             runner_factory=cloud_multimodal.resolve_cloud_runner,
             run_options=options,
             review_only_preview=True,
             review_source_upscale_policy="review_silent_source_upscale_v1",
-            review_source_roots=source_roots,
+            review_source_root=chapters[0].folder.parent,
             review_output_dir=_settings().output_dir,
         )
         for row in rows:
@@ -1306,6 +1521,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "CLI_VERSION",
+    "AggregateChapterManifest",
+    "AggregateManifestEntry",
     "CapabilityResult",
     "ChapterFolder",
     "ChapterManifest",
@@ -1316,10 +1533,12 @@ __all__ = [
     "OperatorCliError",
     "RunOptions",
     "chapter_manifest",
+    "aggregate_chapter_manifest",
     "discover_batch_folders",
     "discover_chapter_folder",
     "fetch_models",
     "import_chapter_folder",
+    "import_aggregate_chapters",
     "load_operator_env",
     "list_job_states",
     "main",
