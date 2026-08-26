@@ -55,8 +55,9 @@ STRIP_BOUNDARY_PROMPT_VERSION = "strip-boundary-assessment-v1"
 # Keep provider response envelopes to one image: this configured endpoint has
 # returned incomplete structured JSON for multi-image requests.  Every ordered
 # panel is still processed; local reconciliation owns complete coverage.
-VISUAL_REQUEST_MAX_PANELS = 8  # preview-only: 4-5 worker saturation sweet spot
+VISUAL_REQUEST_MAX_PANELS = 4  # live A/B: best throughput/repair balance with global provider gate
 VISUAL_REQUEST_MAX_ESTIMATED_BYTES = 3_500_000  # preview-only: larger visual batches
+VISUAL_FINAL_FRESH_SINGLETON_ATTEMPTS = 1  # confirm rare transient rejects with a fresh runner
 VISUAL_REQUEST_OVERLAP = 0
 VISUAL_ANALYSIS_WINDOW_VERSION = "visual-analysis-windows-v1"
 VISUAL_ANALYSIS_WINDOW_MIN_RATIO = 3.0
@@ -2405,6 +2406,41 @@ def _visual_narrative_repair_failure_metadata(
     }
 
 
+class _ProviderConcurrencyGate:
+    """Bound actual provider calls across nested visual workers.
+
+    Batch workers and tall-panel geometry repair share this same gate so inner
+    window parallelism cannot multiply the configured provider concurrency.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = max(1, int(limit))
+        self._semaphore = threading.BoundedSemaphore(self.limit)
+        self._lock = threading.Lock()
+        self.in_flight = 0
+        self.peak_in_flight = 0
+
+    def call(self, operation):
+        self._semaphore.acquire()
+        with self._lock:
+            self.in_flight += 1
+            self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+        try:
+            return operation()
+        finally:
+            with self._lock:
+                self.in_flight = max(0, self.in_flight - 1)
+            self._semaphore.release()
+
+    def snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "provider_concurrency_limit": self.limit,
+                "provider_peak_in_flight": self.peak_in_flight,
+                "provider_in_flight": self.in_flight,
+            }
+
+
 class CloudStageRunner:
     """Run visual, causal-map, and narration calls with one pinned model."""
 
@@ -2423,6 +2459,7 @@ class CloudStageRunner:
         allow_balloon_unknown: bool = False,
         visual_checkpoint_path: Path | None = None,
         visual_parallel_workers: int = 8,
+        provider_concurrency_gate: _ProviderConcurrencyGate | None = None,
     ) -> None:
         model_id = getattr(provider, "model_id", "")
         if not isinstance(model_id, str) or model_id != model_identity.model:
@@ -2452,6 +2489,7 @@ class CloudStageRunner:
         self.min_request_interval_s = max(0.0, float(min_request_interval_s))
         self.estimated_cost_per_request = max(0.0, float(estimated_cost_per_request))
         self.visual_parallel_workers = max(1, int(visual_parallel_workers))
+        self._provider_concurrency_gate = provider_concurrency_gate
         inferred_checkpoint = getattr(cache, "checkpoint_path", None)
         if inferred_checkpoint is None:
             cache_root = getattr(cache, "root", None)
@@ -2612,6 +2650,8 @@ class CloudStageRunner:
             self.estimated_cost_usd += self.estimated_cost_per_request
             self._last_request_at = time.monotonic()
             try:
+                if self._provider_concurrency_gate is not None:
+                    return self._provider_concurrency_gate.call(operation)
                 return operation()
             except CloudStageError:
                 raise
@@ -3158,7 +3198,8 @@ class CloudStageRunner:
                     min_request_interval_s=self.min_request_interval_s,
                     estimated_cost_per_request=self.estimated_cost_per_request,
                     allow_balloon_unknown=self.allow_balloon_unknown,
-                    visual_parallel_workers=1,
+                    visual_parallel_workers=self.visual_parallel_workers,
+                    provider_concurrency_gate=self._provider_concurrency_gate,
                 )
                 visual: Mapping[str, Any] | None = None
                 attempts = max(1, self.max_attempts)
@@ -8785,6 +8826,7 @@ class _StreamingVisualEvidenceSession:
         self.max_estimated_bytes = int(max_estimated_bytes)
         self.worker_count = int(worker_count)
         self._controller = _FixedVisualConcurrency(self.worker_count)
+        self._provider_gate = _ProviderConcurrencyGate(self.worker_count)
         self._tasks: queue.Queue[Any] = queue.Queue(maxsize=self.queue_size)
         self._events: queue.Queue[Any] = queue.Queue(maxsize=max(2, self.queue_size * 2))
         self._stop = threading.Event()
@@ -8844,7 +8886,11 @@ class _StreamingVisualEvidenceSession:
             estimated_cost_per_request=self.runner.estimated_cost_per_request,
             allow_balloon_unknown=self.runner.allow_balloon_unknown,
             visual_checkpoint_path=None,
-            visual_parallel_workers=1,
+            # Batch-level work is already bounded by the stream.  Let tall
+            # panel window repair use the same width while the shared provider
+            # gate keeps the actual provider concurrency globally bounded.
+            visual_parallel_workers=self.worker_count,
+            provider_concurrency_gate=self._provider_gate,
         )
 
     def _flush_pending(self) -> None:
@@ -8967,25 +9013,39 @@ class _StreamingVisualEvidenceSession:
                     break
                 retries += 1
         batch_predicates = tuple(worker_runner.last_visual_failure_predicates)
-        omitted_response_rows = (
+        singleton_recovery_rows = bool(
             pending
-            and not error_code
-            and len(batch_predicates) == 1
-            and batch_predicates[0] == "provider_response_invalid"
+            and (
+                error_code == "cloud.provider_response_invalid"
+                or (
+                    not error_code
+                    and len(batch_predicates) == 1
+                    and (
+                        batch_predicates[0] == "provider_response_invalid"
+                        or batch_predicates[0] in _PANEL_LOCAL_REJECT_PREDICATES
+                    )
+                )
+            )
         )
-        if omitted_response_rows:
+        if singleton_recovery_rows:
             still_missing: list[CloudPanelInput] = []
             for panel in pending:
-                singleton_error = "cloud.provider_response_invalid"
-                predicate = "provider_response_invalid"
-                recovered = False
-                # The batch attempt already consumed one try. Always allow
-                # one final singleton probe, then honor any remaining parent
-                # budget without ever re-batching successful siblings.
-                remaining_attempts = max(
-                    1,
-                    self.runner.max_attempts - attempts_by_id[panel.panel_id],
+                predicate = (
+                    "provider_response_invalid"
+                    if error_code == "cloud.provider_response_invalid"
+                    else batch_predicates[0]
                 )
+                singleton_error = (
+                    "cloud.provider_response_invalid"
+                    if predicate == "provider_response_invalid"
+                    else "cloud.visual_evidence_invalid"
+                )
+                recovered = False
+                # A multi-panel attention/schema miss must not consume the
+                # singleton recovery budget. Give recoverable batch failures
+                # the configured number of isolated submissions; this remains
+                # bounded and persistent failures are still quarantined.
+                remaining_attempts = max(1, self.runner.max_attempts)
                 for _ in range(remaining_attempts):
                     attempts_by_id[panel.panel_id] += 1
                     retries += 1
@@ -9009,10 +9069,64 @@ class _StreamingVisualEvidenceSession:
                         singleton_error = exc.code
                         category = _stream_error_category(exc.code)
                         categories[category] = categories.get(category, 0) + 1
+                        if exc.code == "cloud.provider_response_invalid":
+                            predicate = "provider_response_invalid"
+                            continue
                     predicates = tuple(worker_runner.last_visual_failure_predicates)
                     predicate = predicates[0] if len(predicates) == 1 else ""
                     if not predicate:
                         break
+                if recovered:
+                    continue
+
+                # Rare provider/schema or semantic misses can persist across
+                # retries owned by one long-lived worker runner. Before
+                # quarantining a panel, confirm the failure once using a fresh
+                # runner with an isolated cache/context. This touches only
+                # already-failed outliers and shares the same global provider
+                # concurrency gate.
+                for _ in range(VISUAL_FINAL_FRESH_SINGLETON_ATTEMPTS):
+                    fresh_runner = self._worker_runner()
+                    fresh_runner.last_visual_failure_predicates = {}
+                    attempts_by_id[panel.panel_id] += 1
+                    retries += 1
+                    fresh_row = None
+                    try:
+                        fresh_singleton = fresh_runner.run_visual_evidence((panel,))
+                        fresh_row = next(
+                            (
+                                dict(item)
+                                for item in fresh_singleton.panels
+                                if isinstance(item, Mapping)
+                                and str(item.get("panel_id", "")) == panel.panel_id
+                            ),
+                            None,
+                        )
+                    except CloudStageError as exc:
+                        singleton_error = exc.code
+                        category = _stream_error_category(exc.code)
+                        categories[category] = categories.get(category, 0) + 1
+                    finally:
+                        worker_runner.request_count += fresh_runner.request_count
+                        for key, value in fresh_runner.request_counts.items():
+                            worker_runner.request_counts[key] = (
+                                worker_runner.request_counts.get(key, 0) + value
+                            )
+                        worker_runner.estimated_cost_usd += fresh_runner.estimated_cost_usd
+
+                    if fresh_row is not None:
+                        accepted[panel.panel_id] = fresh_row
+                        recovered = True
+                        break
+                    fresh_predicates = tuple(
+                        fresh_runner.last_visual_failure_predicates
+                    )
+                    predicate = (
+                        fresh_predicates[0]
+                        if len(fresh_predicates) == 1
+                        else predicate
+                    )
+
                 if recovered:
                     continue
                 if (
@@ -9366,6 +9480,7 @@ class _StreamingVisualEvidenceSession:
         self._missing.update(unresolved)
         if self._missing:
             metrics = self._controller.snapshot()
+            metrics.update(self._provider_gate.snapshot())
             metrics.update(
                 {
                     "contract_version": VISUAL_STREAM_VERSION,
@@ -9402,6 +9517,7 @@ class _StreamingVisualEvidenceSession:
         accepted_ordered = tuple(panel for panel in ordered if panel.panel_id in self._accepted)
         if not accepted_ordered:
             metrics = self._controller.snapshot()
+            metrics.update(self._provider_gate.snapshot())
             metrics.update(
                 {
                     "contract_version": VISUAL_STREAM_VERSION,
@@ -9464,6 +9580,7 @@ class _StreamingVisualEvidenceSession:
         if self.runner.cache is not None:
             self.runner.cache.put(key, result.as_dict())
         metrics = self._controller.snapshot()
+        metrics.update(self._provider_gate.snapshot())
         metrics.update(
             {
                 "contract_version": VISUAL_STREAM_VERSION,
