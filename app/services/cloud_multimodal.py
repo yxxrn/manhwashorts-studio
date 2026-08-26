@@ -79,6 +79,7 @@ STORY_MAP_COVERAGE_FALLBACK_STEP = 60
 # before failing closed rather than treating a recoverable coverage omission as
 # a project-level story failure.
 STORY_MAP_COVERAGE_MIN_STEP = 15
+STORY_MAP_COVERAGE_FINAL_STEP = 5
 NARRATION_CHUNK_STEP = 180
 NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
@@ -4194,7 +4195,7 @@ class CloudStageRunner:
         subchunks instead of inventing references or accepting a partial map.
         """
 
-        step = max(STORY_MAP_COVERAGE_MIN_STEP, int(step))
+        step = max(STORY_MAP_COVERAGE_FINAL_STEP, int(step))
         subchunks = [chunk[index : index + step] for index in range(0, len(chunk), step)]
         results = [
             self._run_story_map_chunk(
@@ -4327,6 +4328,19 @@ class CloudStageRunner:
                             chunk,
                             batch_count,
                             step=STORY_MAP_COVERAGE_MIN_STEP,
+                        )
+                        break
+                    if (
+                        coverage_step >= STORY_MAP_COVERAGE_MIN_STEP
+                        and len(chunk) > STORY_MAP_COVERAGE_FINAL_STEP
+                    ):
+                        result = self._run_story_map_coverage_fallback(
+                            prompt,
+                            visual,
+                            chunk_index,
+                            chunk,
+                            batch_count,
+                            step=STORY_MAP_COVERAGE_FINAL_STEP,
                         )
                         break
                 if exc.code in retryable_story_codes and attempt + 1 < self.max_attempts:
