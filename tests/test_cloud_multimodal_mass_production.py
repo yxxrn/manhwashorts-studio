@@ -2107,7 +2107,9 @@ def test_unknown_visual_geometry_uses_conservative_fallback_before_story_mapping
     assert result.state == module.ChapterState.READY_TO_RENDER
     assert result.visual.reconciled is True
     assert result.visual.panel_ids == tuple(panel.panel_id for panel in _panels(module))
-    assert len([call for call in provider.calls if call[0] == "visual"]) == 5
+    assert len([call for call in provider.calls if call[0] == "visual"]) == (
+        1 + len(_panels(module))
+    )
     assert all(
         row.get("fallback_mode") == "conservative_full_panel_v1"
         and row["visual_evidence"]["evidence_source"] == "conservative_full_panel_v1"
@@ -2217,7 +2219,7 @@ def test_unattempted_conservative_visual_cache_is_not_reused():
     assert module._visual_cached_row_is_reusable(row, panel) is True
 
 
-def test_transient_unknown_visual_response_is_retried_atomically():
+def test_transient_unknown_visual_response_is_repaired_per_panel():
     module = _module()
     provider = _FakeProvider(transient_unknown_count=1)
     runner = module.CloudStageRunner(
@@ -2229,7 +2231,9 @@ def test_transient_unknown_visual_response_is_retried_atomically():
     result = runner.run_visual_evidence(_panels(module))
 
     assert result.reconciled is True
-    assert len([call for call in provider.calls if call[0] == "visual"]) == 2
+    assert len([call for call in provider.calls if call[0] == "visual"]) == (
+        1 + len(_panels(module))
+    )
     assert provider.analysis_run_ids[0] != provider.analysis_run_ids[1]
 
 
@@ -7831,14 +7835,17 @@ def test_stream_finish_rejects_partial_final_batch_and_persists_metrics():
     for panel in panels:
         stream.submit(panel)
 
-    with pytest.raises(module.CloudStageError) as caught:
-        stream.finish(panels)
+    result = stream.finish(panels)
 
-    assert caught.value.code == "cloud.panel_coverage_incomplete"
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels[:-1])
+    assert [item["panel_id"] for item in result.rejected_panels] == [
+        "stream-partial-panel-2"
+    ]
     assert runner.last_visual_stream_metrics["submitted_panel_count"] == len(panels)
     assert runner.last_visual_stream_metrics["accepted_panel_count"] == len(panels) - 1
-    assert runner.last_visual_stream_metrics["missing_panel_count"] == 1
-    assert runner.last_visual_stream_metrics["missing_panel_ids"] == [
+    assert runner.last_visual_stream_metrics["missing_panel_count"] == 0
+    assert runner.last_visual_stream_metrics["rejected_panel_count"] == 1
+    assert runner.last_visual_stream_metrics["rejected_panel_ids"] == [
         "stream-partial-panel-2"
     ]
 
@@ -8138,6 +8145,51 @@ def test_stream_retry_budget_honors_configured_attempts_for_missing_panel():
     assert len(provider.calls) == 3
     assert runner.last_visual_stream_metrics["retry_count"] == 2
 
+
+
+def test_stream_repairs_multiple_omitted_batch_rows_as_singletons():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-omitted-singletons"))
+    )
+    omitted_ids = {panels[-2].panel_id, panels[-1].panel_id}
+
+    class _BatchOmitsRowsProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.request_sizes = []
+
+        def observe(self, request):
+            self.request_sizes.append(len(request.panels))
+            rows = super().observe(request)
+            if len(request.panels) > 1:
+                return [
+                    row for row in rows if row.get("panel_id") not in omitted_ids
+                ]
+            return rows
+
+    provider = _BatchOmitsRowsProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=2,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        stream.submit(panel)
+
+    result = stream.finish(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert provider.request_sizes == [len(panels), 1, 1]
+    assert runner.last_visual_stream_metrics["missing_panel_count"] == 0
+    assert runner.last_visual_stream_metrics["retry_count"] == 2
 
 def test_stream_abort_drains_workers_and_rejects_late_finish():
     module = _module()
@@ -8770,3 +8822,66 @@ def test_panel_admission_rejects_duplicate_ids_and_preserves_deterministic_ledge
 
     assert caught.value.code == "cloud.panel_admission_invalid"
     assert caught.value.safe_metadata["reason_code"] == "admission.duplicate_panel_id"
+
+
+def test_stream_skips_rebatch_for_semantic_attention_misses_with_two_attempts():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-direct-singleton-repair"))
+    )
+
+    class _BatchNeedsSingletonRepairProvider(_FakeProvider):
+        def observe(self, request):
+            rows = super().observe(request)
+            if len(request.panels) > 1:
+                for row in rows:
+                    row["visible_facts"] = []
+            return rows
+
+    provider = _BatchNeedsSingletonRepairProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=2,
+    )
+    result = runner.run_visual_evidence(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert len(provider.calls) == 1 + len(panels)
+
+
+def test_semantic_singleton_progresses_to_geometry_singleton_when_geometry_unknown():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-semantic-to-geometry"))
+    )
+
+    class _SemanticThenGeometryProvider(_FakeProvider):
+        def observe(self, request):
+            self.calls.append(("visual", request.visual_instruction_version, request.visual_instruction_sha256))
+            self.analysis_run_ids.append(request.analysis_run_id)
+            rows = [_visual_row(panel) for panel in request.panels]
+            if len(request.panels) > 1:
+                for row in rows:
+                    row["visible_facts"] = []
+                return rows
+            if "-semantic-" in request.analysis_run_id:
+                return [_visual_row(request.panels[0], unknown=True)]
+            return rows
+
+    provider = _SemanticThenGeometryProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=2,
+    )
+    result = runner.run_visual_evidence(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert len(provider.calls) == 1 + 2 * len(panels)
+    assert sum("-semantic-" in value for value in provider.analysis_run_ids) == len(panels)
+    assert sum("-geometry-" in value for value in provider.analysis_run_ids) == len(panels)

@@ -13,8 +13,8 @@ meant to be read, and it matches the scroll feel of the original.
 Cut placement matters. A naive split every N pixels slices through faces and
 speech balloons. Webtoon pages already separate their beats with gutters —
 near-uniform white or black bands — so each cut is nudged to the most
-gutter-like row within a search window. When no gutter exists nearby the ideal
-position is used unchanged, which is no worse than a fixed split.
+gutter-like row within a search window. When no verified separator exists nearby, the source remains connected and
+is handled later through overlapping vision windows instead of a forced cut.
 
 Pillow only, no new dependencies.
 """
@@ -49,7 +49,11 @@ _MIN_SEGMENT_FRACTION = 0.55
 
 # This detector is intentionally based on structure rather than brightness.
 # The version participates in downstream cache/review identities.
-COLOR_AGNOSTIC_DETECTOR_VERSION = "color-agnostic-gutter-v2"
+COLOR_AGNOSTIC_DETECTOR_VERSION = "color-agnostic-gutter-v3"
+VERIFIED_BLANK_DETECTOR_VERSION = "extreme-full-width-blank-v2"
+_BLANK_VARIANCE_MAX = 25.0
+_BLANK_BRIGHT_MIN = 245.0
+_BLANK_DARK_MAX = 10.0
 
 
 @dataclass(frozen=True)
@@ -200,7 +204,17 @@ def color_agnostic_separator_candidates(
                 ),
             )
         )
-    return tuple(sorted(candidates, key=lambda item: (-item.confidence, item.position)))
+    blank_candidates = verified_blank_spans(img, row_textures=textures)
+    combined: list[SeparatorCandidate] = list(blank_candidates)
+    for candidate in candidates:
+        if any(
+            candidate.run_top < blank.run_bottom
+            and candidate.run_bottom > blank.run_top
+            for blank in blank_candidates
+        ):
+            continue
+        combined.append(candidate)
+    return tuple(sorted(combined, key=lambda item: (-item.confidence, item.position)))
 
 
 def color_agnostic_row_classifications(
@@ -255,6 +269,130 @@ def _row_stats(img: Image.Image) -> tuple[list[float], list[float]]:
 
     variances = [max(0.0, 255.0 * sq_means[i] - means[i] ** 2) for i in range(height)]
     return means, variances
+
+
+def verified_blank_spans(
+    img: Image.Image,
+    *,
+    min_run: int | None = None,
+    row_textures: list[float] | None = None,
+) -> tuple[SeparatorCandidate, ...]:
+    """Return only full-width, extreme, low-variance blank bands.
+
+    Unlike the structural gutter detector, this fast path does not require
+    textured context on both sides.  That makes it suitable for large blank
+    regions at page ends and between webtoon beats.  The thresholds are
+    deliberately strict so pale artwork, skies, walls, and effects remain
+    canonical content unless they are truly near-uniform across the full row.
+    """
+    width, height = img.size
+    if width <= 0 or height <= 0:
+        return ()
+    means, variances = _row_stats(img)
+    required_run = (
+        max(24, min(96, int(round(width / 18.0))))
+        if min_run is None
+        else max(1, int(min_run))
+    )
+    candidates: list[SeparatorCandidate] = []
+    index = 0
+    while index < height:
+        is_blank = (
+            variances[index] <= _BLANK_VARIANCE_MAX
+            and (
+                means[index] >= _BLANK_BRIGHT_MIN
+                or means[index] <= _BLANK_DARK_MAX
+            )
+        )
+        if not is_blank:
+            index += 1
+            continue
+        start = index
+        index += 1
+        while index < height and (
+            variances[index] <= _BLANK_VARIANCE_MAX
+            and (
+                means[index] >= _BLANK_BRIGHT_MIN
+                or means[index] <= _BLANK_DARK_MAX
+            )
+        ):
+            index += 1
+        end = index
+        run_length = end - start
+        if run_length < required_run:
+            continue
+        mean_variance = sum(variances[start:end]) / run_length
+        extremity = max(
+            0.0,
+            max(
+                min(means[start:end], default=255.0) - _BLANK_BRIGHT_MIN,
+                _BLANK_DARK_MAX - max(means[start:end], default=0.0),
+            ),
+        )
+        flatness = max(0.0, 1.0 - mean_variance / max(1.0, _BLANK_VARIANCE_MAX))
+        run_score = min(1.0, run_length / max(1.0, required_run * 3.0))
+        confidence = round(min(1.0, 0.9 + 0.05 * flatness + 0.03 * run_score + 0.02 * min(1.0, extremity / 10.0)), 6)
+        tone = "near_white" if sum(means[start:end]) / run_length >= 127.5 else "near_black"
+        candidates.append(
+            SeparatorCandidate(
+                position=(start + end) // 2,
+                confidence=confidence,
+                score=confidence,
+                run_top=start,
+                run_bottom=end,
+                reason=(
+                    f"{VERIFIED_BLANK_DETECTOR_VERSION};{tone};"
+                    f"mean_variance={mean_variance:.3f};run={run_length}"
+                ),
+            )
+        )
+    if len(candidates) <= 1:
+        return tuple(candidates)
+    textures = row_textures
+    if textures is None:
+        _, _, textures = _row_structure_features(img)
+    max_gap = max(12, min(128, int(round(width * 0.12))))
+    merged: list[SeparatorCandidate] = [candidates[0]]
+    for candidate in candidates[1:]:
+        previous = merged[-1]
+        gap_top = previous.run_bottom
+        gap_bottom = candidate.run_top
+        gap = gap_bottom - gap_top
+        bridge = False
+        if 0 < gap <= max_gap:
+            gap_means = means[gap_top:gap_bottom]
+            gap_textures = textures[gap_top:gap_bottom]
+            same_extreme_tone = bool(gap_means) and (
+                all(value >= _BLANK_BRIGHT_MIN for value in gap_means)
+                or all(value <= _BLANK_DARK_MAX for value in gap_means)
+            )
+            low_texture = bool(gap_textures) and (
+                sum(gap_textures) / len(gap_textures) <= 3.0
+                and max(gap_textures) <= 8.0
+            )
+            gap_variances = variances[gap_top:gap_bottom]
+            faint_extreme_mark = bool(gap_variances) and (
+                sum(gap_variances) / len(gap_variances)
+                <= _BLANK_VARIANCE_MAX
+            )
+            bridge = same_extreme_tone and (
+                low_texture or faint_extreme_mark
+            )
+        if not bridge:
+            merged.append(candidate)
+            continue
+        merged[-1] = SeparatorCandidate(
+            position=(previous.run_top + candidate.run_bottom) // 2,
+            confidence=min(previous.confidence, candidate.confidence),
+            score=min(previous.score, candidate.score),
+            run_top=previous.run_top,
+            run_bottom=candidate.run_bottom,
+            reason=(
+                f"{VERIFIED_BLANK_DETECTOR_VERSION};bridged_low_texture_blank;"
+                f"gap={gap}"
+            ),
+        )
+    return tuple(merged)
 
 
 def _gutter_score(mean: float, variance: float) -> float:
@@ -411,8 +549,13 @@ def plan_cuts(img: Image.Image) -> tuple[list[tuple[int, int]], list[bool]]:
         # Leave room for the remaining cuts plus a final segment.
         high = bottom - min_gap * (parts - i)
         row, hit = _best_cut(scores, ideal, radius, low, max(low + 1, high))
+        # Never persist an arbitrary geometry cut through artwork.  A tall
+        # connected scene can be inspected later through overlapping vision
+        # windows without destroying its canonical source lineage.
+        if not hit:
+            continue
         cuts.append(row)
-        snapped.append(hit)
+        snapped.append(True)
 
     bounds = [top, *cuts, bottom]
     spans = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]

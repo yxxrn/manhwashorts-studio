@@ -15,6 +15,8 @@ import httpx
 from app.services import visual_scoring
 
 VISION_REQUEST_TIMEOUT = 600.0
+ANALYSIS_WINDOW_CONTRACT_VERSION = "visual-analysis-windows-v1"
+ANALYSIS_WINDOW_MAX_COUNT = 12
 
 _REQUIRED_OBSERVATION_KEYS = frozenset(
     {
@@ -110,6 +112,33 @@ def _is_ocr_only_evidence_source(value: Any) -> bool:
     return normalized in _OCR_ONLY_EVIDENCE_SOURCES
 
 
+def _normalize_provider_bbox(value: Any) -> Any:
+    """Normalize a strict, unambiguous provider xywh alias to xyxy.
+
+    Some compatible endpoints occasionally return normalized_bbox as
+    [x, y, width, height].  We only reinterpret it when it is impossible as
+    xyxy (x1 <= x0 or y1 <= y0) and the xywh conversion remains completely
+    inside the unit frame.  Ambiguous valid xyxy boxes are never changed.
+    """
+
+    if not isinstance(value, list) or len(value) != 4:
+        return value
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value):
+        return value
+    x0, y0, third, fourth = (float(item) for item in value)
+    if not all(0.0 <= item <= 1.0 for item in (x0, y0, third, fourth)):
+        return value
+    if third > x0 and fourth > y0:
+        return value
+    if third <= 0.0 or fourth <= 0.0:
+        return value
+    x1 = x0 + third
+    y1 = y0 + fourth
+    if x1 > 1.0 or y1 > 1.0:
+        return value
+    return [x0, y0, x1, y1]
+
+
 def _normalize_provider_visual_evidence(observation: Any) -> Any:
     """Normalize one conservative provider alias before local validation.
 
@@ -150,18 +179,43 @@ def _normalize_provider_visual_evidence(observation: Any) -> Any:
             in _BALLOON_MASK_STATUS_ALIASES
             else mask_status
         )
-        if normalized_kind != kind or normalized_mask_status != mask_status:
+        normalized_bbox = _normalize_provider_bbox(region.get("normalized_bbox"))
+        if (
+            normalized_kind != kind
+            or normalized_mask_status != mask_status
+            or normalized_bbox != region.get("normalized_bbox")
+        ):
             item = dict(region)
             item["kind"] = normalized_kind
             item["mask_status"] = normalized_mask_status
+            item["normalized_bbox"] = normalized_bbox
             normalized_regions.append(item)
             changed = True
         else:
             normalized_regions.append(region)
+    protected_regions = visual.get("protected_regions")
+    normalized_protected_regions: list[Any] = []
+    if isinstance(protected_regions, list):
+        for region in protected_regions:
+            if not isinstance(region, Mapping):
+                normalized_protected_regions.append(region)
+                continue
+            normalized_bbox = _normalize_provider_bbox(region.get("normalized_bbox"))
+            if normalized_bbox != region.get("normalized_bbox"):
+                item = dict(region)
+                item["normalized_bbox"] = normalized_bbox
+                normalized_protected_regions.append(item)
+                changed = True
+            else:
+                normalized_protected_regions.append(region)
+    else:
+        normalized_protected_regions = protected_regions
     if not changed:
         return observation
     normalized_visual = dict(visual)
     normalized_visual["balloon_regions"] = normalized_regions
+    if isinstance(protected_regions, list):
+        normalized_visual["protected_regions"] = normalized_protected_regions
     normalized_observation = dict(observation)
     normalized_observation["visual_evidence"] = normalized_visual
     return normalized_observation
@@ -731,6 +785,88 @@ class OpenAICompatibleVisionProvider:
         )
 
 
+def _validated_analysis_windows(
+    panel: Mapping[str, Any],
+) -> tuple[str | None, tuple[int, int] | None, tuple[dict[str, Any], ...]]:
+    version = panel.get("analysis_window_version")
+    source_size = panel.get("analysis_window_source_size")
+    raw_windows = panel.get("analysis_windows")
+    supplied = version is not None or source_size is not None or raw_windows is not None
+    if not supplied:
+        return None, None, ()
+    if version != ANALYSIS_WINDOW_CONTRACT_VERSION:
+        raise VisionRequestInvalid()
+    if (
+        not isinstance(source_size, (list, tuple))
+        or len(source_size) != 2
+        or not all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in source_size)
+        or not isinstance(raw_windows, (list, tuple))
+        or not raw_windows
+        or len(raw_windows) > ANALYSIS_WINDOW_MAX_COUNT
+    ):
+        raise VisionRequestInvalid()
+    width, height = int(source_size[0]), int(source_size[1])
+    normalized: list[dict[str, Any]] = []
+    previous_end: int | None = None
+    for expected_index, raw in enumerate(raw_windows):
+        if not isinstance(raw, Mapping):
+            raise VisionRequestInvalid()
+        index = raw.get("window_index")
+        y0 = raw.get("y0")
+        y1 = raw.get("y1")
+        overlap_above = raw.get("overlap_above")
+        overlap_below = raw.get("overlap_below")
+        mime_type = raw.get("mime_type")
+        payload = raw.get("payload")
+        if (
+            index != expected_index
+            or isinstance(y0, bool)
+            or not isinstance(y0, int)
+            or isinstance(y1, bool)
+            or not isinstance(y1, int)
+            or y0 < 0
+            or y1 <= y0
+            or y1 > height
+            or isinstance(overlap_above, bool)
+            or not isinstance(overlap_above, int)
+            or overlap_above < 0
+            or isinstance(overlap_below, bool)
+            or not isinstance(overlap_below, int)
+            or overlap_below < 0
+            or not isinstance(mime_type, str)
+            or not mime_type.lower().startswith("image/")
+            or not isinstance(payload, bytes)
+            or not payload
+        ):
+            raise VisionRequestInvalid()
+        if expected_index == 0:
+            if y0 != 0 or overlap_above != 0:
+                raise VisionRequestInvalid()
+        else:
+            if previous_end is None or y0 >= previous_end:
+                raise VisionRequestInvalid()
+            if overlap_above != previous_end - y0:
+                raise VisionRequestInvalid()
+        normalized.append(
+            {
+                "window_index": expected_index,
+                "y0": y0,
+                "y1": y1,
+                "overlap_above": overlap_above,
+                "overlap_below": overlap_below,
+                "mime_type": mime_type,
+                "payload": payload,
+            }
+        )
+        previous_end = y1
+    if normalized[-1]["y1"] != height or normalized[-1]["overlap_below"] != 0:
+        raise VisionRequestInvalid()
+    for left, right in zip(normalized, normalized[1:], strict=False):
+        if left["overlap_below"] != left["y1"] - right["y0"]:
+            raise VisionRequestInvalid()
+    return version, (width, height), tuple(normalized)
+
+
 def _validate_request(
     request: VisionObservationRequest,
 ) -> tuple[dict[str, Any], ...]:
@@ -820,17 +956,21 @@ def _validate_request(
             or not payload
         ):
             raise VisionRequestInvalid()
+        window_version, window_source_size, windows = _validated_analysis_windows(panel)
         seen_panel_ids.add(panel_id)
         previous_order = source_order
-        normalized.append(
-            {
-                "panel_id": panel_id,
-                "source_asset_id": source_asset_id,
-                "source_order": source_order,
-                "mime_type": mime_type,
-                "payload": payload,
-            }
-        )
+        normalized_panel = {
+            "panel_id": panel_id,
+            "source_asset_id": source_asset_id,
+            "source_order": source_order,
+            "mime_type": mime_type,
+            "payload": payload,
+        }
+        if windows:
+            normalized_panel["analysis_window_version"] = window_version
+            normalized_panel["analysis_window_source_size"] = window_source_size
+            normalized_panel["analysis_windows"] = windows
+        normalized.append(normalized_panel)
     return tuple(normalized)
 
 
@@ -841,20 +981,48 @@ def _build_payload(
     *,
     encode_image=None,
 ) -> dict[str, Any]:
+    panel_metadata: list[dict[str, Any]] = []
+    for panel in panels:
+        item = {
+            "panel_id": panel["panel_id"],
+            "source_asset_id": panel["source_asset_id"],
+            "source_order": panel["source_order"],
+        }
+        windows = panel.get("analysis_windows", ())
+        if windows:
+            item["analysis_window_version"] = panel["analysis_window_version"]
+            item["analysis_window_source_size"] = list(panel["analysis_window_source_size"])
+            item["analysis_windows"] = [
+                {
+                    "window_index": window["window_index"],
+                    "y0": window["y0"],
+                    "y1": window["y1"],
+                    "overlap_above": window["overlap_above"],
+                    "overlap_below": window["overlap_below"],
+                }
+                for window in windows
+            ]
+        panel_metadata.append(item)
     metadata = {
         "analysis_run_id": request.analysis_run_id,
         "instruction_version": request.instruction_version,
         "instruction_sha256": request.instruction_sha256,
         "chunk_index": request.chunk_index,
-        "panels": [
-            {
-                "panel_id": panel["panel_id"],
-                "source_asset_id": panel["source_asset_id"],
-                "source_order": panel["source_order"],
-            }
-            for panel in panels
-        ],
+        "panels": panel_metadata,
     }
+    has_analysis_windows = any(panel.get("analysis_windows") for panel in panels)
+    window_instruction = (
+        " Some canonical panels include one overview followed by overlapping detail "
+        "windows. Detail windows are alternate views of the SAME panel, never new "
+        "panels. Reconcile all windows into exactly one observation for that panel_id. "
+        "Window y0/y1 coordinates are local to the canonical panel. Any balloon or "
+        "protected-region geometry MUST be normalized to the full canonical panel "
+        "dimensions in analysis_window_source_size, not to an individual window. "
+        "Use the overlap to resolve objects crossing window seams and do not duplicate "
+        "facts merely because they appear in two windows."
+        if has_analysis_windows
+        else ""
+    )
     if request.visual_instruction_version is not None:
         metadata["visual_instruction_version"] = request.visual_instruction_version
         metadata["visual_instruction_sha256"] = request.visual_instruction_sha256
@@ -881,6 +1049,7 @@ def _build_payload(
             "normalized_polygon, confidence, evidence_source, required, "
             "minimum_coverage. Local reconciliation owns the evidence hash. "
             "evidence_refs must include the panel_id and be non-empty. "
+            f"{window_instruction} "
             "Request metadata: "
             f"{json.dumps(metadata, sort_keys=True, separators=(',', ':'))}"
         )
@@ -891,11 +1060,17 @@ def _build_payload(
             "visible_facts, dialogue_or_ocr, inferences, uncertainties, entities, "
             "state_changes, causal_links, and evidence_refs. Do not write a recap "
             "or use file labels or list positions as evidence; never infer missing "
-            "panels. Request metadata: "
+            f"panels.{window_instruction} Request metadata: "
             f"{json.dumps(metadata, sort_keys=True, separators=(',', ':'))}"
         )
     content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
     for panel in panels:
+        content.append(
+            {
+                "type": "text",
+                "text": f"Canonical panel {panel['panel_id']} overview.",
+            }
+        )
         encoded = (
             encode_image(mime_type=panel["mime_type"], payload=panel["payload"])
             if encode_image is not None
@@ -909,6 +1084,31 @@ def _build_payload(
                 },
             }
         )
+        source_size = panel.get("analysis_window_source_size")
+        for window in panel.get("analysis_windows", ()):
+            content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"Detail window for canonical panel {panel['panel_id']}: "
+                        f"index={window['window_index']} y0={window['y0']} y1={window['y1']} "
+                        f"panel_size={list(source_size)}. Reconcile to the same panel_id."
+                    ),
+                }
+            )
+            window_encoded = (
+                encode_image(mime_type=window["mime_type"], payload=window["payload"])
+                if encode_image is not None
+                else base64.b64encode(window["payload"]).decode("ascii")
+            )
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{window['mime_type']};base64,{window_encoded}",
+                    },
+                }
+            )
     return {
         "model": model,
         "messages": [{"role": "user", "content": content}],

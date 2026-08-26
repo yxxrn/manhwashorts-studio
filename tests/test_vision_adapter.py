@@ -835,3 +835,77 @@ def test_visual_sidecars_fail_closed_without_provider_hash_trust(
     else:
         sidecar["evidence_hash"] = "provider-supplied"
     _assert_visual_invalid(module, mock_provider_url, response)
+
+
+def test_analysis_windows_are_complete_views_of_one_canonical_panel():
+    module = _vision_module()
+    panel = {
+        "panel_id": "panel-tall",
+        "source_asset_id": "asset-tall",
+        "source_order": 1,
+        "mime_type": "image/jpeg",
+        "payload": b"overview",
+        "analysis_window_version": module.ANALYSIS_WINDOW_CONTRACT_VERSION,
+        "analysis_window_source_size": [900, 3000],
+        "analysis_windows": (
+            {"window_index": 0, "y0": 0, "y1": 1200, "overlap_above": 0, "overlap_below": 200, "mime_type": "image/jpeg", "payload": b"w0"},
+            {"window_index": 1, "y0": 1000, "y1": 2200, "overlap_above": 200, "overlap_below": 200, "mime_type": "image/jpeg", "payload": b"w1"},
+            {"window_index": 2, "y0": 2000, "y1": 3000, "overlap_above": 200, "overlap_below": 0, "mime_type": "image/jpeg", "payload": b"w2"},
+        ),
+    }
+    request = module.VisionObservationRequest(
+        analysis_run_id="run-tall",
+        instruction_version="vision-first-story-analyzer-v1",
+        instruction_sha256="a" * 64,
+        chunk_index=0,
+        panels=(panel,),
+    )
+    normalized = module._validate_request(request)
+    assert len(normalized) == 1
+    assert len(normalized[0]["analysis_windows"]) == 3
+    body = module._build_payload(request, normalized, "grok-4.3")
+    image_parts = [part for part in _body_parts(body) if part.get("type") == "image_url"]
+    assert len(image_parts) == 4  # one overview + three detail windows
+    rendered = _body_text(body)
+    assert "SAME panel" in rendered
+    assert "full canonical panel" in rendered
+    assert "panel-tall" in rendered
+
+
+def test_analysis_windows_reject_source_coverage_gap():
+    module = _vision_module()
+    panel = {
+        "panel_id": "panel-gap",
+        "source_asset_id": "asset-gap",
+        "source_order": 1,
+        "mime_type": "image/jpeg",
+        "payload": b"overview",
+        "analysis_window_version": module.ANALYSIS_WINDOW_CONTRACT_VERSION,
+        "analysis_window_source_size": [900, 3000],
+        "analysis_windows": (
+            {"window_index": 0, "y0": 0, "y1": 1200, "overlap_above": 0, "overlap_below": 0, "mime_type": "image/jpeg", "payload": b"w0"},
+            {"window_index": 1, "y0": 1300, "y1": 3000, "overlap_above": 0, "overlap_below": 0, "mime_type": "image/jpeg", "payload": b"w1"},
+        ),
+    }
+    request = module.VisionObservationRequest(
+        analysis_run_id="run-gap",
+        instruction_version="vision-first-story-analyzer-v1",
+        instruction_sha256="a" * 64,
+        chunk_index=0,
+        panels=(panel,),
+    )
+    with pytest.raises(module.VisionRequestInvalid):
+        module._validate_request(request)
+
+
+def test_provider_bbox_xywh_alias_is_normalized_only_when_xyxy_is_impossible():
+    module = _vision_module()
+    assert module._normalize_provider_bbox(
+        [0.18, 0.68, 0.64, 0.28]
+    ) == pytest.approx([0.18, 0.68, 0.82, 0.96])
+    # Already-valid xyxy remains untouched even though it could also resemble xywh.
+    original = [0.08, 0.08, 0.78, 0.58]
+    assert module._normalize_provider_bbox(original) == original
+    # An alias that would leave the unit frame is not repaired and must fail later.
+    invalid = [0.8, 0.8, 0.4, 0.4]
+    assert module._normalize_provider_bbox(invalid) == invalid

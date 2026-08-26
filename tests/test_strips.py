@@ -50,18 +50,25 @@ def test_ratio_just_below_threshold_is_left_alone():
     assert len(strips.slice_strip(_jpeg(720, 1728))) == 1
 
 
-def test_tall_strip_is_sliced():
+def test_tall_strip_without_verified_gutter_is_not_force_sliced():
     from app.services import strips
 
-    pieces = strips.slice_strip(_jpeg(720, 4372))
-    assert len(pieces) > 1
+    data = _jpeg(720, 4372)
+    pieces = strips.slice_strip(data)
+    assert len(pieces) == 1
+    assert pieces[0].data == data
+    assert pieces[0].source_bounds == (0, 0, 720, 4372)
 
 
 def test_slices_are_contiguous_and_ordered():
     """Gaps would drop artwork; overlaps would repeat it."""
     from app.services import strips
 
-    pieces = strips.slice_strip(_jpeg(720, 4372))
+    height = 4372
+    pieces = strips.slice_strip(
+        _jpeg(720, height, gutters=[height // 3, 2 * height // 3])
+    )
+    assert len(pieces) > 1
     # strict=False: pieces[1:] is one shorter by construction.
     for earlier, later in zip(pieces, pieces[1:], strict=False):
         assert later.top == earlier.bottom, "slices must tile the strip exactly"
@@ -188,7 +195,10 @@ def test_slicing_keeps_far_more_of_the_page_than_one_crop():
     """The whole point: retention should improve substantially."""
     from app.services import strips
 
-    report = strips.describe(_jpeg(720, 4372))
+    height = 4372
+    report = strips.describe(
+        _jpeg(720, height, gutters=[height // 3, 2 * height // 3])
+    )
     assert report["slices"] > 1
     assert report["kept_single_crop"] < 35.0
     assert report["kept_sliced"] > 80.0
@@ -230,7 +240,12 @@ def test_part_count_maximises_retention():
 def test_ingest_turns_one_strip_into_several_assets():
     from app.services import ingest
 
-    assets = ingest.ingest_image_parts("proj-strip", "page01.jpg", _jpeg(720, 4372))
+    height = 4372
+    assets = ingest.ingest_image_parts(
+        "proj-strip",
+        "page01.jpg",
+        _jpeg(720, height, gutters=[height // 3, 2 * height // 3]),
+    )
     assert len(assets) > 1
     # Zero-padded names so lexical order matches reading order.
     assert [a.original_filename for a in assets] == [
@@ -360,3 +375,61 @@ def test_upload_order_index_stays_dense_across_mixed_files(client, declared_righ
     assert [a["order_index"] for a in assets] == list(range(len(assets)))
     assert assets[-1]["original_filename"] == "flat.jpg"
     assert assets[0]["original_filename"] == "tall.jpg"
+
+
+def test_verified_blank_detector_accepts_large_full_width_edge_blank():
+    from app.services import strips
+    image = Image.new("RGB", (400, 1600), (90, 110, 130))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 399, 299), fill=(252, 252, 252))
+    spans = strips.verified_blank_spans(image)
+    assert spans
+    assert spans[0].run_top == 0
+    assert spans[0].run_bottom >= 295
+    rows = strips.color_agnostic_row_classifications(image)
+    assert all(rows[y][0] == "verified_gutter" for y in range(40, 260))
+    assert rows[600][0] == "canonical_panel"
+
+
+def test_verified_blank_detector_rejects_flat_midtone_art():
+    from app.services import strips
+    image = Image.new("RGB", (400, 1600), (132, 178, 219))
+    assert strips.verified_blank_spans(image) == ()
+
+
+def test_verified_blank_detector_bridges_low_texture_compression_gap():
+    from app.services import strips
+    image = Image.new("RGB", (400, 1200), (252, 252, 252))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 500, 399, 539), fill=(249, 249, 249))
+    spans = strips.verified_blank_spans(image)
+    assert len(spans) == 1
+    assert spans[0].run_top == 0
+    assert spans[0].run_bottom == 1200
+
+
+def test_verified_blank_detector_bridges_short_faint_edge_title_band():
+    from app.services import strips
+    image = Image.new("RGB", (900, 1200), (252, 252, 252))
+    draw = ImageDraw.Draw(image)
+    # A faint scan-credit/title mark can interrupt an otherwise blank edge.
+    # It is not story art and must not become a canonical provider panel.
+    draw.rectangle((310, 500, 590, 595), fill=(248, 248, 248))
+    draw.line((350, 530, 550, 565), fill=(246, 246, 246), width=3)
+    spans = strips.verified_blank_spans(image)
+    assert len(spans) == 1
+    assert spans[0].run_top == 0
+    assert spans[0].run_bottom == 1200
+
+
+def test_verified_blank_detector_does_not_bridge_textured_story_gap():
+    from app.services import strips
+    image = Image.new("RGB", (400, 1200), (252, 252, 252))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 500, 399, 559), fill=(252, 252, 252))
+    for x in range(20, 380, 20):
+        draw.rectangle((x, 500, x + 6, 559), fill=(30, 30, 30))
+    spans = strips.verified_blank_spans(image)
+    assert len(spans) >= 2
+    rows = strips.color_agnostic_row_classifications(image)
+    assert any(rows[y][0] == "canonical_panel" for y in range(500, 560))
