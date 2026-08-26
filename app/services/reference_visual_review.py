@@ -379,7 +379,7 @@ def _panel_is_blank_dominant(crop) -> bool:
     try:
         gray = crop.convert("L")
         small = gray.resize((48, 48))
-        pixels = list(small.getdata())
+        pixels = list(small.get_flattened_data())
         if not pixels:
             return True
         white = sum(1 for value in pixels if value > 235)

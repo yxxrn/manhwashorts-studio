@@ -31,7 +31,7 @@ engine = _make_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 
-@event.listens_for(Engine, "connect")
+@event.listens_for(engine, "connect")
 def _sqlite_pragmas(dbapi_conn, _record) -> None:  # pragma: no cover - driver hook
     """Enable foreign keys and WAL so concurrent worker reads behave."""
     if engine.url.get_backend_name() != "sqlite":

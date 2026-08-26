@@ -41,6 +41,7 @@ def test_split_focus_and_panel_stack_render_h264_aac_without_black_frames(tmp_pa
             height=640,
             fps=30,
             encoder="cpu",
+            preview=True,
         )
     )
     info = probe(result.output_path)

@@ -35,6 +35,20 @@ def test_password_empty_rejected():
         hash_password("")
 
 
+def test_password_rejects_untrusted_scrypt_cost_before_hashing(monkeypatch):
+    """Database text must not control scrypt CPU or memory cost."""
+    import hashlib
+
+    from app.security import verify_password
+
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("scrypt must not run for unapproved parameters")
+
+    monkeypatch.setattr(hashlib, "scrypt", should_not_run)
+    expensive = "scrypt$16777216$8$1$" + ("00" * 16) + "$" + ("00" * 32)
+    assert verify_password("anything", expensive) is False
+
+
 def test_credential_encryption_roundtrip(app_settings):
     from app.security import decrypt_json, encrypt_json
 
@@ -76,6 +90,36 @@ def test_storage_is_content_addressed(app_settings):
     b = storage.put_bytes("t", "y.txt", b"same content")
     assert a.checksum == b.checksum
     assert storage.read_bytes(a.storage_key) == b"same content"
+
+
+def test_storage_concurrent_same_object_uses_private_temp_files(app_settings, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    from threading import Barrier
+
+    from app.services import storage
+
+    barrier = Barrier(2)
+    original_replace = Path.replace
+
+    def synchronized_replace(self, target):
+        if self.name.endswith(".part"):
+            barrier.wait(timeout=5)
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", synchronized_replace)
+    payload = b"concurrent-content" * 4096
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(storage.put_bytes, "race", "same.bin", payload)
+            for _ in range(2)
+        ]
+        results = [future.result() for future in futures]
+
+    assert results[0].storage_key == results[1].storage_key
+    assert results[0].checksum == results[1].checksum
+    assert storage.read_bytes(results[0].storage_key) == payload
+    assert not list(results[0].path.parent.glob("*.part"))
 
 
 # --- ingest ----------------------------------------------------------------

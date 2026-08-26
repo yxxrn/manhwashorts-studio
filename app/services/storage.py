@@ -8,7 +8,9 @@ Swapping in S3 means reimplementing this module only.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,6 +55,21 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _unique_part_path(dest: Path) -> Path:
+    """Create a writer-private temp file next to ``dest`` for atomic replace.
+
+    A deterministic ``dest + '.part'`` races when two workers materialize the
+    same content-addressed object concurrently: one rename removes the shared
+    temp path out from under the other.  A unique sibling keeps writes isolated
+    while preserving same-filesystem atomic ``replace`` semantics.
+    """
+    fd, name = tempfile.mkstemp(
+        prefix=f".{dest.name}.", suffix=".part", dir=dest.parent
+    )
+    os.close(fd)
+    return Path(name)
+
+
 def put_bytes(prefix: str, filename: str, data: bytes) -> StoredObject:
     """Store raw bytes under ``prefix/`` keeping the original extension."""
     checksum = sha256_bytes(data)
@@ -61,9 +78,12 @@ def put_bytes(prefix: str, filename: str, data: bytes) -> StoredObject:
     dest = _safe_key(key)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.exists():
-        tmp = dest.with_suffix(dest.suffix + ".part")
-        tmp.write_bytes(data)
-        tmp.replace(dest)
+        tmp = _unique_part_path(dest)
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
     return StoredObject(key, dest, len(data), checksum)
 
 
@@ -78,9 +98,12 @@ def put_file(prefix: str, source: Path, filename: str | None = None) -> StoredOb
     dest = _safe_key(key)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.exists():
-        tmp = dest.with_suffix(dest.suffix + ".part")
-        shutil.copy2(source, tmp)
-        tmp.replace(dest)
+        tmp = _unique_part_path(dest)
+        try:
+            shutil.copy2(source, tmp)
+            tmp.replace(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
     return StoredObject(key, dest, dest.stat().st_size, checksum)
 
 

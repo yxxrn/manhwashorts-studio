@@ -45,25 +45,39 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, encoded: str) -> bool:
-    """Constant-time verification. Returns False on any malformed input."""
+    """Constant-time verification. Returns False on any malformed input.
+
+    Hash parameters are data stored in the database, not trusted configuration.
+    Refuse unexpected values *before* calling ``hashlib.scrypt`` so a corrupt or
+    tampered row cannot turn login into an attacker-controlled CPU/RAM allocation.
+    Parameter migrations should explicitly add the previous approved tuple here.
+    """
     if not password or not encoded:
         return False
     try:
-        scheme, n, r, p, salt_hex, digest_hex = encoded.split("$")
-        if scheme != "scrypt":
+        scheme, n_raw, r_raw, p_raw, salt_hex, digest_hex = encoded.split("$")
+        n, r, p = int(n_raw), int(r_raw), int(p_raw)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+        if (
+            scheme != "scrypt"
+            or (n, r, p) != (_SCRYPT_N, _SCRYPT_R, _SCRYPT_P)
+            or len(salt) != _SALT_BYTES
+            or len(expected) != _KEY_LEN
+        ):
             return False
         candidate = hashlib.scrypt(
             password.encode("utf-8"),
-            salt=bytes.fromhex(salt_hex),
-            n=int(n),
-            r=int(r),
-            p=int(p),
-            dklen=len(bytes.fromhex(digest_hex)),
-            maxmem=128 * int(n) * int(r) * 2,
+            salt=salt,
+            n=n,
+            r=r,
+            p=p,
+            dklen=_KEY_LEN,
+            maxmem=_SCRYPT_MAXMEM,
         )
     except (ValueError, TypeError):
         return False
-    return hmac.compare_digest(candidate, bytes.fromhex(digest_hex))
+    return hmac.compare_digest(candidate, expected)
 
 
 def _fernet() -> Fernet:

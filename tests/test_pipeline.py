@@ -48,11 +48,11 @@ def _probe(path: Path) -> dict:
     }
 
 
-def _seed_project(db, recap_text: str, panel_count: int = 4) -> str:
+def _seed_project(db, recap_text: str, panel_count: int = 12) -> str:
     """Create a workspace, project, and rights-declared assets directly in the DB."""
     import io
 
-    from PIL import Image
+    from PIL import Image, ImageDraw
 
     from app.constants import AssetType, LicenseType, RightsStatus
     from app.models import Project, SourceAsset, User, Workspace
@@ -74,6 +74,7 @@ def _seed_project(db, recap_text: str, panel_count: int = 4) -> str:
         target_duration=60,
         language="id",
         voice_id="id",
+        template="classic_test",
         cta_text="Komentar di bawah kalau kamu punya teori.",
     )
     db.add(project)
@@ -100,7 +101,24 @@ def _seed_project(db, recap_text: str, panel_count: int = 4) -> str:
     for i in range(panel_count):
         # Distinct sizes so cropping is exercised on portrait, landscape, square.
         size = [(1200, 1600), (1600, 900), (1000, 1000), (900, 1600)][i % 4]
-        img = Image.new("RGB", size, (30 + i * 40, 40, 90))
+        base = (
+            35 + (i * 37) % 170,
+            35 + (i * 53) % 170,
+            35 + (i * 71) % 170,
+        )
+        img = Image.new("RGB", size, base)
+        draw = ImageDraw.Draw(img)
+        width, height = size
+        for band in range(1, 6):
+            y = band * height // 6
+            accent = tuple((channel + band * 29 + i * 11) % 220 + 20 for channel in base)
+            draw.rectangle((0, max(0, y - height // 40), width, min(height, y + height // 40)), fill=accent)
+        inset = max(12, min(width, height) // 10)
+        draw.rectangle((inset, inset, width - inset, height - inset), outline=(245, 245, 245), width=max(4, inset // 12))
+        radius = max(20, min(width, height) // 7)
+        cx = width * (2 + (i % 3)) // 5
+        cy = height * (2 + ((i // 3) % 3)) // 5
+        draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(15, 15, 15), width=max(5, radius // 12))
         buffer = io.BytesIO()
         img.save(buffer, "JPEG", quality=85)
         data = buffer.getvalue()
@@ -123,7 +141,143 @@ def _seed_project(db, recap_text: str, panel_count: int = 4) -> str:
             )
         )
     db.flush()
+    _seed_reconciled_analysis(db, project.id)
     return project.id
+
+
+def _seed_reconciled_analysis(db, project_id: str) -> None:
+    """Persist a provider-free vision fixture over the real image assets."""
+    import hashlib
+
+    from sqlalchemy import select
+
+    from app.constants import AssetType
+    from app.models import AuditLog, PanelRegion, SourceAsset, StoryAnalysis
+    from app.services.analyzer_contract import load_analyzer_instruction
+
+    assets = list(
+        db.scalars(
+            select(SourceAsset)
+            .where(SourceAsset.project_id == project_id, SourceAsset.type == AssetType.IMAGE)
+            .order_by(SourceAsset.order_index, SourceAsset.id)
+        )
+    )
+    assert assets
+    version, digest, _ = load_analyzer_instruction()
+    coverage_hash = hashlib.sha256(f"pipeline-fixture:{project_id}".encode()).hexdigest()
+    panel_ids = tuple(f"pipeline-panel-{index + 1:03d}" for index in range(len(assets)))
+
+    observations = []
+    for index, (panel_id, asset) in enumerate(zip(panel_ids, assets, strict=True)):
+        asset.original_checksum = asset.checksum
+        asset.original_width = asset.width
+        asset.original_height = asset.height
+        asset.source_bounds_json = {"x": 0, "y": 0, "width": asset.width, "height": asset.height}
+        asset.strip_order = index
+        asset.region_order = 0
+        asset.trim_classification = "unsliced"
+        asset.coverage_map_hash = coverage_hash
+        observations.append({
+            "panel_id": panel_id,
+            "source_asset_id": asset.id,
+            "strip_region_id": f"pipeline-region-{index + 1:03d}",
+            "source_index": index,
+            "region_bounds": {"x": 0, "y": 0, "width": asset.width, "height": asset.height},
+            "coverage_map_version": "vision-coverage-v2",
+            "coverage_map_hash": coverage_hash,
+            "visible_facts": [f"Synthetic panel {index + 1} shows the chapter progressing."],
+            "dialogue_or_ocr": [],
+            "inferences": [],
+            "uncertainties": [],
+            "evidence_refs": [panel_id],
+        })
+
+    evidence_groups = [list(panel_ids[offset::3]) for offset in range(3)]
+    claims = [
+        {
+            "claim_id": f"claim-{index + 1}",
+            "claim_type": "fact",
+            "text": f"The visual sequence establishes chapter beat {index + 1}.",
+            "qualification": "This is synthetic fixture evidence for the media pipeline test.",
+            "evidence_panel_ids": group,
+        }
+        for index, group in enumerate(evidence_groups) if group
+    ]
+    claim_by_id = {claim["claim_id"]: claim for claim in claims}
+
+    def evidence(*claim_ids: str) -> list[str]:
+        return list(dict.fromkeys(
+            panel_id
+            for claim_id in claim_ids
+            for panel_id in claim_by_id[claim_id]["evidence_panel_ids"]
+        ))
+
+    c1 = claims[0]["claim_id"]
+    c2 = claims[min(1, len(claims) - 1)]["claim_id"]
+    c3 = claims[min(2, len(claims) - 1)]["claim_id"]
+    passages = [
+        {"passage_id": "pipeline-hook", "editorial_role": "hook", "text": "A routine mission turns dangerous when Rian discovers evidence that changes what the team expects.", "claim_ids": [c1], "evidence_panel_ids": evidence(c1)},
+        {"passage_id": "pipeline-setup", "editorial_role": "setup", "text": "Across the chapter, each panel shows Rian moving from uncertainty toward a choice while the surrounding threat becomes harder to ignore.", "claim_ids": [c2], "evidence_panel_ids": evidence(c2)},
+        {"passage_id": "pipeline-escalation", "editorial_role": "escalation", "text": "The pressure builds because every new detail narrows his options, forcing him to act before the situation closes around him and leaves the rest of the team unable to respond.", "claim_ids": [c2, c3], "evidence_panel_ids": evidence(c2, c3)},
+        {"passage_id": "pipeline-insight", "editorial_role": "editorial_insight", "text": "What matters is not raw strength but the decision pattern: Rian keeps converting setbacks into information that gives him one more move.", "claim_ids": [c1, c3], "evidence_panel_ids": evidence(c1, c3)},
+        {"passage_id": "pipeline-payoff", "editorial_role": "payoff_open_loop", "text": "By the final beat, the evidence points forward, but what will Rian risk when the next opening appears?", "claim_ids": [c3], "evidence_panel_ids": evidence(c3)},
+    ]
+    manifest = {
+        "total_panels": len(panel_ids), "processed_panels": len(panel_ids), "panel_ids": list(panel_ids),
+        "source_content_coverage_ratio": 1.0, "unresolved_material_area": 0, "material_unresolved_regions": [],
+        "reconciliation_complete": True, "coverage_map_version": "vision-coverage-v2", "coverage_map_hash": coverage_hash,
+        "total_canonical_panels": len(panel_ids), "persisted_canonical_panels": len(panel_ids),
+        "processed_canonical_panel_count": len(panel_ids),
+    }
+    row = StoryAnalysis(
+        project_id=project_id, analysis_run_id=f"pipeline-fixture-{project_id[:8]}", state="RECONCILED",
+        provider_type="fixture", provider_name="synthetic-vision", model_name="offline-fixture",
+        instruction_version=version, instruction_sha256=digest, coverage_manifest_json=manifest,
+        continuity_ledger_json={
+            "chunks": [{"chunk_id": "pipeline-chunk", "panel_ids": list(panel_ids)}],
+            "entities": [{"entity_id": "entity-rian", "canonical_name": "Rian", "aliases": [], "panel_ids": list(panel_ids)}],
+            "motives": [], "state_changes": [], "causal_links": [], "reconciled_after_final_chunk": True,
+        },
+        evidence_graph_json={"claims": claims, "script_passages": passages},
+        story_spine_json={
+            "who_wants_what": "Rian wants to understand the changing situation.",
+            "obstacle": "The threat keeps narrowing his options.",
+            "decision": "He keeps moving while using each setback as information.",
+            "consequence": "His choices create one more opening.",
+            "changed_stakes": "The team now depends on what he discovers next.",
+            "unresolved_question": "What will Rian risk when the next opening appears?",
+        },
+        reconciliation_json={
+            "coverage_map_hash": coverage_hash, "coverage_map_version": "vision-coverage-v2",
+            "canonical_panel_count": len(panel_ids), "processed_panel_count": len(panel_ids),
+            "chain_reconciled": True, "chain_errors": [],
+        },
+    )
+    db.add(row)
+    db.flush()
+    for index, (panel_id, asset, observation) in enumerate(zip(panel_ids, assets, observations, strict=True)):
+        db.add(PanelRegion(
+            story_analysis_id=row.id, source_asset_id=asset.id, source_asset_checksum=asset.checksum,
+            original_width=asset.width, original_height=asset.height, strip_region_id=observation["strip_region_id"],
+            panel_id=panel_id, source_order=index, bounds_json=observation["region_bounds"],
+            region_class="canonical_panel", segmentation_confidence=1.0, segmentation_version="vision-coverage-v2",
+            coverage_map_hash=coverage_hash, observation_json=observation, chunk_index=0,
+            evidence_refs_json=observation["evidence_refs"],
+        ))
+    db.add(AuditLog(actor_id="fixture", action="analysis.fixture", entity_type="project", entity_id=project_id, detail={"panel_count": len(panel_ids)}))
+    db.flush()
+
+
+def _prepare_media(db, project_id: str, *, actor_id: str = "test", seed: int = 42):
+    from app.services import pipeline as pl
+    draft = pl.generate_draft(db, project_id, actor_id=actor_id, seed=seed)
+    script = pl.current_script(db, project_id)
+    pl.approve_script(db, script.id, actor_id=actor_id, editorial_review_confirmed=True)
+    segments = pl.generate_voiceover(
+        db, project_id, actor_id=actor_id, provider_name="espeak", speed=0.75
+    )
+    scenes = pl.build_timeline(db, project_id, actor_id=actor_id)
+    return draft, script, segments, scenes, pl.project_cues(db, project_id)
 
 
 def test_draft_pipeline_produces_consistent_timeline(db, recap_text):
@@ -132,15 +286,17 @@ def test_draft_pipeline_produces_consistent_timeline(db, recap_text):
 
     project_id = _seed_project(db, recap_text)
     summary = pl.generate_draft(db, project_id, seed=42)
-
-    assert summary["segments"] == 5
-    assert summary["scenes"] > 0
-    assert summary["cues"] > 0
+    assert summary["segments"] == 0
+    assert summary["scenes"] == 0
+    assert summary["cues"] == 0
 
     script = pl.current_script(db, project_id)
-    segments = pl.audio_segments(db, script.id)
-    scenes = pl.project_scenes(db, project_id)
+    pl.approve_script(db, script.id, actor_id="test", editorial_review_confirmed=True)
+    segments = pl.generate_voiceover(db, project_id, actor_id="test", provider_name="espeak")
+    scenes = pl.build_timeline(db, project_id, actor_id="test")
     cues = pl.project_cues(db, project_id)
+    assert len(segments) == 5
+    assert scenes and cues
 
     audio_end = max(s.end_time for s in segments)
     scene_end = max(s.end_time for s in scenes)
@@ -160,9 +316,7 @@ def test_short_audio_does_not_extend_beyond_narration(db, recap_text):
     from app.services import pipeline as pl
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, seed=42)
-    script = pl.current_script(db, project_id)
-    pl.approve_script(db, script.id, actor_id="test")
+    _draft, script, _segments, _scenes, _cues = _prepare_media(db, project_id)
     job = pl.enqueue_render(db, project_id, "preview", actor_id="test")
     request = pl.build_render_request(db, job)
     assert request.audio_path is not None
@@ -174,7 +328,7 @@ def test_scenes_reference_only_declared_assets(db, recap_text):
     from app.services import pipeline as pl
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, seed=42)
+    _prepare_media(db, project_id)
 
     asset_ids = {a.id for a in pl.project_assets(db, project_id)}
     for scene in pl.project_scenes(db, project_id):
@@ -186,22 +340,20 @@ def test_quality_passes_for_well_formed_project(db, recap_text):
     from app.services.quality import summarise
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, seed=42)
-    script = pl.current_script(db, project_id)
-    pl.approve_script(db, script.id, actor_id="test")
+    _draft, script, _segments, _scenes, _cues = _prepare_media(db, project_id)
 
     results = pl.run_quality_checks(db, project_id)
     summary = summarise(results)
-    assert summary["errors"] == 0, f"unexpected blocking errors: {summary['error_codes']}"
+    assert summary["errors"] == 0, f"unexpected blocking errors: {[(r.code, r.detail) for r in results if not r.passed]}"
 
 
-def test_render_requires_approved_script(db, recap_text):
+def test_render_requires_built_timeline(db, recap_text):
     from app.services import pipeline as pl
 
     project_id = _seed_project(db, recap_text)
     pl.generate_draft(db, project_id, seed=42)
-    # Script deliberately not approved.
-    with pytest.raises(pl.PipelineError, match="[Qq]uality"):
+    # Draft generation deliberately stops before audio/timeline construction.
+    with pytest.raises(pl.PipelineError, match="[Tt]imeline"):
         pl.enqueue_render(db, project_id, "final", actor_id="test")
 
 
@@ -212,9 +364,7 @@ def test_full_render_produces_playable_short(db, recap_text):
     from app.services import pipeline as pl
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, seed=42)
-    script = pl.current_script(db, project_id)
-    pl.approve_script(db, script.id, actor_id="test")
+    _draft, script, _segments, _scenes, _cues = _prepare_media(db, project_id)
 
     job = pl.enqueue_render(db, project_id, "final", actor_id="test")
     job = pl.execute_render(db, job.id)
@@ -250,9 +400,7 @@ def test_burned_subtitles_appear_in_pixels(db, recap_text, tmp_path):
     from app.services import pipeline as pl
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, seed=42)
-    script = pl.current_script(db, project_id)
-    pl.approve_script(db, script.id, actor_id="test")
+    _draft, script, _segments, _scenes, _cues = _prepare_media(db, project_id)
     job = pl.execute_render(db, pl.enqueue_render(db, project_id, "final", actor_id="test").id)
     assert job.status == "succeeded", job.error_message
 
@@ -272,7 +420,7 @@ def test_burned_subtitles_appear_in_pixels(db, recap_text, tmp_path):
     with Image.open(frame) as img:
         width, height = img.size
         band = img.crop((0, int(height * 0.60), width, int(height * 0.88))).convert("RGB")
-        pixels = list(band.getdata())
+        pixels = list(band.get_flattened_data())
         near_white = sum(r > 235 and g > 235 and b > 235 for r, g, b in pixels)
         active_yellow = sum(r > 180 and g > 180 and b < 120 for r, g, b in pixels)
     assert near_white + active_yellow > 1000, "no caption pixels found in the subtitle safe area"
@@ -285,9 +433,7 @@ def test_render_failure_is_retryable(db, recap_text):
     from app.services import pipeline as pl
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, seed=42)
-    script = pl.current_script(db, project_id)
-    pl.approve_script(db, script.id, actor_id="test")
+    _draft, script, _segments, _scenes, _cues = _prepare_media(db, project_id)
 
     job = pl.enqueue_render(db, project_id, "final", actor_id="test")
 
@@ -317,10 +463,8 @@ def test_publish_dry_run_writes_receipt_and_no_fabricated_stats(db, recap_text):
 
     # Use a larger visual fixture so the new same-panel hard gate is exercised
     # by a production-shaped timeline rather than a four-panel compatibility set.
-    project_id = _seed_project(db, recap_text, panel_count=8)
-    pl.generate_draft(db, project_id, seed=42)
-    script = pl.current_script(db, project_id)
-    pl.approve_script(db, script.id, actor_id="test")
+    project_id = _seed_project(db, recap_text, panel_count=12)
+    _prepare_media(db, project_id)
     job = pl.execute_render(db, pl.enqueue_render(db, project_id, "final", actor_id="test").id)
     assert job.status == "succeeded", job.error_message
 
@@ -339,9 +483,7 @@ def test_public_publish_double_gated(db, recap_text):
     from app.services import publish as publish_svc
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, seed=42)
-    script = pl.current_script(db, project_id)
-    pl.approve_script(db, script.id, actor_id="test")
+    _draft, script, _segments, _scenes, _cues = _prepare_media(db, project_id)
     pl.execute_render(db, pl.enqueue_render(db, project_id, "final", actor_id="test").id)
 
     with pytest.raises(pl.PipelineError, match="[Pp]ublic"):
@@ -355,9 +497,7 @@ def test_publish_detects_tampered_artifact(db, recap_text):
     from app.services import publish as publish_svc
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, seed=42)
-    script = pl.current_script(db, project_id)
-    pl.approve_script(db, script.id, actor_id="test")
+    _draft, script, _segments, _scenes, _cues = _prepare_media(db, project_id)
     job = pl.execute_render(db, pl.enqueue_render(db, project_id, "final", actor_id="test").id)
 
     Path(job.output_key).write_bytes(b"not the rendered video")
@@ -369,16 +509,12 @@ def test_audit_log_records_pipeline_actions(db, recap_text):
     from sqlalchemy import select
 
     from app.models import AuditLog
-    from app.services import pipeline as pl
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, actor_id="tester", seed=42)
-    script = pl.current_script(db, project_id)
-    pl.approve_script(db, script.id, actor_id="tester")
+    _prepare_media(db, project_id, actor_id="tester")
 
     actions = {row.action for row in db.scalars(select(AuditLog))}
-    assert {"analysis.run", "script.generate", "voice.generate", "timeline.build",
-            "script.approve"} <= actions
+    assert {"script.generate", "voice.generate", "timeline.build", "script.approve"} <= actions
 
 
 def test_regenerating_voice_replaces_old_segments(db, recap_text):
@@ -386,11 +522,10 @@ def test_regenerating_voice_replaces_old_segments(db, recap_text):
     from app.services import pipeline as pl
 
     project_id = _seed_project(db, recap_text)
-    pl.generate_draft(db, project_id, seed=42)
-    script = pl.current_script(db, project_id)
+    _draft, script, _segments, _scenes, _cues = _prepare_media(db, project_id)
 
     first = pl.audio_segments(db, script.id)
-    pl.generate_voiceover(db, project_id, actor_id="test")
+    pl.generate_voiceover(db, project_id, actor_id="test", provider_name="espeak")
     second = pl.audio_segments(db, script.id)
 
     assert len(second) == len(first)

@@ -25,6 +25,12 @@ from app.config import settings
 # them. Importing them here would pull SQLAlchemy in on every startup, and this
 # module is meant to stay cheap enough to call from the lifespan hook.
 
+# Health checks can be frequent while a project directory contains thousands of
+# files. Keep that endpoint from recursively walking all data roots on every
+# request; cleanup/CLI paths still call the exact uncached function.
+_DATA_USAGE_CACHE: tuple[float, dict[str, Any]] | None = None
+_DATA_USAGE_CACHE_TTL_SECONDS = 30.0
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -76,6 +82,26 @@ def get_data_usage() -> dict[str, Any]:
     }
 
 
+def get_data_usage_cached(
+    ttl_seconds: float = _DATA_USAGE_CACHE_TTL_SECONDS,
+) -> dict[str, Any]:
+    """Return disk usage with a short process-local TTL for health polling."""
+    global _DATA_USAGE_CACHE
+
+    now = time.monotonic()
+    cached = _DATA_USAGE_CACHE
+    if cached is not None and ttl_seconds > 0 and now - cached[0] < ttl_seconds:
+        return dict(cached[1])
+    usage = get_data_usage()
+    _DATA_USAGE_CACHE = (now, dict(usage))
+    return usage
+
+
+def _cache_data_usage(usage: dict[str, Any]) -> None:
+    global _DATA_USAGE_CACHE
+    _DATA_USAGE_CACHE = (time.monotonic(), dict(usage))
+
+
 def _delete_tree(path: Path) -> int:
     """Delete a file or directory tree. Returns bytes freed."""
     try:
@@ -92,18 +118,32 @@ def _delete_tree(path: Path) -> int:
     return 0
 
 
-def _live_project_ids() -> set[str] | None:
-    """Ids of projects that still exist.
+def _tmp_project_state() -> tuple[set[str], set[str]] | None:
+    """Return (live project ids, projects whose scratch must be preserved).
 
-    Returns None when the database cannot be read, which tells callers to skip
-    orphan deletion rather than guess and delete something still in use.
+    A directory belonging to a running/queued render is never age-cleaned.
+    Project ``RENDERING`` state is also treated as active so a brief job-state
+    transition cannot race cleanup.  Database failure remains fail-safe: callers
+    skip orphan assumptions rather than delete blindly.
     """
     try:
+        from app.constants import JobStatus, ProjectStatus
         from app.db import session_scope
-        from app.models import Project
+        from app.models import Project, RenderJob
 
         with session_scope() as db:
-            return {p.id for p in db.query(Project.id).all()}
+            project_rows = db.query(Project.id, Project.status).all()
+            live = {row.id for row in project_rows}
+            active = {
+                row.id for row in project_rows if row.status == ProjectStatus.RENDERING
+            }
+            active.update(
+                row.project_id
+                for row in db.query(RenderJob.project_id)
+                .filter(RenderJob.status.in_((JobStatus.QUEUED, JobStatus.RUNNING)))
+                .all()
+            )
+            return live, active
     except Exception:
         return None
 
@@ -130,13 +170,19 @@ def cleanup_tmp(older_than_days: int | None = None) -> int:
     if not tmp_root.exists():
         return 0
 
-    live = _live_project_ids()
+    state = _tmp_project_state()
+    live = state[0] if state is not None else None
+    active = state[1] if state is not None else set()
 
     for child in list(tmp_root.iterdir()):
         if not child.is_dir():
             # Stray loose files: age-based only.
             if _age_days(child) > older_than_days:
                 freed += _delete_tree(child)
+            continue
+
+        # Active render scratch is protected regardless of age.
+        if child.name in active:
             continue
 
         # Orphaned project scratch: delete regardless of age.
@@ -230,6 +276,7 @@ def run_cleanup(force: bool = False) -> dict[str, Any]:
 
     total_freed = freed_tmp + freed_output
     usage_after = get_data_usage()
+    _cache_data_usage(usage_after)
 
     return {
         "before": usage_before,

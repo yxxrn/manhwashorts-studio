@@ -514,7 +514,7 @@ def _reference_content_stats(
 ) -> tuple[float, float, float]:
     """Measure content and content near the requested focus without OCR."""
     sample = image.resize((96, 172), Image.Resampling.BILINEAR).convert("RGB")
-    pixels = list(sample.getdata())
+    pixels = list(sample.get_flattened_data())
     nonblank = [
         not (red >= 245 and green >= 245 and blue >= 245 and
              max(red, green, blue) - min(red, green, blue) <= 10)

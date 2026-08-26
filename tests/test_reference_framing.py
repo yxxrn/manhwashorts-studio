@@ -63,7 +63,7 @@ def _write_focus_fixture(path: Path) -> None:
 
 def _blank_fraction(path: Path) -> float:
     with Image.open(path) as image:
-        pixels = list(image.convert("RGB").getdata())
+        pixels = list(image.convert("RGB").get_flattened_data())
     blank = sum(
         1 for red, green, blue in pixels
         if red >= 245 and green >= 245 and blue >= 245

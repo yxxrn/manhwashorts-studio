@@ -7,7 +7,10 @@ Nothing here should ever be logged verbatim: secrets are stored as
 
 from __future__ import annotations
 
+import os
 import secrets
+import tempfile
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 
@@ -15,6 +18,47 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_or_create_private_value(path: Path, factory: Callable[[], bytes]) -> bytes:
+    """Read an existing secret or atomically create it without a startup race.
+
+    The candidate is fully written to a private sibling first, then hard-linked
+    into place.  ``link`` is create-if-absent: concurrent processes either win
+    with their complete value or read the already-complete winner, so two app
+    workers cannot return different keys while leaving only one on disk.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        existing = path.read_bytes().strip()
+        if not existing:
+            raise RuntimeError(f"secret file is empty: {path}")
+        return existing
+
+    value = factory()
+    if not value:
+        raise RuntimeError("secret factory returned an empty value")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(value)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.chmod(0o600)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            existing = path.read_bytes().strip()
+            if not existing:
+                raise RuntimeError(f"secret file is empty: {path}") from None
+            return existing
+        path.chmod(0o600)
+        return value
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 class Settings(BaseSettings):
@@ -178,15 +222,9 @@ class Settings(BaseSettings):
 
         self.ensure_dirs()
         key_path = self.data_dir / ".secret_key"
-        if key_path.exists():
-            existing = key_path.read_text(encoding="utf-8").strip()
-            if existing:
-                self.secret_key = SecretStr(existing)
-                return existing
-
-        value = secrets.token_urlsafe(48)
-        key_path.write_text(value, encoding="utf-8")
-        key_path.chmod(0o600)
+        value = _load_or_create_private_value(
+            key_path, lambda: secrets.token_urlsafe(48).encode("utf-8")
+        ).decode("utf-8")
         self.secret_key = SecretStr(value)
         return value
 
@@ -199,12 +237,8 @@ class Settings(BaseSettings):
 
         self.ensure_dirs()
         key_path = self.data_dir / ".fernet_key"
-        if key_path.exists():
-            return key_path.read_bytes().strip()
-
-        key = Fernet.generate_key()
-        key_path.write_bytes(key)
-        key_path.chmod(0o600)
+        key = _load_or_create_private_value(key_path, Fernet.generate_key)
+        self.fernet_key = SecretStr(key.decode("ascii"))
         return key
 
 

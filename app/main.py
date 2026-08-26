@@ -110,7 +110,7 @@ def health() -> dict:
     disk_usage: dict = {}
     try:
         from app.services import cleanup as cleanup_mod
-        disk_usage = cleanup_mod.get_data_usage()
+        disk_usage = cleanup_mod.get_data_usage_cached()
     except Exception:
         pass
 

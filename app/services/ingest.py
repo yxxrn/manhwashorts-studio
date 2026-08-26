@@ -176,10 +176,10 @@ def _panel_quality(data: bytes) -> dict:
     """Cheap CPU-only panel quality metadata; rejects blank connector strips."""
     with Image.open(io.BytesIO(data)) as image:
         gray = image.convert("L").resize((96, 96), Image.Resampling.BILINEAR)
-        pixels = list(gray.getdata())
+        pixels = list(gray.get_flattened_data())
         blank = sum(pixel >= 245 or pixel <= 10 for pixel in pixels) / max(1, len(pixels))
         edges = gray.filter(ImageFilter.FIND_EDGES)
-        edge_density = sum(pixel > 35 for pixel in edges.getdata()) / max(1, len(pixels))
+        edge_density = sum(pixel > 35 for pixel in edges.get_flattened_data()) / max(1, len(pixels))
         width, height = image.size
     decision = "reject" if blank >= 0.94 or (edge_density < 0.008 and blank >= 0.82) else "accept"
     return {
