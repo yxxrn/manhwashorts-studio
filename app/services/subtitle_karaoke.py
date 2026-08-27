@@ -271,6 +271,58 @@ def build_sentence_caption_groups(
     )
 
 
+def provisional_caption_overflow_passage_indexes(
+    passages: Sequence[Mapping[str, object]],
+    duration_s: float,
+) -> tuple[int, ...]:
+    """Return passages that cannot satisfy the silent-review subtitle contract.
+
+    Silent review allocates passage time with the same narration-duration
+    estimator used for the script, so a word-proportional provisional timing
+    is the deterministic pre-persistence equivalent. Spoken text is never
+    rewritten here; this is only an admission check for narrative repair.
+    """
+    try:
+        duration = float(duration_s)
+    except (TypeError, ValueError):
+        return ()
+    if not math.isfinite(duration) or duration <= 0.0:
+        return ()
+    rows = [row for row in passages if isinstance(row, Mapping)]
+    token_rows = [re.findall(r"\S+", str(row.get("text", "")).strip()) for row in rows]
+    total_words = sum(len(tokens) for tokens in token_rows)
+    if total_words <= 0:
+        return ()
+    seconds_per_word = duration / total_words
+    overflow: list[int] = []
+    cursor = 0.0
+    for index, (row, tokens) in enumerate(zip(rows, token_rows, strict=True)):
+        if not tokens:
+            continue
+        cues = [
+            {
+                "spoken_token_index": token_index,
+                "word": token,
+                "start": cursor + seconds_per_word * token_index,
+                "end": cursor + seconds_per_word * (token_index + 1),
+            }
+            for token_index, token in enumerate(tokens)
+        ]
+        try:
+            build_sentence_caption_groups(
+                str(row.get("text", "")),
+                cues,
+                group_prefix=f"provisional-admission-{index + 1}",
+            )
+        except ValueError as exc:
+            if str(exc).startswith("subtitle.overflow:"):
+                overflow.append(index)
+            else:
+                raise
+        cursor += seconds_per_word * len(tokens)
+    return tuple(overflow)
+
+
 def build_sentence_groups_from_segments(segments: Sequence[object]) -> tuple[object, ...]:
     """Build production groups from persisted segment text and word timings.
 

@@ -239,3 +239,137 @@ def test_motion_filter_uses_continuous_time_for_camera_progress():
     assert "n/" in expression
     assert "sin(" not in expression
     assert "cos(" not in expression
+
+
+
+def test_reference_motion_preflight_rejects_interior_blank_crossing(tmp_path):
+    from app.services import reference_profile, render
+
+    image = Image.new("RGB", (1150, 2040), (30, 30, 30))
+    draw = ImageDraw.Draw(image)
+    block = 80
+    for y in range(0, 2040, block):
+        for x in range(0, 1150, block):
+            value = 30 if ((x // block + y // block) % 2 == 0) else 180
+            draw.rectangle(
+                (x, y, min(1149, x + block - 1), min(2039, y + block - 1)),
+                fill=(value, value, value),
+            )
+    draw.rectangle((0, 110, 1149, 260), fill=(245, 245, 245))
+    path = tmp_path / "interior-blank.jpg"
+    image.save(path, quality=100)
+    scene = render.SceneInput(
+        image_path=path,
+        start_time=0.0,
+        end_time=2.0,
+        focus_x=0.5,
+        focus_y=0.95,
+        focus_end_x=0.5,
+        focus_end_y=0.95,
+        camera_curve="slow_push_in",
+        publish_allowed=False,
+    )
+
+    safe, maximum = render._reference_motion_pixel_safety(
+        path,
+        scene,
+        100,
+        178,
+        reference_profile.REFERENCE_MATCHED_SHORTS_V2,
+    )
+
+    assert safe is False
+    assert maximum > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+    scene.camera_curve = "static"
+    static_safe, static_maximum = render._reference_motion_pixel_safety(
+        path,
+        scene,
+        100,
+        178,
+        reference_profile.REFERENCE_MATCHED_SHORTS_V2,
+    )
+    assert static_safe is True
+    assert static_maximum <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+
+
+def test_reference_motion_preflight_preserves_safe_motion(tmp_path):
+    from app.services import reference_profile, render
+
+    path = tmp_path / "safe-motion.jpg"
+    Image.new("RGB", (115, 204), (35, 45, 55)).save(path, quality=100)
+    scene = render.SceneInput(
+        image_path=path,
+        start_time=0.0,
+        end_time=2.0,
+        focus_x=0.5,
+        focus_y=0.5,
+        focus_end_x=0.45,
+        focus_end_y=0.47,
+        camera_curve="slow_push_in",
+        publish_allowed=False,
+    )
+
+    safe, maximum = render._reference_motion_pixel_safety(
+        path,
+        scene,
+        100,
+        178,
+        reference_profile.REFERENCE_MATCHED_SHORTS_V2,
+    )
+
+    assert safe is True
+    assert maximum == 0.0
+
+
+def test_reference_motion_preflight_checks_final_tv_range_pixels(tmp_path):
+    from app.services import framing_analysis, reference_profile, render
+
+    image = Image.new("RGB", (64, 114), (60, 60, 60))
+    pixels = image.load()
+    for y in range(109, 114):
+        for x in range(64):
+            value = 130 + (20 if x % 2 else -20)
+            pixels[x, y] = (value, value, value)
+    path = tmp_path / "tv-range-edge.jpg"
+    image.save(path, quality=100)
+    assert framing_analysis.color_agnostic_edge_blank_fractions(image)[
+        "max_edge_blank_fraction"
+    ] == 0.0
+    scene = render.SceneInput(
+        image_path=path,
+        start_time=0.0,
+        end_time=2.0,
+        camera_curve="static",
+        motion_mode="hold",
+        publish_allowed=False,
+    )
+
+    safe, maximum = render._reference_motion_pixel_safety(
+        path, scene, 64, 114, reference_profile.REFERENCE_MATCHED_SHORTS_V2
+    )
+
+    assert safe is False
+    assert maximum > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+
+
+def test_reference_roi_metric_uses_final_tv_range_pixels():
+    from app.services import reference_visual_review
+
+    image = Image.new("RGB", (64, 114), (60, 60, 60))
+    pixels = image.load()
+    for y in range(109, 114):
+        for x in range(64):
+            value = 130 + (20 if x % 2 else -20)
+            pixels[x, y] = (value, value, value)
+    candidate = SimpleNamespace(
+        features=SimpleNamespace(focal_points=((0.5, 0.5),))
+    )
+    profile = SimpleNamespace(final_width=64, final_height=114)
+
+    alternatives = reference_visual_review.enumerate_reference_roi_alternatives(
+        image.size, candidate, profile, image=image
+    )
+    primary = next(item for item in alternatives if item.roi_label == "panel_primary")
+
+    assert primary.crop_box == (0, 0, 64, 114)
+    assert primary.edge_blank_fraction == 1.0

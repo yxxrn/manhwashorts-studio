@@ -81,8 +81,11 @@ def enumerate_reference_roi_alternatives(
         )
         edge_blank_fraction = None
         if image is not None:
+            final_view = image.crop(crop_box).resize(
+                target_size, Image.Resampling.LANCZOS
+            )
             edge_blank_fraction = framing_analysis.color_agnostic_edge_blank_fractions(
-                image.crop(crop_box)
+                framing_analysis.reference_tv_range_preview(final_view)
             )["max_edge_blank_fraction"]
         alternatives.append(
             editorial_visual_planner.ReferenceROIAlternative(

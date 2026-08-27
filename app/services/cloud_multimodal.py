@@ -1988,7 +1988,7 @@ def select_editorial_beats(
         raise CloudStageError("cloud.editorial_selection_invalid")
     claims = tuple(
         claim
-        for claim in story_map.claims
+        for claim in (getattr(story_map, "claims", ()) or ())
         if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
     )
     beat_rows: list[dict[str, Any]] = []
@@ -2214,6 +2214,26 @@ def _safe_narration_contract_diagnostic(
     return f"field={field};count={count}"
 
 
+def _canonicalize_visual_repair_ending(
+    outline: Mapping[str, Any],
+    passages: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, str] | None]:
+    """Align repair ending metadata to already-grounded final punctuation."""
+
+    normalized = dict(outline)
+    if not passages:
+        return normalized, None
+    final_text = str(passages[-1].get("text", "")).strip()
+    current = str(normalized.get("ending_kind", "")).strip()
+    if not final_text or not current:
+        return normalized, None
+    target = "open_question" if final_text.endswith("?") else ("consequence" if current == "open_question" else current)
+    if target == current:
+        return normalized, None
+    normalized["ending_kind"] = target
+    return normalized, {"from": current, "to": target, "version": "visual-repair-ending-v1"}
+
+
 def _visual_narrative_repair_analyzer_metadata(
     message: str,
     output: Mapping[str, Any] | None,
@@ -2246,6 +2266,10 @@ def _visual_narrative_repair_error_metadata(
         ("repair claim is malformed", "visual.repair_claim_malformed"),
         ("repair claim is unsupported", "visual.repair_claim_unsupported"),
         ("repair claim cites an infeasible panel", "visual.repair_claim_infeasible_panel"),
+        (
+            "repair claim evidence is outside story lineage",
+            "visual.repair_claim_outside_story_lineage",
+        ),
         ("repair has no claims", "visual.repair_claims_empty"),
         ("repair passage is malformed", "visual.repair_passage_malformed"),
         ("repair passage evidence is incomplete", "visual.repair_passage_evidence_incomplete"),
@@ -2316,11 +2340,26 @@ def _visual_narrative_repair_retry_feedback(
             "for every passage, cite its existing claim IDs and complete feasible evidence; "
             "do not omit or add panel references"
         )
+    if predicate in {
+        "visual.repair_claim_infeasible_panel",
+        "visual.repair_claim_outside_story_lineage",
+    }:
+        return (
+            "use only claim IDs listed in feasible_claim_ids; for each selected claim, "
+            "copy evidence_panel_ids only from that claim's feasible_claims entry and "
+            "never rebind a claim to another feasible panel"
+        )
     if predicate == "visual.repair_chronology":
         return (
             "keep the first passage as the hook; for positions 1 onward use feasible "
             "citations in nondecreasing source_order. The hook may be later, but do not "
             "place an earlier panel after a later non-hook panel"
+        )
+    if predicate == "visual.repair_subtitle_overflow":
+        return (
+            "rewrite the affected passage with shorter subtitle-safe wording while preserving "
+            "the same grounded claim IDs and evidence. Every display chunk must keep at least "
+            "two words per line, at most two lines, and no line longer than 22 characters"
         )
     if value == "cloud.narrative_not_grounded" and failed_field == "passage_evidence":
         return (
@@ -2383,6 +2422,71 @@ def _cache_key(
             "prompt_sha256": prompt[1],
         }
     )
+
+
+
+
+def _narration_stage_prompt_is_compatible(
+    record: ChapterJobRecord,
+    narration: NarrationResult,
+    runner: CloudStageRunner,
+) -> bool:
+    """Accept base narration or an exact current visual-repair checkpoint."""
+    narration_prompt = runner.prompts["narration"]
+    if (
+        narration.prompt_version == narration_prompt[0]
+        and narration.prompt_sha256 == narration_prompt[1]
+    ):
+        return True
+    repair_meta = record.stage_results.get("visual_repair")
+    repair_prompt = runner.prompts.get("visual_narrative_repair")
+    if not isinstance(repair_meta, Mapping) or repair_prompt is None:
+        return False
+    return (
+        str(repair_meta.get("contract_version", ""))
+        == visual_narrative_repair.REPAIR_CONTRACT_VERSION
+        and str(repair_meta.get("prompt_version", "")) == repair_prompt[0]
+        and str(repair_meta.get("prompt_sha256", "")) == repair_prompt[1]
+        and str(repair_meta.get("model_identity_hash", ""))
+        == runner.model_identity.identity_hash
+        and repair_meta.get("publish_allowed") is False
+        and narration.prompt_version == repair_prompt[0]
+        and narration.prompt_sha256 == repair_prompt[1]
+    )
+
+def _narration_is_current_visual_repair_checkpoint(
+    record: ChapterJobRecord,
+    narration: NarrationResult,
+    runner: CloudStageRunner,
+) -> bool:
+    """Return whether narration is the exact current visual-repair checkpoint."""
+    repair_prompt = runner.prompts.get("visual_narrative_repair")
+    return bool(
+        repair_prompt is not None
+        and narration.prompt_version == repair_prompt[0]
+        and narration.prompt_sha256 == repair_prompt[1]
+        and _narration_stage_prompt_is_compatible(record, narration, runner)
+    )
+
+
+def _stage_result_identity_is_compatible(
+    cached_identity_hash: str,
+    identity: CloudModelIdentity,
+    *,
+    stage: str,
+) -> bool:
+    """Allow upstream durable stages across a repair-only prompt bump."""
+    if cached_identity_hash == identity.identity_hash:
+        return True
+    if stage not in {"visual", "story_map", "narration"}:
+        return False
+    prompt_versions = dict(identity.prompt_versions)
+    if prompt_versions.get("visual_narrative_repair") != CURRENT_VISUAL_REPAIR_PROMPT_VERSION:
+        return False
+    prompt_versions["visual_narrative_repair"] = LEGACY_VISUAL_REPAIR_PROMPT_VERSION
+    payload = identity.as_dict()
+    payload["prompt_versions"] = prompt_versions
+    return cached_identity_hash == _hash(payload)
 
 
 def _visual_narrative_repair_failure_metadata(
@@ -8121,11 +8225,20 @@ class CloudStageRunner:
             prompt_sha256=prompt[1],
             narration_hash=str(source["narration_hash"]),
         )
-        allowed_claim_ids = {
-            str(claim.get("claim_id"))
-            for claim in story_map.claims
-            if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
+        feasible_claim_rows = [
+            dict(row)
+            for row in payload.get("feasible_claims", ())
+            if isinstance(row, Mapping) and str(row.get("claim_id", "")).strip()
+        ]
+        allowed_claim_panel_ids = {
+            str(row["claim_id"]): {
+                str(panel_id)
+                for panel_id in row.get("evidence_panel_ids", ())
+                if str(panel_id).strip()
+            }
+            for row in feasible_claim_rows
         }
+        allowed_claim_ids = set(allowed_claim_panel_ids)
 
         def reconcile_repaired_references(
             raw_claims: object,
@@ -8137,10 +8250,15 @@ class CloudStageRunner:
                     "repair passages are malformed",
                     "visual.narrative_repair_ungrounded",
                 )
-            repaired_payload, remaps = visual_narrative_repair.remap_same_beat_panel_citations(
+            canonical_payload = visual_narrative_repair.canonicalize_repair_claim_ids(
                 {"claims": claims, "passages": raw_passages},
+                allowed_claim_ids=allowed_claim_ids,
+            )
+            repaired_payload, remaps = visual_narrative_repair.remap_same_beat_panel_citations(
+                canonical_payload,
                 ledger=ledger,
                 section_to_beats=section_to_beats,
+                allowed_claim_panel_ids=allowed_claim_panel_ids,
             )
             claims = self._normalize_narration_claims(repaired_payload["claims"])
             passages = [dict(item) for item in repaired_payload["passages"]]
@@ -8148,6 +8266,7 @@ class CloudStageRunner:
                 {"claims": claims, "passages": passages},
                 ledger=ledger,
                 allowed_claim_ids=allowed_claim_ids,
+                allowed_claim_panel_ids=allowed_claim_panel_ids,
             )
             return claims, passages, remaps
 
@@ -8169,6 +8288,10 @@ class CloudStageRunner:
                             ledger, section_to_beats
                         ),
                     )
+                    if visual_narrative_repair.narration_sections_with_subtitle_overflow(
+                        cached_result, section_to_beats
+                    ):
+                        raise ValueError("cached repair violates subtitle layout")
                     if not remaps:
                         return cached_result
                     evidence_graph = dict(cached_result.evidence_graph)
@@ -8249,12 +8372,15 @@ class CloudStageRunner:
                         ledger, section_to_beats
                     ),
                 )
+                canonical_outline, ending_canonicalization = _canonicalize_visual_repair_ending(
+                    outline, passages
+                )
                 output = {
                     "observations": observations,
                     "continuity_ledger": structural["continuity_ledger"],
                     "coverage_manifest": structural["coverage_manifest"],
                     "evidence_graph": {"claims": claims},
-                    "narrative_outline": dict(outline),
+                    "narrative_outline": canonical_outline,
                     "script_passages": [dict(item) for item in passages],
                 }
                 analyzer_contract.validate_analyzer_output(
@@ -8281,6 +8407,25 @@ class CloudStageRunner:
                 duration = float(duration_metrics["estimated_duration_s"])
                 if not 50.0 <= duration <= 60.0 or not 115 <= report.total_words <= 125:
                     raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
+                subtitle_overflow_sections = (
+                    visual_narrative_repair.narration_sections_with_subtitle_overflow(
+                        {
+                            "passages": list(passage_rows),
+                            "estimated_duration_s": duration,
+                        },
+                        section_to_beats,
+                    )
+                )
+                if subtitle_overflow_sections:
+                    raise CloudStageError(
+                        "visual.narrative_repair_ungrounded",
+                        reviewable=True,
+                        safe_metadata={
+                            "failed_field": "script_passages",
+                            "failed_predicate": "visual.repair_subtitle_overflow",
+                            "failed_section_count": len(subtitle_overflow_sections),
+                        },
+                    )
                 result = NarrationResult(
                     spoken_text=spoken_text,
                     display_words=display_words,
@@ -8301,6 +8446,7 @@ class CloudStageRunner:
                         "signals": asdict(report),
                         "repair_contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
                         "visual_section_remap_v1": list(remaps),
+                        "visual_repair_ending_canonicalization_v1": ending_canonicalization,
                         "feasible_ledger_hash": ledger.ledger_hash,
                         "feasible_render_plan_hash": render_plan.plan_hash,
                         "repaired_sections": list(
@@ -11050,7 +11196,12 @@ def _build_ephemeral_review_candidates(
 
     from PIL import Image, UnidentifiedImageError
 
-    from app.services import reference_visual_review, review_source_upscale, visual_scoring
+    from app.services import (
+        reference_profile,
+        reference_visual_review,
+        review_source_upscale,
+        visual_scoring,
+    )
 
     visual_by_id = {
         str(row.get("panel_id")): row
@@ -11081,6 +11232,13 @@ def _build_ephemeral_review_candidates(
         story_map.beats,
     )
     valid_panel_ids = {panel.panel_id for panel in ordered_panels}
+    claim_panel_ids = {
+        str(panel_id)
+        for claim in story_map.claims
+        if isinstance(claim, Mapping)
+        for panel_id in (claim.get("panel_ids") or ())
+        if str(panel_id).strip()
+    }
     section_evidence: dict[str, tuple[str, ...]] = {}
     for section, beat_ids in section_to_beats.items():
         panel_ids: list[str] = []
@@ -11089,8 +11247,9 @@ def _build_ephemeral_review_candidates(
             if beat is None:
                 continue
             for panel_id in beat.get("panel_ids", ()):
-                if str(panel_id) in valid_panel_ids and str(panel_id) not in panel_ids:
-                    panel_ids.append(str(panel_id))
+                panel_id = str(panel_id)
+                if panel_id in valid_panel_ids and panel_id not in panel_ids:
+                    panel_ids.append(panel_id)
         if not panel_ids:
             raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
         section_evidence[section] = tuple(panel_ids)
@@ -11100,6 +11259,11 @@ def _build_ephemeral_review_candidates(
     panel_crops: dict[str, Image.Image] = {}
     upscale_manifests: dict[str, Mapping[str, Any]] = {}
     for panel in ordered_panels:
+        # Repair claims may only cite original StoryMap claim evidence. Keep
+        # the full beat mapping above for missing-section detection, but avoid
+        # decoding/scoring panels that can never pass claim-lineage validation.
+        if claim_panel_ids and panel.panel_id not in claim_panel_ids:
+            continue
         raw_visual = visual_by_id.get(panel.panel_id)
         raw_evidence = raw_visual.get("visual_evidence") if raw_visual else None
         if not isinstance(raw_evidence, Mapping):
@@ -11113,7 +11277,7 @@ def _build_ephemeral_review_candidates(
 
         # Gutter slivers (a few px tall) drive upscale scale into the hundreds
         # and blow PIL's decompression-bomb limit. Skip them like the loader does.
-        if crop.width < 32 or crop.height < 50:
+        if not reference_profile.review_panel_source_geometry_is_renderable(crop.size):
             continue
 
         if review_source_upscale_policy is not None:
@@ -11573,9 +11737,11 @@ def _durable_visual_repair_covers_missing_sections(
 ) -> bool:
     """Return whether a persisted narration already satisfies visual repair scope."""
 
-    if not missing_sections:
-        return True
     try:
+        if visual_narrative_repair.narration_sections_with_subtitle_overflow(
+            narration, section_to_beats
+        ):
+            return False
         claims = narration.evidence_graph.get("claims", ())
         passages = tuple(dict(item) for item in narration.passages)
         if not isinstance(claims, (list, tuple)):
@@ -11741,7 +11907,11 @@ class CloudBatchService:
             story_map = StoryMapResult.from_dict(record.stage_results["story_map"])
             current_story_prompt = self.runner.prompts["story_map"]
             if (
-                story_map.model_identity_hash != self.runner.model_identity.identity_hash
+                not _stage_result_identity_is_compatible(
+                    story_map.model_identity_hash,
+                    self.runner.model_identity,
+                    stage="story_map",
+                )
                 or story_map.prompt_version != current_story_prompt[0]
                 or story_map.prompt_sha256 != current_story_prompt[1]
                 or story_map.visual_evidence_hash != visual.visual_evidence_hash
@@ -11760,8 +11930,13 @@ class CloudBatchService:
             self.store.save(record)
             narration = NarrationResult.from_dict(record.stage_results["narration"])
             narration = self._reconcile_cached_narration(narration, visual, panels)
-            if self.runner._narration_contract_failures(narration):
-                # A structurally usable narration can still violate the strict
+            if (
+                not _narration_is_current_visual_repair_checkpoint(
+                    record, narration, self.runner
+                )
+                and self.runner._narration_contract_failures(narration)
+            ):
+                # A structurally usable base narration can still violate the strict
                 # narration contract (word window, duration, dialogue copy).
                 # Repair it through the targeted boundary before admission so
                 # persistence never receives a contract-failing narration.
@@ -11771,11 +11946,13 @@ class CloudBatchService:
                     story_map,
                     panels=panels,
                 )
-            current_narration_prompt = self.runner.prompts["narration"]
             if (
-                narration.model_identity_hash != self.runner.model_identity.identity_hash
-                or narration.prompt_version != current_narration_prompt[0]
-                or narration.prompt_sha256 != current_narration_prompt[1]
+                not _stage_result_identity_is_compatible(
+                    narration.model_identity_hash,
+                    self.runner.model_identity,
+                    stage="narration",
+                )
+                or not _narration_stage_prompt_is_compatible(record, narration, self.runner)
                 or narration.visual_evidence_hash != visual.visual_evidence_hash
                 or not _narration_result_is_usable(
                     narration,
@@ -11943,6 +12120,13 @@ class CloudBatchService:
                 for beat in current_story_map.beats
                 if isinstance(beat, Mapping) and str(beat.get("beat_id", "")).strip()
             }
+            claim_panel_ids = {
+                str(panel_id)
+                for claim in (getattr(current_story_map, "claims", ()) or ())
+                if isinstance(claim, Mapping)
+                for panel_id in (claim.get("panel_ids") or ())
+                if str(panel_id).strip()
+            }
             section_evidence_panel_ids = {}
             for section, beat_ids in section_to_beats.items():
                 panel_ids: list[str] = []
@@ -11952,7 +12136,11 @@ class CloudBatchService:
                         continue
                     for panel_id in beat.get("panel_ids", ()):
                         panel_id = str(panel_id)
-                        if panel_id in eligible_panel_ids and panel_id not in panel_ids:
+                        if (
+                            panel_id in eligible_panel_ids
+                            and (not claim_panel_ids or panel_id in claim_panel_ids)
+                            and panel_id not in panel_ids
+                        ):
                             panel_ids.append(panel_id)
                 section_evidence_panel_ids[str(section)] = tuple(panel_ids)
             candidates = pipeline._load_reference_panel_fallback_candidates(
@@ -11976,18 +12164,16 @@ class CloudBatchService:
             allow_source_resolution_warning=bool(policy.allow_low_source_resolution_warning),
             allow_conservative_full_panel=policy is not None,
         )
-        missing = visual_narrative_repair.missing_visual_sections(ledger, section_to_beats)
-        if current_narration is not None and (
-            not missing
-            or (
-                result is not None
-                and _durable_visual_repair_covers_missing_sections(
-                    current_narration,
-                    ledger=ledger,
-                    section_to_beats=section_to_beats,
-                    missing_sections=missing,
-                )
-            )
+        missing = visual_narrative_repair.repair_scope_sections(
+            current_narration or {},
+            ledger,
+            section_to_beats,
+        )
+        if current_narration is not None and _durable_visual_repair_covers_missing_sections(
+            current_narration,
+            ledger=ledger,
+            section_to_beats=section_to_beats,
+            missing_sections=missing,
         ):
             return result, ledger, missing
         if not ledger.entries:
@@ -12030,7 +12216,10 @@ class CloudBatchService:
             panels=panels,
         )
         coalesced_passages, coalesce_provenance = (
-            visual_narrative_repair.coalesce_adjacent_duplicate_panel_passages(repaired.passages)
+            visual_narrative_repair.coalesce_adjacent_duplicate_panel_passages(
+                repaired.passages,
+                minimum_passage_count=len(section_to_beats),
+            )
         )
         if coalesce_provenance:
             qc_report = dict(repaired.qc_report)
@@ -12362,6 +12551,7 @@ class CloudBatchService:
                         "cloud.narrative_not_grounded",
                         "cloud.narrative_duration_out_of_range",
                         "visual.narrative_repair_ungrounded",
+                        "subtitle.overflow",
                     }
                     and isinstance(record.stage_results.get("visual"), Mapping)
                     and isinstance(record.stage_results.get("story_map"), Mapping)
@@ -12503,6 +12693,18 @@ class CloudBatchService:
                             "voice_timing_required": True,
                             "visual_repair": True,
                         }
+                        # The repaired script is a durable cloud-stage result, not
+                        # part of the optional review-render transaction. Commit it
+                        # before timeline/render so a later local preview failure
+                        # cannot roll it back.
+                        if hasattr(db, "commit"):
+                            db.commit()
+                    # Persist the repaired ledger/scope before any optional local
+                    # render work. The outer failure handler reloads this checkpoint.
+                    record.state = ChapterState.READY_TO_RENDER
+                    record.error_code = ""
+                    record.error_message = ""
+                    self.store.save(record)
                 except CloudStageError as exc:
                     return self._record_failure(record, exc)
                 try:
@@ -12806,8 +13008,8 @@ LEGACY_VISUAL_CACHE_IDENTITY_VERSION = "legacy-descriptor-v1"
 # The visual payload/cache contract is independent of the targeted narrative
 # repair prompt.  This explicit migration pair preserves a valid visual cache
 # when that downstream prompt version changes.
-LEGACY_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v2"
-CURRENT_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v3"
+LEGACY_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v3"
+CURRENT_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v4"
 VISUAL_RENDER_PAYLOAD_VERSION = (
     "visual-provider-payload-v1:max-bytes=180000:max-size=384x576:"
     "jpeg-quality=68:subsampling=2:lanczos"
@@ -13037,7 +13239,11 @@ def _migrate_visual_cache_identity(
     if not isinstance(cached, Mapping):
         return None
     if (
-        str(cached.get("model_identity_hash", "")) != model_identity.identity_hash
+        not _stage_result_identity_is_compatible(
+            str(cached.get("model_identity_hash", "")),
+            model_identity,
+            stage="visual",
+        )
         or str(cached.get("prompt_version", "")) != prompt[0]
         or str(cached.get("prompt_sha256", "")) != prompt[1]
         or not bool(cached.get("reconciled", False))

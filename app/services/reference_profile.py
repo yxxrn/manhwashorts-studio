@@ -12,6 +12,28 @@ REVIEW_MAX_UNCHANGED_HOLD_SECONDS = 4.0
 REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION = 0.08
 REVIEW_MIN_TRANSITION_PIXEL_DIFF = 1.0
 REVIEW_MOTION_MAX_NORMALIZED_STEP = 0.08
+REVIEW_MIN_PANEL_CROP_DIMENSION = 32
+REVIEW_MIN_PANEL_CROP_HEIGHT = 400
+
+
+def review_panel_source_geometry_is_renderable(
+    panel_size: tuple[int, int],
+    source_upscale_manifest: object = None,
+) -> bool:
+    """Return whether the original source crop can support review framing."""
+    try:
+        width, height = int(panel_size[0]), int(panel_size[1])
+        if isinstance(source_upscale_manifest, dict):
+            bounds = source_upscale_manifest.get("source_panel_bounds")
+            if isinstance(bounds, (list, tuple)) and len(bounds) == 4:
+                left, top, right, bottom = (int(value) for value in bounds)
+                width, height = right - left, bottom - top
+    except (IndexError, TypeError, ValueError):
+        return False
+    return (
+        width >= REVIEW_MIN_PANEL_CROP_DIMENSION
+        and height >= REVIEW_MIN_PANEL_CROP_HEIGHT
+    )
 
 
 def review_visual_density_contract(

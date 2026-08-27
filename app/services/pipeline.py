@@ -2514,17 +2514,34 @@ def _load_reference_panel_fallback_candidates(
         reference_visual_review.section_evidence_maps(script)
     )
     effective_evidence = section_evidence_panel_ids or default_evidence
+    effective_citations = section_citations or default_citations
     cited_panel_ids = {
         str(value)
         for ids in effective_evidence.values()
         for value in (ids or ())
+        if str(value).strip()
     }
-    regions = [
-        region
-        for region in regions
-        if int(region.source_order) > 0
-        or str(getattr(region, "panel_id", "")) in cited_panel_ids
-    ]
+    cited_source_orders = {
+        int(value)
+        for citations in effective_citations.values()
+        for value in (citations or ())
+        if isinstance(value, int) and not isinstance(value, bool)
+    }
+    if cited_panel_ids or cited_source_orders:
+        # Eligibility is explicit and panel-keyed. Materializing unrelated
+        # regions cannot change the builder result, but it needlessly decodes
+        # and scores an entire chapter. Restrict the expensive source path to
+        # the exact panel IDs/source orders that can be selected.
+        regions = [
+            region
+            for region in regions
+            if str(getattr(region, "panel_id", "")) in cited_panel_ids
+            or int(region.source_order) in cited_source_orders
+        ]
+    else:
+        # Preserve legacy callers that intentionally request the whole story
+        # registry without explicit evidence/citations.
+        regions = [region for region in regions if int(region.source_order) > 0]
     if not regions:
         return ()
     assets = {asset.id: asset for asset in images}
@@ -2590,13 +2607,10 @@ def _load_reference_panel_fallback_candidates(
             source.close()
             if crop.size != (clamped[2] - clamped[0], clamped[3] - clamped[1]):
                 raise ValueError("panel crop dimensions changed")
-            if crop.width < 32 or crop.height < 32:
-                skipped_panel_ids.add(str(region.panel_id))
-                continue
-            # Extremely thin slices (segmentation artifacts that cut a single
-            # panel into horizontal slivers) cannot frame meaningful content
-            # and read as jarring close-ups. Skip them.
-            if crop.height < 400:
+            # Keep the source-crop geometry contract identical to narrative
+            # repair. Upscaling cannot turn a segmentation sliver into a
+            # meaningful review visual.
+            if not reference_profile.review_panel_source_geometry_is_renderable(crop.size):
                 skipped_panel_ids.add(str(region.panel_id))
                 continue
             prepared_crop = crop
@@ -2646,8 +2660,8 @@ def _load_reference_panel_fallback_candidates(
         panel_regions=panel_regions_for_builder or regions,
         panel_candidates_by_region_id=panel_candidates,
         panel_crops_by_region_id=panel_crops,
-        section_evidence_panel_ids=section_evidence_panel_ids or default_evidence,
-        section_citations=section_citations or default_citations,
+        section_evidence_panel_ids=effective_evidence,
+        section_citations=effective_citations,
         beats_by_section=beats_by_section or default_beats,
         profile=profile,
         source_upscale_manifests_by_region_id=source_upscale_manifests,

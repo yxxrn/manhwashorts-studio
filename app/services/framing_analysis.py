@@ -27,6 +27,12 @@ from app.services.visual_scoring import (
 )
 
 DETECTOR_VERSION = "COLOR_AGNOSTIC_BALLOON_FREE_V1:grid256:structure4"
+REFERENCE_TV_RANGE_LUT = tuple(max(16, min(235, round(16 + (219 * value / 255)))) for value in range(256))
+
+def reference_tv_range_preview(image: Image.Image) -> Image.Image:
+    """Approximate final full-range to TV-range RGB values for pixel QC."""
+    return image.convert("RGB").point(list(REFERENCE_TV_RANGE_LUT) * 3)
+
 
 
 def color_agnostic_edge_blank_fractions(image: Image.Image) -> dict[str, float]:
@@ -64,7 +70,17 @@ def color_agnostic_edge_blank_fractions(image: Image.Image) -> dict[str, float]:
                 (left - right) ** 2
                 for left, right in zip(stats.mean, inner_mean, strict=True)
             ) ** 0.5
-            if max(stats.stddev) <= 18.0 and mean_delta >= 20.0:
+            max_stddev = max(stats.stddev)
+            texture_to_contrast = max_stddev / max(mean_delta, 1e-9)
+            # A truly blank/gutter line is not merely low-variance; its local
+            # texture must also be small relative to how strongly it differs
+            # from the image interior.  This ratio is invariant to global
+            # full-range -> TV-range scaling, unlike the absolute stddev gate.
+            if (
+                max_stddev <= 18.0
+                and mean_delta >= 20.0
+                and texture_to_contrast <= 0.30
+            ):
                 blank_lines += 1
         fractions[side] = round(blank_lines / max(1, len(line_boxes)), 6)
     fractions["max_edge_blank_fraction"] = max(fractions.values(), default=0.0)

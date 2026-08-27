@@ -152,6 +152,16 @@ def test_sentence_ass_splits_three_line_overflow_into_safe_chunks():
     assert all(line.count("\\N") <= 1 for line in dialogues)
 
 
+
+
+def test_provisional_caption_admission_rejects_unavoidable_lexical_orphan():
+    from app.services import subtitle_karaoke as module
+    failing = ({"text": "Plans form to resolve challenges independently."},)
+    safe = ({"text": "Plans form to resolve issues alone."},)
+
+    assert module.provisional_caption_overflow_passage_indexes(failing, 2.608) == (0,)
+    assert module.provisional_caption_overflow_passage_indexes(safe, 2.608) == ()
+
 def test_semantic_chunking_is_deterministic_and_avoids_orphans():
     module = _preview_module()
     spoken = (

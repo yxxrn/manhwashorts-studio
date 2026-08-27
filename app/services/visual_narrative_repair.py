@@ -10,16 +10,17 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.services import editorial_visual_planner, framing_analysis
+from app.services import editorial_visual_planner, framing_analysis, subtitle_karaoke
 
-REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v2"
+REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v3"
 VISUAL_SECTION_REMAP_VERSION = "visual_section_remap_v1"
-REPAIR_PROMPT_VERSION = "visual-narrative-repair-v3"
+REPAIR_PROMPT_VERSION = "visual-narrative-repair-v4"
 MAX_REPAIR_ATTEMPTS = 3
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "visual_narrative_repair_v1.txt"
 
@@ -343,19 +344,38 @@ def build_feasible_visual_ledger(
         ):
             continue
         manifest = getattr(candidate, "source_upscale_manifest", None)
+        if not editorial_visual_planner.reference_profile.review_panel_source_geometry_is_renderable(
+            tuple(int(value) for value in candidate.panel_size),
+            manifest,
+        ):
+            continue
         resolution_state = "NATIVE"
         if isinstance(manifest, Mapping):
             resolution_state = str(manifest.get("resolution_state") or "NATIVE")
         feasible_rois: list[dict[str, Any]] = []
+        try:
+            ready_evidence = editorial_visual_planner.visual_scoring.require_reference_ready_visual_evidence(
+                candidate.visual_evidence,
+                allow_conservative_full_panel=allow_conservative_full_panel,
+            )
+        except Exception:
+            continue
+        allow_low_resolution = bool(
+            allow_source_resolution_warning
+            and isinstance(manifest, Mapping)
+            and manifest.get("policy_id") == "review_silent_source_upscale_v1"
+            and manifest.get("resolution_state") == "LOW_SOURCE_RESOLUTION"
+            and manifest.get("non_native_warning") == "review.low_source_resolution"
+        )
         for roi in tuple(getattr(candidate, "roi_alternatives", ()) or ()):
             try:
                 is_feasible, telemetry = framing_analysis.candidate_is_feasible(
                     tuple(int(value) for value in roi.crop_box),
-                    candidate.visual_evidence,
+                    ready_evidence,
                     candidate.border_mask,
                     tuple(int(value) for value in candidate.panel_size),
                     target_size,
-                    allow_source_resolution_warning=allow_source_resolution_warning,
+                    allow_source_resolution_warning=allow_low_resolution,
                     allow_conservative_full_panel=allow_conservative_full_panel,
                     review_aggressive_crop=allow_source_resolution_warning,
                     blank_target_fraction=getattr(profile, "framing_blank_target_fraction", None),
@@ -363,6 +383,9 @@ def build_feasible_visual_ledger(
             except Exception:
                 continue
             if not is_feasible:
+                continue
+            edge_blank = getattr(roi, "edge_blank_fraction", None)
+            if edge_blank is not None and float(edge_blank) > editorial_visual_planner.reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
                 continue
             telemetry_dict = asdict(telemetry)
             feasible_rois.append({
@@ -422,6 +445,106 @@ def missing_visual_sections(
     return tuple(missing)
 
 
+def _narration_passages(narration: object) -> tuple[Mapping[str, Any], ...]:
+    raw = narration.get("passages") if isinstance(narration, Mapping) else getattr(narration, "passages", None)
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return ()
+    return tuple(item for item in raw if isinstance(item, Mapping))
+
+
+def _narration_claims(narration: object) -> tuple[Mapping[str, Any], ...]:
+    graph = narration.get("evidence_graph") if isinstance(narration, Mapping) else getattr(narration, "evidence_graph", None)
+    raw = graph.get("claims") if isinstance(graph, Mapping) else None
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return ()
+    return tuple(item for item in raw if isinstance(item, Mapping))
+
+
+def _passage_section_name(index: int, passage_count: int, section_names: Sequence[str]) -> str:
+    if not section_names:
+        return ""
+    if len(section_names) == 1:
+        return str(section_names[0])
+    if index == 0:
+        return str(section_names[0])
+    if index == passage_count - 1:
+        return str(section_names[-1])
+    if index == 1:
+        return str(section_names[1])
+    if index == passage_count - 2 and len(section_names) >= 4:
+        return str(section_names[-2])
+    return str(section_names[min(2, len(section_names) - 1)])
+
+
+def narration_sections_with_infeasible_citations(narration: object, ledger: FeasibleVisualLedger, section_to_beats: Mapping[str, Sequence[str]]) -> tuple[str, ...]:
+    """Return editorial sections whose current claim/passage citations are stale."""
+    passages = _narration_passages(narration)
+    if not passages:
+        return ()
+    section_names = tuple(str(section) for section in section_to_beats if str(section).strip())
+    if not section_names:
+        return ()
+    feasible_ids = set(ledger.feasible_panel_ids)
+    claim_refs = {
+        str(claim.get("claim_id", "")): {str(panel_id) for panel_id in (claim.get("evidence_panel_ids") or ()) if str(panel_id).strip()}
+        for claim in _narration_claims(narration)
+        if str(claim.get("claim_id", "")).strip()
+    }
+    stale: set[str] = set()
+    for index, passage in enumerate(passages):
+        refs = passage.get("evidence_panel_ids")
+        passage_refs = {str(panel_id) for panel_id in refs if str(panel_id).strip()} if isinstance(refs, list) else set()
+        invalid = not passage_refs or not passage_refs <= feasible_ids
+        claim_ids = passage.get("claim_ids")
+        if not invalid and isinstance(claim_ids, list):
+            for claim_id in map(str, claim_ids):
+                refs_for_claim = claim_refs.get(claim_id)
+                if refs_for_claim is not None and (not refs_for_claim or not refs_for_claim <= feasible_ids):
+                    invalid = True
+                    break
+        if invalid:
+            section = _passage_section_name(index, len(passages), section_names)
+            if section:
+                stale.add(section)
+    return tuple(section for section in section_names if section in stale)
+
+
+def narration_sections_with_subtitle_overflow(
+    narration: object,
+    section_to_beats: Mapping[str, Sequence[str]],
+) -> tuple[str, ...]:
+    """Return sections whose prose cannot satisfy the fixed subtitle layout."""
+    passages = _narration_passages(narration)
+    if not passages:
+        return ()
+    raw_duration = (
+        narration.get("estimated_duration_s")
+        if isinstance(narration, Mapping)
+        else getattr(narration, "estimated_duration_s", None)
+    )
+    failed = subtitle_karaoke.provisional_caption_overflow_passage_indexes(
+        passages,
+        raw_duration,
+    )
+    if not failed:
+        return ()
+    section_names = tuple(str(section) for section in section_to_beats if str(section).strip())
+    overflow = {
+        _passage_section_name(index, len(passages), section_names)
+        for index in failed
+    }
+    return tuple(section for section in section_names if section in overflow)
+
+
+def repair_scope_sections(narration: object, ledger: FeasibleVisualLedger, section_to_beats: Mapping[str, Sequence[str]]) -> tuple[str, ...]:
+    """Union visual, citation-lineage, and subtitle-renderability repair scope."""
+    required = set(missing_visual_sections(ledger, section_to_beats))
+    required.update(narration_sections_with_infeasible_citations(narration, ledger, section_to_beats))
+    required.update(narration_sections_with_subtitle_overflow(narration, section_to_beats))
+    ordered = [str(section) for section in section_to_beats if str(section).strip() and str(section) in required]
+    extras = sorted(required - set(ordered))
+    return (*ordered, *extras)
+
 
 def _normalize_repair_reference_aliases(value: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize the provider's legacy panel_ids alias before local validation.
@@ -465,63 +588,209 @@ def _normalize_repair_reference_aliases(value: Mapping[str, Any]) -> dict[str, A
     return normalized
 
 
+def _repair_claim_transport_key(claim_id: str) -> str | None:
+    """Collapse only the provider's terminal claim-number underscore drift."""
+
+    match = re.fullmatch(r"(?P<prefix>.+__claim)_?(?P<number>\d+)", str(claim_id))
+    if match is None:
+        return None
+    return f"{match.group('prefix')}{match.group('number')}"
+
+
+def canonicalize_repair_claim_ids(
+    value: Mapping[str, Any],
+    *,
+    allowed_claim_ids: set[str],
+) -> dict[str, Any]:
+    """Map a narrow claim-ID transport drift back to trusted story lineage.
+
+    Exact trusted IDs always win.  The only tolerated non-exact spelling is
+    ``__claimN`` versus ``__claim_N`` at the terminal numeric suffix, and it
+    is accepted only when that canonical spelling resolves to exactly one
+    trusted StoryMap claim.  Unknown or ambiguous IDs remain fail-closed.
+    """
+
+    normalized = _normalize_repair_reference_aliases(value)
+    allowed = {str(claim_id) for claim_id in allowed_claim_ids if str(claim_id).strip()}
+    by_transport_key: dict[str, list[str]] = {}
+    for claim_id in sorted(allowed):
+        key = _repair_claim_transport_key(claim_id)
+        if key is not None:
+            by_transport_key.setdefault(key, []).append(claim_id)
+
+    def resolve(claim_id: object) -> str:
+        if not isinstance(claim_id, str) or not claim_id:
+            raise VisualNarrativeRepairError(
+                "repair claim is unsupported",
+                "visual.narrative_repair_ungrounded",
+            )
+        if claim_id in allowed:
+            return claim_id
+        key = _repair_claim_transport_key(claim_id)
+        candidates = by_transport_key.get(key, ()) if key is not None else ()
+        if len(candidates) != 1:
+            raise VisualNarrativeRepairError(
+                "repair claim is unsupported",
+                "visual.narrative_repair_ungrounded",
+            )
+        return candidates[0]
+
+    claims: list[dict[str, Any]] = []
+    for raw_claim in normalized["claims"]:
+        claim = dict(raw_claim)
+        claim["claim_id"] = resolve(claim.get("claim_id"))
+        claims.append(claim)
+
+    passages: list[dict[str, Any]] = []
+    for raw_passage in normalized["passages"]:
+        passage = dict(raw_passage)
+        claim_ids = passage.get("claim_ids")
+        if not isinstance(claim_ids, list) or not claim_ids:
+            raise VisualNarrativeRepairError(
+                "repair passage evidence is incomplete",
+                "visual.narrative_repair_ungrounded",
+            )
+        passage["claim_ids"] = [resolve(claim_id) for claim_id in claim_ids]
+        passages.append(passage)
+
+    return {**normalized, "claims": claims, "passages": passages}
+
+
 def remap_same_beat_panel_citations(
     value: Mapping[str, Any],
     *,
     ledger: FeasibleVisualLedger,
     section_to_beats: Mapping[str, Sequence[str]],
+    allowed_claim_panel_ids: Mapping[str, Sequence[str] | set[str]] | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
-    """Prefer a lower-blank panel without crossing the supported story beat.
-
-    The provider may select any feasible panel, but a review render should not
-    retain avoidable edge-connected blank space when another panel in the same
-    evidence beat supports the same section.  This local rewrite changes only
-    panel references; prose and claim text remain immutable.  The returned
-    provenance is persisted with the narrative QC report.
-    """
+    """Prefer safer same-story evidence without rebinding claim lineage."""
 
     normalized = _normalize_repair_reference_aliases(value)
     raw_claims = normalized["claims"]
     raw_passages = normalized["passages"]
     entries_by_panel = {entry.panel_id: entry for entry in ledger.entries}
+    feasible_ids = set(entries_by_panel)
     ordered_sections = tuple(str(section) for section in section_to_beats)
     remaps: list[dict[str, Any]] = []
     usage_by_panel: dict[str, int] = {}
 
-    def replacement_for(panel_id: str, section: str) -> str:
-        current = entries_by_panel.get(panel_id)
-        if current is None:
-            return panel_id
-        current_beats = set(current.eligible_beats)
-        if not current_beats:
-            return panel_id
-        current_blank = float(
-            current.visual_strengths.get("edge_connected_blank_fraction", 1.0)
+    allowed_lineage: dict[str, set[str]] | None = None
+    if allowed_claim_panel_ids is not None:
+        allowed_lineage = {
+            str(claim_id): {
+                str(panel_id)
+                for panel_id in panel_ids
+                if str(panel_id) in feasible_ids
+            }
+            for claim_id, panel_ids in allowed_claim_panel_ids.items()
+        }
+
+    claim_evidence_by_id: dict[str, set[str]] = {}
+    for raw_claim in raw_claims:
+        if not isinstance(raw_claim, Mapping):
+            raise VisualNarrativeRepairError(
+                "repair claim is malformed",
+                "visual.narrative_repair_ungrounded",
+            )
+        claim_id = str(raw_claim.get("claim_id", ""))
+        refs = raw_claim.get("evidence_panel_ids")
+        claim_evidence_by_id[claim_id] = (
+            {str(ref) for ref in refs} if isinstance(refs, list) else set()
         )
-        if not math.isfinite(current_blank) or not 0.0 <= current_blank <= 1.0:
+
+    def passage_min_source_order(raw_passage: Mapping[str, Any]) -> int | None:
+        refs = raw_passage.get("evidence_panel_ids")
+        if not isinstance(refs, list) or not refs:
+            return None
+        orders = [
+            entries_by_panel[str(ref)].source_order
+            for ref in refs
+            if str(ref) in entries_by_panel
+        ]
+        return min(orders) if orders else None
+
+    original_passage_orders = [
+        passage_min_source_order(raw_passage)
+        if isinstance(raw_passage, Mapping)
+        else None
+        for raw_passage in raw_passages
+    ]
+    original_non_hook_orders = original_passage_orders[1:]
+    preserve_non_hook_chronology = bool(
+        original_non_hook_orders
+        and all(order is not None for order in original_non_hook_orders)
+        and original_non_hook_orders == sorted(original_non_hook_orders)
+    )
+
+    def replacement_for(
+        panel_id: str,
+        section: str,
+        *,
+        allowed_panels: set[str] | None = None,
+        min_source_order: int | None = None,
+        max_source_order: int | None = None,
+    ) -> str:
+        current = entries_by_panel.get(panel_id)
+        must_replace = allowed_panels is not None and panel_id not in allowed_panels
+        if current is None and allowed_panels is None:
             return panel_id
+
+        section_beats = {
+            str(value) for value in (section_to_beats.get(section) or ())
+        }
+        current_beats = set(current.eligible_beats) if current is not None else set()
+        candidate_beats = section_beats if must_replace or current is None else current_beats
+        if not candidate_beats and current is not None:
+            candidate_beats = current_beats
+
+        current_blank = 1.0
+        if current is not None:
+            current_blank = float(
+                current.visual_strengths.get("edge_connected_blank_fraction", 1.0)
+            )
+            if not math.isfinite(current_blank) or not 0.0 <= current_blank <= 1.0:
+                current_blank = 1.0
+
         available = [
             entry
             for entry in ledger.entries
             if entry.panel_id != panel_id
-            and current_beats.intersection(entry.eligible_beats)
+            and (allowed_panels is None or entry.panel_id in allowed_panels)
+            and (not candidate_beats or candidate_beats.intersection(entry.eligible_beats))
             and math.isfinite(
                 float(entry.visual_strengths.get("edge_connected_blank_fraction", 1.0))
             )
             and usage_by_panel.get(entry.panel_id, 0) < len(entry.feasible_rois)
-            and 0.0 <= float(entry.visual_strengths.get("edge_connected_blank_fraction", 1.0)) <= 1.0
+            and 0.0
+            <= float(entry.visual_strengths.get("edge_connected_blank_fraction", 1.0))
+            <= 1.0
+            and (min_source_order is None or entry.source_order >= min_source_order)
+            and (max_source_order is None or entry.source_order <= max_source_order)
         ]
-        alternatives = [
-            entry
-            for entry in available
-            if float(entry.visual_strengths.get("edge_connected_blank_fraction", 1.0)) < current_blank - 1e-9
-        ]
-        reason = "same-beat lower edge-connected blank fraction"
-        if not alternatives and usage_by_panel.get(panel_id, 0) >= len(current.feasible_rois):
+
+        if must_replace or current is None:
             alternatives = available
-            reason = "same-beat alternate after ROI capacity exhausted"
+            reason = "story-lineage feasible replacement"
+        else:
+            alternatives = [
+                entry
+                for entry in available
+                if float(
+                    entry.visual_strengths.get("edge_connected_blank_fraction", 1.0)
+                )
+                < current_blank - 1e-9
+            ]
+            reason = "same-beat lower edge-connected blank fraction"
+            if (
+                not alternatives
+                and current is not None
+                and usage_by_panel.get(panel_id, 0) >= len(current.feasible_rois)
+            ):
+                alternatives = available
+                reason = "same-beat alternate after ROI capacity exhausted"
         if not alternatives:
             return panel_id
+
         selected = min(
             alternatives,
             key=lambda entry: (
@@ -538,19 +807,22 @@ def remap_same_beat_panel_citations(
                 "section": section,
                 "from_panel_id": panel_id,
                 "to_panel_id": selected.panel_id,
-                "from_source_order": current.source_order,
+                "from_source_order": current.source_order if current is not None else None,
                 "to_source_order": selected.source_order,
-                "from_blank_fraction": current_blank,
+                "from_blank_fraction": current_blank if current is not None else None,
                 "to_blank_fraction": float(
                     selected.visual_strengths.get("edge_connected_blank_fraction", 1.0)
                 ),
-                "same_eligible_beats": sorted(current_beats.intersection(selected.eligible_beats)),
+                "same_eligible_beats": sorted(
+                    candidate_beats.intersection(selected.eligible_beats)
+                ),
                 "ledger_hash": ledger.ledger_hash,
                 "reason": reason,
             }
         )
         return selected.panel_id
 
+    mapped_claim_refs: dict[str, list[str]] = {}
     passages: list[dict[str, Any]] = []
     for index, raw_passage in enumerate(raw_passages):
         if not isinstance(raw_passage, Mapping):
@@ -560,16 +832,58 @@ def remap_same_beat_panel_citations(
             )
         section = ordered_sections[index] if index < len(ordered_sections) else ""
         refs = raw_passage.get("evidence_panel_ids")
+        claim_ids = raw_passage.get("claim_ids")
         if not isinstance(refs, list) or not refs:
             raise VisualNarrativeRepairError(
                 "repair passage evidence is incomplete",
                 "visual.narrative_repair_ungrounded",
             )
+        if not isinstance(claim_ids, list) or not claim_ids:
+            raise VisualNarrativeRepairError(
+                "repair passage evidence is incomplete",
+                "visual.narrative_repair_ungrounded",
+            )
+
+        min_source_order: int | None = None
+        max_source_order: int | None = None
+        if preserve_non_hook_chronology and index > 0:
+            if index > 1 and passages:
+                min_source_order = passage_min_source_order(passages[-1])
+            if index + 1 < len(original_passage_orders):
+                max_source_order = original_passage_orders[index + 1]
+
         mapped_refs: list[str] = []
+        passage_claim_ids = [str(claim_id) for claim_id in claim_ids]
         for raw_ref in refs:
-            mapped = replacement_for(str(raw_ref), section)
+            panel_id = str(raw_ref)
+            supporting_claims = [
+                claim_id
+                for claim_id in passage_claim_ids
+                if panel_id in claim_evidence_by_id.get(claim_id, set())
+            ]
+            allowed_panels: set[str] | None = None
+            if allowed_lineage is not None and supporting_claims:
+                lineage_sets = [
+                    allowed_lineage.get(claim_id, set()) for claim_id in supporting_claims
+                ]
+                allowed_panels = (
+                    set.intersection(*lineage_sets) if lineage_sets else set()
+                )
+            mapped = replacement_for(
+                panel_id,
+                section,
+                allowed_panels=allowed_panels,
+                min_source_order=min_source_order,
+                max_source_order=max_source_order,
+            )
             if mapped not in mapped_refs:
                 mapped_refs.append(mapped)
+            for claim_id in supporting_claims:
+                if allowed_lineage is None or mapped in allowed_lineage.get(claim_id, set()):
+                    claim_refs = mapped_claim_refs.setdefault(claim_id, [])
+                    if mapped not in claim_refs:
+                        claim_refs.append(mapped)
+
         passage = dict(raw_passage)
         passage["evidence_panel_ids"] = mapped_refs
         passages.append(passage)
@@ -585,22 +899,28 @@ def remap_same_beat_panel_citations(
             )
         claim = dict(raw_claim)
         claim_id = str(claim.get("claim_id", ""))
-        covered: list[str] = []
-        for passage in passages:
-            if claim_id not in {str(item) for item in passage.get("claim_ids", ())}:
-                continue
-            for panel_id in passage["evidence_panel_ids"]:
-                if panel_id not in covered:
-                    covered.append(panel_id)
+        if allowed_lineage is not None:
+            covered = mapped_claim_refs.get(claim_id, [])
+        else:
+            covered = []
+            for passage in passages:
+                if claim_id not in {
+                    str(item) for item in passage.get("claim_ids", ())
+                }:
+                    continue
+                for panel_id in passage["evidence_panel_ids"]:
+                    if panel_id not in covered:
+                        covered.append(panel_id)
         if covered:
             claim["evidence_panel_ids"] = covered
         claims.append(claim)
 
     return {"claims": claims, "passages": passages}, tuple(remaps)
 
-
 def coalesce_adjacent_duplicate_panel_passages(
     passages: Sequence[Mapping[str, Any]],
+    *,
+    minimum_passage_count: int = 0,
 ) -> tuple[list[dict[str, Any]], tuple[dict[str, Any], ...]]:
     """Merge adjacent passages that have only the same feasible panel.
 
@@ -609,8 +929,10 @@ def coalesce_adjacent_duplicate_panel_passages(
     consecutive reuse of one exact panel when no alternate safe visual exists.
     """
 
+    minimum_passage_count = max(0, int(minimum_passage_count))
     merged: list[dict[str, Any]] = []
     provenance: list[dict[str, Any]] = []
+    source_count = len(passages)
     for raw in passages:
         if not isinstance(raw, Mapping):
             raise VisualNarrativeRepairError(
@@ -632,6 +954,7 @@ def coalesce_adjacent_duplicate_panel_passages(
                 and len(previous_refs) == 1
                 and len(references) == 1
                 and str(previous_refs[0]) == str(references[0])
+                and source_count - (len(provenance) + 1) >= minimum_passage_count
             ):
                 previous_claims = list(previous.get("claim_ids") or ())
                 current_claims = list(current.get("claim_ids") or ())
@@ -696,6 +1019,40 @@ def default_section_to_beats(
     return result
 
 
+def feasible_story_claims(
+    story_map: Mapping[str, Any],
+    ledger: FeasibleVisualLedger,
+) -> list[dict[str, Any]]:
+    """Return only StoryMap claims with original evidence still feasible."""
+
+    feasible = set(ledger.feasible_panel_ids)
+    rows: list[dict[str, Any]] = []
+    raw_claims = story_map.get("claims", ())
+    if not isinstance(raw_claims, Sequence) or isinstance(raw_claims, (str, bytes)):
+        return rows
+    for raw_claim in raw_claims:
+        if not isinstance(raw_claim, Mapping):
+            continue
+        claim_id = str(raw_claim.get("claim_id", "")).strip()
+        panel_ids = raw_claim.get("panel_ids")
+        if not claim_id or not isinstance(panel_ids, list):
+            continue
+        evidence_panel_ids = [
+            str(panel_id)
+            for panel_id in panel_ids
+            if str(panel_id) in feasible
+        ]
+        if not evidence_panel_ids:
+            continue
+        row: dict[str, Any] = {"claim_id": claim_id}
+        for key in ("claim_type", "text", "qualification"):
+            if key in raw_claim:
+                row[key] = raw_claim.get(key)
+        row["evidence_panel_ids"] = evidence_panel_ids
+        rows.append(row)
+    return rows
+
+
 def build_repair_payload(
     *,
     narration: Mapping[str, Any],
@@ -704,13 +1061,16 @@ def build_repair_payload(
     section_to_beats: Mapping[str, Sequence[str]],
     feasible_observations: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    missing = missing_visual_sections(ledger, section_to_beats)
+    missing = repair_scope_sections(narration, ledger, section_to_beats)
     render_plan = FeasibleRenderPlan.from_ledger(ledger)
+    feasible_claim_rows = feasible_story_claims(story_map, ledger)
     return {
         "repair_contract_version": REPAIR_CONTRACT_VERSION,
         "feasible_ledger": ledger.as_dict(),
         "feasible_render_plan": render_plan.as_dict(),
         "feasible_panel_ids": list(ledger.feasible_panel_ids),
+        "feasible_claim_ids": [str(row["claim_id"]) for row in feasible_claim_rows],
+        "feasible_claims": feasible_claim_rows,
         "feasible_by_beat": {
             beat: [entry.panel_id for entry in ledger.entries if beat in entry.eligible_beats]
             for beat in sorted({beat for entry in ledger.entries for beat in entry.eligible_beats})
@@ -726,6 +1086,8 @@ def build_repair_payload(
         "constraints": {
             "same_pinned_model": True,
             "allowed_panel_ids_only": True,
+            "allowed_claim_ids_only": True,
+            "claim_evidence_must_match_story_lineage": True,
             "preserve_causal_order": True,
             "no_copied_dialogue": True,
             "no_invented_facts": True,
@@ -741,6 +1103,7 @@ def validate_repaired_panel_references(
     *,
     ledger: FeasibleVisualLedger,
     allowed_claim_ids: set[str],
+    allowed_claim_panel_ids: Mapping[str, Sequence[str] | set[str]] | None = None,
 ) -> dict[str, Any]:
     """Reject any repair that cites a panel outside the feasible ledger."""
 
@@ -759,6 +1122,15 @@ def validate_repaired_panel_references(
         reference_set = {str(ref) for ref in refs}
         if not reference_set <= feasible:
             raise VisualNarrativeRepairError("repair claim cites an infeasible panel", "visual.narrative_repair_ungrounded")
+        if allowed_claim_panel_ids is not None:
+            story_lineage = {
+                str(ref) for ref in allowed_claim_panel_ids.get(claim_id, ())
+            }
+            if not story_lineage or not reference_set <= story_lineage:
+                raise VisualNarrativeRepairError(
+                    "repair claim evidence is outside story lineage",
+                    "visual.narrative_repair_ungrounded",
+                )
         claim_refs[claim_id] = reference_set
     if not claim_refs:
         raise VisualNarrativeRepairError("repair has no claims", "visual.narrative_repair_ungrounded")
@@ -885,7 +1257,9 @@ __all__ = [
     "default_section_to_beats",
     "load_repair_prompt",
     "missing_visual_sections",
+    "narration_sections_with_infeasible_citations",
     "remap_same_beat_panel_citations",
+    "repair_scope_sections",
     "repair_cache_key",
     "validate_repaired_panel_references",
     "validate_repaired_section_visual_coverage",

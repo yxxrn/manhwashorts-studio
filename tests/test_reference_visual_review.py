@@ -287,7 +287,7 @@ def test_reference_loader_keeps_cited_order_zero_panel(monkeypatch):
         section_evidence_panel_ids={"hook": ("title",)},
     )
 
-    assert captured == ["region-title", "region-a"]
+    assert captured == ["region-title"]
 
 
 @pytest.mark.parametrize("panel_ids", (("missing-panel",), ("panel-a", "foreign-panel")))

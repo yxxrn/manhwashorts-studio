@@ -333,6 +333,102 @@ def test_invalid_visual_repair_cache_does_not_bypass_bounded_provider_path(monke
     assert calls["count"] == repair.MAX_REPAIR_ATTEMPTS
 
 
+
+def test_visual_repair_runner_limits_claims_to_original_feasible_lineage(monkeypatch):
+    module = _module()
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    ledger = repair.FeasibleVisualLedger(
+        entries=(
+            repair.FeasibleVisualRecord(
+                panel_region_id="region-safe",
+                panel_id="panel-safe",
+                source_asset_id="asset-safe",
+                source_order=10,
+                eligible_sections=("hook",),
+                eligible_beats=("beat-safe",),
+                resolution_state="NATIVE",
+                feasible_rois=({"kind": "primary", "roi_label": "primary", "crop_box": [0, 0, 100, 100], "telemetry": {}},),
+                visual_strengths={"edge_connected_blank_fraction": 0.0, "protected_retained_fraction": 1.0},
+                evidence_hash="e" * 64,
+                detector_version="detector-v1",
+                mask_sha256="m" * 64,
+                panel_size=(100, 100),
+            ),
+        ),
+        model_identity_hash=_identity(module).identity_hash,
+    )
+    visual = SimpleNamespace(
+        panels=({"panel_id": "panel-safe"}, {"panel_id": "panel-unsafe"}),
+        source_hash="source-hash",
+        visual_evidence_hash="visual-hash",
+    )
+    story_dict = {
+        "beats": [{"beat_id": "beat-safe", "panel_ids": ["panel-safe", "panel-unsafe"]}],
+        "claims": [
+            {"claim_id": "claim-safe", "panel_ids": ["panel-safe", "panel-unsafe"]},
+            {"claim_id": "claim-unsafe", "panel_ids": ["panel-unsafe"]},
+        ],
+    }
+    story_map = SimpleNamespace(
+        claims=tuple(story_dict["claims"]),
+        story_map_hash="story-hash",
+        as_dict=lambda: story_dict,
+    )
+
+    class Provider:
+        model_id = _identity(module).model
+
+        def __init__(self):
+            self.payloads = []
+
+        def complete_json(self, **kwargs):
+            self.payloads.append(dict(kwargs["payload"]))
+            return {
+                "claims": [{"claim_id": "claim-safe", "evidence_panel_ids": ["panel-safe"]}],
+                "passages": [{
+                    "passage_id": "p1",
+                    "text": "A grounded visible change lands here.",
+                    "claim_ids": ["claim-safe"],
+                    "evidence_panel_ids": ["panel-safe"],
+                }],
+                "narrative_outline": {"story_spine": {}, "ending_kind": "consequence"},
+            }
+
+    captured = []
+
+    def stop_after_wiring(value, *, ledger, section_to_beats, allowed_claim_panel_ids=None):
+        captured.append({claim_id: set(panel_ids) for claim_id, panel_ids in allowed_claim_panel_ids.items()})
+        raise repair.VisualNarrativeRepairError(
+            "stop after lineage wiring",
+            "visual.narrative_repair_ungrounded",
+        )
+
+    monkeypatch.setattr(repair, "remap_same_beat_panel_citations", stop_after_wiring)
+    provider = Provider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        max_attempts=1,
+    )
+    runner._narration_observations = lambda *_args: (
+        [{"panel_id": "panel-safe"}],
+        {"continuity_ledger": {}, "coverage_manifest": {}},
+    )
+
+    with pytest.raises(module.CloudStageError):
+        runner.run_visual_narrative_repair(
+            visual,
+            story_map,
+            None,
+            ledger,
+            {"hook": ("beat-safe",)},
+        )
+
+    assert provider.payloads
+    assert provider.payloads[0]["feasible_claim_ids"] == ["claim-safe"]
+    assert captured
+    assert all(item == {"claim-safe": {"panel-safe"}} for item in captured)
+
 def test_visual_repair_contract_bump_scopes_stale_provider_cache():
     repair = importlib.import_module("app.services.visual_narrative_repair")
     ledger = type("Ledger", (), {"ledger_hash": "ledger-hash"})()
@@ -352,8 +448,8 @@ def test_visual_repair_contract_bump_scopes_stale_provider_cache():
         contract_version=repair.REPAIR_CONTRACT_VERSION,
     )
 
-    assert repair.REPAIR_CONTRACT_VERSION == "visual_narrative_repair_v2"
-    assert repair.REPAIR_PROMPT_VERSION == "visual-narrative-repair-v3"
+    assert repair.REPAIR_CONTRACT_VERSION == "visual_narrative_repair_v3"
+    assert repair.REPAIR_PROMPT_VERSION == "visual-narrative-repair-v4"
     assert old_key != current_key
 
 
@@ -1000,14 +1096,51 @@ def test_review_preview_failure_code_keeps_subtitle_stable_code():
     ) == "subtitle.timing_out_of_bounds"
 
 
+
+
+def test_repaired_narration_checkpoint_requires_exact_current_repair_metadata():
+    module = _module()
+    repair_prompt = ("visual-narrative-repair-v4", "r" * 64, "")
+    runner = SimpleNamespace(
+        prompts={
+            "narration": ("vision-first-story-analyzer-v3", "n" * 64, ""),
+            "visual_narrative_repair": repair_prompt,
+        },
+        model_identity=SimpleNamespace(identity_hash="m" * 64),
+    )
+    narration = SimpleNamespace(
+        prompt_version=repair_prompt[0],
+        prompt_sha256=repair_prompt[1],
+    )
+    record = module.ChapterJobRecord(
+        "project-a",
+        stage_results={
+            "visual_repair": {
+                "contract_version": module.visual_narrative_repair.REPAIR_CONTRACT_VERSION,
+                "prompt_version": repair_prompt[0],
+                "prompt_sha256": repair_prompt[1],
+                "model_identity_hash": "m" * 64,
+                "publish_allowed": False,
+            }
+        },
+    )
+
+    assert module._narration_stage_prompt_is_compatible(record, narration, runner)
+
+    record.stage_results["visual_repair"]["prompt_sha256"] = "stale"
+    assert not module._narration_stage_prompt_is_compatible(record, narration, runner)
+
+
 @pytest.mark.parametrize(
     "failure_code",
     (
         "cloud.narrative_not_grounded",
         "cloud.narrative_duration_out_of_range",
         "visual.narrative_repair_ungrounded",
+        "subtitle.overflow",
     ),
 )
+
 def test_review_project_repairs_after_initial_narration_failure(monkeypatch, failure_code):
     module = _module()
     from types import SimpleNamespace
@@ -1060,7 +1193,7 @@ def test_review_project_repairs_after_initial_narration_failure(monkeypatch, fai
         prompt_sha256="n" * 64,
         visual_evidence_hash=visual.visual_evidence_hash,
     )
-    if failure_code == "visual.narrative_repair_ungrounded":
+    if failure_code in {"visual.narrative_repair_ungrounded", "subtitle.overflow"}:
         failed.stage_results["narration"] = persisted_narration.as_dict()
 
     class Store:
@@ -1133,12 +1266,128 @@ def test_review_project_repairs_after_initial_narration_failure(monkeypatch, fai
     assert observed["script_row"] is None
     if failure_code == "cloud.narrative_duration_out_of_range":
         assert observed["result"].narration is partial_narration
-    elif failure_code == "visual.narrative_repair_ungrounded":
+    elif failure_code in {"visual.narrative_repair_ungrounded", "subtitle.overflow"}:
         assert observed["result"].narration.spoken_text == persisted_narration.spoken_text
     else:
         assert observed["result"] is None
     assert observed["panel_ids"] == tuple(panel.panel_id for panel in panels)
     assert result.state == module.ChapterState.REVIEW_PREVIEW_READY, (result.error_code, result.error_message)
+
+
+def test_review_render_failure_preserves_durable_visual_repair_checkpoint(monkeypatch):
+    module = _module()
+    from types import SimpleNamespace
+
+    panels = _panels(module)
+    visual = module.VisualStageResult(
+        panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
+        source_hash="v" * 64,
+        model_identity_hash="m" * 64,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="p" * 64,
+    )
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel.panel_id for panel in panels),
+        beats=({"beat_id": "beat-1", "panel_ids": [panel.panel_id for panel in panels]},),
+        causal_chain=(),
+        claims=(),
+        story_map_hash="s" * 64,
+        model_identity_hash="m" * 64,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="c" * 64,
+    )
+    original_narration = module.NarrationResult(
+        spoken_text="Original narration.",
+        display_words=("ORIGINAL", "NARRATION"),
+        passages=(),
+        ending_kind="consequence",
+        word_count=120,
+        estimated_duration_s=52.0,
+        qc_report={},
+        model_identity_hash="m" * 64,
+        prompt_version="vision-first-story-analyzer-v3",
+        prompt_sha256="n" * 64,
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    repaired_narration = replace(original_narration, spoken_text="Repaired narration.")
+    failed = module.ChapterJobRecord(
+        job_id="project-a",
+        state=module.ChapterState.NEEDS_REVIEW,
+        error_code="visual.narrative_repair_ungrounded",
+        stage_results={
+            "visual": visual.as_dict(),
+            "story_map": story_map.as_dict(),
+            "narration": original_narration.as_dict(),
+        },
+    )
+
+    class Store:
+        def __init__(self):
+            self.payload = failed.as_dict()
+
+        def load(self, _job_id):
+            return module.ChapterJobRecord.from_dict(self.payload)
+
+        def save(self, record):
+            self.payload = record.as_dict()
+
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.runner = SimpleNamespace(
+        model_identity=SimpleNamespace(identity_hash="m" * 64),
+        assess_strip_boundaries=lambda _request: {},
+        prompts={"visual_narrative_repair": ("visual-narrative-repair-v4", "r" * 64, "")},
+        _last_narration_result=None,
+    )
+    service.store = Store()
+    service.review_root = None
+    monkeypatch.setattr(
+        module,
+        "prepare_project_panels",
+        lambda *_args, **_kwargs: (panels, {"status": "RECONCILED"}),
+    )
+    monkeypatch.setattr(
+        module,
+        "_build_project_prepared_manifest",
+        lambda *_args, **_kwargs: {"manifest": "generated"},
+    )
+    monkeypatch.setattr(service, "run_job", lambda *_args, **_kwargs: failed)
+    ledger = SimpleNamespace(entries=(), as_dict=lambda: {"entries": [], "ledger_hash": "l" * 64})
+    monkeypatch.setattr(
+        service,
+        "_repair_review_narrative",
+        lambda *_args, **_kwargs: (
+            module.ChapterResult(
+                state=module.ChapterState.READY_TO_RENDER,
+                visual=visual,
+                story_map=story_map,
+                narration=repaired_narration,
+            ),
+            ledger,
+            ("cta",),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "persist_cloud_chapter",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(id="analysis-a"),
+            SimpleNamespace(id="script-a", version=2, estimated_duration=50.0, sections=[]),
+        ),
+    )
+    pipeline = importlib.import_module("app.services.pipeline")
+    monkeypatch.setattr(
+        pipeline,
+        "build_timeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("planner boom")),
+    )
+
+    result = service.run_project(object(), "project-a", review_only_preview=True)
+
+    assert result.state == module.ChapterState.NEEDS_REVIEW
+    assert result.error_code == "review.preview_failed"
+    assert result.stage_results["narration"]["spoken_text"] == "Repaired narration."
+    assert result.stage_results["feasible_visual_ledger"]["ledger_hash"] == "l" * 64
+    assert result.stage_results["visual_repair"]["missing_sections"] == ["cta"]
 
 
 def test_review_repair_forwards_persisted_panel_crop_fallback(monkeypatch):
@@ -1188,6 +1437,12 @@ def test_review_repair_forwards_persisted_panel_crop_fallback(monkeypatch):
         lambda *_args, **_kwargs: SimpleNamespace(entries=("entry",)),
     )
     monkeypatch.setattr(repair, "missing_visual_sections", lambda *_args: ())
+
+    monkeypatch.setattr(
+        module,
+        "_durable_visual_repair_covers_missing_sections",
+        lambda *_args, **_kwargs: True,
+    )
 
     service = module.CloudBatchService.__new__(module.CloudBatchService)
     service.runner = SimpleNamespace(
@@ -1262,6 +1517,12 @@ def test_review_repair_persisted_loader_maps_sections_to_story_beats(monkeypatch
         lambda *_args, **_kwargs: SimpleNamespace(entries=("entry",)),
     )
     monkeypatch.setattr(repair, "missing_visual_sections", lambda *_args: ())
+
+    monkeypatch.setattr(
+        module,
+        "_durable_visual_repair_covers_missing_sections",
+        lambda *_args, **_kwargs: True,
+    )
 
     service = module.CloudBatchService.__new__(module.CloudBatchService)
     service.runner = SimpleNamespace(
@@ -1398,6 +1659,12 @@ def test_persisted_review_reuses_exact_prepared_panel_payloads(monkeypatch):
         lambda ledger, *_args: () if ledger.entries else ("hook",),
     )
 
+    monkeypatch.setattr(
+        module,
+        "_durable_visual_repair_covers_missing_sections",
+        lambda *_args, **_kwargs: True,
+    )
+
     service = module.CloudBatchService.__new__(module.CloudBatchService)
     service.runner = SimpleNamespace(
         model_identity=SimpleNamespace(identity_hash="m" * 64),
@@ -1434,7 +1701,7 @@ def test_ephemeral_review_registry_allows_title_visual_row_without_story_candida
 
     profile_module = importlib.import_module("app.services.reference_profile")
     payload = io.BytesIO()
-    Image.new("RGB", (64, 64), (80, 90, 100)).save(payload, format="PNG")
+    Image.new("RGB", (640, 640), (80, 90, 100)).save(payload, format="PNG")
     panels = tuple(
         module.CloudPanelInput(
             panel_id=f"panel-{index}",
@@ -1442,8 +1709,8 @@ def test_ephemeral_review_registry_allows_title_visual_row_without_story_candida
             source_order=index,
             mime_type="image/png",
             payload=payload.getvalue(),
-            panel_bounds=(0, 0, 64, 64),
-            source_dimensions=(64, 64),
+            panel_bounds=(0, 0, 640, 640),
+            source_dimensions=(640, 640),
         )
         for index in range(6)
     )
@@ -1478,6 +1745,60 @@ def test_ephemeral_review_registry_allows_title_visual_row_without_story_candida
 
     assert len(candidates) == 5
     assert all(candidate.source_order > 0 for candidate in candidates)
+    assert len(section_to_beats) == 5
+
+
+def test_ephemeral_review_registry_keeps_beat_mapping_when_section_has_no_claim_panel():
+    module = _module()
+    import io
+
+    from PIL import Image
+
+    profile_module = importlib.import_module("app.services.reference_profile")
+    payload = io.BytesIO()
+    Image.new("RGB", (640, 640), (80, 90, 100)).save(payload, format="PNG")
+    panels = tuple(
+        module.CloudPanelInput(
+            panel_id=f"panel-{index}",
+            source_asset_id=f"asset-{index}",
+            source_order=index,
+            mime_type="image/png",
+            payload=payload.getvalue(),
+            panel_bounds=(0, 0, 640, 640),
+            source_dimensions=(640, 640),
+        )
+        for index in range(6)
+    )
+    visual = module.VisualStageResult(
+        panels=tuple(_visual_row(panel.descriptor()) for panel in panels),
+        source_hash="v" * 64,
+        model_identity_hash="m" * 64,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="p" * 64,
+    )
+    story_map = module.StoryMapResult(
+        panel_ids=tuple(panel.panel_id for panel in panels),
+        beats=tuple(
+            {"beat_id": f"beat-{index}", "panel_ids": [f"panel-{index}"]}
+            for index in range(1, 6)
+        ),
+        causal_chain=(),
+        claims=({"claim_id": "claim-1", "panel_ids": ["panel-1"]},),
+        story_map_hash="s" * 64,
+        model_identity_hash="m" * 64,
+        prompt_version="cloud-causal-map-v2",
+        prompt_sha256="c" * 64,
+    )
+
+    candidates, section_to_beats = module._build_ephemeral_review_candidates(
+        panels,
+        visual,
+        story_map,
+        profile=profile_module.REFERENCE_MATCHED_SHORTS_V2,
+        review_source_upscale_policy=None,
+    )
+
+    assert {candidate.panel_id for candidate in candidates} == {"panel-1"}
     assert len(section_to_beats) == 5
 
 
@@ -5747,6 +6068,21 @@ def test_narration_contract_diagnostic_keeps_only_field_and_count():
     assert "private" not in diagnostic
 
 
+
+
+def test_visual_repair_retry_feedback_targets_subtitle_overflow():
+    module = _module()
+
+    feedback = module._visual_narrative_repair_retry_feedback(
+        "visual.narrative_repair_ungrounded",
+        failed_field="script_passages",
+        failed_predicate="visual.repair_subtitle_overflow",
+    )
+
+    assert "shorter subtitle-safe wording" in feedback
+    assert "22 characters" in feedback
+    assert "same grounded claim IDs and evidence" in feedback
+
 def test_visual_repair_retry_feedback_targets_ending_and_compaction_contracts():
     module = _module()
 
@@ -6592,6 +6928,41 @@ def test_run_job_repairs_structurally_usable_dialogue_copy_narration(tmp_path):
         repaired.observations,
         repaired.passages,
     )
+
+    # A current visual-repair checkpoint owns its own bounded repair path.
+    # Even if the base narration contract sees a condition it would normally
+    # repair, resume must not route this checkpoint through narration_repair.
+    provider.calls.clear()
+    provider.repair_payloads.clear()
+    repair_prompt = runner_prompts["visual_narrative_repair"]
+    visual_checkpoint = replace(
+        candidate,
+        prompt_version=repair_prompt[0],
+        prompt_sha256=repair_prompt[1],
+    )
+    checkpoint_store = module.JsonJobStore(tmp_path / "visual-repair-checkpoint-jobs")
+    checkpoint_store.save(
+        module.ChapterJobRecord(
+            job_id="visual-repair-checkpoint",
+            stage_results={
+                "visual": visual.as_dict(),
+                "story_map": story_map.as_dict(),
+                "narration": visual_checkpoint.as_dict(),
+                "visual_repair": {
+                    "contract_version": module.visual_narrative_repair.REPAIR_CONTRACT_VERSION,
+                    "prompt_version": repair_prompt[0],
+                    "prompt_sha256": repair_prompt[1],
+                    "model_identity_hash": runner.model_identity.identity_hash,
+                    "publish_allowed": False,
+                },
+            },
+        )
+    )
+    checkpoint_result = module.CloudBatchService(
+        runner=runner, store=checkpoint_store
+    ).run_job("visual-repair-checkpoint", panels)
+    assert checkpoint_result.state == module.ChapterState.READY_TO_RENDER
+    assert provider.calls == []
 
 
 def test_targeted_position_repair_validates_full_scope_in_one_request(tmp_path):
@@ -9219,3 +9590,117 @@ def test_semantic_singleton_progresses_to_geometry_singleton_when_geometry_unkno
     assert len(provider.calls) == 1 + 2 * len(panels)
     assert sum("-semantic-" in value for value in provider.analysis_run_ids) == len(panels)
     assert sum("-geometry-" in value for value in provider.analysis_run_ids) == len(panels)
+
+
+def test_upstream_stage_identity_accepts_repair_prompt_only_legacy_hash():
+    module = _module()
+    base = _identity(module)
+    current = module.CloudModelIdentity(
+        provider=base.provider,
+        model=base.model,
+        model_version=base.model_version,
+        endpoint=base.endpoint,
+        prompt_versions=dict(base.prompt_versions)
+        | {"visual_narrative_repair": module.CURRENT_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    legacy = module.CloudModelIdentity(
+        provider=base.provider,
+        model=base.model,
+        model_version=base.model_version,
+        endpoint=base.endpoint,
+        prompt_versions=dict(current.prompt_versions)
+        | {"visual_narrative_repair": module.LEGACY_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    assert module._stage_result_identity_is_compatible(legacy.identity_hash, current, stage="story_map")
+    assert module._stage_result_identity_is_compatible(legacy.identity_hash, current, stage="narration")
+    assert not module._stage_result_identity_is_compatible(legacy.identity_hash, current, stage="visual_narrative_repair")
+
+
+def test_upstream_stage_identity_rejects_provider_model_change():
+    module = _module()
+    base = _identity(module)
+    current = module.CloudModelIdentity(
+        provider=base.provider, model="different-model", model_version=base.model_version,
+        endpoint=base.endpoint,
+        prompt_versions=dict(base.prompt_versions)
+        | {"visual_narrative_repair": module.CURRENT_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    legacy = module.CloudModelIdentity(
+        provider=base.provider, model=base.model, model_version=base.model_version,
+        endpoint=base.endpoint,
+        prompt_versions=dict(base.prompt_versions)
+        | {"visual_narrative_repair": module.LEGACY_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    assert not module._stage_result_identity_is_compatible(legacy.identity_hash, current, stage="story_map")
+
+
+def test_repair_only_identity_bump_reuses_persisted_visual_without_rehash():
+    module = _module()
+    panels = _panels(module, "repair-only-visual")
+    base = _identity(module)
+    current = replace(base, prompt_versions=dict(base.prompt_versions) | {"visual_narrative_repair": module.CURRENT_VISUAL_REPAIR_PROMPT_VERSION})
+    legacy = replace(current, prompt_versions=dict(current.prompt_versions) | {"visual_narrative_repair": module.LEGACY_VISUAL_REPAIR_PROMPT_VERSION})
+    runner = module.CloudStageRunner(provider=_FakeProvider(), model_identity=current)
+    prompt = runner.prompts["visual"]
+    rows = tuple(_visual_row(panel.descriptor()) | {"source_asset_id": panel.source_asset_id, "source_order": panel.source_order, "source_checksum": panel.source_checksum} for panel in panels)
+    cached = module.VisualStageResult(panels=rows, source_hash=module._visual_source_hash(panels), model_identity_hash=legacy.identity_hash, prompt_version=prompt[0], prompt_sha256=prompt[1], cache_identity_version=module.VISUAL_CACHE_IDENTITY_VERSION, panel_identity_hashes=module._visual_panel_identity_hashes(panels))
+    before_hash = cached.visual_evidence_hash
+    migrated = module._migrate_visual_cache_identity(cached.as_dict(), panels, model_identity=current, prompt=prompt)
+    assert migrated is not None
+    reused = module.VisualStageResult.from_dict(migrated)
+    assert reused.model_identity_hash == legacy.identity_hash
+    assert reused.visual_evidence_hash == before_hash
+
+
+def test_visual_repair_ending_canonicalization_is_content_preserving():
+    module = _module()
+    passages = [{"text": "The visible consequence lands here."}]
+    outline = {"story_spine": {"unresolved_question": "What follows?"}, "ending_kind": "open_question"}
+    normalized, provenance = module._canonicalize_visual_repair_ending(outline, passages)
+    assert passages == [{"text": "The visible consequence lands here."}]
+    assert outline["ending_kind"] == "open_question"
+    assert normalized["ending_kind"] == "consequence"
+    assert provenance == {"from": "open_question", "to": "consequence", "version": "visual-repair-ending-v1"}
+
+
+def test_visual_repair_ending_canonicalization_promotes_grounded_question():
+    module = _module()
+    passages = [{"text": "What happens after this visible change?"}]
+    outline = {"story_spine": {"unresolved_question": "What happens next?"}, "ending_kind": "consequence"}
+    normalized, provenance = module._canonicalize_visual_repair_ending(outline, passages)
+    assert normalized["ending_kind"] == "open_question"
+    assert provenance["to"] == "open_question"
+
+
+
+def test_visual_repair_ending_canonicalization_follows_grounded_final_punctuation():
+    module = _module()
+    outline = {
+        "story_spine": {"unresolved_question": "What follows?"},
+        "ending_kind": "open_question",
+    }
+    normalized, provenance = module._canonicalize_visual_repair_ending(
+        outline,
+        ({"text": "The grounded consequence lands here."},),
+    )
+    assert normalized["ending_kind"] == "consequence"
+    assert outline["ending_kind"] == "open_question"
+    assert provenance == {
+        "from": "open_question",
+        "to": "consequence",
+        "version": "visual-repair-ending-v1",
+    }
+
+
+
+def test_visual_repair_ending_canonicalization_preserves_passage_text():
+    module = _module()
+    passages = ({"text": "What could the visible change mean?"},)
+    outline = {
+        "story_spine": {"unresolved_question": "What could it mean?"},
+        "ending_kind": "consequence",
+    }
+    normalized, provenance = module._canonicalize_visual_repair_ending(outline, passages)
+    assert normalized["ending_kind"] == "open_question"
+    assert passages[0]["text"] == "What could the visible change mean?"
+    assert provenance["to"] == "open_question"

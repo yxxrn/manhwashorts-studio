@@ -232,6 +232,31 @@ def test_adjacent_singleton_duplicate_panel_passages_are_coalesced_truthfully():
     assert provenance[0]["contract_version"] == "visual_sequence_coalesce_v1"
 
 
+
+def test_adjacent_duplicate_coalesce_respects_required_section_count():
+    module = _module()
+    source = [
+        {
+            "passage_id": f"p{index}",
+            "text": f"Passage {index}.",
+            "claim_ids": [f"claim-{index}"],
+            "evidence_panel_ids": [panel_id],
+        }
+        for index, panel_id in enumerate(
+            ("panel-1", "panel-2", "panel-shared", "panel-shared", "panel-5"),
+            start=1,
+        )
+    ]
+
+    passages, provenance = module.coalesce_adjacent_duplicate_panel_passages(
+        source,
+        minimum_passage_count=5,
+    )
+
+    assert len(passages) == 5
+    assert [row["passage_id"] for row in passages] == ["p1", "p2", "p3", "p4", "p5"]
+    assert provenance == ()
+
 def test_repaired_narrative_allows_later_dramatic_hook_but_keeps_following_beats_ordered():
     module = _module()
     ledger = module.FeasibleVisualLedger(
@@ -315,6 +340,68 @@ def test_same_beat_remap_never_crosses_evidence_beats():
     assert remapped["passages"][0]["evidence_panel_ids"] == ["panel-current"]
     assert provenance == ()
 
+
+
+
+def test_same_beat_remap_preserves_existing_non_hook_chronology():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(
+            _entry(module, panel_id="panel-hook", beat="beat-hook", order=42, blank=0.0),
+            _entry(module, panel_id="panel-setup", beat="beat-setup", order=49, blank=0.0),
+            _entry(module, panel_id="panel-current", beat="beat-middle", order=71, blank=0.12),
+            _entry(module, panel_id="panel-too-late", beat="beat-middle", order=93, blank=0.01),
+            _entry(module, panel_id="panel-twist", beat="beat-twist", order=81, blank=0.0),
+            _entry(module, panel_id="panel-cta", beat="beat-cta", order=82, blank=0.0),
+        ),
+        model_identity_hash="model-hash",
+    )
+    value = {
+        "claims": [
+            {"claim_id": f"claim-{index}", "evidence_panel_ids": [panel_id]}
+            for index, panel_id in enumerate(
+                ("panel-hook", "panel-setup", "panel-current", "panel-twist", "panel-cta"),
+                start=1,
+            )
+        ],
+        "passages": [
+            {
+                "passage_id": f"p{index}",
+                "claim_ids": [f"claim-{index}"],
+                "evidence_panel_ids": [panel_id],
+            }
+            for index, panel_id in enumerate(
+                ("panel-hook", "panel-setup", "panel-current", "panel-twist", "panel-cta"),
+                start=1,
+            )
+        ],
+    }
+
+    repaired, provenance = module.remap_same_beat_panel_citations(
+        value,
+        ledger=ledger,
+        section_to_beats={
+            "hook": ("beat-hook",),
+            "setup": ("beat-setup",),
+            "body": ("beat-middle",),
+            "twist": ("beat-twist",),
+            "cta": ("beat-cta",),
+        },
+    )
+
+    assert [row["evidence_panel_ids"] for row in repaired["passages"]] == [
+        ["panel-hook"],
+        ["panel-setup"],
+        ["panel-current"],
+        ["panel-twist"],
+        ["panel-cta"],
+    ]
+    assert not any(item["to_panel_id"] == "panel-too-late" for item in provenance)
+    module.validate_repaired_panel_references(
+        repaired,
+        ledger=ledger,
+        allowed_claim_ids={f"claim-{index}" for index in range(1, 6)},
+    )
 
 def test_same_beat_remap_preserves_panel_capacity_across_sections():
     module = _module()
@@ -432,6 +519,11 @@ def test_feasible_ledger_calls_framing_gate_and_excludes_rejected_panels(monkeyp
         return (crop_box[0] == 0), telemetry
 
     monkeypatch.setattr(module.framing_analysis, "candidate_is_feasible", fake_feasible)
+    monkeypatch.setattr(
+        module.editorial_visual_planner.visual_scoring,
+        "require_reference_ready_visual_evidence",
+        lambda evidence, **_kwargs: evidence,
+    )
     candidate = SimpleNamespace(
         panel_region_id="region-safe",
         panel_id="panel-safe",
@@ -473,6 +565,11 @@ def test_feasible_ledger_forwards_conservative_full_panel_opt_in(monkeypatch):
         return (bool(kwargs.get("allow_conservative_full_panel")), _telemetry(module, tuple(crop_box)))
 
     monkeypatch.setattr(module.framing_analysis, "candidate_is_feasible", fake_feasible)
+    monkeypatch.setattr(
+        module.editorial_visual_planner.visual_scoring,
+        "require_reference_ready_visual_evidence",
+        lambda evidence, **_kwargs: evidence,
+    )
     candidate = SimpleNamespace(
         panel_region_id="region-fallback",
         panel_id="panel-fallback",
@@ -508,6 +605,167 @@ def test_feasible_ledger_forwards_conservative_full_panel_opt_in(monkeypatch):
     assert len(ledger.entries) == 1
     assert calls[0]["allow_conservative_full_panel"] is True
 
+
+def test_feasible_ledger_rejects_roi_planner_would_reject_for_edge_blank(monkeypatch):
+    module = _module()
+    evidence = SimpleNamespace()
+    monkeypatch.setattr(
+        module.editorial_visual_planner.visual_scoring,
+        "require_reference_ready_visual_evidence",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        module.framing_analysis,
+        "candidate_is_feasible",
+        lambda *_args, **_kwargs: (True, _telemetry(module)),
+    )
+    candidate = SimpleNamespace(
+        panel_region_id="region-edge-blank",
+        panel_id="panel-edge-blank",
+        source_asset_id="asset-1",
+        source_order=30,
+        panel_size=(1080, 1920),
+        border_mask=SimpleNamespace(mask_sha256="m" * 64, detector_version="color-agnostic-border-v1"),
+        visual_evidence=evidence,
+        evidence_hash="e" * 64,
+        source_upscale_manifest={"resolution_state": "UPSCALED"},
+        eligible_sections=("hook",),
+        eligible_beats=("beat-1",),
+        roi_alternatives=(SimpleNamespace(
+            kind="primary", roi_label="primary", crop_box=(0, 0, 1080, 1920),
+            focus=(0.5, 0.5, 0.5, 0.5), edge_blank_fraction=1.0,
+        ),),
+    )
+    ledger = module.build_feasible_visual_ledger(
+        [candidate],
+        profile=SimpleNamespace(final_width=1080, final_height=1920),
+        model_identity_hash="model-hash",
+    )
+    assert ledger.entries == ()
+
+
+def test_repair_scope_includes_stale_cta_citation_even_when_cta_beat_has_capacity():
+    module = _module()
+    entries = (
+        _entry(module, panel_id="panel-hook", beat="beat-hook", order=10),
+        _entry(module, panel_id="panel-setup", beat="beat-setup", order=20),
+        _entry(module, panel_id="panel-conflict", beat="beat-conflict", order=30),
+        _entry(module, panel_id="panel-twist", beat="beat-twist", order=40),
+        _entry(module, panel_id="panel-cta-safe", beat="beat-cta", order=50),
+    )
+    ledger = module.FeasibleVisualLedger(entries=entries, model_identity_hash="model-hash")
+    sections = {
+        "hook": ("beat-hook",),
+        "setup": ("beat-setup",),
+        "conflict": ("beat-conflict",),
+        "twist": ("beat-twist",),
+        "cta": ("beat-cta",),
+    }
+    narration = {
+        "ending_kind": "open_question",
+        "evidence_graph": {
+            "claims": [
+                {"claim_id": "claim-hook", "evidence_panel_ids": ["panel-hook"]},
+                {"claim_id": "claim-setup", "evidence_panel_ids": ["panel-setup"]},
+                {"claim_id": "claim-conflict", "evidence_panel_ids": ["panel-conflict"]},
+                {"claim_id": "claim-twist", "evidence_panel_ids": ["panel-twist"]},
+                {"claim_id": "claim-stale-cta", "evidence_panel_ids": ["panel-sliver"]},
+            ]
+        },
+        "passages": [
+            {"passage_id": "p1", "claim_ids": ["claim-hook"], "evidence_panel_ids": ["panel-hook"]},
+            {"passage_id": "p2", "claim_ids": ["claim-setup"], "evidence_panel_ids": ["panel-setup"]},
+            {"passage_id": "p3", "claim_ids": ["claim-conflict"], "evidence_panel_ids": ["panel-conflict"]},
+            {"passage_id": "p4", "claim_ids": ["claim-twist"], "evidence_panel_ids": ["panel-twist"]},
+            {"passage_id": "p5", "claim_ids": ["claim-stale-cta"], "evidence_panel_ids": ["panel-sliver"]},
+        ],
+    }
+    story_map = {
+        "beats": [
+            {"beat_id": beat, "panel_ids": [entry.panel_id]}
+            for beat, entry in zip(
+                ("beat-hook", "beat-setup", "beat-conflict", "beat-twist", "beat-cta"),
+                entries,
+                strict=True,
+            )
+        ],
+        "claims": [
+            {"claim_id": "claim-cta-safe", "text": "Safe ending fact.", "panel_ids": ["panel-cta-safe"]}
+        ],
+    }
+
+    assert module.missing_visual_sections(ledger, sections) == ()
+    assert module.repair_scope_sections(narration, ledger, sections) == ("cta",)
+    payload = module.build_repair_payload(
+        narration=narration,
+        story_map=story_map,
+        ledger=ledger,
+        section_to_beats=sections,
+    )
+    assert payload["missing_sections"] == ["cta"]
+    assert payload["feasible_claim_ids"] == ["claim-cta-safe"]
+
+
+
+
+def test_repair_scope_includes_subtitle_overflow_with_feasible_visual_citations():
+    module = _module()
+    entries = (
+        _entry(module, panel_id="panel-hook", beat="beat-hook", order=10),
+        _entry(module, panel_id="panel-setup", beat="beat-setup", order=20),
+        _entry(module, panel_id="panel-conflict", beat="beat-conflict", order=30),
+        _entry(module, panel_id="panel-twist", beat="beat-twist", order=40),
+        _entry(module, panel_id="panel-cta", beat="beat-cta", order=50),
+    )
+    ledger = module.FeasibleVisualLedger(entries=entries, model_identity_hash="model-hash")
+    sections = {
+        "hook": ("beat-hook",),
+        "setup": ("beat-setup",),
+        "conflict": ("beat-conflict",),
+        "twist": ("beat-twist",),
+        "cta": ("beat-cta",),
+    }
+    passage_rows = (
+        ("hook", "claim-hook", "panel-hook", "A hero waits."),
+        ("setup", "claim-setup", "panel-setup", "The trail continues."),
+        ("conflict", "claim-conflict", "panel-conflict", "Trouble builds nearby."),
+        ("twist", "claim-twist", "panel-twist", "A secret surfaces."),
+        (
+            "cta",
+            "claim-cta",
+            "panel-cta",
+            "Plans form to resolve challenges independently.",
+        ),
+    )
+    narration = {
+        "estimated_duration_s": 53.48,
+        "evidence_graph": {
+            "claims": [
+                {"claim_id": claim_id, "evidence_panel_ids": [panel_id]}
+                for _section, claim_id, panel_id, _text in passage_rows
+            ]
+        },
+        "passages": [
+            {
+                "passage_id": f"p{index}",
+                "claim_ids": [claim_id],
+                "evidence_panel_ids": [panel_id],
+                "text": text,
+            }
+            for index, (_section, claim_id, panel_id, text) in enumerate(
+                passage_rows, start=1
+            )
+        ],
+    }
+
+    assert module.missing_visual_sections(ledger, sections) == ()
+    assert module.narration_sections_with_infeasible_citations(
+        narration, ledger, sections
+    ) == ()
+    assert module.narration_sections_with_subtitle_overflow(
+        narration, sections
+    ) == ("cta",)
+    assert module.repair_scope_sections(narration, ledger, sections) == ("cta",)
 
 def test_repair_attempts_are_bounded_and_cache_identity_includes_ledger_hash():
     module = _module()
@@ -580,3 +838,220 @@ def test_feasible_render_plan_fails_closed_on_stale_lineage():
             source_checksum="source",
             evidence_hash="e" * 64,
         )
+
+
+
+def test_repair_claim_id_transport_drift_canonicalizes_to_unique_trusted_id():
+    module = _module()
+    value = {
+        "claims": [
+            {
+                "claim_id": "b0__sub2__sub0__claim1",
+                "evidence_panel_ids": ["panel-safe"],
+            }
+        ],
+        "passages": [
+            {
+                "passage_id": "p1",
+                "claim_ids": ["b0__sub2__sub0__claim1"],
+                "evidence_panel_ids": ["panel-safe"],
+            }
+        ],
+    }
+
+    repaired = module.canonicalize_repair_claim_ids(
+        value,
+        allowed_claim_ids={"b0__sub2__sub0__claim_1"},
+    )
+
+    assert repaired["claims"][0]["claim_id"] == "b0__sub2__sub0__claim_1"
+    assert repaired["passages"][0]["claim_ids"] == ["b0__sub2__sub0__claim_1"]
+
+
+def test_repair_claim_id_canonicalization_rejects_untrusted_claim():
+    module = _module()
+    value = {
+        "claims": [
+            {
+                "claim_id": "b0__sub2__sub0__claim9",
+                "evidence_panel_ids": ["panel-safe"],
+            }
+        ],
+        "passages": [
+            {
+                "passage_id": "p1",
+                "claim_ids": ["b0__sub2__sub0__claim9"],
+                "evidence_panel_ids": ["panel-safe"],
+            }
+        ],
+    }
+
+    with pytest.raises(module.VisualNarrativeRepairError) as caught:
+        module.canonicalize_repair_claim_ids(
+            value,
+            allowed_claim_ids={"b0__sub2__sub0__claim_1"},
+        )
+
+    assert caught.value.code == "visual.narrative_repair_ungrounded"
+
+
+def test_repair_payload_exposes_only_claims_with_original_feasible_evidence():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(_entry(module, panel_id="panel-safe", beat="beat-1", order=10),),
+        model_identity_hash="model-hash",
+    )
+    payload = module.build_repair_payload(
+        narration={"passages": []},
+        story_map={
+            "beats": [{"beat_id": "beat-1", "panel_ids": ["panel-safe", "panel-unsafe"]}],
+            "claims": [
+                {
+                    "claim_id": "claim-safe",
+                    "text": "Visible fact.",
+                    "qualification": "Directly visible.",
+                    "panel_ids": ["panel-safe", "panel-unsafe"],
+                },
+                {
+                    "claim_id": "claim-unavailable",
+                    "text": "Unavailable fact.",
+                    "qualification": "Only unsafe evidence.",
+                    "panel_ids": ["panel-unsafe"],
+                },
+            ],
+        },
+        ledger=ledger,
+        section_to_beats={"hook": ("beat-1",)},
+    )
+
+    assert payload["feasible_claim_ids"] == ["claim-safe"]
+    assert payload["feasible_claims"] == [
+        {
+            "claim_id": "claim-safe",
+            "text": "Visible fact.",
+            "qualification": "Directly visible.",
+            "evidence_panel_ids": ["panel-safe"],
+        }
+    ]
+
+
+def test_repaired_claim_cannot_rebind_to_feasible_panel_outside_story_lineage():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(
+            _entry(module, panel_id="panel-original", beat="beat-1", order=10),
+            _entry(module, panel_id="panel-other", beat="beat-1", order=11),
+        ),
+        model_identity_hash="model-hash",
+    )
+
+    with pytest.raises(module.VisualNarrativeRepairError) as caught:
+        module.validate_repaired_panel_references(
+            {
+                "claims": [
+                    {"claim_id": "claim-1", "evidence_panel_ids": ["panel-other"]}
+                ],
+                "passages": [
+                    {
+                        "passage_id": "p1",
+                        "claim_ids": ["claim-1"],
+                        "evidence_panel_ids": ["panel-other"],
+                    }
+                ],
+            },
+            ledger=ledger,
+            allowed_claim_ids={"claim-1"},
+            allowed_claim_panel_ids={"claim-1": {"panel-original"}},
+        )
+
+    assert caught.value.code == "visual.narrative_repair_ungrounded"
+
+
+def test_same_beat_remap_keeps_claim_evidence_inside_story_lineage():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(
+            _entry(module, panel_id="panel-current", beat="beat-1", order=10, blank=0.20),
+            _entry(module, panel_id="panel-lowest", beat="beat-1", order=11, blank=0.01),
+            _entry(module, panel_id="panel-allowed", beat="beat-1", order=12, blank=0.05),
+        ),
+        model_identity_hash="model-hash",
+    )
+
+    repaired, provenance = module.remap_same_beat_panel_citations(
+        {
+            "claims": [
+                {"claim_id": "claim-1", "evidence_panel_ids": ["panel-current"]}
+            ],
+            "passages": [
+                {
+                    "passage_id": "p1",
+                    "claim_ids": ["claim-1"],
+                    "evidence_panel_ids": ["panel-current"],
+                }
+            ],
+        },
+        ledger=ledger,
+        section_to_beats={"hook": ("beat-1",)},
+        allowed_claim_panel_ids={
+            "claim-1": {"panel-current", "panel-allowed"}
+        },
+    )
+
+    assert repaired["passages"][0]["evidence_panel_ids"] == ["panel-allowed"]
+    assert provenance[0]["to_panel_id"] == "panel-allowed"
+
+
+def test_feasible_ledger_rejects_source_sliver_before_upscale_framing(monkeypatch):
+    module = _module()
+    calls = []
+
+    def fake_feasible(*_args, **_kwargs):
+        calls.append(True)
+        return True, _telemetry(module)
+
+    monkeypatch.setattr(module.framing_analysis, "candidate_is_feasible", fake_feasible)
+    monkeypatch.setattr(
+        module.editorial_visual_planner.visual_scoring,
+        "require_reference_ready_visual_evidence",
+        lambda value, **_kwargs: value,
+    )
+    candidate = SimpleNamespace(
+        panel_region_id="region-sliver",
+        panel_id="panel-sliver",
+        source_asset_id="asset-1",
+        source_order=414,
+        panel_size=(1666, 1670),
+        border_mask=SimpleNamespace(
+            mask_sha256="m" * 64,
+            detector_version="color-agnostic-border-v1",
+        ),
+        visual_evidence=SimpleNamespace(),
+        evidence_hash="e" * 64,
+        source_checksum="s" * 64,
+        source_upscale_manifest={
+            "resolution_state": "UPSCALED",
+            "source_panel_bounds": [0, 0, 900, 284],
+        },
+        eligible_sections=("cta",),
+        eligible_beats=("beat-final",),
+        roi_alternatives=(
+            SimpleNamespace(
+                kind="primary",
+                roi_label="primary",
+                crop_box=(0, 0, 1666, 1670),
+                focus=(0.5, 0.5, 0.5, 0.5),
+                edge_blank_fraction=0.0,
+            ),
+        ),
+        panel_candidate=SimpleNamespace(source_family=""),
+    )
+
+    ledger = module.build_feasible_visual_ledger(
+        [candidate],
+        profile=SimpleNamespace(final_width=1080, final_height=1920),
+        model_identity_hash="model-hash",
+    )
+
+    assert ledger.entries == ()
+    assert calls == []

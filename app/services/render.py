@@ -851,6 +851,75 @@ def _motion_filter(
     return f"crop=w='{crop_w}':h='{crop_h}':x='{x}':y='{y}',scale={width}:{height}:flags=lanczos"
 
 
+_REFERENCE_MOTION_PREFLIGHT_VERSION = "reference-motion-pixel-preflight-v2"
+_REFERENCE_MOTION_PREFLIGHT_SAMPLES = 65
+def _reference_motion_pixel_safety(
+    prepared_image: Path,
+    scene: SceneInput,
+    width: int,
+    height: int,
+    profile: ReferenceProfileConfig,
+    *,
+    sample_count: int = _REFERENCE_MOTION_PREFLIGHT_SAMPLES,
+) -> tuple[bool, float]:
+    """Verify every sampled camera viewport remains free of visible edge blank."""
+    if sample_count < 2:
+        raise ValueError("motion preflight requires at least two samples")
+    safe_curve = motion_director.safe_camera_curve(scene.camera_curve or scene.effect)
+    try:
+        with Image.open(prepared_image) as source:
+            image = source.convert("RGB")
+    except (OSError, ValueError) as exc:
+        raise RenderError(
+            "visual.panel_lineage_unavailable: prepared reference frame is unreadable",
+            code="visual.panel_lineage_unavailable",
+        ) from exc
+    if safe_curve == "static":
+        view = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
+        maximum = framing_analysis.color_agnostic_edge_blank_fractions(
+            framing_analysis.reference_tv_range_preview(view)
+        )["max_edge_blank_fraction"]
+        return maximum <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION, maximum
+
+    iw, ih = image.size
+    maximum = 0.0
+    for index in range(sample_count):
+        progress = index / (sample_count - 1)
+        smooth = progress * progress * (3.0 - 2.0 * progress)
+        fx = (1.0 - smooth) * max(0.05, min(0.95, scene.focus_x)) + smooth * max(
+            0.05, min(0.95, scene.focus_end_x)
+        )
+        fy = (1.0 - smooth) * max(0.05, min(0.95, scene.focus_y)) + smooth * max(
+            0.05, min(0.95, scene.focus_end_y)
+        )
+        normal_delta = profile.normal_zoom_max - 1.0
+        impact_delta = profile.impact_zoom_max - 1.0
+        if safe_curve == "slow_push_in":
+            zoom = 1.0 + normal_delta * smooth
+        elif safe_curve == "slow_pull_out":
+            zoom = 1.0 + normal_delta - normal_delta * smooth
+        elif safe_curve in {"push_in", "reveal"}:
+            zoom = 1.0 + impact_delta * smooth
+        elif safe_curve == "static_emphasis":
+            zoom = 1.0 + normal_delta * 0.45 * smooth
+        elif safe_curve == "atmospheric":
+            zoom = 1.0 + normal_delta * 0.55 * smooth
+        else:
+            zoom = 1.0 + normal_delta * smooth
+        crop_w = max(2, int(math.floor(iw / zoom / 2.0) * 2))
+        crop_h = max(2, int(math.floor(ih / zoom / 2.0) * 2))
+        x = max(0, min(iw - crop_w, int(math.floor(((iw - crop_w) * fx) / 2.0) * 2)))
+        y = max(0, min(ih - crop_h, int(math.floor(((ih - crop_h) * fy) / 2.0) * 2)))
+        view = image.crop((x, y, x + crop_w, y + crop_h))
+        fraction = framing_analysis.color_agnostic_edge_blank_fractions(
+            framing_analysis.reference_tv_range_preview(view)
+        )["max_edge_blank_fraction"]
+        maximum = max(maximum, fraction)
+        if maximum > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
+            return False, maximum
+    return True, maximum
+
+
 def _procedural_effect(
     mode: str,
     intensity: str,
@@ -2393,6 +2462,42 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 )
                 effected.save(prepared, "JPEG", quality=94)
         prepared_cache[cache_key] = prepared
+
+        if request.silent_reference_review and request.profile is not None:
+            motion_safe, motion_blank = _reference_motion_pixel_safety(
+                prepared, scene, width, height, request.profile
+            )
+            if not motion_safe:
+                original_curve = scene.camera_curve
+                scene.camera_curve = "static"
+                scene.motion_mode = "hold"
+                scene.motion_intensity = "low"
+                scene.focus_end_x = scene.focus_x
+                scene.focus_end_y = scene.focus_y
+                static_safe, static_blank = _reference_motion_pixel_safety(
+                    prepared, scene, width, height, request.profile
+                )
+                if not static_safe:
+                    raise RenderError(
+                        "visual.blank_infeasible: static reference viewport retains a visible edge blank",
+                        code="visual.blank_infeasible",
+                    )
+                reason = str(scene.motion_reason or "").strip()
+                scene.motion_reason = (
+                    f"{reason}; fallback:pixel_edge_motion_static"
+                    if reason
+                    else "fallback:pixel_edge_motion_static"
+                )
+                telemetry = dict(scene.framing_telemetry or {})
+                telemetry["motion_pixel_preflight"] = {
+                    "version": _REFERENCE_MOTION_PREFLIGHT_VERSION,
+                    "fallback": "static",
+                    "original_curve": original_curve,
+                    "max_motion_edge_blank_fraction": round(float(motion_blank), 6),
+                    "static_edge_blank_fraction": round(float(static_blank), 6),
+                    "threshold": reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+                }
+                scene.framing_telemetry = telemetry
 
         clip = work / f"clip{i:03d}.mp4"
         render_scene_clip(

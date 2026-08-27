@@ -1,4 +1,4 @@
-Version: visual-narrative-repair-v3
+Version: visual-narrative-repair-v4
 
 You are repairing a Sharp Friend v1 chapter narration for a review-only visual
 edit. The local system has already rejected some panels as unsafe to frame.
@@ -41,11 +41,12 @@ top-level keys:
 }
 
 Every claim and passage citation MUST be one of feasible_panel_ids. Never cite
-an unsafe panel merely because it appeared in the old narration. Every claim
-ID must come from the existing story map; update its wording and qualification
-only when the feasible evidence supports that revision. A later dramatic
-feasible moment may open the narration, but the remaining passages must explain
-the causal story in chronological order. Prefer a truthful visual-section
+an unsafe panel merely because it appeared in the old narration. Every returned
+claim ID MUST be one of feasible_claim_ids. For each selected claim, its
+evidence_panel_ids MUST be a non-empty subset of that claim's feasible_claims
+evidence_panel_ids. Do not rebind a claim to a different feasible panel. A later
+dramatic feasible moment may open the narration, but the remaining passages must
+explain the causal story in chronological order. Prefer a truthful visual-section
 remap over a generic hook.
 
 Visual quality is part of the ledger contract, not a prose afterthought. When
