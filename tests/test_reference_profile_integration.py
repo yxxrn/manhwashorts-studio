@@ -130,32 +130,18 @@ def test_reference_planner_matches_empirical_32_shot_pacing_and_is_deterministic
     assert first == second
 
 
-def test_review_only_cadence_adapts_to_feasible_panel_capacity():
+def test_review_only_cadence_rejects_insufficient_panel_capacity():
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
-    capacity = 4 * profile.max_canonical_panel_uses
 
-    shots = editorial_visual_planner.plan(
-        _spans(),
-        _candidates(4),
-        profile=profile,
-        allow_review_cadence_adaptation=True,
-    )
+    with pytest.raises(editorial_visual_planner.ReferencePlanningError) as exc:
+        editorial_visual_planner.plan(
+            _spans(),
+            _candidates(4),
+            profile=profile,
+            allow_review_cadence_adaptation=True,
+        )
 
-    assert len(shots) == capacity
-    assert all(
-        "visual.cadence_adapted_to_feasible_capacity"
-        in shot.get("alignment_reasons", ())
-        for shot in shots
-    )
-    assert all(
-        "visual.cadence_adapted_to_feasible_capacity"
-        in shot.get("visual_review_warnings", ())
-        for shot in shots
-    )
-    uses: dict[str, int] = {}
-    for shot in shots:
-        uses[str(shot["asset_id"])] = uses.get(str(shot["asset_id"]), 0) + 1
-    assert max(uses.values()) <= profile.max_canonical_panel_uses
+    assert exc.value.code == "visual.capacity_insufficient"
 
 
 def test_reference_emphasis_slots_prioritize_camera_intent_deterministically():

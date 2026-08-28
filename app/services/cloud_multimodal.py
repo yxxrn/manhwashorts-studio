@@ -85,7 +85,7 @@ NARRATION_COVERAGE_FALLBACK_STEP = 60
 NARRATION_COVERAGE_MIN_STEP = 30
 NARRATION_REPAIR_VERSION = "narration-targeted-repair-v6"
 NARRATION_REPAIR_MAX_ATTEMPTS = 3
-NARRATION_REPAIR_POSITION_MAX_ATTEMPTS = 1
+NARRATION_REPAIR_POSITION_MAX_ATTEMPTS = 3  # two bounded retries for positional prose repair
 NARRATION_REPAIR_CANDIDATE_VERSION = "narration-repair-candidate-v1"
 NARRATION_REPAIR_RESULT_VERSION = "narration-repair-result-v7"
 NARRATION_REPAIR_CANDIDATE_STAGE = "narration_repair_candidate"
@@ -97,7 +97,10 @@ NARRATION_REPAIR_IDENTITY_MIGRATION_VERSION = "narration-repair-identity-migrati
 NARRATION_REPAIR_EVIDENCE_CLOSURE_VERSION = "narration-repair-evidence-closure-v2"
 NARRATION_MICRO_COMPACTION_VERSION = "narration-micro-compaction-v3"
 NARRATION_MICRO_COMPACTION_MIN_WORDS = 126
-NARRATION_MICRO_COMPACTION_MAX_WORDS = 130
+NARRATION_MICRO_COMPACTION_MAX_WORDS = 132
+NARRATION_MICRO_EXPANSION_VERSION = "narration-micro-expansion-v1"
+NARRATION_MICRO_EXPANSION_MIN_WORDS = 109
+NARRATION_MICRO_EXPANSION_MAX_WORDS = 114
 NARRATION_REPAIR_POSITION_MIN_WORDS = 7
 NARRATION_REPAIR_POSITION_WORD_SLACK = 8
 NARRATION_REPAIR_POSITION_MIN_COUNT = 4
@@ -170,6 +173,39 @@ _MICRO_COMPACTION_RULES = (
     ("that will", "that'll", "that_will_to_thatll"),
     ("there will", "there'll", "there_will_to_therell"),
 )
+
+_MICRO_EXPANSION_RULES = (
+    ("I'll", "I will", "ill_to_i_will"),
+    ("you'll", "you will", "youll_to_you_will"),
+    ("he'll", "he will", "hell_to_he_will"),
+    ("she'll", "she will", "shell_to_she_will"),
+    ("we'll", "we will", "well_to_we_will"),
+    ("they'll", "they will", "theyll_to_they_will"),
+    ("didn't", "did not", "didnt_to_did_not"),
+    ("couldn't", "could not", "couldnt_to_could_not"),
+    ("shouldn't", "should not", "shouldnt_to_should_not"),
+    ("wouldn't", "would not", "wouldnt_to_would_not"),
+    ("mustn't", "must not", "mustnt_to_must_not"),
+    ("they're", "they are", "theyre_to_they_are"),
+    ("we're", "we are", "were_to_we_are"),
+    ("you're", "you are", "youre_to_you_are"),
+    ("don't", "do not", "dont_to_do_not"),
+    ("isn't", "is not", "isnt_to_is_not"),
+    ("aren't", "are not", "arent_to_are_not"),
+    ("wasn't", "was not", "wasnt_to_was_not"),
+    ("weren't", "were not", "werent_to_were_not"),
+    ("won't", "will not", "wont_to_will_not"),
+    ("haven't", "have not", "havent_to_have_not"),
+    ("hasn't", "has not", "hasnt_to_has_not"),
+    ("I'm", "I am", "im_to_i_am"),
+    ("I've", "I have", "ive_to_i_have"),
+    ("we've", "we have", "weve_to_we_have"),
+    ("they've", "they have", "theyve_to_they_have"),
+    ("you've", "you have", "youve_to_you_have"),
+    ("that'll", "that will", "thatll_to_that_will"),
+    ("there'll", "there will", "therell_to_there_will"),
+)
+
 
 
 def _case_preserving_replacement(original: str, replacement: str) -> str:
@@ -261,42 +297,91 @@ def _micro_compact_rewrites(
     )
 
 
+def _micro_expand_rewrites(
+    rewrites: Sequence[str],
+    *,
+    total_words: int,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """Expand only unambiguous contractions to rescue a narrow undershoot."""
+
+    original = tuple(rewrites)
+    metadata = {
+        "version": NARRATION_MICRO_EXPANSION_VERSION,
+        "applied": False,
+        "before_word_count": total_words,
+        "after_word_count": total_words,
+        "operation_count": 0,
+        "operation_types": [],
+        "result_hash": _hash({"rewrites": list(original)}),
+        "failed_predicate": None,
+    }
+    if total_words >= 115:
+        return original, metadata
+    if not NARRATION_MICRO_EXPANSION_MIN_WORDS <= total_words <= NARRATION_MICRO_EXPANSION_MAX_WORDS:
+        return original, {**metadata, "failed_predicate": "micro_expansion_window"}
+
+    current = list(original)
+    operation_types: list[str] = []
+    while sum(script.narration_word_count(text) for text in current) < 115:
+        replaced = False
+        for position, text in enumerate(current):
+            for source, replacement, operation_type in _MICRO_EXPANSION_RULES:
+                pattern = re.compile(r"(?<![\w'])" + re.escape(source) + r"(?![\w'])", re.IGNORECASE)
+                match = pattern.search(text)
+                if match is None:
+                    continue
+                current[position] = (
+                    text[: match.start()]
+                    + _case_preserving_replacement(match.group(0), replacement)
+                    + text[match.end() :]
+                )
+                operation_types.append(operation_type)
+                replaced = True
+                break
+            if replaced:
+                break
+        if not replaced:
+            break
+
+    expanded = tuple(current)
+    after_words = sum(script.narration_word_count(text) for text in expanded)
+    return expanded, {
+        "version": NARRATION_MICRO_EXPANSION_VERSION,
+        "applied": bool(operation_types),
+        "before_word_count": total_words,
+        "after_word_count": after_words,
+        "operation_count": len(operation_types),
+        "operation_types": operation_types,
+        "result_hash": _hash({"rewrites": list(expanded)}),
+        "failed_predicate": (
+            "micro_expansion_no_safe_operation" if after_words < 115 else None
+        ),
+    }
+
+
 NARRATION_REPAIR_INSTRUCTION = (
     "TARGETED NARRATION POSITION REPAIR: return exactly one JSON object with "
-    'the single top-level key {"rewrites": ["text for position 0", "..."]}. '
-    "The rewrites array must contain one revised spoken-text string for every "
-    "ordered position supplied in the context; array index N maps to position N. "
-    "never return, create, or rewrite claim IDs, evidence panel IDs, slot IDs, "
-    "passage IDs, observations, beat IDs, or hashes. Preserve the supplied causal "
-    "order and evidence-grounded meaning. Write natural English within each "
-    "position's word_budget_min/word_budget_max values as drafting guidance "
-    "and sanitized diagnostics, not hard admission bounds. The local validator "
-    "enforces the exact vector shape and order, non-empty strings, trusted "
-    "lineage, causal order, total 115-125 words, and 50-60 seconds; it rejects "
-    "only a pathological single-position share. Target approximately 120 total "
-    "words; exactly 120 is guidance. For the usual eight-position vector, aim "
-    "for roughly 14 or 15 words per position. A smaller trusted vector is "
-    "valid when the grounded candidate has fewer positions: distribute the "
-    "115-125 total naturally across the supplied positions, without inventing "
-    "positions or padding solely to reach eight. Per-position budgets remain "
-    "drafting guidance, not hard caps. Count every rewrite "
-    "before returning. Aim for 118 "
-    "total words so natural variation stays inside the accepted range; exactly "
-    "120 is guidance only. Before returning JSON, recount the complete vector "
-    "word by word and revise it until the total is 115-125 words; never return "
-    "a vector above 125 words. The local compactor is only a narrow safety net "
-    "for 126-130 and "
-    "cannot repair larger responses. "
-    "Do not invent facts, add citations, copy dialogue, or return any wrapper, "
-    "metadata, or alternate key. Every rewrite must paraphrase any dialogue into "
-    "third-person narrator language; never quote or preserve a four-word lexical "
-    "sequence from dialogue_or_ocr. Quotation marks, capitalization changes, or "
-    "renaming a speaker are not loopholes: local strict validation rejects "
-    "near-verbatim dialogue. Describe only the grounded event or consequence. "
-    "Every supplied context panel and section belongs to the exact retained "
-    "passage/claim evidence closure; never mix a same-chapter panel from "
-    "another section."
+    '{"rewrites": ["text for position 0", "..."]}. '
+    "The rewrites array must contain one revised spoken-text string for every ordered "
+    "position supplied in the context; array index N maps to position N. Never return, "
+    "create, or rewrite claim IDs, evidence panel IDs, slot IDs, passage IDs, observations, "
+    "beat IDs, or hashes. Preserve the supplied causal order and evidence-grounded meaning. "
+    "In normal repair mode, word_budget_min/word_budget_max are drafting guidance and aim "
+    "for approximately 120 total words. In "
+    "CAPACITY-LOCKED WORD BUDGET MODE, the supplied position word_budget values are exact "
+    "targets and every word_budget_max and passage_word_budget_max is a hard ceiling; the "
+    "positions belonging to each passage must remain exactly one complete retained passage. "
+    "The local validator enforces exact vector shape/order, trusted lineage, total 115-125 "
+    "words, 50-60 seconds, and any capacity-locked passage ceilings. Recount every position, "
+    "every passage, and the complete vector before returning. Do not invent facts, add "
+    "citations, copy dialogue, or return wrappers or metadata. Every rewrite must paraphrase "
+    "dialogue into third-person narrator language; never quote or preserve a four-word lexical "
+    "sequence from dialogue_or_ocr. Quotation marks, capitalization changes, or renaming a "
+    "speaker are not loopholes. Describe only the grounded event or consequence. Every "
+    "supplied context panel and section belongs to the exact retained passage/claim evidence "
+    "closure; never mix a same-chapter panel from another section."
 )
+
 EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
 EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT = 4
@@ -2140,7 +2225,11 @@ def _prompt_specs() -> dict[str, tuple[str, str, str]]:
     }
 
 
-def _narration_retry_feedback(message_or_code: str) -> str:
+def _narration_retry_feedback(
+    message_or_code: str,
+    *,
+    observed_word_count: int | None = None,
+) -> str:
     """Return bounded, sanitized guidance for one rejected narration attempt."""
 
     value = str(message_or_code)
@@ -2161,6 +2250,29 @@ def _narration_retry_feedback(message_or_code: str) -> str:
         return (
             "use natural evidence-grounded prose and avoid generic hype, CTA language, "
             "copied dialogue, and unsupported claims"
+        )
+    if value == "cloud.narrative_repair_position_contract_invalid":
+        return (
+            "return exactly one rewrite string for every supplied ordered position; preserve the exact "
+            "position count and order, do not merge or omit positions, and return no wrapper fields "
+            "other than the rewrites array."
+        )
+    if value in {
+        "cloud.narrative_repair_micro_compaction_unavailable",
+        "cloud.narrative_repair_position_budget_invalid",
+    }:
+        observed = (
+            f" The rejected vector had {int(observed_word_count)} lexical words."
+            if isinstance(observed_word_count, int)
+            else ""
+        )
+        return (
+            "rewrite the same locked positions without changing passage, claim, or evidence "
+            "lineage; obey every supplied word_budget_max as a hard ceiling, including each "
+            "passage_word_budget_max; target 115-120 lexical words total, shorten verbose "
+            "positions first, and recount both every passage and the complete rewrite vector "
+            "before returning."
+            + observed
         )
     return (
         "return strict JSON grounded only in the supplied ordered panels and claims; "
@@ -2221,6 +2333,8 @@ def _canonicalize_visual_repair_ending(
     """Align repair ending metadata to already-grounded final punctuation."""
 
     normalized = dict(outline)
+    story_spine = dict(normalized.get("story_spine") or {})
+    normalized["story_spine"] = story_spine
     if not passages:
         return normalized, None
     final_text = str(passages[-1].get("text", "")).strip()
@@ -2228,10 +2342,18 @@ def _canonicalize_visual_repair_ending(
     if not final_text or not current:
         return normalized, None
     target = "open_question" if final_text.endswith("?") else ("consequence" if current == "open_question" else current)
-    if target == current:
+    question_repaired = not str(story_spine.get("unresolved_question", "")).strip()
+    if question_repaired:
+        story_spine["unresolved_question"] = final_text if final_text.endswith("?") else "What follows?"
+    if target == current and not question_repaired:
         return normalized, None
     normalized["ending_kind"] = target
-    return normalized, {"from": current, "to": target, "version": "visual-repair-ending-v1"}
+    return normalized, {
+        "from": current,
+        "to": target,
+        "version": "visual-repair-ending-v1",
+        **({"unresolved_question_repaired": "true"} if question_repaired else {}),
+    }
 
 
 def _visual_narrative_repair_analyzer_metadata(
@@ -2274,6 +2396,26 @@ def _visual_narrative_repair_error_metadata(
         ("repair passage is malformed", "visual.repair_passage_malformed"),
         ("repair passage evidence is incomplete", "visual.repair_passage_evidence_incomplete"),
         ("repair passage cites unsupported evidence", "visual.repair_passage_unsupported_evidence"),
+        (
+            "repair passage evidence is outside its claim lineage",
+            "visual.repair_passage_outside_claim_lineage",
+        ),
+        (
+            "repair passage visual capacity is insufficient",
+            "visual.repair_visual_capacity_shortfall",
+        ),
+        (
+            "repair capacity plan is infeasible",
+            "visual.repair_capacity_plan_infeasible",
+        ),
+        (
+            "repair passage diverges from capacity plan",
+            "visual.repair_capacity_plan_mismatch",
+        ),
+        (
+            "repair passage exceeds capacity word budget",
+            "visual.repair_capacity_word_budget",
+        ),
         ("repair chronology is not ordered", "visual.repair_chronology"),
         ("repair claim evidence is incomplete", "visual.repair_claim_evidence_incomplete"),
         ("repair passage text is incomplete", "visual.repair_passage_text_incomplete"),
@@ -2316,6 +2458,7 @@ def _visual_narrative_repair_retry_feedback(
     *,
     failed_field: str | None = None,
     failed_predicate: str | None = None,
+    observed_word_count: int | None = None,
 ) -> str:
     """Return bounded, non-content guidance for one rejected repair attempt."""
 
@@ -2331,9 +2474,14 @@ def _visual_narrative_repair_retry_feedback(
             "return enough ordered passages to cover every missing visual section, with "
             "non-empty claims and feasible panel citations"
         )
+    if predicate == "visual.repair_passage_unsupported_evidence":
+        return (
+            "follow capacity_safe_claim_plan exactly by passage index: copy each row's "
+            "claim_ids and evidence_panel_ids verbatim without substitution, omission, "
+            "reordering, aliases, or extra panel references"
+        )
     if predicate in {
         "visual.repair_passage_evidence_incomplete",
-        "visual.repair_passage_unsupported_evidence",
         "visual.repair_claim_evidence_incomplete",
     }:
         return (
@@ -2351,9 +2499,39 @@ def _visual_narrative_repair_retry_feedback(
         )
     if predicate == "visual.repair_chronology":
         return (
-            "keep the first passage as the hook; for positions 1 onward use feasible "
-            "citations in nondecreasing source_order. The hook may be later, but do not "
-            "place an earlier panel after a later non-hook panel"
+            "keep the first passage as the hook. For every later passage, read "
+            "chronology_contract and each feasible claim's min_source_order; choose a "
+            "nondecreasing subsequence by min_source_order. The hook may be later, but "
+            "never choose a later-ranked non-hook claim and then return to an earlier one"
+        )
+    if predicate in {
+        "visual.repair_capacity_plan_mismatch",
+        "visual.repair_capacity_word_budget",
+    }:
+        return (
+            "follow capacity_safe_claim_plan exactly by passage index: copy each row's "
+            "claim_ids and evidence_panel_ids without substitution, narrate only those "
+            "grounded claims, aim for target_lexical_words, and never exceed "
+            "max_lexical_words"
+        )
+    if predicate == "visual.repair_capacity_plan_infeasible":
+        return (
+            "the local grounded capacity plan is infeasible; do not invent claims, panels, "
+            "or filler, and preserve the supplied evidence contract"
+        )
+    if predicate == "visual.repair_visual_capacity_shortfall":
+        return (
+            "use capacity_contract and feasible_claims directly. For each affected passage, "
+            "sum evidence_panel_slot_capacity across unique cited panels until the total is at "
+            "least that passage's required_visual_slots. visual_slot_capacity is the per-claim "
+            "summary. Prefer unique panels before a second ROI, keep claim chronology, and only "
+            "add a claim when its grounded fact is actually narrated in that passage. Never add "
+            "unrelated panels or evidence merely to fill time, and keep every shot at or below 4.0 seconds"
+        )
+    if predicate == "visual.repair_passage_outside_claim_lineage":
+        return (
+            "remove unrelated passage panels; every evidence_panel_id in a passage must belong "
+            "to at least one claim_id in that same passage and preserve original claim lineage"
         )
     if predicate == "visual.repair_subtitle_overflow":
         return (
@@ -2399,9 +2577,16 @@ def _visual_narrative_repair_retry_feedback(
             "referencing passages, with 118-124 lexical words and no unsupported facts"
         )
     if value == "cloud.narrative_duration_out_of_range":
+        observed = (
+            f" The rejected result had {int(observed_word_count)} lexical words."
+            if isinstance(observed_word_count, int)
+            else ""
+        )
         return (
             "return 4-6 concise chronological passages using only existing claim IDs and "
-            "feasible panel IDs; keep the grounded spoken script at 118-124 lexical words"
+            "feasible panel IDs; preserve the required visual capacity and recount the complete "
+            "spoken script before returning. Target 120-122 lexical words total."
+            + observed
         )
     return (
         "return strict JSON with existing claim IDs, feasible panel IDs, grounded "
@@ -2442,7 +2627,7 @@ def _narration_stage_prompt_is_compatible(
     repair_prompt = runner.prompts.get("visual_narrative_repair")
     if not isinstance(repair_meta, Mapping) or repair_prompt is None:
         return False
-    return (
+    current = (
         str(repair_meta.get("contract_version", ""))
         == visual_narrative_repair.REPAIR_CONTRACT_VERSION
         and str(repair_meta.get("prompt_version", "")) == repair_prompt[0]
@@ -2453,6 +2638,36 @@ def _narration_stage_prompt_is_compatible(
         and narration.prompt_version == repair_prompt[0]
         and narration.prompt_sha256 == repair_prompt[1]
     )
+    return current or _narration_is_legacy_visual_repair_checkpoint(
+        record, narration, runner
+    )
+
+
+def _narration_is_legacy_visual_repair_checkpoint(
+    record: ChapterJobRecord,
+    narration: NarrationResult,
+    runner: CloudStageRunner,
+) -> bool:
+    """Admit one prior repair generation only as provisional resume input."""
+
+    repair_meta = record.stage_results.get("visual_repair")
+    if not isinstance(repair_meta, Mapping):
+        return False
+    return (
+        narration.prompt_version == LEGACY_VISUAL_REPAIR_PROMPT_VERSION
+        and str(repair_meta.get("contract_version", ""))
+        == LEGACY_VISUAL_REPAIR_CONTRACT_VERSION
+        and str(repair_meta.get("prompt_version", ""))
+        == LEGACY_VISUAL_REPAIR_PROMPT_VERSION
+        and str(repair_meta.get("prompt_sha256", "")) == narration.prompt_sha256
+        and repair_meta.get("publish_allowed") is False
+        and _stage_result_identity_is_compatible(
+            str(repair_meta.get("model_identity_hash", "")),
+            runner.model_identity,
+            stage="narration",
+        )
+    )
+
 
 def _narration_is_current_visual_repair_checkpoint(
     record: ChapterJobRecord,
@@ -4601,7 +4816,7 @@ class CloudStageRunner:
             model_identity_hash=story_map.model_identity_hash,
             prompt_version=story_map.prompt_version,
             prompt_sha256=story_map.prompt_sha256,
-            visual_evidence_hash=visual.visual_evidence_hash,
+            visual_evidence_hash=selected_visual.visual_evidence_hash,
         )
         selected_panels = (
             tuple(panel for panel in panels if panel.panel_id in selected_ids)
@@ -5374,6 +5589,8 @@ class CloudStageRunner:
     def _build_narration_repair_slots(
         candidate: NarrationResult,
         story_map: StoryMapResult,
+        *,
+        preserve_candidate_evidence: bool = False,
     ) -> tuple[NarrationRepairSlot, ...]:
         """Create stable local slot identities from already grounded records."""
 
@@ -5466,7 +5683,11 @@ class CloudStageRunner:
                     "cloud.narrative_repair_evidence_closure_invalid",
                     reviewable=True,
                 )
-            evidence_panel_ids = tuple(trusted_evidence_panel_ids)
+            evidence_panel_ids = (
+                candidate_evidence_panel_ids
+                if preserve_candidate_evidence
+                else tuple(trusted_evidence_panel_ids)
+            )
             matching_beats = [
                 (beat_index, beat)
                 for beat_index, beat in enumerate(story_map.beats)
@@ -5534,6 +5755,8 @@ class CloudStageRunner:
         positions: Sequence[NarrationRepairPosition | Mapping[str, Any]],
         candidate: NarrationResult,
         story_map: StoryMapResult,
+        *,
+        allow_claim_evidence_subset: bool = False,
     ) -> dict[str, Any]:
         """Build the exact panel/section closure for selected claim positions."""
 
@@ -5596,12 +5819,23 @@ class CloudStageRunner:
                     (claim_id,),
                     story_claims,
                 )
-                if not set(claim_refs).issubset(set(evidence_panel_ids)):
+                selected_claim_refs = (
+                    tuple(ref for ref in claim_refs if ref in set(evidence_panel_ids))
+                    if allow_claim_evidence_subset
+                    else claim_refs
+                )
+                if (
+                    not selected_claim_refs
+                    or (
+                        not allow_claim_evidence_subset
+                        and not set(claim_refs).issubset(set(evidence_panel_ids))
+                    )
+                ):
                     raise CloudStageError(
                         "cloud.narrative_repair_evidence_closure_invalid",
                         reviewable=True,
                     )
-                for panel_id in claim_refs:
+                for panel_id in selected_claim_refs:
                     if panel_id not in trusted_claim_refs:
                         trusted_claim_refs.append(panel_id)
             if (
@@ -5636,6 +5870,11 @@ class CloudStageRunner:
             )
         identity = {
             "version": NARRATION_REPAIR_EVIDENCE_CLOSURE_VERSION,
+            "evidence_scope_mode": (
+                "candidate_passage_locked"
+                if allow_claim_evidence_subset
+                else "full_claim_closure"
+            ),
             "lineage_candidate_hash": CloudStageRunner._narration_repair_lineage_identity(
                 candidate
             ),
@@ -5687,6 +5926,13 @@ class CloudStageRunner:
                 "cloud.narrative_repair_evidence_closure_invalid",
                 reviewable=True,
             )
+        evidence_scope_mode = str(closure.get("evidence_scope_mode", "full_claim_closure"))
+        if evidence_scope_mode not in {"full_claim_closure", "candidate_passage_locked"}:
+            raise CloudStageError(
+                "cloud.narrative_repair_evidence_closure_invalid",
+                reviewable=True,
+            )
+        allow_claim_evidence_subset = evidence_scope_mode == "candidate_passage_locked"
         if story_map is not None:
             if (
                 closure.get("story_map_hash") != story_map.story_map_hash
@@ -5775,12 +6021,25 @@ class CloudStageRunner:
                         (claim_id,),
                         story_claims,
                     )
-                    if not set(claim_refs).issubset(set(evidence_panel_ids)):
+                    selected_claim_refs = (
+                        tuple(ref for ref in claim_refs if ref in set(evidence_panel_ids))
+                        if allow_claim_evidence_subset
+                        else claim_refs
+                    )
+                    if (
+                        not selected_claim_refs
+                        or (
+                            not allow_claim_evidence_subset
+                            and not set(claim_refs).issubset(set(evidence_panel_ids))
+                        )
+                    ):
                         raise CloudStageError(
                             "cloud.narrative_repair_evidence_closure_invalid",
                             reviewable=True,
                         )
-                    trusted_refs.extend(item for item in claim_refs if item not in trusted_refs)
+                    trusted_refs.extend(
+                        item for item in selected_claim_refs if item not in trusted_refs
+                    )
                 if (
                     not set(context_panel_ids).issubset(set(passage_permitted))
                     or not set(evidence_panel_ids).issubset(set(passage_permitted))
@@ -5801,6 +6060,7 @@ class CloudStageRunner:
         story_map: StoryMapResult,
         *,
         prompt: tuple[str, str, str] | None = None,
+        allow_claim_evidence_subset: bool = False,
     ) -> dict[str, Any]:
         """Canonicalize the ordered local rewrite registry and its cache identity."""
 
@@ -5904,6 +6164,7 @@ class CloudStageRunner:
             canonical_positions,
             candidate,
             story_map,
+            allow_claim_evidence_subset=allow_claim_evidence_subset,
         )
         identity = {
             "version": NARRATION_REPAIR_POSITION_REGISTRY_VERSION,
@@ -5934,10 +6195,15 @@ class CloudStageRunner:
         story_map: StoryMapResult,
         *,
         prompt: tuple[str, str, str] | None = None,
+        passage_word_budgets: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
         """Select 4-8 trusted claim positions before any provider request."""
 
-        slots = self._build_narration_repair_slots(candidate, story_map)
+        slots = self._build_narration_repair_slots(
+            candidate,
+            story_map,
+            preserve_candidate_evidence=bool(passage_word_budgets),
+        )
         candidate_claims = {
             str(claim.get("claim_id", "")): claim
             for claim in candidate.evidence_graph.get("claims", ())
@@ -5965,6 +6231,10 @@ class CloudStageRunner:
                         story_claim.get("panel_ids", ()),
                     )
                 )
+                if passage_word_budgets:
+                    claim_refs = tuple(
+                        ref for ref in claim_refs if ref in set(slot.evidence_panel_ids)
+                    )
                 if not claim_refs or not set(claim_refs).issubset(set(slot.evidence_panel_ids)):
                     raise CloudStageError(
                         "cloud.narrative_repair_position_lineage_invalid",
@@ -5997,46 +6267,96 @@ class CloudStageRunner:
                 "cloud.narrative_repair_position_selection_invalid",
                 reviewable=True,
             )
-        selected = list(all_positions)
-        while len(selected) > NARRATION_REPAIR_POSITION_MAX_COUNT:
-            counts: dict[str, int] = {}
-            for item in selected:
-                counts[item.passage_id] = counts.get(item.passage_id, 0) + 1
-            removable = [
-                item for item in selected if item.removable and counts[item.passage_id] > 1
-            ]
-            if not removable or len(selected) - 1 < 8:
+        if passage_word_budgets:
+            budget_keys = {str(key) for key in passage_word_budgets}
+            passage_keys = {slot.passage_id for slot in slots}
+            if budget_keys != passage_keys:
                 raise CloudStageError(
-                    "cloud.narrative_repair_position_selection_invalid",
-                    reviewable=True,
+                    "cloud.narrative_repair_position_budget_invalid", reviewable=True
                 )
-            selected.remove(
-                min(
-                    removable,
-                    key=lambda item: (
-                        item.priority,
-                        item.causal_position,
-                        item.passage_id,
-                        item.claim_ids,
-                    ),
+            selected = []
+            for slot in slots:
+                identity = {
+                    "version": NARRATION_REPAIR_POSITION_REGISTRY_VERSION,
+                    "mode": "capacity_passage_locked",
+                    "candidate_hash": _hash(candidate.as_dict()),
+                    "story_map_hash": story_map.story_map_hash,
+                    "passage_id": slot.passage_id,
+                    "claim_ids": list(slot.claim_ids),
+                    "evidence_panel_ids": list(slot.evidence_panel_ids),
+                }
+                selected.append(
+                    NarrationRepairPosition(
+                        position=len(selected),
+                        slot_id=f"narration_position_v1_passage_{_hash(identity)}",
+                        passage_id=slot.passage_id,
+                        claim_ids=slot.claim_ids,
+                        evidence_panel_ids=slot.evidence_panel_ids,
+                        beat_id=slot.beat_id,
+                        causal_position=slot.causal_position,
+                        priority=slot.priority,
+                        removable=False,
+                        word_budget=1,
+                    )
                 )
-            )
-        target_word_count = 120
-        base_budget, remainder = divmod(target_word_count, len(selected))
+        else:
+            selected = list(all_positions)
+            while len(selected) > NARRATION_REPAIR_POSITION_MAX_COUNT:
+                counts: dict[str, int] = {}
+                for item in selected:
+                    counts[item.passage_id] = counts.get(item.passage_id, 0) + 1
+                removable = [
+                    item for item in selected if item.removable and counts[item.passage_id] > 1
+                ]
+                if not removable or len(selected) - 1 < 8:
+                    raise CloudStageError(
+                        "cloud.narrative_repair_position_selection_invalid",
+                        reviewable=True,
+                    )
+                selected.remove(
+                    min(
+                        removable,
+                        key=lambda item: (
+                            item.priority,
+                            item.causal_position,
+                            item.passage_id,
+                            item.claim_ids,
+                        ),
+                    )
+                )
+        if passage_word_budgets:
+            selected_counts: dict[str, int] = {}
+            for item in selected:
+                selected_counts[item.passage_id] = selected_counts.get(item.passage_id, 0) + 1
+            missing = set(selected_counts) - set(passage_word_budgets)
+            if missing:
+                raise CloudStageError("cloud.narrative_repair_position_budget_invalid", reviewable=True)
+            per_position_budget = []
+            seen_by_passage: dict[str, int] = {}
+            for item in selected:
+                total = int(passage_word_budgets[item.passage_id])
+                count = selected_counts[item.passage_id]
+                base, remainder = divmod(total, count)
+                seen = seen_by_passage.get(item.passage_id, 0)
+                per_position_budget.append(base + (1 if seen < remainder else 0))
+                seen_by_passage[item.passage_id] = seen + 1
+            target_word_count = sum(int(passage_word_budgets[key]) for key in selected_counts)
+        else:
+            target_word_count = 120
+            base_budget, remainder = divmod(target_word_count, len(selected))
+            per_position_budget = [base_budget + (1 if index < remainder else 0) for index in range(len(selected))]
         budgeted = [
             replace(
                 item,
                 position=index,
-                word_budget=base_budget + (1 if index < remainder else 0),
-                word_budget_min=_position_word_budget_bounds(
-                    base_budget + (1 if index < remainder else 0)
-                )[0],
+                word_budget=per_position_budget[index],
+                word_budget_min=_position_word_budget_bounds(per_position_budget[index])[0],
                 word_budget_max=_position_word_budget_bounds(
-                    base_budget + (1 if index < remainder else 0),
+                    per_position_budget[index],
                     max_word_budget=(
-                        base_budget
-                        + (1 if index < remainder else 0)
-                        + (1 if index < 125 - target_word_count else 0)
+                        per_position_budget[index]
+                        if passage_word_budgets
+                        else per_position_budget[index] + (1 if index < 125 - target_word_count else 0)
                     ),
                 )[1],
             )
@@ -6047,6 +6367,12 @@ class CloudStageRunner:
             candidate,
             story_map,
             prompt=prompt,
+            allow_claim_evidence_subset=bool(passage_word_budgets),
+        )
+        registry["passage_word_budgets"] = (
+            {str(key): int(value) for key, value in passage_word_budgets.items()}
+            if passage_word_budgets
+            else {}
         )
         candidate_passages = {
             str(passage.get("passage_id", "")): passage
@@ -6062,6 +6388,9 @@ class CloudStageRunner:
                     "word_budget": item.word_budget,
                     "word_budget_min": item.word_budget_min,
                     "word_budget_max": item.word_budget_max,
+                    "passage_word_budget_max": (
+                        int(passage_word_budgets[item.passage_id]) if passage_word_budgets else None
+                    ),
                     "passage_text": str(passage.get("text", "")),
                     "claim_context": [
                         {
@@ -6088,6 +6417,7 @@ class CloudStageRunner:
                 "position_registry_hash": registry["slot_order_hash"],
                 "passage_lineage_version": passage_lineage["version"],
                 "passage_lineage_hash": passage_lineage["lineage_hash"],
+                "passage_word_budgets": registry["passage_word_budgets"],
             }
         )
         return registry
@@ -6107,6 +6437,17 @@ class CloudStageRunner:
         """
 
         raw_positions = registry.get("positions")
+        closure = registry.get("evidence_closure")
+        evidence_scope_mode = (
+            str(closure.get("evidence_scope_mode", "full_claim_closure"))
+            if isinstance(closure, Mapping)
+            else "full_claim_closure"
+        )
+        allow_claim_evidence_subset = evidence_scope_mode == "candidate_passage_locked"
+        if evidence_scope_mode not in {"full_claim_closure", "candidate_passage_locked"}:
+            raise CloudStageError(
+                "cloud.narrative_repair_position_lineage_invalid", reviewable=True
+            )
         if not isinstance(raw_positions, list) or not raw_positions:
             raise CloudStageError(
                 "cloud.narrative_repair_position_lineage_invalid",
@@ -6198,12 +6539,17 @@ class CloudStageRunner:
             claim_ids = tuple(str(value) for value in claim_values)
             evidence_panel_ids = tuple(str(value) for value in evidence_values)
             original_claim_values = candidate_by_id[passage_id].get("claim_ids")
-            if not isinstance(original_claim_values, (list, tuple)):
+            original_evidence_values = candidate_by_id[passage_id].get("evidence_panel_ids")
+            if (
+                not isinstance(original_claim_values, (list, tuple))
+                or not isinstance(original_evidence_values, (list, tuple))
+            ):
                 raise CloudStageError(
                     "cloud.narrative_repair_position_lineage_invalid",
                     reviewable=True,
                 )
             original_claim_ids = tuple(str(value) for value in original_claim_values)
+            original_evidence_panel_ids = tuple(str(value) for value in original_evidence_values)
             if (
                 any(not value.strip() for value in claim_ids)
                 or len(set(claim_ids)) != len(claim_ids)
@@ -6214,6 +6560,10 @@ class CloudStageRunner:
                 or any(not value.strip() for value in evidence_panel_ids)
                 or len(set(evidence_panel_ids)) != len(evidence_panel_ids)
                 or any(panel_id not in observation_ids for panel_id in evidence_panel_ids)
+                or (
+                    allow_claim_evidence_subset
+                    and not set(evidence_panel_ids).issubset(set(original_evidence_panel_ids))
+                )
             ):
                 raise CloudStageError(
                     "cloud.narrative_repair_position_lineage_invalid",
@@ -6231,10 +6581,19 @@ class CloudStageRunner:
                         reviewable=True,
                     )
                 claim_refs = tuple(str(value) for value in claim_refs)
+                selected_claim_refs = (
+                    tuple(ref for ref in claim_refs if ref in set(evidence_panel_ids))
+                    if allow_claim_evidence_subset
+                    else claim_refs
+                )
                 if (
                     any(not value.strip() for value in claim_refs)
                     or len(set(claim_refs)) != len(claim_refs)
-                    or not set(claim_refs).issubset(set(evidence_panel_ids))
+                    or not selected_claim_refs
+                    or (
+                        not allow_claim_evidence_subset
+                        and not set(claim_refs).issubset(set(evidence_panel_ids))
+                    )
                 ):
                     raise CloudStageError(
                         "cloud.narrative_repair_position_lineage_invalid",
@@ -6283,9 +6642,22 @@ class CloudStageRunner:
                     "evidence_panel_ids",
                     claim.get("panel_ids", ()),
                 )
-                if not isinstance(claim_refs, (list, tuple)) or not {
-                    str(value) for value in claim_refs
-                }.issubset(set(evidence_panel_ids)):
+                claim_ref_set = (
+                    {str(value) for value in claim_refs}
+                    if isinstance(claim_refs, (list, tuple))
+                    else set()
+                )
+                if (
+                    not claim_ref_set
+                    or (
+                        allow_claim_evidence_subset
+                        and not (claim_ref_set & set(evidence_panel_ids))
+                    )
+                    or (
+                        not allow_claim_evidence_subset
+                        and not claim_ref_set.issubset(set(evidence_panel_ids))
+                    )
+                ):
                     raise CloudStageError(
                         "cloud.narrative_repair_position_lineage_invalid",
                         reviewable=True,
@@ -6594,6 +6966,45 @@ class CloudStageRunner:
         grouped_text: dict[str, list[str]] = {}
         for position, text in zip(positions, rewrites, strict=True):
             grouped_text.setdefault(position.passage_id, []).append(text.strip())
+        explicit_passage_word_budgets = registry.get("passage_word_budgets")
+        if explicit_passage_word_budgets:
+            if not isinstance(explicit_passage_word_budgets, Mapping):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_budget_invalid",
+                    reviewable=True,
+                )
+            passage_word_counts = {
+                passage_id: script.narration_word_count(" ".join(parts))
+                for passage_id, parts in grouped_text.items()
+            }
+            passage_word_budgets = {
+                str(passage_id): int(budget)
+                for passage_id, budget in explicit_passage_word_budgets.items()
+            }
+            if set(passage_word_counts) != set(passage_word_budgets) or any(
+                budget <= 0 for budget in passage_word_budgets.values()
+            ):
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_budget_invalid",
+                    reviewable=True,
+                )
+            over_budget = {
+                passage_id: passage_word_counts[passage_id] - budget
+                for passage_id, budget in passage_word_budgets.items()
+                if passage_word_counts[passage_id] > budget
+            }
+            if over_budget:
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_budget_invalid",
+                    reviewable=True,
+                    safe_metadata={
+                        **response_shape_metrics(
+                            "passage_word_budget", word_counts, total_words, duration, micro_compaction
+                        ),
+                        "over_budget_passage_count": len(over_budget),
+                        "max_passage_word_overage": max(over_budget.values()),
+                    },
+                )
         lineage_by_passage = {str(row["passage_id"]): row for row in passage_lineage["passages"]}
         passages: list[dict[str, Any]] = []
         for original in candidate.passages:
@@ -7470,17 +7881,26 @@ class CloudStageRunner:
         """
 
         prompt = self.prompts["narration"]
+        if (
+            not _stage_result_identity_is_compatible(
+                candidate.model_identity_hash,
+                self.model_identity,
+                stage="narration",
+            )
+            or candidate.prompt_version != prompt[0]
+            or candidate.prompt_sha256 != prompt[1]
+        ):
+            raise CloudStageError("cloud.narrative_repair_identity_mismatch", reviewable=True)
+        if candidate.model_identity_hash != self.model_identity.identity_hash:
+            candidate = replace(
+                candidate,
+                model_identity_hash=self.model_identity.identity_hash,
+            )
         compact_visual, compact_story_map = self._compact_narration_repair_context(
             candidate,
             visual,
             story_map,
         )
-        if (
-            candidate.model_identity_hash != self.model_identity.identity_hash
-            or candidate.prompt_version != prompt[0]
-            or candidate.prompt_sha256 != prompt[1]
-        ):
-            raise CloudStageError("cloud.narrative_repair_identity_mismatch", reviewable=True)
         failure_codes = self._narration_contract_failures(candidate)
         if not failure_codes:
             raise CloudStageError("cloud.narrative_repair_not_needed")
@@ -7577,6 +7997,9 @@ class CloudStageRunner:
         visual: VisualStageResult,
         candidate: NarrationResult,
         failure_codes: Sequence[str],
+        *,
+        allow_passage_removal: bool = True,
+        passage_word_budgets: Mapping[str, int] | None = None,
     ) -> NarrationResult:
         """Repair prose or complete low-priority passages without changing evidence scope."""
 
@@ -7584,8 +8007,13 @@ class CloudStageRunner:
         position_registry = self._build_narration_repair_position_registry(
             candidate,
             story_map,
+            passage_word_budgets=passage_word_budgets,
         )
-        removable_passage_ids = self._removable_narration_passage_ids(candidate)
+        removable_passage_ids = (
+            self._removable_narration_passage_ids(candidate)
+            if allow_passage_removal
+            else ()
+        )
         repair_context = {
             "contract_version": NARRATION_REPAIR_VERSION,
             "micro_compaction_version": NARRATION_MICRO_COMPACTION_VERSION,
@@ -7612,10 +8040,28 @@ class CloudStageRunner:
             "target_word_count": position_registry["target_word_count"],
             "target_duration_min_s": 50.0,
             "target_duration_max_s": 60.0,
+            "passage_word_budgets": (
+                {str(key): int(value) for key, value in passage_word_budgets.items()}
+                if passage_word_budgets
+                else {}
+            ),
             "prior_narration": candidate.as_dict(),
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v9"
-        repair_prompt_text = f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v12"
+        capacity_locked_instruction = (
+            "\n\nCAPACITY-LOCKED WORD BUDGET MODE: passage_word_budget_max is a hard ceiling. "
+            "Do not move words from one passage into another. The supplied positions for each passage "
+            "must remain exactly one complete retained passage; do not merge, split, omit, or cross-mix "
+            "passages. Aim for each supplied position word_budget exactly; in this mode those position "
+            "budgets sum to target_word_count and are chosen to keep "
+            "every passage within grounded visual capacity. Recount each passage and the complete vector "
+            "before returning."
+            if passage_word_budgets
+            else ""
+        )
+        repair_prompt_text = (
+            f"{prompt[2]}\n\n{NARRATION_REPAIR_INSTRUCTION}{capacity_locked_instruction}"
+        )
         repair_prompt = (
             repair_prompt_version,
             _hash(repair_prompt_text),
@@ -7787,6 +8233,8 @@ class CloudStageRunner:
             "cloud.narrative_claim_unmapped",
             "cloud.narrative_qc_blocked",
             "cloud.narrative_duration_out_of_range",
+            "cloud.narrative_repair_micro_compaction_unavailable",
+            "cloud.narrative_repair_position_budget_invalid",
         }
         obs_by_id = {str(item["panel_id"]): item for item in observations}
         if repair_position_registry is not None:
@@ -8082,7 +8530,16 @@ class CloudStageRunner:
                         flush=True,
                     )
                     if exc.code in retryable_codes and attempt + 1 < self.max_attempts:
-                        retry_feedback = _narration_retry_feedback(exc.code)
+                        observed_word_count = exc.safe_metadata.get("total_word_count")
+                        retry_feedback = _narration_retry_feedback(
+                            exc.code,
+                            observed_word_count=(
+                                int(observed_word_count)
+                                if isinstance(observed_word_count, int)
+                                and not isinstance(observed_word_count, bool)
+                                else None
+                            ),
+                        )
                         continue
                     raise
             if chunk_end is None:
@@ -8174,6 +8631,70 @@ class CloudStageRunner:
             # by _run_targeted_narration_repair.
         return result
 
+    def _run_visual_repair_text_only_duration_repair(
+        self,
+        *,
+        visual_repair_prompt: tuple[str, str, str],
+        source: Mapping[str, Any],
+        observations: Sequence[Mapping[str, Any]],
+        structural: Mapping[str, Any],
+        story_map: StoryMapResult,
+        visual: VisualStageResult,
+        candidate: NarrationResult,
+        capacity_plan: Mapping[str, Any],
+    ) -> NarrationResult:
+        """Repair only visual-repair prose after its evidence scope is locked."""
+
+        rows = capacity_plan.get("rows") if isinstance(capacity_plan, Mapping) else None
+        if not isinstance(rows, list) or len(rows) != len(candidate.passages):
+            raise CloudStageError("visual.narrative_repair_ungrounded", reviewable=True)
+        passage_word_budgets = {
+            str(passage.get("passage_id", "")): int(row.get("target_lexical_words", 0))
+            for passage, row in zip(candidate.passages, rows, strict=True)
+            if isinstance(passage, Mapping) and isinstance(row, Mapping)
+        }
+        if len(passage_word_budgets) != len(candidate.passages) or any(value <= 0 for value in passage_word_budgets.values()):
+            raise CloudStageError("visual.narrative_repair_ungrounded", reviewable=True)
+        repair_source = {
+            **dict(source),
+            "visual_repair_text_only_duration_repair": {
+                "version": "visual-repair-text-only-duration-v1",
+                "visual_repair_prompt_version": visual_repair_prompt[0],
+                "visual_repair_prompt_sha256": visual_repair_prompt[1],
+                "candidate_scope_hash": self._narration_scope_signature(candidate),
+            },
+        }
+        repaired = self._run_targeted_narration_repair(
+            self.prompts["narration"],
+            repair_source,
+            observations,
+            structural,
+            story_map,
+            visual,
+            candidate,
+            ("cloud.narrative_duration_out_of_range",),
+            allow_passage_removal=False,
+            passage_word_budgets=passage_word_budgets,
+        )
+        qc_report = dict(repaired.qc_report)
+        qc_report["visual_repair_text_only_duration_repair_v1"] = {
+            "version": "visual-repair-text-only-duration-v1",
+            "scope": "text_only_locked_claim_evidence",
+            "candidate_word_count": int(candidate.word_count),
+            "candidate_duration_s": float(candidate.estimated_duration_s),
+            "result_word_count": int(repaired.word_count),
+            "result_duration_s": float(repaired.estimated_duration_s),
+            "passage_removal_allowed": False,
+        }
+        return replace(
+            repaired,
+            qc_report=qc_report,
+            model_identity_hash=self.model_identity.identity_hash,
+            prompt_version=visual_repair_prompt[0],
+            prompt_sha256=visual_repair_prompt[1],
+            visual_evidence_hash=visual.visual_evidence_hash,
+        )
+
     def run_visual_narrative_repair(
         self,
         visual: VisualStageResult,
@@ -8209,7 +8730,28 @@ class CloudStageRunner:
             section_to_beats=section_to_beats,
             feasible_observations=feasible_observations,
         )
+        capacity_plan = payload.get("capacity_safe_claim_plan")
+        if not isinstance(capacity_plan, Mapping) or not bool(capacity_plan.get("feasible")):
+            rebalance = payload.get("capacity_rebalance")
+            rebalance = dict(rebalance) if isinstance(rebalance, Mapping) else {}
+            raise CloudStageError(
+                "visual.narrative_repair_ungrounded",
+                reviewable=True,
+                safe_metadata={
+                    "failed_field": "capacity_safe_claim_plan",
+                    "failed_predicate": "visual.repair_capacity_plan_infeasible",
+                    "target_visual_slots": rebalance.get("target_visual_slots"),
+                    "claim_backed_visual_slots": rebalance.get("claim_backed_visual_slots"),
+                    "minimum_visual_slots_for_narration": rebalance.get(
+                        "minimum_visual_slots_for_narration"
+                    ),
+                },
+            )
         render_plan = visual_narrative_repair.FeasibleRenderPlan.from_ledger(ledger)
+        capacity_plan_hash = _hash({
+            "capacity_safe_claim_plan": capacity_plan,
+            "capacity_rebalance": payload.get("capacity_rebalance"),
+        })
         source = {
             "visual_source_hash": visual.source_hash,
             "story_map_hash": story_map.story_map_hash,
@@ -8218,12 +8760,14 @@ class CloudStageRunner:
             "ledger_hash": ledger.ledger_hash,
             "section_to_beats": payload["section_to_beats"],
             "render_plan_hash": render_plan.plan_hash,
+            "capacity_plan_hash": capacity_plan_hash,
         }
         key = visual_narrative_repair.repair_cache_key(
             ledger=ledger,
             model_identity_hash=self.model_identity.identity_hash,
             prompt_sha256=prompt[1],
             narration_hash=str(source["narration_hash"]),
+            capacity_plan_hash=capacity_plan_hash,
         )
         feasible_claim_rows = [
             dict(row)
@@ -8243,13 +8787,53 @@ class CloudStageRunner:
         def reconcile_repaired_references(
             raw_claims: object,
             raw_passages: object,
+            *,
+            enforce_word_budget: bool = True,
         ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], tuple[dict[str, Any], ...]]:
-            claims = self._normalize_narration_claims(raw_claims)
             if not isinstance(raw_passages, list):
                 raise visual_narrative_repair.VisualNarrativeRepairError(
                     "repair passages are malformed",
                     "visual.narrative_repair_ungrounded",
                 )
+            raw_passages = visual_narrative_repair.recover_missing_capacity_plan_references(
+                raw_passages,
+                payload.get("capacity_safe_claim_plan", {}),
+            )
+            if isinstance(raw_claims, list) and not raw_claims:
+                claims: list[dict[str, Any]] = []
+            else:
+                claims = self._normalize_narration_claims(raw_claims)
+            authoritative_claims = {
+                str(claim["claim_id"]): {
+                    key: claim[key]
+                    for key in (
+                        "claim_id",
+                        "claim_type",
+                        "text",
+                        "qualification",
+                        "evidence_panel_ids",
+                    )
+                    if key in claim
+                }
+                for claim in self._normalize_narration_claims(feasible_claim_rows)
+                if str(claim.get("claim_id", "")).strip()
+            }
+            returned_claim_ids = {
+                str(claim.get("claim_id", ""))
+                for claim in claims
+                if isinstance(claim, Mapping)
+            }
+            referenced_claim_ids = {
+                str(claim_id)
+                for passage in raw_passages
+                if isinstance(passage, Mapping)
+                for claim_id in passage.get("claim_ids", ())
+                if str(claim_id).strip()
+            }
+            for claim_id in sorted(referenced_claim_ids - returned_claim_ids):
+                authoritative = authoritative_claims.get(claim_id)
+                if authoritative is not None:
+                    claims.append(dict(authoritative))
             canonical_payload = visual_narrative_repair.canonicalize_repair_claim_ids(
                 {"claims": claims, "passages": raw_passages},
                 allowed_claim_ids=allowed_claim_ids,
@@ -8267,6 +8851,11 @@ class CloudStageRunner:
                 ledger=ledger,
                 allowed_claim_ids=allowed_claim_ids,
                 allowed_claim_panel_ids=allowed_claim_panel_ids,
+            )
+            visual_narrative_repair.validate_repaired_capacity_safe_claim_plan(
+                passages,
+                payload.get("capacity_safe_claim_plan", {}),
+                enforce_word_budget=enforce_word_budget,
             )
             return claims, passages, remaps
 
@@ -8287,6 +8876,11 @@ class CloudStageRunner:
                         missing_sections=visual_narrative_repair.missing_visual_sections(
                             ledger, section_to_beats
                         ),
+                    )
+                    visual_narrative_repair.validate_repaired_visual_capacity(
+                        passages,
+                        ledger,
+                        total_duration_s=cached_result.estimated_duration_s,
                     )
                     if visual_narrative_repair.narration_sections_with_subtitle_overflow(
                         cached_result, section_to_beats
@@ -8353,7 +8947,7 @@ class CloudStageRunner:
                 raw_claims = provider_output.get("claims")
                 if raw_claims is None:
                     raw_claims = provider_output.get("evidence_graph")
-                claims = self._normalize_narration_claims(raw_claims)
+                claims = raw_claims
                 passages = provider_output.get("passages")
                 if passages is None:
                     passages = provider_output.get("script_passages")
@@ -8363,6 +8957,7 @@ class CloudStageRunner:
                 claims, passages, remaps = reconcile_repaired_references(
                     claims,
                     passages,
+                    enforce_word_budget=False,
                 )
                 visual_narrative_repair.validate_repaired_section_visual_coverage(
                     passages,
@@ -8390,6 +8985,40 @@ class CloudStageRunner:
                 )
                 claims_by_id = {str(claim["claim_id"]): claim for claim in claims}
                 passage_rows = tuple(dict(item) for item in passages)
+                visual_repair_micro_compaction: dict[str, Any] | None = None
+                visual_repair_micro_expansion: dict[str, Any] | None = None
+                visual_repair_text_only_duration_repair: dict[str, Any] | None = None
+                visual_repair_text_only_narration_repair: dict[str, Any] | None = None
+                canonical_before = sum(
+                    script.narration_word_count(str(item.get("text", "")))
+                    for item in passage_rows
+                )
+                if canonical_before > 125:
+                    compacted, compaction = _micro_compact_rewrites(
+                        tuple(str(item.get("text", "")).strip() for item in passage_rows),
+                        total_words=canonical_before,
+                    )
+                    visual_repair_micro_compaction = dict(compaction)
+                    if not compaction.get("failed_predicate"):
+                        passage_rows = tuple(
+                            dict(row, text=text)
+                            for row, text in zip(passage_rows, compacted, strict=True)
+                        )
+                        passages = [dict(item) for item in passage_rows]
+                        output["script_passages"] = [dict(item) for item in passage_rows]
+                elif canonical_before < 115:
+                    expanded, expansion = _micro_expand_rewrites(
+                        tuple(str(item.get("text", "")).strip() for item in passage_rows),
+                        total_words=canonical_before,
+                    )
+                    visual_repair_micro_expansion = dict(expansion)
+                    if not expansion.get("failed_predicate"):
+                        passage_rows = tuple(
+                            dict(row, text=text)
+                            for row, text in zip(passage_rows, expanded, strict=True)
+                        )
+                        passages = [dict(item) for item in passage_rows]
+                        output["script_passages"] = [dict(item) for item in passage_rows]
                 report = editorial_qc.screen_narrative_naturalness(
                     passage_rows,
                     claims_by_id,
@@ -8404,9 +9033,130 @@ class CloudStageRunner:
                     spoken_text,
                     "dramatic",
                 )
+                canonical_word_count = int(duration_metrics["word_count"])
                 duration = float(duration_metrics["estimated_duration_s"])
-                if not 50.0 <= duration <= 60.0 or not 115 <= report.total_words <= 125:
-                    raise CloudStageError("cloud.narrative_duration_out_of_range", reviewable=True)
+                if (
+                    not 50.0 <= duration <= 60.0
+                    or not 115 <= report.total_words <= 125
+                    or not 115 <= canonical_word_count <= 125
+                ):
+                    provisional_qc = {
+                        "profile_id": "sharp_friend_v1",
+                        "profile_sha256": narrative_identity.SHARP_FRIEND_V1.contract_sha256,
+                        "total_words": int(report.total_words),
+                        "estimated_duration_s": duration,
+                        "duration_contract": duration_metrics,
+                        "ending_kind": output["narrative_outline"]["ending_kind"],
+                        "display_word_count": len(display_words),
+                        "timing_source": "voice_required",
+                        "warnings": list(report.warnings),
+                        "signals": asdict(report),
+                        "repair_contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
+                        "visual_section_remap_v1": list(remaps),
+                        "visual_repair_ending_canonicalization_v1": ending_canonicalization,
+                        "visual_repair_micro_compaction_v1": visual_repair_micro_compaction,
+                        "visual_repair_micro_expansion_v1": visual_repair_micro_expansion,
+                    }
+                    provisional = NarrationResult(
+                        spoken_text=spoken_text,
+                        display_words=display_words,
+                        passages=passage_rows,
+                        ending_kind=str(output["narrative_outline"]["ending_kind"]),
+                        word_count=canonical_word_count,
+                        estimated_duration_s=duration,
+                        qc_report=provisional_qc,
+                        model_identity_hash=self.model_identity.identity_hash,
+                        prompt_version=prompt[0],
+                        prompt_sha256=prompt[1],
+                        observations=tuple(observations),
+                        continuity_ledger=dict(output["continuity_ledger"]),
+                        evidence_graph=dict(output["evidence_graph"]),
+                        story_spine=dict(output["narrative_outline"]["story_spine"]),
+                        visual_evidence_hash=visual.visual_evidence_hash,
+                    )
+                    text_repaired = self._run_visual_repair_text_only_duration_repair(
+                        visual_repair_prompt=prompt,
+                        source=source,
+                        observations=observations,
+                        structural=structural,
+                        story_map=story_map,
+                        visual=visual,
+                        candidate=provisional,
+                        capacity_plan=payload.get("capacity_safe_claim_plan", {}),
+                    )
+                    visual_repair_text_only_duration_repair = dict(
+                        text_repaired.qc_report.get(
+                            "visual_repair_text_only_duration_repair_v1", {}
+                        )
+                    )
+                    visual_repair_text_only_narration_repair = dict(
+                        text_repaired.qc_report.get("narration_repair", {})
+                    )
+                    claims, passages, text_remaps = reconcile_repaired_references(
+                        text_repaired.evidence_graph.get("claims"),
+                        list(text_repaired.passages),
+                    )
+                    if text_remaps:
+                        remaps = (*remaps, *text_remaps)
+                    visual_narrative_repair.validate_repaired_section_visual_coverage(
+                        passages,
+                        ledger=ledger,
+                        section_to_beats=section_to_beats,
+                        missing_sections=visual_narrative_repair.missing_visual_sections(
+                            ledger, section_to_beats
+                        ),
+                    )
+                    passage_rows = tuple(dict(item) for item in passages)
+                    claims_by_id = {str(claim["claim_id"]): claim for claim in claims}
+                    report = editorial_qc.screen_narrative_naturalness(
+                        passage_rows,
+                        claims_by_id,
+                        narrative_identity.SHARP_FRIEND_V1,
+                    )
+                    checks = quality.check_narrative_naturalness(report)
+                    if any(
+                        not check.passed and check.severity == "error"
+                        for check in checks
+                    ):
+                        raise CloudStageError(
+                            "cloud.narrative_qc_blocked", reviewable=True
+                        )
+                    spoken_text = "\n\n".join(
+                        str(item["text"]).strip() for item in passage_rows
+                    )
+                    display_words = derive_display_words(spoken_text)
+                    duration_metrics = script.narration_duration_metrics(
+                        spoken_text,
+                        "dramatic",
+                    )
+                    canonical_word_count = int(duration_metrics["word_count"])
+                    duration = float(duration_metrics["estimated_duration_s"])
+                    output["script_passages"] = [dict(item) for item in passage_rows]
+                    output["evidence_graph"] = {"claims": claims}
+                    if (
+                        not 50.0 <= duration <= 60.0
+                        or not 115 <= report.total_words <= 125
+                        or not 115 <= canonical_word_count <= 125
+                    ):
+                        raise CloudStageError(
+                            "cloud.narrative_duration_out_of_range",
+                            reviewable=True,
+                            safe_metadata={
+                                "failed_field": "script_passages",
+                                "failed_predicate": "narration_duration_contract",
+                                "observed_word_count": canonical_word_count,
+                                "reported_word_count": int(report.total_words),
+                                "observed_duration_s": duration,
+                                "target_word_count_min": 115,
+                                "target_word_count_max": 125,
+                                "text_only_repair_attempted": True,
+                            },
+                        )
+                visual_narrative_repair.validate_repaired_visual_capacity(
+                    passage_rows,
+                    ledger,
+                    total_duration_s=duration,
+                )
                 subtitle_overflow_sections = (
                     visual_narrative_repair.narration_sections_with_subtitle_overflow(
                         {
@@ -8447,6 +9197,12 @@ class CloudStageRunner:
                         "repair_contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
                         "visual_section_remap_v1": list(remaps),
                         "visual_repair_ending_canonicalization_v1": ending_canonicalization,
+                        "visual_repair_micro_compaction_v1": visual_repair_micro_compaction,
+                        "visual_repair_micro_expansion_v1": visual_repair_micro_expansion,
+                        "visual_repair_text_only_duration_repair_v1": (
+                            visual_repair_text_only_duration_repair
+                        ),
+                        "narration_repair": visual_repair_text_only_narration_repair,
                         "feasible_ledger_hash": ledger.ledger_hash,
                         "feasible_render_plan_hash": render_plan.plan_hash,
                         "repaired_sections": list(
@@ -8520,10 +9276,16 @@ class CloudStageRunner:
                     reviewable=error.reviewable,
                     safe_metadata=safe_metadata,
                 )
+            observed_word_count = error.safe_metadata.get("observed_word_count")
             retry_feedback = _visual_narrative_repair_retry_feedback(
                 error.code,
                 failed_field=str(error.safe_metadata.get("failed_field", "")) or None,
                 failed_predicate=str(error.safe_metadata.get("failed_predicate", "")) or None,
+                observed_word_count=(
+                    int(observed_word_count)
+                    if isinstance(observed_word_count, int)
+                    else None
+                ),
             )
         raise CloudStageError("visual.narrative_repair_bounded", reviewable=True)
 
@@ -11500,8 +12262,16 @@ def _visual_cache_requires_subset_restore(
     runner: CloudStageRunner,
     cached: Mapping[str, Any] | None,
     panels: Sequence[CloudPanelInput],
+    *,
+    allow_admitted_subset: bool = False,
 ) -> bool:
-    """Detect a partial/stale visual stage before checkpoint restoration."""
+    """Detect a partial/stale visual stage before checkpoint restoration.
+
+    Review-only resume may intentionally persist a strict admitted subset after
+    quarantining provider-failing siblings.  Prefer that durable subset over an
+    unrelated smaller cache candidate only when its exact row identities still
+    reconcile against the current prepared manifest.
+    """
 
     if not isinstance(cached, Mapping):
         return True
@@ -11510,8 +12280,23 @@ def _visual_cache_requires_subset_restore(
         ordered = runner._ordered_panels(tuple(panels))
     except (CloudStageError, KeyError, TypeError, ValueError):
         return True
-    if visual.panel_ids != tuple(panel.panel_id for panel in ordered):
-        return True
+    ordered_ids = tuple(panel.panel_id for panel in ordered)
+    if visual.panel_ids != ordered_ids:
+        if not allow_admitted_subset:
+            return True
+        subset = _panels_for_cached_visual_stage(ordered, cached)
+        if (
+            len(subset) != len(visual.panel_ids)
+            or tuple(panel.panel_id for panel in subset) != visual.panel_ids
+        ):
+            return True
+        migrated = _migrate_visual_cache_identity(
+            cached,
+            runner._ordered_panels(subset),
+            model_identity=runner.model_identity,
+            prompt=runner.prompts["visual"],
+        )
+        return migrated is None
     if visual.source_hash != _visual_source_hash(ordered):
         return True
     if tuple(visual.panel_identity_hashes) != _visual_panel_identity_hashes(ordered):
@@ -11762,6 +12547,11 @@ def _durable_visual_repair_covers_missing_sections(
             section_to_beats=section_to_beats,
             missing_sections=missing_sections,
         )
+        visual_narrative_repair.validate_repaired_visual_capacity(
+            passages,
+            ledger,
+            total_duration_s=getattr(narration, "estimated_duration_s", None),
+        )
     except (
         AttributeError,
         KeyError,
@@ -11932,6 +12722,9 @@ class CloudBatchService:
             narration = self._reconcile_cached_narration(narration, visual, panels)
             if (
                 not _narration_is_current_visual_repair_checkpoint(
+                    record, narration, self.runner
+                )
+                and not _narration_is_legacy_visual_repair_checkpoint(
                     record, narration, self.runner
                 )
                 and self.runner._narration_contract_failures(narration)
@@ -12164,6 +12957,51 @@ class CloudBatchService:
             allow_source_resolution_warning=bool(policy.allow_low_source_resolution_warning),
             allow_conservative_full_panel=policy is not None,
         )
+        if not _carries_payloads and current_narration is None:
+            feasible_claim_rows = visual_narrative_repair.feasible_story_claims(
+                current_story_map.as_dict(), ledger
+            )
+            claim_slot_capacity = sum(
+                visual_narrative_repair._unique_claim_panel_capacity(feasible_claim_rows).values()
+            )
+            minimum_visual_slots = math.ceil(
+                float(profile.duration_min_s) / reference_profile.REVIEW_MAX_SHOT_SECONDS
+            )
+            if claim_slot_capacity < minimum_visual_slots:
+                beat_panel_ids = {
+                    str(beat['beat_id']): tuple(
+                        str(panel_id) for panel_id in (beat.get('panel_ids') or ())
+                        if str(panel_id) in eligible_panel_ids
+                    )
+                    for beat in current_story_map.beats
+                    if isinstance(beat, Mapping) and str(beat.get('beat_id', '')).strip()
+                }
+                beat_panel_ids = {k: v for k, v in beat_panel_ids.items() if v}
+                if beat_panel_ids:
+                    expanded_candidates = pipeline._load_reference_panel_fallback_candidates(
+                        db, project_id, script_row, images, profile,
+                        review_source_upscale_policy=policy,
+                        section_evidence_panel_ids=beat_panel_ids,
+                        section_citations=dict.fromkeys(beat_panel_ids, ()),
+                        beats_by_section={beat_id: (beat_id,) for beat_id in beat_panel_ids},
+                        allow_persisted_panel_crop_fallback=policy is not None,
+                        review_source_root=review_source_root,
+                        allow_conservative_full_panel=policy is not None,
+                    )
+                    expanded_ledger = visual_narrative_repair.build_feasible_visual_ledger(
+                        expanded_candidates, profile=profile,
+                        model_identity_hash=self.runner.model_identity.identity_hash,
+                        allow_source_resolution_warning=bool(policy.allow_low_source_resolution_warning),
+                        allow_conservative_full_panel=policy is not None,
+                    )
+                    expanded_claim_rows = visual_narrative_repair.feasible_story_claims(
+                        current_story_map.as_dict(), expanded_ledger
+                    )
+                    expanded_capacity = sum(
+                        visual_narrative_repair._unique_claim_panel_capacity(expanded_claim_rows).values()
+                    )
+                    if expanded_capacity > claim_slot_capacity:
+                        ledger = expanded_ledger
         missing = visual_narrative_repair.repair_scope_sections(
             current_narration or {},
             ledger,
@@ -12388,6 +13226,7 @@ class CloudBatchService:
                 self.runner,
                 record.stage_results.get("visual"),
                 panels,
+                allow_admitted_subset=review_only_preview,
             ):
                 expected_source_hash = str(
                     manifest_raw.get("source_identity_hash", "")
@@ -13008,8 +13847,9 @@ LEGACY_VISUAL_CACHE_IDENTITY_VERSION = "legacy-descriptor-v1"
 # The visual payload/cache contract is independent of the targeted narrative
 # repair prompt.  This explicit migration pair preserves a valid visual cache
 # when that downstream prompt version changes.
-LEGACY_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v3"
-CURRENT_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v4"
+LEGACY_VISUAL_REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v4"
+LEGACY_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v7"
+CURRENT_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v8"
 VISUAL_RENDER_PAYLOAD_VERSION = (
     "visual-provider-payload-v1:max-bytes=180000:max-size=384x576:"
     "jpeg-quality=68:subsampling=2:lanczos"
@@ -13284,11 +14124,33 @@ def _migrate_visual_cache_identity(
     identity_version = str(cached.get("cache_identity_version", ""))
     if identity_version == VISUAL_CACHE_IDENTITY_VERSION:
         persisted_hashes = tuple(str(item) for item in cached.get("panel_identity_hashes", ()))
+        source_matches = str(cached.get("source_hash", "")) == expected_source_hash
+        if source_matches and persisted_hashes == identity_hashes:
+            return dict(cached)
+
+        # Review-only resume can durably keep an admitted visual subset while
+        # retaining aggregate identity from the larger prepared manifest. The
+        # aggregate source/hash metadata may therefore be stale after subset
+        # restoration. Reuse is still safe only when every admitted row carries
+        # the exact current content-addressed panel identity and the persisted
+        # aggregate vector proves this was a strict larger-manifest subset.
+        row_identity_hashes = tuple(
+            str(row.get("cache_identity_hash", ""))
+            for row in raw_rows
+            if isinstance(row, Mapping)
+        )
+        strict_manifest_subset = len(persisted_hashes) > len(identity_hashes)
         if (
-            str(cached.get("source_hash", "")) != expected_source_hash
-            or persisted_hashes != identity_hashes
+            not strict_manifest_subset
+            or len(row_identity_hashes) != len(identity_hashes)
+            or row_identity_hashes != identity_hashes
+            or any(not value for value in row_identity_hashes)
         ):
             return None
+        # Preserve the original aggregate source hash so a StoryMap generated
+        # from this exact accepted visual subset keeps the same evidence hash.
+        # No omitted sibling is admitted downstream; run_project filters inputs
+        # to these row IDs before run_job reaches this boundary.
         return dict(cached)
 
     if identity_version not in {"", LEGACY_VISUAL_CACHE_IDENTITY_VERSION}:

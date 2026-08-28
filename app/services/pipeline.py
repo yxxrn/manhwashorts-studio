@@ -2917,6 +2917,20 @@ def _reference_duration_bounds(profile: object, *, silent_reference_review: bool
     return float(profile.duration_min_s), float(profile.duration_max_s)
 
 
+def _enforce_silent_review_transition_contract(planned: list[dict]) -> None:
+    """Persist one visible transition at every silent-review boundary."""
+    from app.services import editorial_visual_planner
+
+    if not planned:
+        return
+    planned[0]["transition"] = "none"
+    if len(planned) == 1:
+        return
+    schedule = editorial_visual_planner._review_transition_schedule(planned)
+    for index in range(1, len(planned)):
+        planned[index]["transition"] = schedule[index]
+
+
 def build_timeline(
     db: Session,
     project_id: str,
@@ -3086,40 +3100,10 @@ def build_timeline(
                     raise PipelineError(f"{exc.code}: {exc}") from exc
 
     if profile is not None and silent_reference_review and len(planned) > 1:
-        # Persist the review transition contract after panel binding.  The
-        # candidate planner may replace synthetic base-shot identities while
-        # validating exact panel lineage; this final timeline boundary keeps a
-        # bounded visible fade from being lost before the renderer sees it.
-        boundaries = [
-            index
-            for index in range(1, len(planned))
-            if (
-                planned[index].get("section") != planned[index - 1].get("section")
-                or planned[index].get("panel_id") != planned[index - 1].get("panel_id")
-            )
-        ]
-        fade_budget = min(
-            len(boundaries),
-            max(1, int(len(planned) * (1.0 - profile.hard_cut_ratio_min))),
-        )
-        priority_sections = {"twist", "cta", "cliffhanger"}
-        fade_boundaries = set(
-            sorted(
-                boundaries,
-                key=lambda index: (
-                    planned[index].get("section") not in priority_sections,
-                    index,
-                ),
-            )[:fade_budget]
-        )
-        for index, shot in enumerate(planned):
-            shot["transition"] = (
-                "none"
-                if index == 0
-                else "fade"
-                if index in fade_boundaries
-                else "cut"
-            )
+        # Silent review requires a visible animation at every shot boundary.
+        # Reassert this after panel binding so no downstream sparse-cut policy
+        # can erase the planner's transition contract.
+        _enforce_silent_review_transition_contract(planned)
 
     for old in db.scalars(select(TimelineScene).where(TimelineScene.project_id == project_id)):
         db.delete(old)

@@ -175,8 +175,17 @@ def test_visual_repair_failure_classifies_safe_predicate_and_targets_retry_feedb
         "visual.narrative_repair_ungrounded",
         failed_predicate="visual.repair_chronology",
     )
-    assert "nondecreasing source_order" in chronology_feedback
+    assert "chronology_contract" in chronology_feedback
+    assert "min_source_order" in chronology_feedback
     assert "hook may be later" in chronology_feedback
+    capacity_feedback = module._visual_narrative_repair_retry_feedback(
+        "visual.narrative_repair_ungrounded",
+        failed_predicate="visual.repair_visual_capacity_shortfall",
+    )
+    assert "capacity_contract" in capacity_feedback
+    assert "evidence_panel_slot_capacity" in capacity_feedback
+    assert "visual_slot_capacity" in capacity_feedback
+    assert "unique cited panels" in capacity_feedback
     assert "repaired section still" not in str(metadata)
 
 
@@ -236,7 +245,7 @@ def test_durable_visual_repair_result_is_reused_when_feasible_sections_are_cover
     ) is True
 
 
-def test_invalid_visual_repair_cache_does_not_bypass_bounded_provider_path(monkeypatch):
+def test_infeasible_visual_repair_capacity_fails_before_provider_even_with_invalid_cache(monkeypatch):
     module = _module()
     repair = importlib.import_module("app.services.visual_narrative_repair")
     from types import SimpleNamespace
@@ -329,14 +338,16 @@ def test_invalid_visual_repair_cache_does_not_bypass_bounded_provider_path(monke
             {"hook": ("beat-missing",)},
         )
 
-    assert caught.value.code == "cloud.provider_request_failed"
-    assert calls["count"] == repair.MAX_REPAIR_ATTEMPTS
+    assert caught.value.code == "visual.narrative_repair_ungrounded"
+    assert caught.value.safe_metadata["failed_predicate"] == "visual.repair_capacity_plan_infeasible"
+    assert calls["count"] == 0
 
 
 
 def test_visual_repair_runner_limits_claims_to_original_feasible_lineage(monkeypatch):
     module = _module()
     repair = importlib.import_module("app.services.visual_narrative_repair")
+    monkeypatch.setattr(repair.reference_profile, "REVIEW_MAX_SHOT_SECONDS", 60.0)
     ledger = repair.FeasibleVisualLedger(
         entries=(
             repair.FeasibleVisualRecord(
@@ -429,6 +440,158 @@ def test_visual_repair_runner_limits_claims_to_original_feasible_lineage(monkeyp
     assert captured
     assert all(item == {"claim-safe": {"panel-safe"}} for item in captured)
 
+def test_visual_repair_reconstructs_referenced_authoritative_claim_before_validation(monkeypatch):
+    module = _module()
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    ledger = repair.FeasibleVisualLedger(
+        entries=(repair.FeasibleVisualRecord(
+            panel_region_id="region-safe",
+            panel_id="panel-safe",
+            source_asset_id="asset-safe",
+            source_order=10,
+            eligible_sections=("hook",),
+            eligible_beats=("beat-safe",),
+            resolution_state="NATIVE",
+            feasible_rois=({"kind":"primary","roi_label":"primary","crop_box":[0,0,100,100],"telemetry":{}},),
+            visual_strengths={"edge_connected_blank_fraction":0.0,"protected_retained_fraction":1.0},
+            evidence_hash="e" * 64,
+            detector_version="detector-v1",
+            mask_sha256="m" * 64,
+            panel_size=(100,100),
+        ),),
+        model_identity_hash=_identity(module).identity_hash,
+    )
+    visual = SimpleNamespace(
+        panels=({"panel_id":"panel-safe"},),
+        source_hash="source-hash",
+        visual_evidence_hash="visual-hash",
+    )
+    story_dict = {
+        "beats":[{"beat_id":"beat-safe","panel_ids":["panel-safe"]}],
+        "claims":[{"claim_id":"claim-safe","text":"Visible fact.","qualification":"Directly visible.","panel_ids":["panel-safe"]}],
+    }
+    story_map = SimpleNamespace(
+        claims=tuple(story_dict["claims"]),
+        story_map_hash="story-hash",
+        as_dict=lambda: story_dict,
+    )
+    class Provider:
+        model_id = _identity(module).model
+        def complete_json(self, **_kwargs):
+            return {
+                "claims": [],
+                "passages":[{
+                    "passage_id":"p1",
+                    "text":"A grounded visible change lands here.",
+                    "claim_ids":["claim-safe"],
+                    "evidence_panel_ids":["panel-safe"],
+                }],
+                "narrative_outline":{"story_spine":{},"ending_kind":"consequence"},
+            }
+    original_build_repair_payload = repair.build_repair_payload
+    def build_feasible_test_payload(**kwargs):
+        payload = original_build_repair_payload(**kwargs)
+        payload["capacity_safe_claim_plan"] = {
+            "feasible": True,
+            "rows": [{
+                "passage_index": 0,
+                "section": "hook",
+                "required_visual_slots": 1,
+                "available_visual_slots": 1,
+                "claim_ids": ["claim-safe"],
+                "evidence_panel_ids": ["panel-safe"],
+                "evidence_panel_slot_capacity": {"panel-safe": 1},
+                "claim_min_source_orders": [10],
+                "max_lexical_words": 125,
+                "target_lexical_words": 20,
+                "feasible": True,
+            }],
+        }
+        return payload
+    monkeypatch.setattr(repair, "build_repair_payload", build_feasible_test_payload)
+    captured=[]
+    def stop_after_reconstruction(value, **_kwargs):
+        captured.extend(value["claims"])
+        raise repair.VisualNarrativeRepairError("stop after reconstruction", "visual.narrative_repair_ungrounded")
+    monkeypatch.setattr(repair, "remap_same_beat_panel_citations", stop_after_reconstruction)
+    runner = module.CloudStageRunner(provider=Provider(), model_identity=_identity(module), max_attempts=1)
+    runner._narration_observations = lambda *_args: (
+        [{"panel_id":"panel-safe"}],
+        {"continuity_ledger":{},"coverage_manifest":{}},
+    )
+    with pytest.raises(module.CloudStageError):
+        runner.run_visual_narrative_repair(visual, story_map, None, ledger, {"hook": ("beat-safe",)})
+    assert len(captured) == repair.MAX_REPAIR_ATTEMPTS
+    assert all(
+        claim == {
+            "claim_id": "claim-safe",
+            "claim_type": "interpretation",
+            "text": "Visible fact.",
+            "qualification": "Directly visible.",
+            "evidence_panel_ids": ["panel-safe"],
+        }
+        for claim in captured
+    )
+
+
+def test_visual_repair_infeasible_capacity_plan_fails_before_provider_call(monkeypatch):
+    module = _module()
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    ledger = repair.FeasibleVisualLedger(
+        entries=(repair.FeasibleVisualRecord(
+            panel_region_id="region-safe",
+            panel_id="panel-safe",
+            source_asset_id="asset-safe",
+            source_order=10,
+            eligible_sections=("hook",),
+            eligible_beats=("beat-safe",),
+            resolution_state="NATIVE",
+            feasible_rois=({"kind":"primary","roi_label":"primary","crop_box":[0,0,100,100],"telemetry":{}},),
+            visual_strengths={"edge_connected_blank_fraction":0.0,"protected_retained_fraction":1.0},
+            evidence_hash="e" * 64,
+            detector_version="detector-v1",
+            mask_sha256="m" * 64,
+            panel_size=(100,100),
+        ),),
+        model_identity_hash=_identity(module).identity_hash,
+    )
+    visual = SimpleNamespace(
+        panels=({"panel_id":"panel-safe"},),
+        source_hash="source-hash",
+        visual_evidence_hash="visual-hash",
+    )
+    story_dict = {
+        "beats":[{"beat_id":"beat-safe","panel_ids":["panel-safe"]}],
+        "claims":[{"claim_id":"claim-safe","text":"Visible fact.","qualification":"Directly visible.","panel_ids":["panel-safe"]}],
+    }
+    story_map = SimpleNamespace(
+        claims=tuple(story_dict["claims"]),
+        story_map_hash="story-hash",
+        as_dict=lambda: story_dict,
+    )
+    class Provider:
+        model_id = _identity(module).model
+        calls = 0
+        def complete_json(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("provider must not be called for an infeasible local plan")
+    provider = Provider()
+    runner = module.CloudStageRunner(provider=provider, model_identity=_identity(module), max_attempts=1)
+    runner._narration_observations = lambda *_args: (
+        [{"panel_id":"panel-safe"}],
+        {"continuity_ledger":{},"coverage_manifest":{}},
+    )
+
+    with pytest.raises(module.CloudStageError) as exc_info:
+        runner.run_visual_narrative_repair(
+            visual, story_map, None, ledger, {"hook": ("beat-safe",)}
+        )
+
+    assert exc_info.value.code == "visual.narrative_repair_ungrounded"
+    assert exc_info.value.safe_metadata["failed_predicate"] == "visual.repair_capacity_plan_infeasible"
+    assert provider.calls == 0
+
+
 def test_visual_repair_contract_bump_scopes_stale_provider_cache():
     repair = importlib.import_module("app.services.visual_narrative_repair")
     ledger = type("Ledger", (), {"ledger_hash": "ledger-hash"})()
@@ -448,8 +611,8 @@ def test_visual_repair_contract_bump_scopes_stale_provider_cache():
         contract_version=repair.REPAIR_CONTRACT_VERSION,
     )
 
-    assert repair.REPAIR_CONTRACT_VERSION == "visual_narrative_repair_v3"
-    assert repair.REPAIR_PROMPT_VERSION == "visual-narrative-repair-v4"
+    assert repair.REPAIR_CONTRACT_VERSION == "visual_narrative_repair_v7"
+    assert repair.REPAIR_PROMPT_VERSION == "visual-narrative-repair-v8"
     assert old_key != current_key
 
 
@@ -1097,6 +1260,54 @@ def test_review_preview_failure_code_keeps_subtitle_stable_code():
 
 
 
+
+
+def test_legacy_visual_repair_checkpoint_is_provisional_resume_compatible():
+    module = _module()
+    base = _identity(module)
+    current_identity = replace(
+        base,
+        prompt_versions=dict(base.prompt_versions)
+        | {"visual_narrative_repair": module.CURRENT_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    legacy_identity = replace(
+        current_identity,
+        prompt_versions=dict(current_identity.prompt_versions)
+        | {"visual_narrative_repair": module.LEGACY_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    runner = SimpleNamespace(
+        prompts={
+            "narration": ("vision-first-story-analyzer-v3", "n" * 64, ""),
+            "visual_narrative_repair": (
+                module.CURRENT_VISUAL_REPAIR_PROMPT_VERSION, "c" * 64, ""
+            ),
+        },
+        model_identity=current_identity,
+    )
+    narration = SimpleNamespace(
+        prompt_version=module.LEGACY_VISUAL_REPAIR_PROMPT_VERSION,
+        prompt_sha256="l" * 64,
+    )
+    record = module.ChapterJobRecord(
+        "project-legacy-repair",
+        stage_results={
+            "visual_repair": {
+                "contract_version": module.LEGACY_VISUAL_REPAIR_CONTRACT_VERSION,
+                "prompt_version": module.LEGACY_VISUAL_REPAIR_PROMPT_VERSION,
+                "prompt_sha256": "l" * 64,
+                "model_identity_hash": legacy_identity.identity_hash,
+                "publish_allowed": False,
+            }
+        },
+    )
+
+    assert module._narration_is_legacy_visual_repair_checkpoint(
+        record, narration, runner
+    )
+    assert module._narration_stage_prompt_is_compatible(record, narration, runner)
+    assert not module._narration_is_current_visual_repair_checkpoint(
+        record, narration, runner
+    )
 
 def test_repaired_narration_checkpoint_requires_exact_current_repair_metadata():
     module = _module()
@@ -4386,6 +4597,33 @@ def test_visual_repair_normalizes_panel_ids_alias_before_grounding_validation():
     )
 
 
+def test_narration_retry_feedback_retargets_uncompactable_position_vector():
+    module = _module()
+
+    feedback = module._narration_retry_feedback(
+        "cloud.narrative_repair_micro_compaction_unavailable",
+        observed_word_count=130,
+    )
+
+    assert "same locked positions" in feedback
+    assert "115-120 lexical words" in feedback
+    assert "word_budget_max as a hard ceiling" in feedback
+    assert "passage_word_budget_max" in feedback
+    assert "130 lexical words" in feedback
+    assert "claim" in feedback and "evidence" in feedback
+
+
+def test_narration_retry_feedback_preserves_exact_position_count():
+    module = _module()
+    feedback = module._narration_retry_feedback(
+        "cloud.narrative_repair_position_contract_invalid"
+    )
+    assert "exactly one rewrite string for every supplied ordered position" in feedback
+    assert "do not merge or omit positions" in feedback
+    assert "rewrites array" in feedback
+    assert module.NARRATION_REPAIR_POSITION_MAX_ATTEMPTS == 3
+
+
 def test_visual_repair_retry_feedback_is_static_and_specific():
     module = _module()
 
@@ -4741,6 +4979,53 @@ def test_narration_duration_failure_retains_candidate_for_visual_repair(monkeypa
     assert caught.value.code == "cloud.narrative_duration_out_of_range"
     assert runner._last_narration_result is invalid
 
+def test_run_narration_selected_story_tracks_selected_visual_hash(monkeypatch):
+    module = _module()
+    panels = _panels(module, "selected-story-visual-hash")
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=_identity(module),
+        max_attempts=1,
+    )
+    visual = runner.run_visual_evidence(panels)
+    story_map = runner.run_story_map(visual)
+    selected_panel_ids = tuple(panel.panel_id for panel in panels[:2])
+    selected_set = set(selected_panel_ids)
+    beat_ids = tuple(
+        str(beat["beat_id"])
+        for beat in story_map.beats
+        if selected_set.intersection(str(value) for value in beat.get("panel_ids", ()))
+    )
+    claim_ids = tuple(
+        str(claim["claim_id"])
+        for claim in story_map.claims
+        if selected_set.intersection(
+            str(value)
+            for value in claim.get("evidence_panel_ids", claim.get("panel_ids", ()))
+        )
+    )
+    selection = module.EditorialSelection(
+        beat_ids=beat_ids,
+        panel_ids=selected_panel_ids,
+        claim_ids=claim_ids,
+        beat_scores=(),
+        selection_hash=module._hash(
+            {"beats": beat_ids, "panels": selected_panel_ids, "claims": claim_ids}
+        ),
+    )
+    monkeypatch.setattr(module, "select_editorial_beats", lambda *_args, **_kwargs: selection)
+
+    def stop_after_selection(_prompt, _source, _obs, _struct, selected_story, selected_visual, **_kwargs):
+        assert selected_visual.visual_evidence_hash != visual.visual_evidence_hash
+        assert selected_story.visual_evidence_hash == selected_visual.visual_evidence_hash
+        raise module.CloudStageError("test.stop")
+
+    monkeypatch.setattr(runner, "_run_narration_batched", stop_after_selection)
+    with pytest.raises(module.CloudStageError) as caught:
+        runner.run_narration(visual, story_map, panels=panels)
+    assert caught.value.code == "test.stop"
+
+
 def test_repair_harness_uses_compact_candidate_context_without_normal_call():
     module = _module()
     base_panels = _panels(module, "compact-repair")
@@ -4985,7 +5270,7 @@ def test_targeted_repair_prompt_declares_exact_slot_wire_shape():
     module = _module()
     instruction = module.NARRATION_REPAIR_INSTRUCTION
     assert '{"rewrites": ["text for position 0", "..."]}' in instruction
-    assert "never return, create, or rewrite claim IDs" in instruction
+    assert "never return, create, or rewrite claim ids" in instruction.lower()
     assert "approximately 120 total words" in instruction
     assert "word_budget_min/word_budget_max" in instruction
     assert "third-person narrator language" in instruction
@@ -4993,29 +5278,30 @@ def test_targeted_repair_prompt_declares_exact_slot_wire_shape():
     assert "renaming a speaker are not loopholes" in instruction
 
 
-def test_targeted_repair_prompt_requires_concise_position_drafting():
+def test_targeted_repair_prompt_distinguishes_normal_and_capacity_locked_budgets():
     module = _module()
     instruction = module.NARRATION_REPAIR_INSTRUCTION
-    assert "not hard admission bounds" in instruction
-    assert "word_budget_min/word_budget_max" in instruction
-    assert "pathological single-position share" in instruction
-    assert "exactly 120 is guidance" in instruction
+    assert "normal repair mode" in instruction
+    assert "drafting guidance" in instruction
+    assert "CAPACITY-LOCKED WORD BUDGET MODE" in instruction
+    assert "exact targets" in instruction
+    assert "hard ceiling" in instruction
 
 
-def test_targeted_repair_prompt_targets_compact_eight_position_vector():
+def test_targeted_repair_prompt_requires_grounded_locked_scope():
     module = _module()
     instruction = module.NARRATION_REPAIR_INSTRUCTION
-    assert "usual eight-position vector" in instruction
-    assert "A smaller trusted vector is valid" in instruction
-    assert "without inventing positions or padding solely to reach eight" in instruction
-    assert "Per-position budgets remain drafting guidance, not hard caps" in instruction
+    assert "trusted lineage" in instruction
+    assert "Recount every position" in instruction
+    assert "third-person narrator language" in instruction
+    assert "never mix a same-chapter panel from another section" in instruction
 
 
-def test_targeted_repair_prompt_targets_safe_in_range_total():
+def test_targeted_repair_prompt_keeps_global_acceptance_bounds():
     module = _module()
     instruction = module.NARRATION_REPAIR_INSTRUCTION
-    assert "Aim for 118 total words" in instruction
-    assert "exactly 120 is guidance only" in instruction
+    assert "total 115-125 words" in instruction
+    assert "50-60 seconds" in instruction
 
 
 def _position_rewrite_text(word_budget, prefix):
@@ -5069,6 +5355,44 @@ def _provider_position_vector(payload):
             for row in rows
         ]
     }
+
+
+def test_visual_text_only_position_registry_preserves_passage_locked_evidence_subset():
+    module = _module()
+    runner, candidate, visual, story_map = _immutable_slot_fixture(module)
+    panel_ids = list(visual.panel_ids[:4])
+    claims = []
+    passages = []
+    budgets = {}
+    for index, panel_id in enumerate(panel_ids):
+        claim_id = f"immutable-claim-{index}-0"
+        base_claim = next(claim for claim in story_map.claims if claim["claim_id"] == claim_id)
+        claim = dict(base_claim)
+        claim["panel_ids"] = [panel_id, visual.panel_ids[(index + 1) % 4]]
+        claim["evidence_panel_ids"] = list(claim["panel_ids"])
+        claims.append(claim)
+        passage_id = f"locked-passage-{index}"
+        passages.append({
+            "passage_id": passage_id,
+            "editorial_role": "causal_turn",
+            "text": f"Grounded passage {index} stays on its selected panel.",
+            "claim_ids": [claim_id],
+            "evidence_panel_ids": [panel_id],
+        })
+        budgets[passage_id] = 30
+    locked_candidate = replace(candidate, passages=tuple(passages), evidence_graph={"claims": claims})
+    locked_story_map = replace(story_map, claims=tuple(claims))
+    registry = runner._build_narration_repair_position_registry(
+        locked_candidate, locked_story_map, passage_word_budgets=budgets
+    )
+    assert registry["evidence_closure"]["evidence_scope_mode"] == "candidate_passage_locked"
+    assert len(registry["positions"]) == len(passages)
+    expected = {row["passage_id"]: row for row in passages}
+    for row in registry["positions"]:
+        original = expected[row["passage_id"]]
+        assert row["claim_ids"] == original["claim_ids"]
+        assert row["evidence_panel_ids"] == original["evidence_panel_ids"]
+        assert row["word_budget"] == budgets[row["passage_id"]]
 
 
 def test_position_repair_preselection_is_deterministic_and_budgeted():
@@ -5452,7 +5776,8 @@ def test_position_repair_accepts_observed_in_range_distribution_as_guidance():
 
     assert sum(len(str(passage["text"]).split()) for passage in reconciled["script_passages"]) == 124
     instruction = module.NARRATION_REPAIR_INSTRUCTION
-    assert "not hard admission bounds" in instruction
+    assert "normal repair mode" in instruction
+    assert "drafting guidance" in instruction
 
 
 def test_position_repair_micro_compacts_exact_127_words_without_losing_negation():
@@ -5480,6 +5805,116 @@ def test_position_repair_micro_compacts_exact_127_words_without_losing_negation(
     assert "it's" in text
     assert "doesn't" in text
     assert "does not" not in text
+
+
+def test_visual_repair_text_only_duration_fallback_locks_passage_scope(monkeypatch):
+    module = _module()
+    from types import SimpleNamespace
+
+    runner = module.CloudStageRunner(
+        provider=SimpleNamespace(model_id=_identity(module).model),
+        model_identity=_identity(module),
+        max_attempts=1,
+    )
+    passage = {
+        "passage_id": "visual-repair-p1",
+        "editorial_role": "hook",
+        "text": "Grounded words stay tied to the same visible evidence.",
+        "claim_ids": ["claim-1"],
+        "evidence_panel_ids": ["panel-1"],
+    }
+    spoken = passage["text"]
+    candidate = module.NarrationResult(
+        spoken_text=spoken,
+        display_words=module.derive_display_words(spoken),
+        passages=(passage,),
+        ending_kind="consequence",
+        word_count=137,
+        estimated_duration_s=59.57,
+        observations=(),
+        continuity_ledger={},
+        evidence_graph={"claims": [{
+            "claim_id": "claim-1",
+            "claim_type": "fact",
+            "text": "Grounded visible fact.",
+            "qualification": "Visible evidence supports it.",
+            "evidence_panel_ids": ["panel-1"],
+        }]},
+        story_spine={},
+        qc_report={},
+        model_identity_hash=runner.model_identity.identity_hash,
+        prompt_version=runner.prompts["visual_narrative_repair"][0],
+        prompt_sha256=runner.prompts["visual_narrative_repair"][1],
+        visual_evidence_hash="visual-hash",
+    )
+    repaired = replace(
+        candidate,
+        word_count=120,
+        estimated_duration_s=52.17,
+        qc_report={"narration_repair": {"scope": "position_locked_rewrite_vector"}},
+    )
+    captured = {}
+
+    def fake_targeted(*args, allow_passage_removal=True, **kwargs):
+        captured["failure_codes"] = args[7]
+        captured["allow_passage_removal"] = allow_passage_removal
+        captured["passage_word_budgets"] = kwargs.get("passage_word_budgets")
+        return repaired
+
+    monkeypatch.setattr(runner, "_run_targeted_narration_repair", fake_targeted)
+    result = runner._run_visual_repair_text_only_duration_repair(
+        visual_repair_prompt=runner.prompts["visual_narrative_repair"],
+        source={"ledger_hash": "ledger"},
+        observations=(),
+        structural={},
+        story_map=SimpleNamespace(),
+        visual=SimpleNamespace(visual_evidence_hash="visual-hash"),
+        candidate=candidate,
+        capacity_plan={"rows": [{"target_lexical_words": 120}]},
+    )
+
+    assert captured["failure_codes"] == ("cloud.narrative_duration_out_of_range",)
+    assert captured["passage_word_budgets"] == {"visual-repair-p1": 120}
+    assert captured["allow_passage_removal"] is False
+    assert result.prompt_version == runner.prompts["visual_narrative_repair"][0]
+    assert result.prompt_sha256 == runner.prompts["visual_narrative_repair"][1]
+    marker = result.qc_report["visual_repair_text_only_duration_repair_v1"]
+    assert marker["scope"] == "text_only_locked_claim_evidence"
+    assert marker["passage_removal_allowed"] is False
+    assert marker["candidate_word_count"] == 137
+    assert marker["result_word_count"] == 120
+
+
+def test_micro_expansion_rescues_narrow_undershoot_without_new_content():
+    module = _module()
+    source = (
+        "They'll move when they're ready, but they won't rush. "
+        "We haven't seen why they couldn't wait, and I'm still watching. "
+        "You've got the same evidence, so don't change what it means. "
+        "She'll stay close while we're following the visible turn. "
+        "They've already chosen, and we won't invent anything else. "
+        "You're seeing the same grounded event while they aren't moving back. "
+        "We couldn't add facts, so we'll only expand safe contractions. "
+        "I haven't changed any claim or panel evidence here. "
+        "They're still following what we've already seen, and they won't add new motives. "
+        "We're keeping the same visible sequence, so you won't get invented context. "
+        "They'll describe what's grounded while we don't alter the evidence."
+    )
+    rewrites = (source,)
+    before = module.script.narration_word_count(source)
+    assert 109 <= before <= 114
+
+    expanded, metadata = module._micro_expand_rewrites(
+        rewrites, total_words=before
+    )
+
+    assert metadata["version"] == module.NARRATION_MICRO_EXPANSION_VERSION
+    assert metadata["applied"] is True
+    assert metadata["failed_predicate"] is None
+    assert metadata["after_word_count"] >= 115
+    assert metadata["after_word_count"] <= 125
+    assert "She will" in expanded[0]
+    assert metadata["operation_count"] >= 1
 
 
 def test_micro_compaction_supports_standard_future_and_modal_contractions():
@@ -5555,6 +5990,27 @@ def test_position_repair_micro_compaction_without_safe_operation_fails_closed():
     assert metrics["total_word_count"] == 127
     assert metrics["micro_compaction"]["operation_count"] == 0
     assert "no_compact0_word" not in json.dumps(metrics)
+
+
+def test_micro_compaction_accepts_131_when_safe_contractions_can_reach_limit():
+    module = _module()
+    phrases = ("it is", "does not", "will not", "have not", "there is", "that is")
+    counts = (17, 17, 17, 16, 16, 16, 16, 16)
+    rewrites = []
+    for index, count in enumerate(counts):
+        prefix = phrases[index] if index < len(phrases) else ""
+        used = 2 if prefix else 0
+        fillers = [f"safe{index}word{word_index}" for word_index in range(count - used)]
+        rewrites.append(" ".join(part for part in (prefix, *fillers) if part))
+    assert sum(module.script.narration_word_count(text) for text in rewrites) == 131
+
+    compacted, metadata = module._micro_compact_rewrites(rewrites, total_words=131)
+
+    assert metadata["applied"] is True
+    assert metadata["failed_predicate"] is None
+    assert metadata["after_word_count"] == 125
+    assert len(metadata["operation_types"]) == 6
+    assert sum(module.script.narration_word_count(text) for text in compacted) == 125
 
 
 def test_position_repair_micro_compaction_window_rejects_large_overshoot():
@@ -5914,6 +6370,35 @@ def test_position_repair_duration_gate_remains_hard_after_compaction_boundary(mo
     assert caught.value.safe_metadata["estimated_duration_s"] == 61.0
 
 
+def test_position_repair_enforces_explicit_passage_word_budgets():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    passage_ids = [str(item["passage_id"]) for item in candidate.passages]
+    base, remainder = divmod(120, len(passage_ids))
+    budgets = {
+        passage_id: base + (1 if index < remainder else 0)
+        for index, passage_id in enumerate(passage_ids)
+    }
+    registry = runner._build_narration_repair_position_registry(
+        candidate, story_map, passage_word_budgets=budgets
+    )
+    assert registry["passage_word_budgets"] == budgets
+    counts = [int(row["word_budget"]) for row in registry["positions"]]
+    first_passage = registry["positions"][0]["passage_id"]
+    second_passage = next(
+        row["passage_id"] for row in registry["positions"] if row["passage_id"] != first_passage
+    )
+    source_index = next(i for i, row in enumerate(registry["positions"]) if row["passage_id"] == first_passage)
+    sink_index = next(i for i, row in enumerate(registry["positions"]) if row["passage_id"] == second_passage)
+    counts[source_index] += 1
+    counts[sink_index] -= 1
+    raw = {"rewrites": [_position_rewrite_text(count, f"budget{index}_") for index, count in enumerate(counts)]}
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, registry, candidate)
+    assert caught.value.code == "cloud.narrative_repair_position_budget_invalid"
+    assert caught.value.safe_metadata["failed_predicate"] == "passage_word_budget"
+
+
 @pytest.mark.parametrize("mutation", ("old_id_wrapper", "wrong_count", "wrong_type"))
 def test_position_repair_rejects_non_positional_provider_shapes(mutation):
     module = _module()
@@ -6082,6 +6567,34 @@ def test_visual_repair_retry_feedback_targets_subtitle_overflow():
     assert "shorter subtitle-safe wording" in feedback
     assert "22 characters" in feedback
     assert "same grounded claim IDs and evidence" in feedback
+
+
+def test_visual_repair_retry_feedback_targets_visual_capacity_shortfall():
+    module = _module()
+
+    feedback = module._visual_narrative_repair_retry_feedback(
+        "visual.narrative_repair_ungrounded",
+        failed_field="script_passages",
+        failed_predicate="visual.repair_visual_capacity_shortfall",
+    )
+
+    assert "required_visual_slots" in feedback
+    assert "unique panels" in feedback
+    assert "unrelated panels" in feedback
+    assert "4.0 seconds" in feedback
+
+def test_visual_repair_retry_feedback_enforces_mandatory_capacity_plan():
+    module = _module()
+
+    feedback = module._visual_narrative_repair_retry_feedback(
+        "visual.narrative_repair_ungrounded",
+        failed_predicate="visual.repair_capacity_plan_mismatch",
+    )
+
+    assert "capacity_safe_claim_plan exactly" in feedback
+    assert "claim_ids and evidence_panel_ids" in feedback
+    assert "max_lexical_words" in feedback
+
 
 def test_visual_repair_retry_feedback_targets_ending_and_compaction_contracts():
     module = _module()
@@ -6327,6 +6840,89 @@ def test_equivalent_preparation_migrates_legacy_visual_cache_without_provider_ca
         )
         is None
     )
+
+
+def test_current_visual_cache_reuses_exact_review_subset_with_full_manifest_hash_vector():
+    module = _module()
+    base_panels = _panels(module, "review-subset")
+    full_panels = tuple(
+        replace(
+            panel,
+            metadata_only=True,
+            prepared_order=index,
+            identity_payload_checksum="a" * 64,
+            identity_descriptor_hash=(f"{index + 1:064x}"),
+            source_identity_hash="c" * 64,
+        )
+        for index, panel in enumerate(base_panels)
+    )
+    identity = _identity(module)
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(), model_identity=identity
+    )
+    prompt = runner.prompts["visual"]
+    accepted = (full_panels[0], full_panels[2])
+    rows = tuple(
+        _visual_row(
+            {
+                "panel_id": panel.panel_id,
+                "source_asset_id": panel.source_asset_id,
+                "source_order": panel.source_order,
+            }
+        )
+        | {
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "source_checksum": panel.source_checksum,
+            "cache_identity_hash": panel.identity_descriptor_hash,
+            "cache_identity_version": module.VISUAL_CACHE_IDENTITY_VERSION,
+        }
+        for panel in accepted
+    )
+    cached = module.VisualStageResult(
+        panels=rows,
+        source_hash="d" * 64,
+        model_identity_hash=identity.identity_hash,
+        prompt_version=prompt[0],
+        prompt_sha256=prompt[1],
+        cache_identity_version=module.VISUAL_CACHE_IDENTITY_VERSION,
+        panel_identity_hashes=module._visual_panel_identity_hashes(full_panels),
+    ).as_dict()
+    subset_panels = module._panels_for_cached_visual_stage(full_panels, cached)
+    assert module._visual_cache_requires_subset_restore(
+        runner, cached, full_panels, allow_admitted_subset=False
+    ) is True
+    assert module._visual_cache_requires_subset_restore(
+        runner, cached, full_panels, allow_admitted_subset=True
+    ) is False
+
+    migrated = module._migrate_visual_cache_identity(
+        cached,
+        subset_panels,
+        model_identity=identity,
+        prompt=prompt,
+    )
+
+    assert migrated is not None
+    assert migrated == cached
+    assert len(migrated["panel_identity_hashes"]) == 3
+
+    tampered = dict(cached)
+    tampered_rows = [dict(row) for row in rows]
+    tampered_rows[1]["cache_identity_hash"] = "f" * 64
+    tampered["panels"] = tampered_rows
+    assert (
+        module._migrate_visual_cache_identity(
+            tampered,
+            subset_panels,
+            model_identity=identity,
+            prompt=prompt,
+        )
+        is None
+    )
+    assert module._visual_cache_requires_subset_restore(
+        runner, tampered, full_panels, allow_admitted_subset=True
+    ) is True
 
 
 def test_metadata_only_manifest_migrates_exact_legacy_descriptor_without_provider_call():
@@ -6686,16 +7282,17 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-position-repair-v9"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v12"
     )
     assert len(repair_prompt_sha256) == 64
     assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text
-    assert "revise it until the total is 115-125 words" in repair_prompt_text
-    assert "never return a vector above 125 words" in repair_prompt_text
-    assert "cannot repair larger responses" in repair_prompt_text
-    assert "usual eight-position vector" in repair_prompt_text
-    assert "A smaller trusted vector is valid" in repair_prompt_text
-    assert "without inventing positions or padding solely to reach eight" in repair_prompt_text
+    assert "total 115-125 words" in repair_prompt_text
+    assert "CAPACITY-LOCKED WORD BUDGET MODE" in repair_prompt_text
+    assert "exactly one complete retained passage" in repair_prompt_text
+    assert "passage_word_budget_max is a hard ceiling" in repair_prompt_text
+    assert "position word_budget values are exact targets" in repair_prompt_text
+    assert "Recount every position" in repair_prompt_text
+    assert "never mix a same-chapter panel from another section" in repair_prompt_text
     assert repair_prompt_text != runner.prompts["narration"][2]
     assert provider.repair_payloads[0]["targeted_repair"]["failure_codes"] == [
         "cloud.narrative_duration_out_of_range",
@@ -9634,6 +10231,82 @@ def test_upstream_stage_identity_rejects_provider_model_change():
     assert not module._stage_result_identity_is_compatible(legacy.identity_hash, current, stage="story_map")
 
 
+def test_repair_only_identity_bump_normalizes_targeted_narration_candidate(monkeypatch):
+    module = _module()
+    base = _identity(module)
+    current = replace(
+        base,
+        prompt_versions=dict(base.prompt_versions)
+        | {"visual_narrative_repair": module.CURRENT_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    legacy = replace(
+        current,
+        prompt_versions=dict(current.prompt_versions)
+        | {"visual_narrative_repair": module.LEGACY_VISUAL_REPAIR_PROMPT_VERSION},
+    )
+    runner = module.CloudStageRunner(provider=_FakeProvider(), model_identity=current)
+    visual_prompt = runner.prompts["visual"]
+    story_prompt = runner.prompts["story_map"]
+    narration_prompt = runner.prompts["narration"]
+    visual = module.VisualStageResult(
+        panels=(),
+        source_hash="visual-source",
+        model_identity_hash=current.identity_hash,
+        prompt_version=visual_prompt[0],
+        prompt_sha256=visual_prompt[1],
+    )
+    story_map = module.StoryMapResult(
+        panel_ids=(),
+        beats=(),
+        causal_chain=(),
+        claims=(),
+        story_map_hash="story-hash",
+        model_identity_hash=current.identity_hash,
+        prompt_version=story_prompt[0],
+        prompt_sha256=story_prompt[1],
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    candidate = module.NarrationResult(
+        spoken_text="Grounded words remain unchanged.",
+        display_words=("GROUNDED", "WORDS", "REMAIN", "UNCHANGED"),
+        passages=(),
+        ending_kind="consequence",
+        word_count=130,
+        estimated_duration_s=56.52,
+        qc_report={},
+        model_identity_hash=legacy.identity_hash,
+        prompt_version=narration_prompt[0],
+        prompt_sha256=narration_prompt[1],
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+    captured = []
+    monkeypatch.setattr(
+        runner,
+        "_compact_narration_repair_context",
+        lambda normalized, _visual, _story: (
+            (captured.append(normalized) or _visual),
+            _story,
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_narration_contract_failures",
+        lambda _candidate: ("cloud.narrative_duration_out_of_range",),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_targeted_narration_repair",
+        lambda _prompt, _source, _obs, _struct, _story, _visual, normalized, _failures: normalized,
+    )
+
+    result = runner.run_narration_repair_candidate(candidate, visual, story_map)
+
+    assert captured
+    assert captured[0].model_identity_hash == current.identity_hash
+    assert result.model_identity_hash == current.identity_hash
+    assert result.spoken_text == candidate.spoken_text
+
+
 def test_repair_only_identity_bump_reuses_persisted_visual_without_rehash():
     module = _module()
     panels = _panels(module, "repair-only-visual")
@@ -9691,6 +10364,16 @@ def test_visual_repair_ending_canonicalization_follows_grounded_final_punctuatio
         "version": "visual-repair-ending-v1",
     }
 
+
+
+def test_visual_repair_ending_canonicalization_repairs_empty_unresolved_question():
+    module = _module()
+    passages = ({"text": "The grounded consequence lands here."},)
+    outline = {"story_spine": {"unresolved_question": ""}, "ending_kind": "consequence"}
+    normalized, provenance = module._canonicalize_visual_repair_ending(outline, passages)
+    assert normalized["story_spine"]["unresolved_question"] == "What follows?"
+    assert outline["story_spine"]["unresolved_question"] == ""
+    assert provenance["unresolved_question_repaired"] == "true"
 
 
 def test_visual_repair_ending_canonicalization_preserves_passage_text():

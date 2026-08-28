@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, replace
 REVIEW_VISUAL_SECONDS_PER_UNIQUE_MIN = 3.0
 REVIEW_VISUAL_SECONDS_PER_UNIQUE_MAX = 4.0
 REVIEW_MAX_UNCHANGED_HOLD_SECONDS = 4.0
+REVIEW_MAX_SHOT_SECONDS = 4.0
 REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION = 0.08
 REVIEW_MIN_TRANSITION_PIXEL_DIFF = 1.0
 REVIEW_MOTION_MAX_NORMALIZED_STEP = 0.08
@@ -51,17 +52,10 @@ def review_visual_density_contract(
     available = int(available_visuals)
     if not math.isfinite(duration) or duration < 0.0 or available < 0:
         raise ValueError("review visual density inputs are invalid")
-    if available == 0:
-        return {
-            "available_visuals": 0,
-            "minimum_required_visuals": 0,
-            "target_visuals": 0,
-            "min_seconds_per_visual": REVIEW_VISUAL_SECONDS_PER_UNIQUE_MIN,
-            "max_seconds_per_visual": REVIEW_VISUAL_SECONDS_PER_UNIQUE_MAX,
-        }
-    minimum_required = min(
-        available,
-        max(1, math.ceil(duration / REVIEW_VISUAL_SECONDS_PER_UNIQUE_MAX)),
+    minimum_required = (
+        max(1, math.ceil(duration / REVIEW_MAX_SHOT_SECONDS))
+        if duration > 0.0
+        else 0
     )
     target = min(
         available,

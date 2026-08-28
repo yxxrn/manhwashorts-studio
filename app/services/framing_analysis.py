@@ -87,6 +87,44 @@ def color_agnostic_edge_blank_fractions(image: Image.Image) -> dict[str, float]:
     return fractions
 
 
+def color_agnostic_edge_blank_span_fractions(image: Image.Image) -> dict[str, float]:
+    """Measure consecutive blank-strip depth as a fraction of the full frame."""
+    sample = image.convert("RGB").resize((64, 114), Image.Resampling.BILINEAR)
+    width, height = sample.size
+    inner = sample.crop((width // 4, height // 4, 3 * width // 4, 3 * height // 4))
+    inner_mean = ImageStat.Stat(inner).mean
+
+    def _blank_line(box: tuple[int, int, int, int]) -> bool:
+        stats = ImageStat.Stat(sample.crop(box))
+        mean_delta = sum(
+            (left - right) ** 2
+            for left, right in zip(stats.mean, inner_mean, strict=True)
+        ) ** 0.5
+        max_stddev = max(stats.stddev)
+        return (
+            max_stddev <= 18.0
+            and mean_delta >= 20.0
+            and max_stddev / max(mean_delta, 1e-9) <= 0.30
+        )
+
+    scans = {
+        "left": (width, [(x, 0, x + 1, height) for x in range(width // 4)]),
+        "right": (width, [(width - x - 1, 0, width - x, height) for x in range(width // 4)]),
+        "top": (height, [(0, y, width, y + 1) for y in range(height // 4)]),
+        "bottom": (height, [(0, height - y - 1, width, height - y) for y in range(height // 4)]),
+    }
+    fractions: dict[str, float] = {}
+    for side, (dimension, boxes) in scans.items():
+        blank_lines = 0
+        for box in boxes:
+            if not _blank_line(box):
+                break
+            blank_lines += 1
+        fractions[side] = round(blank_lines / max(1, dimension), 6)
+    fractions["max_edge_blank_fraction"] = max(fractions.values(), default=0.0)
+    return fractions
+
+
 def detector_contract_matches(contract_version: str, detector_version: str) -> bool:
     return detector_version == contract_version or detector_version.startswith(
         f"{contract_version}:"

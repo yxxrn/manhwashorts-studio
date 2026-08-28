@@ -326,6 +326,20 @@ def test_reference_scene_input_carries_exact_panel_review_identity():
     assert scene.publish_allowed is False
 
 
+
+def test_silent_review_transition_contract_overrides_all_cuts():
+    shots = [
+        {"section": "hook", "transition": "cut"},
+        {"section": "setup", "transition": "cut"},
+        {"section": "conflict", "transition": "cut"},
+        {"section": "twist", "transition": "cut"},
+    ]
+
+    pipeline._enforce_silent_review_transition_contract(shots)
+
+    assert shots[0]["transition"] == "none"
+    assert all(shot["transition"] in {"fade", "slide_left", "slide_right"} for shot in shots[1:])
+
 def test_silent_reference_request_is_explicit_and_audio_free():
     request = render.RenderRequest(
         project_id="project",
@@ -709,6 +723,34 @@ def test_exact_reference_preparation_uses_persisted_roi_pixels(monkeypatch, tmp_
     assert red > blue
 
 
+def test_exact_reference_preparation_trusts_final_framing_blank_telemetry(monkeypatch, tmp_path):
+    import importlib
+    from dataclasses import asdict
+
+    framing = importlib.import_module("app.services.framing_analysis")
+    source = Image.new("RGB", (100, 200), "white")
+    source_path = tmp_path / "panel-final-telemetry.png"
+    source.save(source_path)
+    evidence = _evidence("panel-a", "asset-a", 3)
+    mask = framing.build_color_agnostic_border_mask(source, evidence)
+    selected_box = (0, 0, 100, 200)
+    telemetry = framing.FramingTelemetry(
+        contract_version=reference_profile.REFERENCE_MATCHED_SHORTS_V1.framing_contract_version, detector_version=mask.detector_version,
+        mask_sha256=mask.mask_sha256, crop_box=selected_box, base_zoom=1.0, source_resolution_zoom_cap=1.35,
+        protected_region_zoom_cap=1.35, edge_connected_blank_fraction=0.0, non_discardable_low_information_fraction=0.0,
+        protected_retained_fraction=1.0, balloon_mask_intersection_ratio=0.0, subject_coverage=1.0, face_coverage=1.0,
+        action_coverage=1.0, effect_coverage=1.0, continuity_context_coverage=1.0, mask_confidence=0.96, mask_source="vision_geometry_v1",
+    )
+    monkeypatch.setattr(framing, "candidate_is_feasible", lambda *_a, **_k: (True, telemetry))
+    monkeypatch.setattr(framing, "color_agnostic_edge_blank_fractions", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("raw crop blank scanner must not override final framing telemetry")))
+    selected = {"kind": "primary", "roi_label": "selected", "crop_box": list(selected_box), "pixel_edge_blank_fraction": 0.0}
+    persisted = asdict(telemetry) | {"selected_roi": selected}
+    scene = render.SceneInput(image_path=source_path, start_time=0.0, end_time=1.0, panel_region_id="region-a", panel_id="panel-a", source_asset_id="asset-a", source_order=3, panel_size=(100, 200), evidence_hash=visual_scoring.visual_evidence_hash(evidence), visual_evidence=visual_scoring.panel_visual_evidence_json(evidence), border_mask=asdict(mask), selected_roi=selected, framing_telemetry=persisted, publish_allowed=False)
+    destination = tmp_path / "prepared-final-telemetry.jpg"
+    render._prepare_exact_reference_frame(scene=scene, dest=destination, width=1080, height=1920, profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1)
+    assert destination.exists()
+
+
 def test_reference_ledger_keeps_full_mask_only_on_accepted_attempt():
     import importlib
     from dataclasses import asdict
@@ -1033,6 +1075,65 @@ def test_reference_planner_tries_all_roi_phases_on_alternate_panel(monkeypatch):
     assert accepted["roi_kind"] == "alternate_roi"
 
 
+def test_reference_panel_attempt_uses_final_framing_telemetry_not_stale_roi_blank(monkeypatch):
+    from dataclasses import replace
+
+    from app.services import editorial_visual_planner, framing_analysis
+
+    regions, crops, candidates = _builder_inputs()
+    candidate = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions[:1],
+        panel_candidates_by_region_id={"region-a": candidates["region-a"]},
+        panel_crops_by_region_id={"region-a": crops["region-a"]},
+        section_evidence_panel_ids={"setup": ("panel-a",)},
+        section_citations={},
+        beats_by_section={"setup": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )[0]
+    roi = replace(candidate.roi_alternatives[0], edge_blank_fraction=1.0)
+    telemetry = framing_analysis.FramingTelemetry(
+        contract_version=reference_profile.REFERENCE_MATCHED_SHORTS_V1.framing_contract_version,
+        detector_version=candidate.border_mask.detector_version,
+        mask_sha256=candidate.border_mask.mask_sha256,
+        crop_box=roi.crop_box,
+        base_zoom=1.0, source_resolution_zoom_cap=1.35, protected_region_zoom_cap=1.35,
+        edge_connected_blank_fraction=0.0, non_discardable_low_information_fraction=0.0,
+        protected_retained_fraction=1.0, balloon_mask_intersection_ratio=0.0,
+        subject_coverage=1.0, face_coverage=1.0, action_coverage=1.0, effect_coverage=1.0,
+        continuity_context_coverage=1.0, mask_confidence=0.96, mask_source="vision_geometry_v1",
+    )
+    monkeypatch.setattr(framing_analysis, "candidate_is_feasible", lambda *_a, **_k: (True, telemetry))
+
+    accepted, _telemetry, entry = editorial_visual_planner._reference_panel_attempt(
+        candidate, roi, profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        attempt_order=0, phase_kind="primary", previously_used=False, used_rois=set(),
+        review_aggressive_crop=True,
+    )
+
+    assert accepted is True
+    assert entry["accepted"] is True
+    assert entry["code"] is None
+    assert entry["telemetry"]["edge_connected_blank_fraction"] == 0.0
+
+
+def test_reference_planner_persists_final_blank_telemetry_not_stale_roi_estimate(monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from app.services import editorial_visual_planner, framing_analysis
+    regions, crops, candidates = _builder_inputs()
+    candidate = pipeline._build_reference_panel_fallback_candidates(panel_regions=regions[:1], panel_candidates_by_region_id={"region-a": candidates["region-a"]}, panel_crops_by_region_id={"region-a": crops["region-a"]}, section_evidence_panel_ids={"setup": ("panel-a",)}, section_citations={}, beats_by_section={"setup": ()}, profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1)[0]
+    stale_roi = replace(candidate.roi_alternatives[0], edge_blank_fraction=1.0)
+    candidate = replace(candidate, roi_alternatives=(stale_roi,))
+    telemetry = framing_analysis.FramingTelemetry(contract_version=reference_profile.REFERENCE_MATCHED_SHORTS_V1.framing_contract_version, detector_version=candidate.border_mask.detector_version, mask_sha256=candidate.border_mask.mask_sha256, crop_box=stale_roi.crop_box, base_zoom=1.0, source_resolution_zoom_cap=1.35, protected_region_zoom_cap=1.35, edge_connected_blank_fraction=0.0, non_discardable_low_information_fraction=0.0, protected_retained_fraction=1.0, balloon_mask_intersection_ratio=0.0, subject_coverage=1.0, face_coverage=1.0, action_coverage=1.0, effect_coverage=1.0, continuity_context_coverage=1.0, mask_confidence=0.96, mask_source="vision_geometry_v1")
+    monkeypatch.setattr(editorial_visual_planner, "_feasible_roi_capacity", lambda *_a, **_k: 1)
+    monkeypatch.setattr(framing_analysis, "candidate_is_feasible", lambda *_a, **_k: (True, telemetry))
+    monkeypatch.setattr(editorial_visual_planner, "_plan_reference", lambda *_a, **_k: [{"order_index":0,"section":"setup","start_time":0.0,"end_time":3.5,"camera_intent":"neutral","effect":"static","asset_id":"unused","transition":"none","focus_x":0.5,"focus_y":0.5,"focus_end_x":0.5,"focus_end_y":0.5}])
+    result = editorial_visual_planner._plan_reference_panel_candidates([SimpleNamespace(section="setup", start_time=0.0, end_time=3.5)], reference_profile.REFERENCE_MATCHED_SHORTS_V1, (candidate,), allow_review_cadence_adaptation=True, allow_review_duration=True)
+    assert result[0]["roi"]["pixel_edge_blank_fraction"] == 0.0
+    assert result[0]["framing_telemetry"]["selected_roi"]["pixel_edge_blank_fraction"] == 0.0
+
+
 def test_reference_planner_counts_distinct_roi_capacity_for_single_panel(monkeypatch):
     from types import SimpleNamespace
 
@@ -1201,30 +1302,24 @@ def test_review_planner_uses_distinct_roi_capacity_before_long_holds(monkeypatch
         return not duplicate, {"edge_connected_blank_fraction": 0.0}, entry
 
     monkeypatch.setattr(editorial_visual_planner, "_reference_panel_attempt", fake_attempt)
-    result = editorial_visual_planner._plan_reference_panel_candidates(
-        [
-            SimpleNamespace(
-                section=section,
-                start_time=index * 10.26,
-                end_time=(index + 1) * 10.26,
-                text="The pressure shifts as the next move changes the stakes.",
-            )
-            for index, section in enumerate(sections)
-        ],
-        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
-        candidate_tuple,
-        allow_review_cadence_adaptation=True,
-        allow_review_duration=True,
-    )
+    with pytest.raises(editorial_visual_planner.ReferencePlanningError) as exc:
+        editorial_visual_planner._plan_reference_panel_candidates(
+            [
+                SimpleNamespace(
+                    section=section,
+                    start_time=index * 10.26,
+                    end_time=(index + 1) * 10.26,
+                    text="The pressure shifts as the next move changes the stakes.",
+                )
+                for index, section in enumerate(sections)
+            ],
+            reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+            candidate_tuple,
+            allow_review_cadence_adaptation=True,
+            allow_review_duration=True,
+        )
 
-    assert len(result) == 10
-    assert max(shot["end_time"] - shot["start_time"] for shot in result) < 6.0
-    assert len({shot["panel_id"] for shot in result}) == 5
-    assert all(
-        len({shot["roi_label"] for shot in result if shot["panel_id"] == panel_id}) == 2
-        for panel_id in {shot["panel_id"] for shot in result}
-    )
-    assert any(shot["transition"] == "fade" for shot in result[1:])
+    assert exc.value.code == "visual.capacity_insufficient"
 
 
 def test_silent_render_video_uses_persisted_roi_without_reselection(monkeypatch, tmp_path):

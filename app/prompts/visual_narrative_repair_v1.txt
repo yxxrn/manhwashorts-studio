@@ -1,4 +1,4 @@
-Version: visual-narrative-repair-v4
+Version: visual-narrative-repair-v8
 
 You are repairing a Sharp Friend v1 chapter narration for a review-only visual
 edit. The local system has already rejected some panels as unsafe to frame.
@@ -65,25 +65,46 @@ supports that claim; retain a higher-blank candidate only when the lower-blank
 candidate conflicts with the claim. This is a visual-quality preference, not
 permission to broaden a claim or cite an infeasible panel.
 
-Each repaired section must cite enough feasible panel IDs and ROI alternatives
-to satisfy its deterministic section capacity. When one panel cannot supply
-that capacity, include every other feasible same-beat panel whose visible
-evidence supports the same claim; never assume the renderer can invent another
-shot from an under-specified citation.
+Each repaired passage must satisfy visual_capacity_requirements and cite enough
+feasible panel IDs to satisfy its section capacity while keeping every rendered
+shot at or below 4.0 seconds. The request includes capacity_contract. Every
+feasible claim exposes visual_slot_capacity, and evidence_panel_slot_capacity
+shows the usable slots contributed by each grounded evidence panel. Do not
+recalculate capacity from raw feasible_rois. Sum capacity across UNIQUE cited
+panels only, and ensure the total for each passage is at least its
+required_visual_slots. capacity_contract.max_lexical_words_per_visual_slot is a
+conservative drafting ceiling for passage length versus available visual slots.
+Prefer additional unique panels before reusing a panel through a second ROI.
+The request also supplies capacity_safe_claim_plan, a deterministic grouping of
+existing feasible claims that already satisfies source chronology and unique-panel
+capacity. This plan is MANDATORY. Return the SAME number of passages as the plan.
+For each passage index, copy that plan row's claim_ids and evidence_panel_ids exactly,
+then narrate only the grounded facts of those claims so the displayed panels match
+the spoken content. Do not substitute another claim or panel bundle. Each plan row
+also supplies target_lexical_words and max_lexical_words; aim for the target and
+never exceed the maximum. The capacity_rebalance object gives the total grounded
+word range that is actually feasible under the four-second cadence. Never add a
+claim or panel merely to fill time.
 
 Evidence binding is checked locally before acceptance: every passage citation
-must be a feasible panel, and a passage must include evidence for each of its
+must be a feasible panel, and every cited panel must belong to at least one of
+that passage's claim_ids. A passage must include evidence for each of its
 claim_ids. If one claim is supported by several panels, its evidence may be
 distributed across passages; the union of those passage citations that carry
-the claim must cover the claim's declared evidence_panel_ids. Additional
-feasible context panels are allowed only when they visibly support the passage.
-Check these coverage and union rules before returning the JSON.
+the claim must cover the claim's declared evidence_panel_ids. Unrelated context
+panels are forbidden even when they are feasible. Check these coverage, union,
+and per-passage capacity rules before returning the JSON.
 Each passage must include non-empty claim_ids and evidence_panel_ids, and every
 claim ID must be one of the existing claim IDs. Do not return a passage with an
 empty claim list even when its text is only a transition.
 The first passage is the hook by position, even if its semantic editorial_role
-has another label; all following passages must be chronological by their cited
-source order. Do not place an earlier panel after a later one.
+has another label. The request includes chronology_contract and every feasible
+claim includes evidence_source_orders, min_source_order, and max_source_order.
+For positions after the hook, choose claims as a nondecreasing subsequence of
+chronology_contract.claims_by_source_order. The minimum cited source order of
+each non-hook passage MUST be greater than or equal to the previous non-hook
+passage. Never choose a later-ranked claim and then return to an earlier-ranked
+claim. Do not infer source order from panel IDs; use the supplied numeric fields.
 
 Use all material causal beats that remain supported by the story map. Do not
 invent names, relationships, motives, events, or certainty. Do not copy any
@@ -91,9 +112,9 @@ dialogue or OCR wording. Use a clever, friendly, perceptive Sharp Friend voice
 with contractions, causal transitions, varied sentence lengths, and selective
 evidence-grounded commentary. No hype, CTA, fixed catchphrase, or panel list.
 
-Keep four to six passages and 118-124 lexical words so the local dramatic
-duration estimator lands in the 50-60 second range; do not pad with generic
-filler. The final ending kind controls punctuation: open_question ends
+Keep the exact passage count in capacity_safe_claim_plan and use the lexical-word
+range in capacity_rebalance. The total must remain within the local 50-60 second
+dramatic-duration contract; do not pad with generic filler. The final ending kind controls punctuation: open_question ends
 with an evidence-grounded question; cliffhanger and consequence do not need a
 question mark. Do not generate display_text or subtitle cues; those are derived
 locally from the approved spoken text.

@@ -874,14 +874,60 @@ def _reference_motion_pixel_safety(
             "visual.panel_lineage_unavailable: prepared reference frame is unreadable",
             code="visual.panel_lineage_unavailable",
         ) from exc
-    if safe_curve == "static":
-        view = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
-        maximum = framing_analysis.color_agnostic_edge_blank_fractions(
-            framing_analysis.reference_tv_range_preview(view)
-        )["max_edge_blank_fraction"]
-        return maximum <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION, maximum
+    has_reference_geometry = bool(
+        scene.border_mask
+        and isinstance(scene.selected_roi, Mapping)
+        and isinstance(scene.framing_telemetry, Mapping)
+    )
+    edge_metric = (
+        framing_analysis.color_agnostic_edge_blank_span_fractions
+        if has_reference_geometry
+        else framing_analysis.color_agnostic_edge_blank_fractions
+    )
+    reference_mask = None
+    reference_roi_box = None
+    if has_reference_geometry:
+        reference_mask = _reference_border_mask_from_mapping(scene.border_mask)
+        raw_roi_box = scene.selected_roi.get("crop_box")
+        if not isinstance(raw_roi_box, (list, tuple)) or len(raw_roi_box) != 4:
+            raise RenderError(
+                "visual.panel_lineage_unavailable: motion preflight ROI is invalid",
+                code="visual.panel_lineage_unavailable",
+            )
+        reference_roi_box = tuple(int(value) for value in raw_roi_box)
+    def _effective_blank_fraction(
+        pixel_fraction: float,
+        viewport: tuple[int, int, int, int],
+    ) -> float:
+        if (
+            not has_reference_geometry
+            or pixel_fraction <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+            or reference_mask is None
+            or reference_roi_box is None
+        ):
+            return pixel_fraction
+        left, top, right, bottom = reference_roi_box
+        roi_width = right - left
+        roi_height = bottom - top
+        vx0, vy0, vx1, vy1 = viewport
+        mapped = (
+            left + int(math.floor(vx0 * roi_width / max(1, iw))),
+            top + int(math.floor(vy0 * roi_height / max(1, ih))),
+            left + int(math.ceil(vx1 * roi_width / max(1, iw))),
+            top + int(math.ceil(vy1 * roi_height / max(1, ih))),
+        )
+        mask_fraction = framing_analysis._mask_crop_fraction(reference_mask, mapped)
+        return min(float(pixel_fraction), float(mask_fraction))
 
     iw, ih = image.size
+    if safe_curve == "static":
+        view = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
+        pixel_fraction = edge_metric(
+            framing_analysis.reference_tv_range_preview(view)
+        )["max_edge_blank_fraction"]
+        maximum = _effective_blank_fraction(pixel_fraction, (0, 0, iw, ih))
+        return maximum <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION, maximum
+
     maximum = 0.0
     for index in range(sample_count):
         progress = index / (sample_count - 1)
@@ -911,10 +957,13 @@ def _reference_motion_pixel_safety(
         x = max(0, min(iw - crop_w, int(math.floor(((iw - crop_w) * fx) / 2.0) * 2)))
         y = max(0, min(ih - crop_h, int(math.floor(((ih - crop_h) * fy) / 2.0) * 2)))
         view = image.crop((x, y, x + crop_w, y + crop_h))
-        fraction = framing_analysis.color_agnostic_edge_blank_fractions(
+        fraction = edge_metric(
             framing_analysis.reference_tv_range_preview(view)
         )["max_edge_blank_fraction"]
-        maximum = max(maximum, fraction)
+        effective_fraction = _effective_blank_fraction(
+            fraction, (x, y, x + crop_w, y + crop_h)
+        )
+        maximum = max(maximum, effective_fraction)
         if maximum > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
             return False, maximum
     return True, maximum
@@ -1059,12 +1108,16 @@ def render_scene_clip(
 def join_scene_clips(
     clips: list[Path], scenes: list[SceneInput], dest: Path, fps: int,
     encoder: encoders.Selection | None = None, preview: bool = False,
+    *,
+    require_transitions: bool = False,
 ) -> Path:
-    """Join directed clips with exact cuts or duration-preserving dissolves.
+    """Join clips without moving persisted scene boundaries.
 
-    A fade is built from the outgoing tail and incoming head, then concatenated
-    with the untouched bodies. No chained ``xfade`` timestamps, black flash, or
-    cumulative duration drift. The Shot Director still owns which boundaries fade.
+    Animated boundaries begin exactly at the incoming scene start. The
+    outgoing scene remains intact through its planned end; its last frame is
+    then held only inside the transition while the incoming head is revealed.
+    The incoming head is consumed by that transition, so total duration does
+    not shrink and no cumulative tail padding is required.
     """
     if not clips or len(clips) != len(scenes):
         raise RenderError("scene clips and scene plan do not match", code="join_mismatch")
@@ -1077,57 +1130,76 @@ def join_scene_clips(
         )
         for index in range(len(scenes))
     ]
+    if require_transitions and any(
+        transition_names[index] is None for index in range(max(0, len(scenes) - 1))
+    ):
+        raise RenderError(
+            "review.transition_missing: every review boundary must be animated",
+            code="review.transition_missing",
+        )
     transitions = [
-        min(max(1, int(round(_SECTION_TRANSITION_MAX * fps))), frame_counts[index], frame_counts[index + 1])
-        if transition_names[index] is not None
-        else 0
+        min(
+            max(1, int(round(_SECTION_TRANSITION_MAX * fps))),
+            frame_counts[index], frame_counts[index + 1],
+        )
+        if transition_names[index] is not None else 0
         for index in range(len(scenes))
     ]
     graph: list[str] = []
     segments: list[str] = []
 
-    def part(index: int, start_frame: int, end_frame: int) -> str | None:
+    def part(index: int, start_frame: int, end_frame: int) -> None:
         if end_frame <= start_frame:
-            return None
+            return
         label = f"part{len(segments)}"
         graph.append(
             f"[{index}:v]trim=start_frame={start_frame}:end_frame={end_frame},"
-            f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p,setsar=1[{label}]"
+            f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},"
+            f"format=yuv420p,setsar=1[{label}]"
         )
         segments.append(label)
-        return label
 
     for index, frame_count in enumerate(frame_counts):
-        before = transitions[index - 1] if index else 0.0
+        before = transitions[index - 1] if index else 0
+        part(index, before, frame_count)
         after = transitions[index]
-        part(index, int(before), max(int(before), frame_count - int(after)))
-        if after:
-            tail = f"tail{index}"
-            head = f"head{index + 1}"
-            transition = f"transition{index}"
-            transition_name = transition_names[index] or "fade"
-            graph.extend(
-                [
-                    f"[{index}:v]trim=start_frame={frame_count - after}:end_frame={frame_count},"
-                    f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p,setsar=1[{tail}]",
-                    f"[{index + 1}:v]trim=start_frame=0:end_frame={after},"
-                    f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},format=yuv420p,setsar=1[{head}]",
-                    f"[{tail}][{head}]xfade=transition={transition_name}:duration={after / fps:.6f}:"
-                    f"offset=0[{transition}]",
-                ]
-            )
-            segments.append(transition)
+        if not after:
+            continue
+        tail = f"tail{index}"
+        head = f"head{index + 1}"
+        transition = f"transition{index}"
+        transition_name = transition_names[index] or "fade"
+        graph.extend(
+            [
+                f"[{index}:v]trim=start_frame={frame_count - 1}:end_frame={frame_count},"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},"
+                f"tpad=stop_mode=clone:stop_duration={after / fps:.6f},"
+                f"trim=start_frame=0:end_frame={after},setpts=PTS-STARTPTS,fps={fps},"
+                f"format=yuv420p,setsar=1[{tail}]",
+                f"[{index + 1}:v]trim=start_frame=0:end_frame={after},"
+                f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps},"
+                f"format=yuv420p,setsar=1[{head}]",
+                f"[{tail}][{head}]xfade=transition={transition_name}:"
+                f"duration={after / fps:.6f}:offset=0[{transition}]",
+            ]
+        )
+        segments.append(transition)
 
     if not segments:
         raise RenderError("scene clips have no renderable duration", code="join_empty")
     joined = "joined"
-    graph.append(f"{''.join(f'[{label}]' for label in segments)}concat=n={len(segments)}:v=1:a=0[{joined}]")
-    # xfade overlaps two source tails by its duration. Restore those frames at
-    # the end, then trim to the audio-locked plan length.
-    total = sum(durations)
-    overlap = sum(transitions) / fps
     graph.append(
-        f"[{joined}]tpad=stop_mode=clone:stop_duration={overlap:.6f},"
+        f"{''.join(f'[{label}]' for label in segments)}"
+        f"concat=n={len(segments)}:v=1:a=0[{joined}]"
+    )
+    total = sum(durations)
+    # Frame rounding can leave the concatenated stream a fraction of one frame
+    # shorter than the decimal scene plan. Allow at most one final clone frame
+    # so trim can land on the persisted duration; never compensate transition
+    # overlap here.
+    rounding_pad = 1.0 / max(1, fps)
+    graph.append(
+        f"[{joined}]tpad=stop_mode=clone:stop_duration={rounding_pad:.6f},"
         f"trim=duration={total:.3f}[joined_exact]"
     )
     filter_graph = encoders.apply_filter_suffix(selection, ";".join(graph))
@@ -1141,15 +1213,21 @@ def join_scene_clips(
     try:
         _run(cmd, timeout=900, step="concat")
     except RenderError:
-        # Safe fallback: preserve every frame with hard cuts when an xfade graph
-        # cannot be built for a particular clip combination.
+        if require_transitions:
+            raise
         manifest = dest.with_suffix(".concat.txt")
-        manifest.write_text("\n".join(f"file '{clip}'" for clip in clips) + "\n", encoding="utf-8")
+        manifest.write_text(
+            "\n".join(f"file '{clip}'" for clip in clips) + "\n",
+            encoding="utf-8",
+        )
         _run(
-            [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
-             "-f", "concat", "-safe", "0", "-i", str(manifest),
-             "-c", "copy", "-movflags", "+faststart", str(dest)],
-            timeout=900, step="concat_fallback",
+            [
+                settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "concat", "-safe", "0", "-i", str(manifest),
+                "-c", "copy", "-movflags", "+faststart", str(dest),
+            ],
+            timeout=900,
+            step="concat_fallback",
         )
     return dest
 
@@ -1818,6 +1896,109 @@ def _reference_telemetry_mapping(value: object) -> Mapping[str, Any]:
     )
 
 
+_REFERENCE_PIXEL_BLANK_REFINE_VERSION = "review-pixel-blank-refine-v1"
+_REFERENCE_PIXEL_BLANK_REFINE_MAX_PASSES = 8
+_REFERENCE_PIXEL_BLANK_REFINE_MIN_RETAINED = 0.65
+
+
+def _refine_review_pixel_blank_crop(
+    panel: Image.Image,
+    crop_box: tuple[int, int, int, int],
+    *,
+    evidence: visual_scoring.PanelVisualEvidence,
+    mask: framing_analysis.BorderMaskResult,
+    panel_size: tuple[int, int],
+    target_size: tuple[int, int],
+    profile: ReferenceProfileConfig,
+    feasibility_kwargs: Mapping[str, object],
+    initial_telemetry: object | None = None,
+) -> tuple[tuple[int, int, int, int], object, dict[str, Any]]:
+    original = crop_box
+    current = crop_box
+    final_telemetry: object | None = initial_telemetry
+    attempts: list[dict[str, Any]] = []
+    def _cut(fraction: float, dimension: int, sample_dimension: int) -> int:
+        if fraction <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
+            return 0
+        ratio = fraction + (1.0 / sample_dimension)
+        return max(1, math.ceil(dimension * ratio))
+
+    for pass_index in range(_REFERENCE_PIXEL_BLANK_REFINE_MAX_PASSES + 1):
+        crop = panel.crop(current)
+        fractions = framing_analysis.color_agnostic_edge_blank_span_fractions(
+            framing_analysis.reference_tv_range_preview(crop)
+        )
+        if fractions["max_edge_blank_fraction"] <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
+            if final_telemetry is None:
+                _ok, final_telemetry = framing_analysis.candidate_is_feasible(
+                    current,
+                    evidence,
+                    mask,
+                    panel_size,
+                    target_size,
+                    blank_target_fraction=profile.framing_blank_target_fraction,
+                    allow_conservative_full_panel=True,
+                    **dict(feasibility_kwargs),
+                )
+            return current, final_telemetry, {
+                "version": _REFERENCE_PIXEL_BLANK_REFINE_VERSION,
+                "applied": current != original,
+                "original_crop_box": list(original),
+                "refined_crop_box": list(current),
+                "attempt_count": len(attempts),
+                "attempts": attempts,
+                "final_edge_blank_fractions": fractions,
+            }
+        if pass_index >= _REFERENCE_PIXEL_BLANK_REFINE_MAX_PASSES:
+            break
+        width = current[2] - current[0]
+        height = current[3] - current[1]
+        left = _cut(float(fractions["left"]), width, 64)
+        right = _cut(float(fractions["right"]), width, 64)
+        top = _cut(float(fractions["top"]), height, 114)
+        bottom = _cut(float(fractions["bottom"]), height, 114)
+        proposed = (
+            current[0] + left,
+            current[1] + top,
+            current[2] - right,
+            current[3] - bottom,
+        )
+        original_width = original[2] - original[0]
+        original_height = original[3] - original[1]
+        if (
+            proposed[2] - proposed[0] < original_width * _REFERENCE_PIXEL_BLANK_REFINE_MIN_RETAINED
+            or proposed[3] - proposed[1] < original_height * _REFERENCE_PIXEL_BLANK_REFINE_MIN_RETAINED
+        ):
+            break
+        feasible, telemetry = framing_analysis.candidate_is_feasible(
+            proposed,
+            evidence,
+            mask,
+            panel_size,
+            target_size,
+            blank_target_fraction=profile.framing_blank_target_fraction,
+            allow_conservative_full_panel=True,
+            **dict(feasibility_kwargs),
+        )
+        attempts.append(
+            {
+                "pass_index": pass_index + 1,
+                "crop_box": list(proposed),
+                "edge_blank_fractions": fractions,
+                "framing_feasible": bool(feasible),
+                "framing_rejection_code": getattr(telemetry, "rejection_code", None),
+            }
+        )
+        if not feasible:
+            break
+        current = proposed
+        final_telemetry = telemetry
+    raise RenderError(
+        "visual.blank_infeasible: review ROI pixel blank cannot be safely refined",
+        code="visual.blank_infeasible",
+    )
+
+
 def _prepare_exact_reference_frame(
     *,
     scene: SceneInput,
@@ -1999,14 +2180,8 @@ def _prepare_exact_reference_frame(
                     "visual.panel_lineage_unavailable: reference telemetry ROI is stale",
                     code="visual.panel_lineage_unavailable",
                 )
-    panel_crop = panel.crop(crop_box)
-    pixel_edge_blank_fraction = framing_analysis.color_agnostic_edge_blank_fractions(
-        panel_crop
-    )["max_edge_blank_fraction"]
-    if (
-        pixel_edge_blank_fraction
-        > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
-    ):
+    final_edge_blank_fraction = float(telemetry_map["edge_connected_blank_fraction"])
+    if final_edge_blank_fraction > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
         raise RenderError(
             "visual.blank_infeasible: persisted reference ROI retains a visible edge blank",
             code="visual.blank_infeasible",
@@ -2018,11 +2193,56 @@ def _prepare_exact_reference_frame(
     )
     if persisted_pixel_edge is not None and _reference_canonical_json(
         round(float(persisted_pixel_edge), 6)
-    ) != _reference_canonical_json(round(float(pixel_edge_blank_fraction), 6)):
+    ) != _reference_canonical_json(round(final_edge_blank_fraction, 6)):
         raise RenderError(
-            "visual.panel_lineage_unavailable: reference ROI pixel edge telemetry is stale",
+            "visual.panel_lineage_unavailable: reference ROI framing telemetry is stale",
             code="visual.panel_lineage_unavailable",
         )
+    original_crop_box = crop_box
+    crop_box, refined_telemetry, refinement = _refine_review_pixel_blank_crop(
+        panel,
+        crop_box,
+        evidence=evidence,
+        mask=mask,
+        panel_size=panel_size,        target_size=(width, height),
+        profile=profile,
+        feasibility_kwargs=feasibility_kwargs,
+        initial_telemetry=telemetry,
+    )
+    if crop_box != original_crop_box:
+        original_width = original_crop_box[2] - original_crop_box[0]
+        original_height = original_crop_box[3] - original_crop_box[1]
+        refined_width = crop_box[2] - crop_box[0]
+        refined_height = crop_box[3] - crop_box[1]
+
+        def _remap_focus(value: float, axis: str) -> float:
+            if axis == "x":
+                absolute = original_crop_box[0] + float(value) * original_width
+                remapped = (absolute - crop_box[0]) / refined_width
+            else:
+                absolute = original_crop_box[1] + float(value) * original_height
+                remapped = (absolute - crop_box[1]) / refined_height
+            return max(0.05, min(0.95, remapped))
+
+        scene.focus_x = _remap_focus(scene.focus_x, "x")
+        scene.focus_end_x = _remap_focus(scene.focus_end_x, "x")
+        scene.focus_y = _remap_focus(scene.focus_y, "y")
+        scene.focus_end_y = _remap_focus(scene.focus_end_y, "y")
+    refined_map = _reference_telemetry_mapping(refined_telemetry)
+    refined_selected = dict(selected_roi)
+    refined_selected["crop_box"] = list(crop_box)
+    refined_selected["pixel_edge_blank_fraction"] = refinement[
+        "final_edge_blank_fractions"
+    ]["max_edge_blank_fraction"]
+    refined_selected["refinement_version"] = refinement["version"]
+    updated_telemetry = dict(persisted_telemetry)
+    for field_name in _REFERENCE_TELEMETRY_FIELDS:
+        updated_telemetry[field_name] = refined_map[field_name]
+    updated_telemetry["selected_roi"] = refined_selected
+    updated_telemetry["pixel_blank_refinement"] = refinement
+    scene.selected_roi = refined_selected
+    scene.framing_telemetry = updated_telemetry
+    panel_crop = panel.crop(crop_box)
     output_size = (_reference_even(round(width * 1.15)), _reference_even(round(height * 1.15)))
     prepared = panel_crop.resize(output_size, Image.Resampling.LANCZOS)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -2467,37 +2687,21 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             motion_safe, motion_blank = _reference_motion_pixel_safety(
                 prepared, scene, width, height, request.profile
             )
+            telemetry = dict(scene.framing_telemetry or {})
+            telemetry["motion_pixel_preflight"] = {
+                "version": _REFERENCE_MOTION_PREFLIGHT_VERSION,
+                "status": "safe" if motion_safe else "unsafe",
+                "fallback": "not_needed" if motion_safe else "forbidden",
+                "camera_curve": scene.camera_curve,
+                "max_motion_edge_blank_fraction": round(float(motion_blank), 6),
+                "threshold": reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+            }
+            scene.framing_telemetry = telemetry
             if not motion_safe:
-                original_curve = scene.camera_curve
-                scene.camera_curve = "static"
-                scene.motion_mode = "hold"
-                scene.motion_intensity = "low"
-                scene.focus_end_x = scene.focus_x
-                scene.focus_end_y = scene.focus_y
-                static_safe, static_blank = _reference_motion_pixel_safety(
-                    prepared, scene, width, height, request.profile
+                raise RenderError(
+                    "review.motion_unsafe: animated review viewport violates pixel safety",
+                    code="review.motion_unsafe",
                 )
-                if not static_safe:
-                    raise RenderError(
-                        "visual.blank_infeasible: static reference viewport retains a visible edge blank",
-                        code="visual.blank_infeasible",
-                    )
-                reason = str(scene.motion_reason or "").strip()
-                scene.motion_reason = (
-                    f"{reason}; fallback:pixel_edge_motion_static"
-                    if reason
-                    else "fallback:pixel_edge_motion_static"
-                )
-                telemetry = dict(scene.framing_telemetry or {})
-                telemetry["motion_pixel_preflight"] = {
-                    "version": _REFERENCE_MOTION_PREFLIGHT_VERSION,
-                    "fallback": "static",
-                    "original_curve": original_curve,
-                    "max_motion_edge_blank_fraction": round(float(motion_blank), 6),
-                    "static_edge_blank_fraction": round(float(static_blank), 6),
-                    "threshold": reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
-                }
-                scene.framing_telemetry = telemetry
 
         clip = work / f"clip{i:03d}.mp4"
         render_scene_clip(
@@ -2509,7 +2713,15 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
 
     report(55, "joining scenes")
     silent = work / "silent.mp4"
-    join_scene_clips(clips, request.scenes, silent, fps, selection, request.preview)
+    join_scene_clips(
+        clips,
+        request.scenes,
+        silent,
+        fps,
+        selection,
+        request.preview,
+        require_transitions=request.silent_reference_review,
+    )
 
     report(65, "burning subtitles")
     video_stage = silent

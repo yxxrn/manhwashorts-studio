@@ -95,6 +95,65 @@ def test_zero_feasible_hook_is_explicitly_repairable_and_payload_is_panel_keyed(
     assert "visual_evidence_by_asset" not in payload
 
 
+def test_repair_payload_exposes_machine_readable_claim_chronology():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(
+            _entry(module, panel_id="panel-late", beat="beat-2", order=30),
+            _entry(module, panel_id="panel-early", beat="beat-1", order=10),
+        ),
+        model_identity_hash="model-hash",
+    )
+    payload = module.build_repair_payload(
+        narration={
+            "passages": [
+                {
+                    "passage_id": "p1",
+                    "text": "Grounded narration remains visible.",
+                    "claim_ids": ["claim-late"],
+                    "evidence_panel_ids": ["panel-late"],
+                }
+            ],
+            "estimated_duration_s": 3.0,
+        },
+        story_map={
+            "beats": [
+                {"beat_id": "beat-1", "panel_ids": ["panel-early"]},
+                {"beat_id": "beat-2", "panel_ids": ["panel-late"]},
+            ],
+            "claims": [
+                {"claim_id": "claim-late", "panel_ids": ["panel-late"]},
+                {"claim_id": "claim-early", "panel_ids": ["panel-early"]},
+            ],
+        },
+        ledger=ledger,
+        section_to_beats={"hook": ("beat-1",), "setup": ("beat-2",)},
+    )
+
+    claims = {row["claim_id"]: row for row in payload["feasible_claims"]}
+    assert claims["claim-early"]["evidence_source_orders"] == [10]
+    assert claims["claim-early"]["min_source_order"] == 10
+    assert claims["claim-late"]["max_source_order"] == 30
+    assert claims["claim-early"]["evidence_panel_slot_capacity"] == {"panel-early": 1}
+    assert claims["claim-early"]["visual_slot_capacity"] == 1
+    assert claims["claim-early"]["unique_panel_count"] == 1
+    capacity = payload["capacity_contract"]
+    assert capacity["max_shot_duration_s"] == 4.0
+    assert capacity["narration_words_per_second"] == 2.3
+    assert capacity["max_lexical_words_per_visual_slot"] == 9
+    assert capacity["claim_capacity_field"] == "visual_slot_capacity"
+    assert capacity["panel_capacity_field"] == "evidence_panel_slot_capacity"
+    chronology = payload["chronology_contract"]
+    assert chronology["non_hook_rule"] == "nondecreasing_min_source_order"
+    assert [row["claim_id"] for row in chronology["claims_by_source_order"]] == [
+        "claim-early",
+        "claim-late",
+    ]
+    assert payload["constraints"][
+        "non_hook_claims_must_follow_chronology_contract"
+    ] is True
+
+
 def test_feasible_ledger_excludes_title_page_candidate_that_planner_rejects(monkeypatch):
     """The repair ledger and reference planner must share title-page policy."""
     module = _module()
@@ -403,6 +462,75 @@ def test_same_beat_remap_preserves_existing_non_hook_chronology():
         allowed_claim_ids={f"claim-{index}" for index in range(1, 6)},
     )
 
+def test_same_beat_remap_repairs_non_hook_chronology_inside_claim_lineage():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(
+            _entry(module, panel_id="panel-hook", beat="beat-hook", order=90, blank=0.0),
+            _entry(module, panel_id="panel-setup", beat="beat-setup", order=40, blank=0.0),
+            _entry(module, panel_id="panel-body-stale", beat="beat-body", order=30, blank=0.01),
+            _entry(module, panel_id="panel-body-ordered", beat="beat-body", order=55, blank=0.05),
+            _entry(module, panel_id="panel-twist", beat="beat-twist", order=70, blank=0.0),
+        ),
+        model_identity_hash="model-hash",
+    )
+    value = {
+        "claims": [
+            {"claim_id": "claim-hook", "evidence_panel_ids": ["panel-hook"]},
+            {"claim_id": "claim-setup", "evidence_panel_ids": ["panel-setup"]},
+            {"claim_id": "claim-body", "evidence_panel_ids": ["panel-body-stale"]},
+            {"claim_id": "claim-twist", "evidence_panel_ids": ["panel-twist"]},
+        ],
+        "passages": [
+            {"passage_id": "p1", "claim_ids": ["claim-hook"], "evidence_panel_ids": ["panel-hook"]},
+            {"passage_id": "p2", "claim_ids": ["claim-setup"], "evidence_panel_ids": ["panel-setup"]},
+            {"passage_id": "p3", "claim_ids": ["claim-body"], "evidence_panel_ids": ["panel-body-stale"]},
+            {"passage_id": "p4", "claim_ids": ["claim-twist"], "evidence_panel_ids": ["panel-twist"]},
+        ],
+    }
+
+    repaired, provenance = module.remap_same_beat_panel_citations(
+        value,
+        ledger=ledger,
+        section_to_beats={
+            "hook": ("beat-hook",),
+            "setup": ("beat-setup",),
+            "body": ("beat-body",),
+            "twist": ("beat-twist",),
+        },
+        allowed_claim_panel_ids={
+            "claim-hook": {"panel-hook"},
+            "claim-setup": {"panel-setup"},
+            "claim-body": {"panel-body-stale", "panel-body-ordered"},
+            "claim-twist": {"panel-twist"},
+        },
+    )
+
+    assert [row["evidence_panel_ids"] for row in repaired["passages"]] == [
+        ["panel-hook"],
+        ["panel-setup"],
+        ["panel-body-ordered"],
+        ["panel-twist"],
+    ]
+    assert any(
+        item["from_panel_id"] == "panel-body-stale"
+        and item["to_panel_id"] == "panel-body-ordered"
+        and item["reason"] == "claim-lineage chronology repair"
+        for item in provenance
+    )
+    module.validate_repaired_panel_references(
+        repaired,
+        ledger=ledger,
+        allowed_claim_ids={"claim-hook", "claim-setup", "claim-body", "claim-twist"},
+        allowed_claim_panel_ids={
+            "claim-hook": {"panel-hook"},
+            "claim-setup": {"panel-setup"},
+            "claim-body": {"panel-body-stale", "panel-body-ordered"},
+            "claim-twist": {"panel-twist"},
+        },
+    )
+
+
 def test_same_beat_remap_preserves_panel_capacity_across_sections():
     module = _module()
     ledger = module.FeasibleVisualLedger(
@@ -606,7 +734,7 @@ def test_feasible_ledger_forwards_conservative_full_panel_opt_in(monkeypatch):
     assert calls[0]["allow_conservative_full_panel"] is True
 
 
-def test_feasible_ledger_rejects_roi_planner_would_reject_for_edge_blank(monkeypatch):
+def test_feasible_ledger_uses_final_framing_telemetry_not_stale_roi_edge_estimate(monkeypatch):
     module = _module()
     evidence = SimpleNamespace()
     monkeypatch.setattr(
@@ -641,7 +769,9 @@ def test_feasible_ledger_rejects_roi_planner_would_reject_for_edge_blank(monkeyp
         profile=SimpleNamespace(final_width=1080, final_height=1920),
         model_identity_hash="model-hash",
     )
-    assert ledger.entries == ()
+    assert len(ledger.entries) == 1
+    assert ledger.entries[0].panel_id == "panel-edge-blank"
+    assert ledger.entries[0].feasible_rois[0]["telemetry"]["edge_connected_blank_fraction"] == 0.0
 
 
 def test_repair_scope_includes_stale_cta_citation_even_when_cta_beat_has_capacity():
@@ -738,7 +868,7 @@ def test_repair_scope_includes_subtitle_overflow_with_feasible_visual_citations(
         ),
     )
     narration = {
-        "estimated_duration_s": 53.48,
+        "estimated_duration_s": 12.0,
         "evidence_graph": {
             "claims": [
                 {"claim_id": claim_id, "evidence_panel_ids": [panel_id]}
@@ -767,7 +897,7 @@ def test_repair_scope_includes_subtitle_overflow_with_feasible_visual_citations(
     ) == ("cta",)
     assert module.repair_scope_sections(narration, ledger, sections) == ("cta",)
 
-def test_repair_attempts_are_bounded_and_cache_identity_includes_ledger_hash():
+def test_repair_attempts_are_bounded_and_cache_identity_includes_ledger_and_capacity_plan_hash():
     module = _module()
     ledger = module.FeasibleVisualLedger(entries=(_entry(module),), model_identity_hash="model-hash")
     first = module.repair_cache_key(
@@ -782,7 +912,15 @@ def test_repair_attempts_are_bounded_and_cache_identity_includes_ledger_hash():
         prompt_sha256="p" * 64,
         narration_hash="n" * 64,
     )
+    third = module.repair_cache_key(
+        ledger=ledger,
+        model_identity_hash="model-hash",
+        prompt_sha256="p" * 64,
+        narration_hash="n" * 64,
+        capacity_plan_hash="capacity-plan-b",
+    )
     assert first != second
+    assert first != third
     assert module.MAX_REPAIR_ATTEMPTS == 3
 
 
@@ -793,14 +931,299 @@ def test_repair_prompt_specifies_distributed_claim_evidence_binding():
     assert "every passage citation must be a feasible panel" in prompt
     assert "distributed across passages" in prompt
     assert "each passage must include non-empty claim_ids" in prompt
-    assert "all following passages must be chronological" in prompt
+    assert "nondecreasing subsequence" in prompt
+    assert "min_source_order" in prompt
     assert "lowest edge_connected_blank_fraction first" in prompt
     assert "never claim that a nonzero blank fraction is zero" in prompt
     assert "same eligible beat" in prompt
     assert "lower-blank candidate" in prompt
     assert "enough feasible panel ids" in prompt
     assert "section capacity" in prompt
-    assert "118-124 lexical words" in prompt
+    assert "capacity_safe_claim_plan" in prompt
+    assert "same number of passages" in prompt
+    assert "displayed panels match the spoken content" in prompt
+    assert "capacity_rebalance" in prompt
+    assert "max_lexical_words" in prompt
+    assert "mandatory" in prompt
+
+
+def test_visual_capacity_rebalances_sixteen_requested_slots_to_thirteen_grounded_slots():
+    module = _module()
+    requirements = [
+        {"passage_index": 0, "section": "hook", "required_visual_slots": 2},
+        {"passage_index": 1, "section": "setup", "required_visual_slots": 4},
+        {"passage_index": 2, "section": "conflict", "required_visual_slots": 4},
+        {"passage_index": 3, "section": "twist", "required_visual_slots": 2},
+        {"passage_index": 4, "section": "cta", "required_visual_slots": 4},
+    ]
+    claims = [
+        {
+            "claim_id": f"claim-{index}",
+            "evidence_panel_slot_capacity": {f"panel-{index}": capacity},
+        }
+        for index, capacity in enumerate((2, 1, 1, 1, 2, 1, 1, 2, 1, 1))
+    ]
+
+    rows, metadata = module._rebalance_visual_capacity_requirements(
+        requirements,
+        claims,
+        max_words_per_visual_slot=9,
+    )
+
+    assert [row["required_visual_slots"] for row in rows] == [2, 3, 3, 2, 3]
+    assert metadata["claim_backed_visual_slots"] == 13
+    assert metadata["minimum_visual_slots_for_narration"] == 13
+    assert metadata["target_visual_slots"] == 13
+    assert metadata["target_word_count_min"] == 115
+    assert metadata["target_word_count_max"] == 117
+    assert metadata["target_word_count_goal"] == 115
+    assert metadata["rebalanced"] is True
+    assert metadata["feasible"] is True
+
+
+def test_visual_capacity_uses_grounded_headroom_when_available():
+    module = _module()
+    requirements = [
+        {"passage_index": index, "section": f"section-{index}", "required_visual_slots": 1}
+        for index in range(5)
+    ]
+    claims = [
+        {
+            "claim_id": f"claim-{index}",
+            "evidence_panel_slot_capacity": {f"panel-{index}": 1},
+        }
+        for index in range(27)
+    ]
+    rows, metadata = module._rebalance_visual_capacity_requirements(
+        requirements, claims, max_words_per_visual_slot=9
+    )
+    assert metadata["rule"] == "visual_capacity_rebalance_v2"
+    assert metadata["minimum_visual_slots_for_narration"] == 13
+    assert metadata["preferred_visual_slots_for_narration"] == 15
+    assert metadata["preferred_words_per_visual_slot"] == 8
+    assert metadata["target_visual_slots"] == 15
+    assert metadata["target_word_count_goal"] == 120
+    assert [row["required_visual_slots"] for row in rows] == [3, 3, 3, 3, 3]
+
+
+def test_capacity_safe_claim_plan_backtracks_when_early_overshoot_strands_late_passage():
+    module = _module()
+    claims = [
+        {
+            "claim_id": "claim-greedy-trap",
+            "min_source_order": 10,
+            "max_source_order": 10,
+            "evidence_panel_slot_capacity": {"panel-1": 2, "panel-6-shared": 1},
+        },
+        {
+            "claim_id": "claim-hook-exact",
+            "min_source_order": 11,
+            "max_source_order": 11,
+            "evidence_panel_slot_capacity": {"panel-1": 2},
+        },
+        {
+            "claim_id": "claim-setup",
+            "min_source_order": 20,
+            "max_source_order": 20,
+            "evidence_panel_slot_capacity": {"panel-2": 3},
+        },
+        {
+            "claim_id": "claim-conflict",
+            "min_source_order": 30,
+            "max_source_order": 30,
+            "evidence_panel_slot_capacity": {"panel-3": 3},
+        },
+        {
+            "claim_id": "claim-twist",
+            "min_source_order": 40,
+            "max_source_order": 40,
+            "evidence_panel_slot_capacity": {"panel-4": 2},
+        },
+        {
+            "claim_id": "claim-cta",
+            "min_source_order": 50,
+            "max_source_order": 50,
+            "evidence_panel_slot_capacity": {"panel-6-shared": 1, "panel-5": 2},
+        },
+    ]
+    requirements = [
+        {"passage_index": 0, "section": "hook", "required_visual_slots": 2},
+        {"passage_index": 1, "section": "setup", "required_visual_slots": 3},
+        {"passage_index": 2, "section": "conflict", "required_visual_slots": 3},
+        {"passage_index": 3, "section": "twist", "required_visual_slots": 2},
+        {"passage_index": 4, "section": "cta", "required_visual_slots": 3},
+    ]
+
+    plan = module._capacity_safe_claim_plan(claims, requirements)
+
+    assert plan["feasible"] is True
+    assert plan["rule"] == "ordered_unique_panel_capacity_search_v2"
+    assert [row["available_visual_slots"] for row in plan["rows"]] == [2, 3, 3, 2, 3]
+    assert plan["rows"][0]["claim_ids"] == ["claim-hook-exact"]
+    assert plan["rows"][-1]["claim_ids"] == ["claim-cta"]
+    assert all(row["claim_ids"] and row["evidence_panel_ids"] for row in plan["rows"])
+
+
+def test_capacity_word_budgets_sum_to_grounded_target_without_exceeding_slots():
+    module = _module()
+    plan = {
+        "feasible": True,
+        "rows": [
+            {"passage_index": 0, "available_visual_slots": 2},
+            {"passage_index": 1, "available_visual_slots": 3},
+            {"passage_index": 2, "available_visual_slots": 3},
+            {"passage_index": 3, "available_visual_slots": 2},
+            {"passage_index": 4, "available_visual_slots": 3},
+        ],
+    }
+
+    decorated = module._attach_capacity_word_budgets(
+        plan, max_words_per_visual_slot=9, target_word_count=115
+    )
+
+    assert decorated["feasible"] is True
+    assert decorated["word_budget_feasible"] is True
+    assert sum(row["target_lexical_words"] for row in decorated["rows"]) == 115
+    assert [row["max_lexical_words"] for row in decorated["rows"]] == [18, 27, 27, 18, 27]
+    assert all(
+        row["target_lexical_words"] <= row["max_lexical_words"]
+        for row in decorated["rows"]
+    )
+
+
+def test_missing_capacity_plan_references_are_recovered_but_nonempty_substitutions_remain():
+    module = _module()
+    plan = {
+        "rows": [
+            {"claim_ids": ["claim-a"], "evidence_panel_ids": ["panel-a"]},
+            {"claim_ids": ["claim-b"], "evidence_panel_ids": ["panel-b"]},
+        ]
+    }
+    passages = [
+        {"passage_id": "p1", "text": "Grounded prose.", "claim_ids": [], "evidence_panel_ids": []},
+        {
+            "passage_id": "p2",
+            "text": "Provider substitution stays visible to the strict validator.",
+            "claim_ids": ["claim-other"],
+            "evidence_panel_ids": ["panel-other"],
+        },
+    ]
+
+    recovered = module.recover_missing_capacity_plan_references(passages, plan)
+
+    assert recovered[0]["claim_ids"] == ["claim-a"]
+    assert recovered[0]["evidence_panel_ids"] == ["panel-a"]
+    assert recovered[1]["claim_ids"] == ["claim-other"]
+    assert recovered[1]["evidence_panel_ids"] == ["panel-other"]
+
+
+def test_missing_capacity_plan_reference_recovery_preserves_nonempty_panel_alias():
+    module = _module()
+    plan = {"rows": [{"claim_ids": ["claim-a"], "evidence_panel_ids": ["panel-a"]}]}
+    passages = [
+        {
+            "passage_id": "p1",
+            "text": "Grounded prose.",
+            "claim_ids": None,
+            "panel_ids": ["panel-provider"],
+        }
+    ]
+
+    recovered = module.recover_missing_capacity_plan_references(passages, plan)
+
+    assert recovered[0]["claim_ids"] == ["claim-a"]
+    assert "evidence_panel_ids" not in recovered[0]
+    assert recovered[0]["panel_ids"] == ["panel-provider"]
+
+
+def test_capacity_safe_plan_is_mandatory_for_repaired_passage_evidence_and_words():
+    module = _module()
+    plan = {
+        "feasible": True,
+        "rows": [
+            {
+                "claim_ids": ["claim-a"],
+                "evidence_panel_ids": ["panel-a"],
+                "max_lexical_words": 9,
+            }
+        ],
+    }
+    valid = [
+        {
+            "text": "Grounded words stay with this panel.",
+            "claim_ids": ["claim-a"],
+            "evidence_panel_ids": ["panel-a"],
+        }
+    ]
+    module.validate_repaired_capacity_safe_claim_plan(valid, plan)
+
+    with pytest.raises(module.VisualNarrativeRepairError, match="diverges from capacity plan"):
+        module.validate_repaired_capacity_safe_claim_plan(
+            [dict(valid[0], evidence_panel_ids=["panel-b"])], plan
+        )
+    with pytest.raises(module.VisualNarrativeRepairError, match="exceeds capacity word budget"):
+        module.validate_repaired_capacity_safe_claim_plan(
+            [dict(valid[0], text="one two three four five six seven eight nine ten")],
+            plan,
+        )
+
+
+def test_capacity_safe_claim_plan_groups_unique_panels_in_source_order():
+    module = _module()
+    claims = [
+        {
+            "claim_id": "claim-a",
+            "min_source_order": 10,
+            "max_source_order": 10,
+            "evidence_panel_slot_capacity": {"panel-a": 2},
+        },
+        {
+            "claim_id": "claim-a-duplicate",
+            "min_source_order": 11,
+            "max_source_order": 11,
+            "evidence_panel_slot_capacity": {"panel-a": 2},
+        },
+        {
+            "claim_id": "claim-b",
+            "min_source_order": 20,
+            "max_source_order": 20,
+            "evidence_panel_slot_capacity": {"panel-b": 1},
+        },
+        {
+            "claim_id": "claim-c",
+            "min_source_order": 30,
+            "max_source_order": 30,
+            "evidence_panel_slot_capacity": {"panel-c": 1},
+        },
+        {
+            "claim_id": "claim-d",
+            "min_source_order": 40,
+            "max_source_order": 40,
+            "evidence_panel_slot_capacity": {"panel-d": 2},
+        },
+    ]
+    requirements = [
+        {"passage_index": 0, "section": "hook", "required_visual_slots": 2},
+        {"passage_index": 1, "section": "setup", "required_visual_slots": 2},
+        {"passage_index": 2, "section": "twist", "required_visual_slots": 2},
+    ]
+
+    plan = module._capacity_safe_claim_plan(claims, requirements)
+
+    assert plan["feasible"] is True
+    assert plan["preserve_passage_count"] is True
+    assert [row["claim_ids"] for row in plan["rows"]] == [
+        ["claim-a"],
+        ["claim-b", "claim-c"],
+        ["claim-d"],
+    ]
+    assert [row["available_visual_slots"] for row in plan["rows"]] == [2, 2, 2]
+    assert [row["claim_min_source_orders"] for row in plan["rows"]] == [
+        [10],
+        [20, 30],
+        [40],
+    ]
+    assert len({panel for row in plan["rows"] for panel in row["evidence_panel_ids"]}) == 4
 
 
 def test_feasible_render_plan_is_deterministic_and_shared_by_repair_payload():
@@ -931,8 +1354,48 @@ def test_repair_payload_exposes_only_claims_with_original_feasible_evidence():
             "text": "Visible fact.",
             "qualification": "Directly visible.",
             "evidence_panel_ids": ["panel-safe"],
+            "evidence_source_orders": [10],
+            "min_source_order": 10,
+            "max_source_order": 10,
+            "evidence_panel_slot_capacity": {"panel-safe": 1},
+            "visual_slot_capacity": 1,
+            "unique_panel_count": 1,
         }
     ]
+
+
+def test_feasible_claim_capacity_caps_multi_roi_panel_at_two_shots():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(
+            module.FeasibleVisualRecord(
+                panel_region_id="region-many",
+                panel_id="panel-many",
+                source_asset_id="asset-many",
+                source_order=10,
+                eligible_sections=("hook",),
+                eligible_beats=("beat-1",),
+                resolution_state="NATIVE",
+                feasible_rois=(
+                    {"kind": "primary", "roi_label": "a", "crop_box": [0, 0, 100, 100], "telemetry": {}},
+                    {"kind": "secondary", "roi_label": "b", "crop_box": [10, 0, 100, 100], "telemetry": {}},
+                    {"kind": "detail", "roi_label": "c", "crop_box": [20, 0, 100, 100], "telemetry": {}},
+                ),
+                visual_strengths={"edge_connected_blank_fraction": 0.0},
+                evidence_hash="e" * 64,
+                detector_version="detector-v1",
+                mask_sha256="m" * 64,
+                panel_size=(100, 100),
+            ),
+        ),
+        model_identity_hash="model-hash",
+    )
+    rows = module.feasible_story_claims(
+        {"claims": [{"claim_id": "claim-many", "panel_ids": ["panel-many"]}]},
+        ledger,
+    )
+    assert rows[0]["evidence_panel_slot_capacity"] == {"panel-many": 2}
+    assert rows[0]["visual_slot_capacity"] == 2
 
 
 def test_repaired_claim_cannot_rebind_to_feasible_panel_outside_story_lineage():
@@ -1055,3 +1518,114 @@ def test_feasible_ledger_rejects_source_sliver_before_upscale_framing(monkeypatc
 
     assert ledger.entries == ()
     assert calls == []
+
+
+
+def test_repaired_passage_rejects_feasible_panel_outside_its_claim_lineage():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(
+            _entry(module, panel_id="panel-a", beat="beat-a", order=10),
+            _entry(module, panel_id="panel-b", beat="beat-b", order=20),
+        ),
+        model_identity_hash="model-hash",
+    )
+
+    with pytest.raises(module.VisualNarrativeRepairError) as exc:
+        module.validate_repaired_panel_references(
+            {
+                "claims": [
+                    {"claim_id": "claim-a", "evidence_panel_ids": ["panel-a"]}
+                ],
+                "passages": [
+                    {
+                        "passage_id": "p1",
+                        "text": "Grounded sentence.",
+                        "claim_ids": ["claim-a"],
+                        "evidence_panel_ids": ["panel-a", "panel-b"],
+                    }
+                ],
+            },
+            ledger=ledger,
+            allowed_claim_ids={"claim-a"},
+            allowed_claim_panel_ids={"claim-a": {"panel-a"}},
+        )
+
+    assert exc.value.code == "visual.narrative_repair_ungrounded"
+    assert "outside its claim lineage" in str(exc.value)
+
+def test_repair_scope_includes_visual_capacity_shortfall():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(_entry(module, panel_id="panel-a", beat="beat-a", order=10),),
+        model_identity_hash="model-hash",
+    )
+    narration = {
+        "estimated_duration_s": 9.0,
+        "passages": [
+            {
+                "passage_id": "p1",
+                "text": "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty.",
+                "claim_ids": ["claim-a"],
+                "evidence_panel_ids": ["panel-a"],
+            }
+        ],
+        "evidence_graph": {
+            "claims": [
+                {"claim_id": "claim-a", "evidence_panel_ids": ["panel-a"]}
+            ]
+        },
+    }
+
+    assert module.narration_sections_with_visual_capacity_shortfall(
+        narration, ledger, {"hook": ("beat-a",)}
+    ) == ("hook",)
+    assert module.repair_scope_sections(
+        narration, ledger, {"hook": ("beat-a",)}
+    ) == ("hook",)
+
+
+def test_repaired_visual_capacity_accepts_two_panels_with_three_roi_slots():
+    module = _module()
+    first = _entry(module, panel_id="panel-a", beat="beat-a", order=10)
+    second = _entry(module, panel_id="panel-b", beat="beat-a", order=11)
+    first = module.FeasibleVisualRecord(
+        **{
+            **first.__dict__,
+            "feasible_rois": first.feasible_rois + (dict(first.feasible_rois[0], roi_label="alternate"),),
+        }
+    )
+    ledger = module.FeasibleVisualLedger(
+        entries=(first, second), model_identity_hash="model-hash"
+    )
+    passages = [
+        {
+            "passage_id": "p1",
+            "text": "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty.",
+            "claim_ids": ["claim-a", "claim-b"],
+            "evidence_panel_ids": ["panel-a", "panel-b"],
+        }
+    ]
+
+    module.validate_repaired_visual_capacity(passages, ledger)
+
+
+def test_repaired_visual_capacity_rejects_single_long_panel():
+    module = _module()
+    ledger = module.FeasibleVisualLedger(
+        entries=(_entry(module, panel_id="panel-a", beat="beat-a", order=10),),
+        model_identity_hash="model-hash",
+    )
+    passages = [
+        {
+            "passage_id": "p1",
+            "text": "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty.",
+            "claim_ids": ["claim-a"],
+            "evidence_panel_ids": ["panel-a"],
+        }
+    ]
+
+    with pytest.raises(module.VisualNarrativeRepairError) as exc:
+        module.validate_repaired_visual_capacity(passages, ledger)
+
+    assert exc.value.code == "visual.narrative_repair_ungrounded"

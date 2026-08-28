@@ -589,7 +589,7 @@ def test_editorial_fade_contains_real_intermediate_frames(tmp_path):
     join_scene_clips(clips, scenes, output, 30, encoder)
     frame = tmp_path / "fade_frame.png"
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", "1.94",
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", "2.08",
          "-i", str(output), "-frames:v", "1", str(frame)],
         check=True,
     )

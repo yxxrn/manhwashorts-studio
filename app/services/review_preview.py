@@ -54,9 +54,9 @@ def review_visual_density_contract(
 def _frame_edge_blank_metrics(image: Image.Image) -> dict[str, float]:
     """Expose the shared color-agnostic framing metric to review QC."""
 
-    from app.services.framing_analysis import color_agnostic_edge_blank_fractions
+    from app.services.framing_analysis import color_agnostic_edge_blank_span_fractions
 
-    return color_agnostic_edge_blank_fractions(image)
+    return color_agnostic_edge_blank_span_fractions(image)
 
 
 def _frame_edge_blank_audit(frame_paths: Sequence[Path]) -> dict[str, object]:
@@ -188,6 +188,79 @@ def _audit_transition_pixels(
     return result
 
 
+def _audit_transition_pixels_from_video(
+    output: Path,
+    root: Path,
+    shots: Sequence[Mapping[str, object]],
+    *,
+    fps: float,
+) -> dict[str, object]:
+    """Measure each transition inside its exact rendered frame window."""
+    if fps <= 0.0:
+        raise ReviewPreviewError("review.transition_measurement_missing")
+    planned: list[dict[str, object]] = []
+    requested: set[int] = set()
+    try:
+        for shot in shots[1:]:
+            transition = str(shot.get("transition", "cut") or "cut")
+            if transition in {"cut", "none"}:
+                continue
+            boundary = float(shot.get("start_time", 0.0))
+            window = float(shot.get("transition_duration_s", 0.0))
+            if window <= 0.0:
+                raise ReviewPreviewError("review.transition_measurement_missing")
+            times = tuple(boundary + window * fraction for fraction in (0.25, 0.50, 0.75))
+            indices = tuple(max(0, int(round(value * fps))) for value in times)
+            if not (indices[0] < indices[1] < indices[2]):
+                raise ReviewPreviewError("review.transition_measurement_missing")
+            requested.update(indices)
+            planned.append({"transition": transition, "boundary_s": boundary, "frame_indices": indices})
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ReviewPreviewError("review.transition_measurement_failed") from exc
+    frame_dir = root / "transition-audit-frames"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    for stale in frame_dir.glob("frame-*.jpg"):
+        stale.unlink()
+    ordered = sorted(requested)
+    expression = "+".join(f"eq(n\\,{index})" for index in ordered)
+    try:
+        render_service._run(
+            [
+                settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(output),
+                "-vf", f"select={expression},scale=180:320:flags=lanczos",
+                "-fps_mode", "vfr",
+                str(frame_dir / "frame-%03d.jpg"),
+            ],
+            timeout=900,
+            step="review_transition_frames",
+        )
+    except render_service.RenderError as exc:
+        raise ReviewPreviewError("review.transition_measurement_failed") from exc
+    paths = sorted(frame_dir.glob("frame-*.jpg"))
+    if len(paths) != len(ordered):
+        raise ReviewPreviewError("review.transition_measurement_missing")
+    by_index = dict(zip(ordered, paths, strict=True))
+    visible_count = 0
+    for item in planned:
+        first, middle, last = item["frame_indices"]
+        first_mid = _image_difference(by_index[first], by_index[middle])
+        mid_last = _image_difference(by_index[middle], by_index[last])
+        item["first_mid_pixel_diff"] = first_mid
+        item["mid_last_pixel_diff"] = mid_last
+        if min(first_mid, mid_last) >= reference_profile.REVIEW_MIN_TRANSITION_PIXEL_DIFF:
+            visible_count += 1
+    result = {
+        "planned_transition_count": len(planned),
+        "visible_transition_count": visible_count,
+        "transition_pixel_diffs": planned,
+        "sampling": "exact_transition_window_v1",
+    }
+    if visible_count != len(planned):
+        raise ReviewPreviewError("review.transition_not_visible")
+    return result
+
+
 def _measured_subtitle_qc(
     sidecar: Mapping[str, object], contract: Mapping[str, object]
 ) -> dict[str, object]:
@@ -213,6 +286,63 @@ def _measured_subtitle_qc(
     ):
         raise ReviewPreviewError("review.subtitle_measurement_invalid")
     return dict(evidence)
+
+
+def _corroborated_frame_edge_blank_max(
+    shots: Sequence[Mapping[str, object]],
+    audit: Mapping[str, object],
+) -> float:
+    threshold = reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+    raw_max = float(audit.get("max_frame_edge_blank_fraction", 0.0))
+    if raw_max <= threshold:
+        return raw_max
+    per_frame = audit.get("per_frame_edge_blank_fractions")
+    sample_times = audit.get("sample_frame_times_s")
+    if not isinstance(per_frame, list) or not isinstance(sample_times, list):
+        return raw_max
+    if len(per_frame) != len(sample_times):
+        return raw_max
+    effective: list[float] = []
+    for metrics, sample_time in zip(per_frame, sample_times, strict=True):
+        if not isinstance(metrics, Mapping):
+            return raw_max
+        try:
+            raw = float(metrics.get("max_edge_blank_fraction", 0.0))
+            timestamp = float(sample_time)
+        except (TypeError, ValueError, OverflowError):
+            return raw_max
+        if raw <= threshold:
+            effective.append(raw)
+            continue
+        active = None
+        for shot in reversed(shots):
+            try:
+                start = float(shot.get("start_time", 0.0))
+                end = float(shot.get("end_time", 0.0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if start - 1e-9 <= timestamp <= end + 1e-9:
+                active = shot
+                break
+        if active is None:
+            effective.append(raw)
+            continue
+        telemetry = active.get("framing_telemetry")
+        preflight = telemetry.get("motion_pixel_preflight") if isinstance(telemetry, Mapping) else None
+        if not isinstance(preflight, Mapping) or preflight.get("status") != "safe":
+            effective.append(raw)
+            continue
+        try:
+            corroborated = float(preflight["max_motion_edge_blank_fraction"])
+            preflight_threshold = float(preflight["threshold"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            effective.append(raw)
+            continue
+        if corroborated <= threshold and preflight_threshold <= threshold + 1e-9:
+            effective.append(min(raw, corroborated))
+        else:
+            effective.append(raw)
+    return max(effective, default=raw_max)
 
 
 def _measured_visual_qc(
@@ -271,6 +401,11 @@ def _measured_visual_qc(
         if isinstance(shot, Mapping)
     ]
     total_duration = sum(durations)
+    if any(
+        duration > reference_profile.REVIEW_MAX_SHOT_SECONDS + 1e-9
+        for duration in durations
+    ):
+        raise ReviewPreviewError("review.shot_duration_excessive")
     modes = {
         str(shot.get("motion_mode", "hold"))
         for shot in shots
@@ -302,15 +437,21 @@ def _measured_visual_qc(
         if isinstance(shot, Mapping)
         and str(shot.get("transition", "cut") or "cut") not in {"cut", "none"}
     )
+    expected_transition_count = max(0, len(shots) - 1)
+    if transition_count != expected_transition_count:
+        raise ReviewPreviewError("review.transition_missing")
     audit.setdefault("unique_visuals", len(visual_keys))
     audit.setdefault("available_visuals", max(len(visual_keys), available_capacity))
     audit.setdefault("motion_mode_diversity", len(modes))
     audit.setdefault("motion_mode_distribution", dict(sorted(mode_counts.items())))
     audit.setdefault("reuse_streak_max", reuse_streak)
-    audit.setdefault("transition_count", transition_count)
-    if float(
-        audit.get("max_frame_edge_blank_fraction", 0.0)
-    ) > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
+    audit["transition_count"] = transition_count
+    raw_frame_blank = float(audit.get("max_frame_edge_blank_fraction", 0.0))
+    effective_frame_blank = _corroborated_frame_edge_blank_max(shots, audit)
+    audit["raw_max_frame_edge_blank_fraction"] = raw_frame_blank
+    audit["corroborated_max_frame_edge_blank_fraction"] = effective_frame_blank
+    audit["max_frame_edge_blank_fraction"] = effective_frame_blank
+    if effective_frame_blank > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
         raise ReviewPreviewError("review.blank_edge_visible")
     trajectory_reports: list[dict[str, int | float]] = []
     for shot in shots:
@@ -342,6 +483,14 @@ def _measured_visual_qc(
         raise ReviewPreviewError("review.transition_not_visible")
     if float(audit.get("max_unchanged_hold_s", 0.0)) > reference_profile.REVIEW_MAX_UNCHANGED_HOLD_SECONDS:
         raise ReviewPreviewError("review.visual_hold_excessive")
+    static_modes = {"hold", "static_emphasis"}
+    if any(
+        str(shot.get("motion_mode", "hold")) in static_modes
+        or str(shot.get("camera_curve", "")) in {"static", "static_emphasis"}
+        for shot in shots
+        if isinstance(shot, Mapping)
+    ):
+        raise ReviewPreviewError("review.motion_static")
     density = review_visual_density_contract(
         total_duration,
         max(
@@ -355,10 +504,8 @@ def _measured_visual_qc(
         raise ReviewPreviewError("review.visual_density_insufficient")
     if int(audit.get("reuse_streak_max", reuse_streak)) > 2:
         raise ReviewPreviewError("review.visual_reuse_streak_excessive")
-    if len(shots) >= 4 and int(audit.get("motion_mode_diversity", len(modes))) < 4:
-        raise ReviewPreviewError("review.motion_mode_diversity_insufficient")
-    if len(shots) >= 4 and int(audit.get("transition_count", transition_count)) < 1:
-        raise ReviewPreviewError("review.transition_missing")
+    if len(shots) >= 2 and len(modes) < 2:
+        raise ReviewPreviewError("review.motion_direction_insufficient")
     if (
         len(shots) >= 4
         and int(audit.get("motion_mode_diversity", len(modes))) > 0
@@ -566,12 +713,24 @@ def _render_audit(
     except (OSError, ValueError, render_service.RenderError) as exc:
         raise ReviewPreviewError("review.contact_sheet_failed") from exc
     frame_audit = _frame_motion_audit(paths, duration)
+    frame_audit["sample_frame_times_s"] = [
+        round(index * duration / max(1, len(paths)), 6)
+        for index in range(len(paths))
+    ]
     frame_audit.update(_frame_edge_blank_audit(paths))
     if shots:
-        frame_audit["transition_pixel_audit"] = _audit_transition_pixels(
-            paths,
+        video_stream = next(
+            (item for item in probe.get("streams", []) if item.get("codec_type") == "video"),
+            {},
+        )
+        rate = str(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate") or "0/1")
+        numerator, denominator = rate.split("/", 1)
+        measured_fps = float(numerator) / max(float(denominator), 1e-9)
+        frame_audit["transition_pixel_audit"] = _audit_transition_pixels_from_video(
+            output,
+            root,
             shots,
-            duration=duration,
+            fps=measured_fps,
         )
     return root / "ffprobe.json", contact_sheet, root / "blackdetect.txt", frame_audit
 

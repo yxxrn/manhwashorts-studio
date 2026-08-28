@@ -21,7 +21,7 @@ def _review_sidecar(*, shot_count: int = 8, available_visuals: int = 15) -> dict
                 "start_time": start,
                 "end_time": start + shot_duration,
                 "motion_mode": modes[index % len(modes)],
-                "transition": "fade" if index == 1 else "cut",
+                "transition": "none" if index == 0 else ("fade", "slide_left", "slide_right")[(index - 1) % 3],
                 "framing_telemetry": {
                     "edge_connected_blank_fraction": 0.0,
                     "available_visual_capacity": available_visuals,
@@ -34,11 +34,43 @@ def _review_sidecar(*, shot_count: int = 8, available_visuals: int = 15) -> dict
             "available_visuals": available_visuals,
             "unique_visuals": shot_count,
             "motion_mode_diversity": len(set(modes)),
-            "transition_count": 1,
+            "transition_count": max(0, shot_count - 1),
             "max_unchanged_hold_s": 2.0,
             "mean_frame_diff": 2.0,
         },
     }
+
+
+def test_review_frame_blank_accepts_geometry_safe_motion_preflight():
+    from app.services import review_preview
+
+    sidecar = _review_sidecar(shot_count=15, available_visuals=15)
+    shot = sidecar["shots"][5]
+    shot["framing_telemetry"]["motion_pixel_preflight"] = {
+        "status": "safe", "max_motion_edge_blank_fraction": 0.0, "threshold": 0.08,
+    }
+    audit = sidecar["visual_motion_audit"]
+    audit["max_frame_edge_blank_fraction"] = 0.20
+    audit["per_frame_edge_blank_fractions"] = [{"max_edge_blank_fraction": 0.20}]
+    audit["sample_frame_times_s"] = [shot["start_time"] + 0.5]
+    result = review_preview._measured_visual_qc(sidecar)
+    measured = result["visual_motion_audit"]
+    assert measured["raw_max_frame_edge_blank_fraction"] == 0.20
+    assert measured["corroborated_max_frame_edge_blank_fraction"] == 0.0
+
+
+def test_review_frame_blank_rejects_without_safe_preflight():
+    from app.services import review_preview
+
+    sidecar = _review_sidecar(shot_count=15, available_visuals=15)
+    shot = sidecar["shots"][5]
+    audit = sidecar["visual_motion_audit"]
+    audit["max_frame_edge_blank_fraction"] = 0.20
+    audit["per_frame_edge_blank_fractions"] = [{"max_edge_blank_fraction": 0.20}]
+    audit["sample_frame_times_s"] = [shot["start_time"] + 0.5]
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+    assert exc.value.code == "review.blank_edge_visible"
 
 
 def test_review_density_contract_targets_three_to_four_seconds_per_visual():
@@ -55,8 +87,13 @@ def test_review_density_contract_targets_three_to_four_seconds_per_visual():
 def test_review_qc_rejects_eight_visuals_when_fifteen_safe_visuals_exist():
     from app.services import review_preview
 
+    sidecar = _review_sidecar(shot_count=13, available_visuals=15)
+    for index, shot in enumerate(sidecar["shots"]):
+        shot["panel_id"] = f"panel-{index % 8}"
+        shot["selected_roi"] = {"roi_label": "primary"}
+
     with pytest.raises(review_preview.ReviewPreviewError) as exc:
-        review_preview._measured_visual_qc(_review_sidecar())
+        review_preview._measured_visual_qc(sidecar)
 
     assert exc.value.code == "review.visual_density_insufficient"
 
@@ -128,9 +165,9 @@ def test_reference_transition_schedule_spreads_short_visible_transitions():
 
     transitions = editorial_visual_planner._review_transition_schedule(shots)
 
-    assert len(transitions) >= 2
-    assert all(index > 0 for index in transitions)
-    assert len(transitions) <= 3
+    assert len(transitions) == 11
+    assert set(transitions) == set(range(1, 12))
+    assert set(transitions.values()) <= {"fade", "slide_left", "slide_right"}
 
 
 def test_review_candidate_order_is_source_chronological_not_family_lexical():
@@ -154,6 +191,17 @@ def test_review_candidate_order_is_source_chronological_not_family_lexical():
         later,
     ]
 
+
+
+def test_edge_blank_span_metric_uses_full_frame_fraction():
+    from app.services import framing_analysis
+
+    image = Image.new("RGB", (64, 114), (220, 120, 80))
+    ImageDraw.Draw(image).rectangle((0, 0, 0, 113), fill=(8, 8, 8))
+    metrics = framing_analysis.color_agnostic_edge_blank_span_fractions(image)
+
+    assert metrics["left"] == pytest.approx(1 / 64, abs=1e-6)
+    assert metrics["max_edge_blank_fraction"] < 0.08
 
 def test_frame_edge_audit_detects_a_near_uniform_left_sidebar():
     from app.services import review_preview
@@ -219,6 +267,48 @@ def test_transition_pixel_audit_blocks_planned_transition_with_no_visible_change
 
     assert exc.value.code == "review.transition_not_visible"
 
+
+
+def test_review_join_requires_animation_at_every_boundary(tmp_path: Path):
+    from app.services import render
+
+    clips = [tmp_path / "a.mp4", tmp_path / "b.mp4"]
+    scenes = [
+        render.SceneInput(None, 0.0, 1.0, transition="none"),
+        render.SceneInput(None, 1.0, 2.0, transition="cut"),
+    ]
+
+    with pytest.raises(render.RenderError) as exc:
+        render.join_scene_clips(
+            clips, scenes, tmp_path / "joined.mp4", 30, require_transitions=True
+        )
+
+    assert exc.value.code == "review.transition_missing"
+
+
+def test_review_join_does_not_fallback_to_hard_cut(monkeypatch, tmp_path: Path):
+    from app.services import render
+
+    calls = []
+
+    def fail_xfade(*_args, **_kwargs):
+        calls.append(True)
+        raise render.RenderError("xfade failed", code="ffmpeg.filter_failed")
+
+    monkeypatch.setattr(render, "_run", fail_xfade)
+    clips = [tmp_path / "a.mp4", tmp_path / "b.mp4"]
+    scenes = [
+        render.SceneInput(None, 0.0, 1.0, transition="none"),
+        render.SceneInput(None, 1.0, 2.0, transition="fade"),
+    ]
+
+    with pytest.raises(render.RenderError) as exc:
+        render.join_scene_clips(
+            clips, scenes, tmp_path / "joined.mp4", 30, require_transitions=True
+        )
+
+    assert exc.value.code == "ffmpeg.filter_failed"
+    assert calls == [True]
 
 def test_renderer_maps_visible_transition_families_to_ffmpeg_filters():
     from app.services import render
@@ -321,12 +411,35 @@ def test_reference_motion_preflight_preserves_safe_motion(tmp_path):
     assert maximum == 0.0
 
 
+
+def test_reference_motion_preflight_corroborates_flat_art_with_reference_mask(monkeypatch, tmp_path):
+    from app.services import framing_analysis, reference_profile, render
+
+    image = Image.new("RGB", (64, 114), (220, 120, 80))
+    ImageDraw.Draw(image).rectangle((0, 0, 11, 113), fill=(245, 245, 245))
+    path = tmp_path / "flat-art-edge.jpg"
+    image.save(path, quality=100)
+    scene = render.SceneInput(
+        image_path=path, start_time=0.0, end_time=2.0,
+        focus_x=0.5, focus_y=0.5, focus_end_x=0.5, focus_end_y=0.5,
+        camera_curve="slow_push_in", publish_allowed=False,
+        border_mask={"present": True}, selected_roi={"crop_box": [0, 0, 64, 114]},
+        framing_telemetry={"edge_connected_blank_fraction": 0.0},
+    )
+    monkeypatch.setattr(render, "_reference_border_mask_from_mapping", lambda _value: object())
+    monkeypatch.setattr(framing_analysis, "_mask_crop_fraction", lambda *_args, **_kwargs: 0.0)
+    safe, maximum = render._reference_motion_pixel_safety(
+        path, scene, 64, 114, reference_profile.REFERENCE_MATCHED_SHORTS_V2
+    )
+    assert safe is True
+    assert maximum == 0.0
+
 def test_reference_motion_preflight_checks_final_tv_range_pixels(tmp_path):
     from app.services import framing_analysis, reference_profile, render
 
     image = Image.new("RGB", (64, 114), (60, 60, 60))
     pixels = image.load()
-    for y in range(109, 114):
+    for y in range(102, 114):
         for x in range(64):
             value = 130 + (20 if x % 2 else -20)
             pixels[x, y] = (value, value, value)
@@ -373,3 +486,77 @@ def test_reference_roi_metric_uses_final_tv_range_pixels():
 
     assert primary.crop_box == (0, 0, 64, 114)
     assert primary.edge_blank_fraction == 1.0
+
+
+def test_review_density_minimum_does_not_shrink_to_available_capacity():
+    from app.services import review_preview
+
+    contract = review_preview.review_visual_density_contract(51.3, 5)
+
+    assert contract["minimum_required_visuals"] == 13
+    assert contract["target_visuals"] == 5
+
+
+def test_review_qc_rejects_any_shot_over_four_seconds():
+    from app.services import review_preview
+
+    sidecar = _review_sidecar(shot_count=13, available_visuals=15)
+    sidecar["shots"][0]["end_time"] = 4.001
+
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+
+    assert exc.value.code == "review.shot_duration_excessive"
+
+
+def test_review_qc_requires_animation_at_every_boundary():
+    from app.services import review_preview
+
+    sidecar = _review_sidecar(shot_count=13, available_visuals=15)
+    sidecar["shots"][6]["transition"] = "cut"
+    sidecar["visual_motion_audit"]["transition_count"] = 11
+
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+
+    assert exc.value.code == "review.transition_missing"
+
+
+def test_review_qc_rejects_static_motion_mode():
+    from app.services import review_preview
+
+    sidecar = _review_sidecar(shot_count=13, available_visuals=15)
+    sidecar["shots"][3]["motion_mode"] = "hold"
+
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+
+    assert exc.value.code == "review.motion_static"
+
+
+def test_review_zoom_motion_is_monotonic_and_never_static():
+    from app.services import editorial_visual_planner
+
+    shots = [
+        {
+            "focus_x": 0.4 + index * 0.01,
+            "focus_y": 0.5,
+            "focus_end_x": 0.7,
+            "focus_end_y": 0.6,
+            "motion_mode": "guided_pan",
+            "camera_curve": "pan_horizontal",
+            "motion_reason": "old",
+        }
+        for index in range(6)
+    ]
+
+    editorial_visual_planner._enforce_review_zoom_motion(shots)
+
+    assert [shot["motion_mode"] for shot in shots] == [
+        "slow_push", "slow_pull", "slow_push", "slow_pull", "slow_push", "slow_pull"
+    ]
+    assert [shot["camera_curve"] for shot in shots] == [
+        "slow_push_in", "slow_pull_out", "slow_push_in", "slow_pull_out", "slow_push_in", "slow_pull_out"
+    ]
+    assert all(shot["focus_end_x"] == shot["focus_x"] for shot in shots)
+    assert all(shot["focus_end_y"] == shot["focus_y"] for shot in shots)

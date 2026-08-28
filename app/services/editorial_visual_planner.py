@@ -97,44 +97,11 @@ def _ordered_review_roi_alternatives(
 def _review_transition_schedule(
     shots: Sequence[Mapping[str, object]],
 ) -> dict[int, str]:
-    """Place a sparse, visible transition schedule across the review timeline.
+    """Animate every review boundary with a short deterministic transition."""
 
-    Section boundaries remain preferred, but long sections also receive evenly
-    spaced transitions.  The review-only ceiling is deliberately sparse so
-    transitions remain editorial accents instead of a continuous effect.
-    """
-
-    if len(shots) < 2:
-        return {}
-    boundaries = list(range(1, len(shots)))
-    preferred = [
-        index
-        for index in boundaries
-        if shots[index].get("section") != shots[index - 1].get("section")
-    ]
-    count = min(
-        len(boundaries),
-        max(1, math.ceil(len(boundaries) * 0.25)),
-    )
-    selected: list[int] = []
-    for index in preferred:
-        if len(selected) >= count:
-            break
-        selected.append(index)
-    for rank in range(1, count + 1):
-        if len(selected) >= count:
-            break
-        ideal = round(rank * len(shots) / (count + 1))
-        candidate = min(
-            (index for index in boundaries if index not in selected),
-            key=lambda index: (abs(index - ideal), index),
-            default=None,
-        )
-        if candidate is not None:
-            selected.append(candidate)
     return {
-        index: _review_transition_family(rank)
-        for rank, index in enumerate(sorted(selected))
+        index: _review_transition_family(index - 1)
+        for index in range(1, len(shots))
     }
 
 
@@ -477,6 +444,27 @@ def _apply_reference_motion(shots: list[dict], beats: list[director.StoryBeat]) 
             curve_for.get(motion.mode, "static")
         )
         shot["overlay_text"] = ""
+
+
+def _enforce_review_zoom_motion(shots: list[dict]) -> None:
+    """Use monotonic fixed-focus zooms for every review shot.
+
+    Translating a viewport by sub-pixel increments can look like camera shake
+    after video quantization. Review motion therefore alternates push/pull
+    zooms around the already approved focus point and never falls back to a
+    static hold.
+    """
+
+    for index, shot in enumerate(shots):
+        push = index % 2 == 0
+        shot["motion_mode"] = "slow_push" if push else "slow_pull"
+        shot["motion_intensity"] = "low"
+        shot["camera_curve"] = "slow_push_in" if push else "slow_pull_out"
+        shot["focus_end_x"] = float(shot.get("focus_x", 0.5))
+        shot["focus_end_y"] = float(shot.get("focus_y", 0.5))
+        reason = str(shot.get("motion_reason", "") or "").strip()
+        suffix = "review:monotonic_fixed_focus_zoom"
+        shot["motion_reason"] = f"{reason}; {suffix}" if reason else suffix
 
 
 def _reference_roi_key(shot: Mapping[str, object]) -> tuple[object, ...]:
@@ -996,7 +984,15 @@ def _reference_panel_attempt(
         else telemetry.get("rejection_code")
     )
     accepted = bool(feasible)
-    pixel_edge_blank_fraction = roi.edge_blank_fraction
+    pixel_edge_blank_fraction = (
+        (
+            getattr(telemetry, "edge_connected_blank_fraction", None)
+            if not isinstance(telemetry, Mapping)
+            else telemetry.get("edge_connected_blank_fraction")
+        )
+        if review_aggressive_crop
+        else roi.edge_blank_fraction
+    )
     if (
         accepted
         and pixel_edge_blank_fraction is not None
@@ -1423,7 +1419,11 @@ def _plan_reference_panel_candidates(
                     "roi_label": roi.roi_label,
                     "crop_box": list(roi.crop_box),
                     "focus": list(roi.focus),
-                    "pixel_edge_blank_fraction": roi.edge_blank_fraction,
+                    "pixel_edge_blank_fraction": (
+                        telemetry_record.get("edge_connected_blank_fraction")
+                        if allow_review_cadence_adaptation
+                        else roi.edge_blank_fraction
+                    ),
                 },
                 "candidate_count": len(eligible),
                 "selection_context": {
@@ -1486,7 +1486,11 @@ def _plan_reference_panel_candidates(
                     "roi_label": roi.roi_label,
                     "crop_box": list(roi.crop_box),
                     "focus": list(roi.focus),
-                    "pixel_edge_blank_fraction": roi.edge_blank_fraction,
+                    "pixel_edge_blank_fraction": (
+                        telemetry_record.get("edge_connected_blank_fraction")
+                        if allow_review_cadence_adaptation
+                        else roi.edge_blank_fraction
+                    ),
                 },
                 "roi_label": roi.roi_label,
                 "focus_x": roi.focus[0],
@@ -1512,6 +1516,8 @@ def _plan_reference_panel_candidates(
                 shot["camera_curve"] = "slow_push_in"
                 shot["motion_mode"] = "slow_push"
                 shot["motion_reason"] = "static focus: pan/focus_shift downgraded to zoom"
+    if allow_review_cadence_adaptation:
+        _enforce_review_zoom_motion(selected_shots)
     if allow_review_cadence_adaptation and len(selected_shots) > 1:
         # The panel-candidate path reuses the base shot list but can replace
         # its panel/ROI identity during exact lineage binding. Reassert a
@@ -1522,7 +1528,7 @@ def _plan_reference_panel_candidates(
             shot["transition"] = (
                 "none"
                 if index == 0
-                else transition_boundaries.get(index, "cut")
+                else transition_boundaries[index]
             )
     return selected_shots
 
@@ -1556,8 +1562,14 @@ def _plan_reference(
     if max_shots_by_section is not None:
         capacity = min(capacity, sum(max_shots_by_section.values()))
     if allow_review_cadence_adaptation:
-        # Review cadence is evidence-driven: prefer three-to-four seconds per
-        # genuinely available visual, while never inventing capacity.
+        density = reference_profile.review_visual_density_contract(total_duration, capacity)
+        minimum_required = int(density["minimum_required_visuals"])
+        if capacity < minimum_required:
+            raise ReferencePlanningError(
+                f"{profile.profile_id} has capacity for {capacity} review shots; "
+                f"at least {minimum_required} are required by the four-second ceiling",
+                "visual.capacity_insufficient",
+            )
         nominal_target = _review_visual_shot_target(total_duration, capacity)
     else:
         nominal_target = max(
@@ -1570,18 +1582,10 @@ def _plan_reference(
     target = nominal_target
     cadence_adapted = False
     if capacity < target:
-        if not allow_review_cadence_adaptation:
-            raise ReferencePlanningError(
-                f"{profile.profile_id} cannot satisfy the panel reuse cap for "
-                f"{target} shots"
-            )
-        section_count = len({str(span.section) for span in spans if str(span.section)})
-        if capacity < max(1, section_count):
-            raise ReferencePlanningError(
-                f"{profile.profile_id} has insufficient feasible panel capacity for "
-                f"{section_count} story sections"
-            )
-        target = capacity
+        raise ReferencePlanningError(
+            f"{profile.profile_id} cannot satisfy the panel reuse cap for {target} shots",
+            "visual.capacity_insufficient" if allow_review_cadence_adaptation else None,
+        )
 
     if capacity < target:
         raise ReferencePlanningError(
@@ -1703,7 +1707,11 @@ def _plan_reference(
             shot["transition"] = (
                 "none"
                 if absolute_index == 0
-                else review_transition_boundaries.get(absolute_index, "cut")
+                else (
+                    review_transition_boundaries[absolute_index]
+                    if allow_review_cadence_adaptation
+                    else "cut"
+                )
             )
             reasons = list(shot.get("alignment_reasons", ()))
             valid = (
@@ -1798,6 +1806,12 @@ def _plan_reference(
         if any(duration <= 0 for duration in durations):
             raise ReferencePlanningError(
                 f"{profile.profile_id} produced a non-positive review shot duration"
+            )
+        if any(duration > reference_profile.REVIEW_MAX_SHOT_SECONDS + 1e-9 for duration in durations):
+            raise ReferencePlanningError(
+                f"{profile.profile_id} produced a review shot longer than "
+                f"{reference_profile.REVIEW_MAX_SHOT_SECONDS:.1f} seconds",
+                "visual.capacity_insufficient",
             )
     else:
         normal = [duration for duration in durations if profile.hold_min_s <= duration <= profile.hold_max_s]
