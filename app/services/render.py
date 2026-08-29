@@ -16,7 +16,6 @@ artifact where the publish step could pick it up.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import math
 import re
@@ -40,6 +39,7 @@ from app.services import (
     subtitle_karaoke,
     visual_scoring,
 )
+from app.services.file_integrity import sha256_file
 from app.services.reference_profile import ReferenceProfileConfig, profile_hash
 from app.services.timeline import CueSpec, wrap_caption
 
@@ -1979,7 +1979,7 @@ def _subtitle_manifest_evidence(
         "contract_version": subtitle_karaoke.SUBTITLE_CONTRACT_VERSION,
         "profile_id": getattr(profile, "profile_id", None),
         "font_name": font_name,
-        "font_file_sha256": hashlib.sha256(font_path.read_bytes()).hexdigest(),
+        "font_file_sha256": sha256_file(font_path),
         "max_active_text_width_px": round(maximum_width, 3),
         "safe_text_width_px": safe_width,
         "minimum_horizontal_clearance_px": round((width - maximum_width) / 2.0, 3),
@@ -3202,7 +3202,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         srt_path = output.with_suffix(".srt")
         srt_path.write_text(to_srt(request.cues), encoding="utf-8")
 
-    checksum = hashlib.sha256(output.read_bytes()).hexdigest()
+    checksum = sha256_file(output)
     report(100, "done")
 
     scratch_bytes = sum(path.stat().st_size for path in work.rglob("*") if path.is_file())

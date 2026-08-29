@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 from app.config import settings
 from app.services import visual_scoring
+from app.services.file_integrity import sha256_file
 
 THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v2"
 TARGET_SIZE = (1080, 1920)
@@ -57,14 +58,6 @@ class VisualCandidate:
     source_family: str
     roi_label: str
     focus_y: float
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _script_sections(script: object) -> tuple[dict[str, str], str]:
@@ -682,7 +675,7 @@ def generate_thumbnail_package(
     output_dir.mkdir(parents=True, exist_ok=True)
     headlines, sections, language = generate_headlines(script)
     story_hash = _story_hash(sections)
-    video_checksum = _sha256_file(video_path)
+    video_checksum = sha256_file(video_path)
     if not force:
         existing = _existing_manifest(
             output_dir, video_checksum=video_checksum, story_hash=story_hash

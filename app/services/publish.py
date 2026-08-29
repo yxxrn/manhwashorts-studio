@@ -14,7 +14,6 @@ FR-10 hold.
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -37,6 +36,7 @@ from app.security import decrypt_json, new_idempotency_key
 from app.services import policy
 from app.services import quality as quality_svc
 from app.services import youtube as yt
+from app.services.file_integrity import sha256_file
 from app.services.pipeline import (
     PipelineError,
     audit,
@@ -85,7 +85,7 @@ def verify_artifact(job: RenderJob) -> Path:
             "the rendered video is missing from disk. Re-render before publishing."
         )
     if job.checksum:
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        actual = sha256_file(path)
         if actual != job.checksum:
             raise PipelineError(
                 "the rendered file does not match its checksum from render time. "

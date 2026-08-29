@@ -13,6 +13,8 @@ from typing import Any
 
 from PIL import Image
 
+from app.services.file_integrity import sha256_file
+
 PROVENANCE_KIND = "codex_manual_vision_reference_v1"
 INTERNAL_REVIEW_RIGHTS = "internal review only"
 EXPECTED_SOURCE_ORDERS = tuple(range(24))
@@ -123,7 +125,7 @@ def _positive_int(value: Any, code: str) -> int:
 
 def _sha256(path: Path) -> str:
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return sha256_file(path)
     except OSError:
         _fail("review.source_unreadable")
     raise AssertionError("unreachable")

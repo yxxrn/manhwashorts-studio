@@ -3861,6 +3861,20 @@ def _ensure_final_thumbnail(
     return manifest
 
 
+def _persist_production_metadata(
+    db: Session,
+    script: ScriptVersion,
+    metadata: Mapping[str, Any],
+    production: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Persist one immutable production checkpoint envelope and commit it."""
+    next_metadata = {**dict(metadata), "production": dict(production)}
+    script.editorial_metadata = next_metadata
+    db.flush()
+    db.commit()
+    return next_metadata
+
+
 def run_production(
     db: Session,
     project_id: str,
@@ -3912,10 +3926,9 @@ def run_production(
                 "thumbnail_path": thumbnail_manifest.get("thumbnail_path", ""),
                 "thumbnail_headline": thumbnail_manifest.get("headline", ""),
             })
-            metadata = {**metadata, "production": dict(production)}
-            script.editorial_metadata = metadata
-            db.flush()
-            db.commit()
+            metadata = _persist_production_metadata(
+                db, script, metadata, production
+            )
         return existing
 
     if not _audio_stage_ready(db, script):
@@ -3927,12 +3940,9 @@ def run_production(
             actor_id=actor_id,
         )
     production["audio_script_hash"] = script_hash
-    metadata = {**metadata, "production": dict(production)}
-    script.editorial_metadata = metadata
-    db.flush()
     # Commit each successful boundary so an interrupted production run resumes
     # from the last completed stage rather than repeating provider work.
-    db.commit()
+    metadata = _persist_production_metadata(db, script, metadata, production)
 
     adaptive_policy = _approved_adaptive_reference_policy(script)
     timeline_reusable = (
@@ -3957,10 +3967,7 @@ def run_production(
             adaptive_reference_duration_bounds_s=bounds,
         )
     production["timeline_script_hash"] = script_hash
-    metadata = {**metadata, "production": dict(production)}
-    script.editorial_metadata = metadata
-    db.flush()
-    db.commit()
+    metadata = _persist_production_metadata(db, script, metadata, production)
 
     preflight = run_quality_checks(db, project_id, actor_id=actor_id)
     if any(result.blocking for result in preflight):
@@ -3999,10 +4006,7 @@ def run_production(
             "thumbnail_headline": (thumbnail_manifest or {}).get("headline", ""),
         }
     )
-    metadata = {**metadata, "production": dict(production)}
-    script.editorial_metadata = metadata
-    db.flush()
-    db.commit()
+    _persist_production_metadata(db, script, metadata, production)
     return job
 
 

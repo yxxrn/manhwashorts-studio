@@ -24,6 +24,7 @@ from app.config import settings
 from app.models import PanelRegion, ScriptVersion, SourceAsset, StoryAnalysis, SubtitleCue
 from app.services import reference_profile
 from app.services import render as render_service
+from app.services.file_integrity import sha256_file
 
 PROVENANCE = "codex_cloud_multimodal_review_v1"
 DISPLAY_TIMING_VERSION = "review_provisional_display_pacing_v1"
@@ -766,7 +767,7 @@ def _write_text(path: Path, value: str) -> None:
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return sha256_file(path)
 
 
 def _frame_motion_audit(frame_paths: list[Path], duration: float) -> dict[str, object]:
