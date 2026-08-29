@@ -33,6 +33,28 @@ os.environ["MS_ENVIRONMENT"] = "local"
 os.environ["MS_YOUTUBE_ENABLED"] = "false"
 
 
+_TEST_CATEGORY_MARKERS = frozenset({
+    "unit", "contracts", "integration", "render", "production", "migrations", "api", "cloud"
+})
+_FFMPEG_TEST_FILES = frozenset({
+    "test_pipeline.py", "test_motion_stability.py", "test_reference_render_surface.py",
+    "test_reference_visual_review.py", "test_regular_render_karaoke.py",
+    "test_review_failure_propagation.py", "test_split_focus_render.py",
+})
+
+def pytest_collection_modifyitems(items):
+    """Tag tests by responsibility without changing default collection."""
+    for item in items:
+        try:
+            relative = Path(str(item.path)).resolve().relative_to(ROOT / "tests")
+        except (ValueError, OSError):
+            continue
+        if len(relative.parts) > 1 and relative.parts[0] in _TEST_CATEGORY_MARKERS:
+            item.add_marker(getattr(pytest.mark, relative.parts[0]))
+        if relative.name in _FFMPEG_TEST_FILES:
+            item.add_marker(pytest.mark.ffmpeg)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_environment() -> Iterator[None]:
     """Point the app at a scratch data directory before it is imported.

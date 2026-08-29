@@ -10,7 +10,16 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q --strict-markers"
 markers = [
-    "slow: exercises real FFmpeg rendering; skip with -m 'not slow'",
+    "slow: exercises long-running rendering or integration behavior",
+    "ffmpeg: invokes or validates FFmpeg-backed media behavior",
+    "unit: isolated unit-level behavior",
+    "contracts: stable schema and behavioral contracts",
+    "integration: multi-service integration behavior",
+    "render: rendering, framing, subtitle, and thumbnail behavior",
+    "production: end-to-end orchestration and release behavior",
+    "migrations: database migration compatibility",
+    "api: HTTP/API surface behavior",
+    "cloud: cloud multimodal stage and resume behavior",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:starlette.*",
