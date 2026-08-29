@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.services import visual_scoring
-from app.services.visual_scoring import PanelCandidate
+from app.services.visual_contracts import PanelCandidate
 
 
 @dataclass(frozen=True)

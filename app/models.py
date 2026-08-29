@@ -39,7 +39,7 @@ from app.constants import (
     SpoilerLevel,
     UploadStatus,
 )
-from app.db import Base
+from app.db_base import Base
 
 
 def _uuid() -> str:

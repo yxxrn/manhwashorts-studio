@@ -18,6 +18,7 @@ from app.services import (
     reference_profile,
     review_source_upscale,
     roi_detection,
+    visual_planning,
     visual_scoring,
 )
 
@@ -2140,7 +2141,7 @@ def _plan_reference(
         target_shots=target,
         max_counts_by_section=max_shots_by_section,
     )
-    shots = visual_scoring.plan_content_aware_scenes(
+    shots = visual_planning.plan_content_aware_scenes(
         beats,
         candidates,
         min_scene_seconds=profile.hold_min_s,
@@ -2413,7 +2414,7 @@ def plan(
             review_duration_bounds_s=review_duration_bounds_s,
         )
     beats = _coalesce_beats(director.analyze_story(span_list))
-    shots = visual_scoring.plan_content_aware_scenes(beats, candidates)
+    shots = visual_planning.plan_content_aware_scenes(beats, candidates)
     history: list[str] = []
     motion_plans = []
     curve_for = {

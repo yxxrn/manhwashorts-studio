@@ -9,13 +9,10 @@ from contextlib import contextmanager
 from fastapi import Request
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-
-
-class Base(DeclarativeBase):
-    """Declarative base for all ORM models."""
+from app.db_base import Base
 
 
 def _make_engine() -> Engine:

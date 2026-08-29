@@ -6,6 +6,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 
+from app.services.subtitle_contracts import KaraokeSentenceGroup, KaraokeWord
 from app.services.timeline import normalize_display_text, wrap_caption
 
 SUBTITLE_CONTRACT_VERSION = "sentence_chunked_word_karaoke_v2"
@@ -42,10 +43,7 @@ SEMANTIC_BREAK_WORDS = frozenset(
 
 
 def _karaoke_types():
-    # Keep the canonical dataclasses in render.py for import compatibility;
-    # this module owns only the shared timing/chunking behavior.
-    from app.services.render import KaraokeSentenceGroup, KaraokeWord
-
+    # Compatibility helper retained for tests/callers that exercise this boundary.
     return KaraokeSentenceGroup, KaraokeWord
 
 

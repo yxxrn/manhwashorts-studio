@@ -15,7 +15,7 @@ from typing import Any
 
 from app.services import visual_scoring
 from app.services.roi_detection import ROI, rank_rois
-from app.services.visual_scoring import PanelCandidate
+from app.services.visual_contracts import PanelCandidate
 
 
 @dataclass(frozen=True)

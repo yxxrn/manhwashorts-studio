@@ -20,6 +20,8 @@ from typing import Any
 
 from PIL import Image, ImageFilter, ImageStat
 
+from app.services.visual_contracts import PanelCandidate, VisualFeatures
+
 VISUAL_EVIDENCE_CONTRACT_VERSION = "COLOR_AGNOSTIC_BALLOON_FREE_V1"
 _MASK_STATUSES = frozenset({"unknown", "known_empty", "known_nonempty"})
 _BALLOON_KINDS = frozenset({"speech_balloon"})
@@ -63,41 +65,8 @@ def asset_use_cap(shot_count: int) -> int:
     return max(2, int(math.floor(max(0, shot_count) * 0.12)))
 
 
-@dataclass(frozen=True)
-class VisualFeatures:
-    face_visibility: float = 0.0
-    facial_expression: float = 0.0
-    action_pose: float = 0.0
-    weapons: float = 0.0
-    monsters: float = 0.0
-    visual_effects: float = 0.0
-    motion_lines: float = 0.0
-    impact_frame: float = 0.0
-    close_up: float = 0.0
-    dramatic_composition: float = 0.0
-    object_density: float = 0.0
-    empty_background: float = 0.0
-    scenery_only: float = 0.0
-    transition: float = 0.0
-    speech_balloon_dominance: float = 0.0
-    ui_overlay_dominance: float = 0.0
-    blank_dominance: float = 0.0
-    ocr_text: str = ""
-    semantic_tags: frozenset[str] = frozenset()
-    focal_points: tuple[tuple[float, float], ...] = ((0.5, 0.4),)
-    face_points: tuple[tuple[float, float], ...] = ()
-    face_boxes: tuple[tuple[float, float, float, float], ...] = ()
-    visual_signature: str = ""
 
 
-@dataclass(frozen=True)
-class PanelCandidate:
-    asset_id: str
-    order_index: int
-    features: VisualFeatures
-    visual_score: float
-    semantic_score: float = 0.0
-    source_family: str = ""
 
 
 class VisualEvidenceError(ValueError):
@@ -961,21 +930,18 @@ def plan_content_aware_scenes(
     preferred_asset_ids_by_section: Mapping[str, Iterable[str]] | None = None,
     max_asset_uses: int | None = None,
 ) -> list[dict]:
-    """Plan directed shots; panel scoring remains the candidate provider."""
-    from app.services.camera_planner import apply_camera_plans
-    from app.services.shot_director import plan_shots
+    """Compatibility facade for the dedicated visual-planning boundary."""
+    import importlib
 
-    return apply_camera_plans(
-        plan_shots(
-            list(spans),
-            candidates,
-            min_scene_seconds,
-            max_scene_seconds,
-            preferred_asset_ids_by_section=preferred_asset_ids_by_section,
-            max_asset_uses=max_asset_uses,
-        )
+    planner = importlib.import_module("app.services.visual_planning")
+    return planner.plan_content_aware_scenes(
+        spans,
+        candidates,
+        min_scene_seconds,
+        max_scene_seconds,
+        preferred_asset_ids_by_section=preferred_asset_ids_by_section,
+        max_asset_uses=max_asset_uses,
     )
-
 
 def score_breakdown(candidate: PanelCandidate) -> dict[str, float | str]:
     f = candidate.features
