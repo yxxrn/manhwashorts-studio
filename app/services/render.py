@@ -1064,6 +1064,168 @@ def apply_local_effects(image: Image.Image, effects: tuple[str, ...], intensity:
     return out.convert("RGB")
 
 
+def _render_subpixel_review_scene_clip(
+    scene: SceneInput,
+    prepared_image: Path,
+    dest: Path,
+    width: int,
+    height: int,
+    fps: int,
+    *,
+    encoder: encoders.Selection,
+    preview: bool,
+    profile: ReferenceProfileConfig | None,
+) -> Path:
+    """Render review motion with floating-point affine sampling per output frame.
+
+    FFmpeg ``zoompan`` quantizes its source viewport to integer pixels. At the
+    deliberately subtle review zoom rate that creates a visible hold/jump
+    cadence at 60 fps. OpenCV affine sampling keeps viewport origin and scale
+    in floating point, so every encoded frame advances continuously.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover - pinned runtime dependency
+        raise RenderError(
+            "review.subpixel_motion_unavailable: OpenCV is required for stabilized review motion",
+            code="review.subpixel_motion_unavailable",
+        ) from exc
+
+    image = cv2.imread(str(prepared_image), cv2.IMREAD_COLOR)
+    if image is None or image.ndim != 3:
+        raise RenderError(
+            "review.subpixel_motion_unavailable: prepared review frame is unreadable",
+            code="review.subpixel_motion_unavailable",
+        )
+    input_height, input_width = image.shape[:2]
+    if input_width < 2 or input_height < 2:
+        raise RenderError(
+            "review.subpixel_motion_unavailable: prepared review frame is too small",
+            code="review.subpixel_motion_unavailable",
+        )
+
+    frames = max(2, int(round(scene.duration * fps)))
+    safe_curve = motion_director.safe_camera_curve(scene.camera_curve or scene.effect)
+    normal_delta = (profile.normal_zoom_max - 1.0) if profile else 0.06
+    normal_delta = min(normal_delta, reference_profile.REVIEW_MOTION_ZOOM_DELTA)
+    impact_delta = (profile.impact_zoom_max - 1.0) if profile else 0.08
+
+    filter_chain = encoders.apply_filter_suffix(encoder, "format=yuv420p")
+    command = [
+        settings.ffmpeg_bin,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *encoders.input_args(encoder),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgr24",
+        "-s:v",
+        f"{width}x{height}",
+        "-r",
+        str(fps),
+        "-i",
+        "pipe:0",
+        "-vf",
+        filter_chain,
+        "-r",
+        str(fps),
+        "-frames:v",
+        str(frames),
+        *encoders.video_args(encoder, preview=preview, final=not preview),
+        str(dest),
+    ]
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RenderError(
+            f"{settings.ffmpeg_bin} not found. Install FFmpeg: sudo apt-get install ffmpeg",
+            code="ffmpeg_missing",
+        ) from exc
+    if process.stdin is None or process.stderr is None:  # pragma: no cover - Popen contract
+        process.kill()
+        raise RenderError(
+            "review subpixel renderer could not open FFmpeg pipes",
+            code="scene_render_failed",
+        )
+
+    try:
+        for frame_index in range(frames):
+            progress = frame_index / max(1, frames - 1)
+            smooth = progress * progress * (3.0 - 2.0 * progress)
+            focus_x = (1.0 - smooth) * max(0.05, min(0.95, scene.focus_x)) + smooth * max(
+                0.05, min(0.95, scene.focus_end_x)
+            )
+            focus_y = (1.0 - smooth) * max(0.05, min(0.95, scene.focus_y)) + smooth * max(
+                0.05, min(0.95, scene.focus_end_y)
+            )
+            if safe_curve == "static":
+                zoom = 1.0
+            elif safe_curve == "slow_pull_out":
+                zoom = 1.0 + normal_delta - normal_delta * smooth
+            elif safe_curve in {"push_in", "reveal"}:
+                zoom = 1.0 + impact_delta * smooth
+            elif safe_curve == "static_emphasis":
+                zoom = 1.0 + normal_delta * 0.45 * smooth
+            elif safe_curve == "atmospheric":
+                zoom = 1.0 + normal_delta * 0.55 * smooth
+            else:
+                zoom = 1.0 + normal_delta * smooth
+
+            scale_x = (width / input_width) * zoom
+            scale_y = (height / input_height) * zoom
+            matrix = np.array(
+                [
+                    [scale_x, 0.0, focus_x * width - scale_x * focus_x * input_width],
+                    [0.0, scale_y, focus_y * height - scale_y * focus_y * input_height],
+                ],
+                dtype=np.float32,
+            )
+            frame = cv2.warpAffine(
+                image,
+                matrix,
+                (width, height),
+                flags=cv2.INTER_LANCZOS4,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(0, 0, 0),
+            )
+            process.stdin.write(frame.tobytes())
+        process.stdin.close()
+        return_code = process.wait(timeout=600)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        process.wait()
+        raise RenderError("scene_render timed out after 600s", code="scene_render_timeout") from exc
+    except (BrokenPipeError, OSError, cv2.error) as exc:
+        with contextlib.suppress(Exception):
+            process.stdin.close()
+        with contextlib.suppress(Exception):
+            process.wait(timeout=10)
+        log = process.stderr.read().decode("utf-8", errors="replace")[-1500:]
+        raise RenderError(
+            f"scene_render failed during subpixel review motion. Last output: {log[-300:] or 'none'}",
+            code="scene_render_failed",
+            log_tail=log,
+        ) from exc
+
+    log = process.stderr.read().decode("utf-8", errors="replace")[-1500:]
+    if return_code != 0:
+        raise RenderError(
+            f"scene_render failed (exit {return_code}). Last output: {log[-300:] or 'none'}",
+            code="scene_render_failed",
+            log_tail=log,
+        )
+    return dest
+
+
 def render_scene_clip(
     scene: SceneInput,
     prepared_image: Path,
@@ -1082,6 +1244,11 @@ def render_scene_clip(
     is resolved, so callers and tests can stay unaware of the choice.
     """
     selection = encoder or encoders.select()
+    if stabilized_review_motion and settings.motion_enabled:
+        return _render_subpixel_review_scene_clip(
+            scene, prepared_image, dest, width, height, fps,
+            encoder=selection, preview=preview, profile=profile,
+        )
     duration = scene.duration
     frames = max(2, int(round(duration * fps)))
     motion = (

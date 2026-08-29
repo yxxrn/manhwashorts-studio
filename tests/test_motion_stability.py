@@ -281,6 +281,72 @@ def test_invalid_display_cue_is_blocked_by_motion_qc_matrix():
 
 
 @pytest.mark.slow
+def test_stabilized_review_motion_has_subpixel_sixty_fps_cadence(tmp_path):
+    import cv2
+    import numpy as np
+
+    from app.services import encoders, reference_profile, render
+
+    source = tmp_path / "review-grid.png"
+    _grid(source)
+    output = tmp_path / "review-subpixel.mp4"
+    selection = encoders.Selection(encoders.CPU, requested="cpu")
+    profile = reference_profile.resolve_reference_profile("reference_matched_shorts_v2")
+    render.render_scene_clip(
+        render.SceneInput(
+            image_path=source,
+            start_time=0.0,
+            end_time=1.2,
+            focus_x=0.5,
+            focus_y=0.44,
+            focus_end_x=0.5,
+            focus_end_y=0.44,
+            camera_curve="slow_push_in",
+            effect="slow_push_in",
+            motion_mode="slow_push",
+            transition="none",
+        ),
+        source,
+        output,
+        240,
+        426,
+        60,
+        encoder=selection,
+        preview=True,
+        profile=profile,
+        stabilized_review_motion=True,
+    )
+
+    capture = cv2.VideoCapture(str(output))
+    assert capture.isOpened()
+    assert capture.get(cv2.CAP_PROP_FPS) == pytest.approx(60.0, abs=0.01)
+    frames = []
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        gray = cv2.cvtColor(
+            cv2.resize(frame, (64, 114), interpolation=cv2.INTER_AREA),
+            cv2.COLOR_BGR2GRAY,
+        )
+        frames.append(gray)
+    capture.release()
+    assert len(frames) >= 70
+    differences = np.array(
+        [
+            float(np.mean(cv2.absdiff(before, after)))
+            for before, after in zip(frames, frames[1:], strict=False)
+        ]
+    )
+    micro_hold_fraction = float(
+        np.mean(differences < reference_profile.REVIEW_MOTION_MICRO_HOLD_DIFF)
+    )
+    assert micro_hold_fraction <= (
+        reference_profile.REVIEW_MOTION_MAX_MICRO_HOLD_FRACTION
+    )
+
+
+@pytest.mark.slow
 def test_real_ffmpeg_grid_motion_decodes_and_legacy_fallback_is_static(tmp_path):
     from app.config import settings
     from app.services import encoders, render

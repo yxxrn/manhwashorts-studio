@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -666,12 +667,21 @@ def _frame_motion_audit(frame_paths: list[Path], duration: float) -> dict[str, o
     interval = float(duration) / max(1, len(frame_paths) - 1)
     longest_run = 0
     current_run = 0
+    micro_hold_run = 0
+    longest_micro_hold_run = 0
+    micro_hold_threshold = reference_profile.REVIEW_MOTION_MICRO_HOLD_DIFF
     for difference in differences:
         if difference < 0.5:
             current_run += 1
             longest_run = max(longest_run, current_run)
         else:
             current_run = 0
+        if difference < micro_hold_threshold:
+            micro_hold_run += 1
+            longest_micro_hold_run = max(longest_micro_hold_run, micro_hold_run)
+        else:
+            micro_hold_run = 0
+    micro_hold_fraction = sum(value < micro_hold_threshold for value in differences) / len(differences)
     return {
         "sample_frame_count": len(frame_paths),
         "mean_frame_diff": round(sum(differences) / len(differences), 4),
@@ -679,6 +689,9 @@ def _frame_motion_audit(frame_paths: list[Path], duration: float) -> dict[str, o
         "min_frame_diff": ordered[0],
         "max_frame_diff": ordered[-1],
         "near_identical_fraction": round(sum(value < 0.5 for value in differences) / len(differences), 4),
+        "micro_hold_threshold": micro_hold_threshold,
+        "micro_hold_fraction": round(micro_hold_fraction, 4),
+        "max_micro_hold_run_s": round((longest_micro_hold_run + 1) * interval, 3),
         "max_unchanged_hold_s": round((longest_run + 1) * interval, 3),
     }
 
@@ -711,26 +724,27 @@ def _rendered_shot_motion_audit(
             body_start = start + min(0.05, duration * 0.10)
             body_duration = max(0.30, end - min(0.05, duration * 0.10) - body_start)
         shot_root = sample_root / f"shot-{index:02d}"
+        shutil.rmtree(shot_root, ignore_errors=True)
         shot_root.mkdir(parents=True, exist_ok=True)
         try:
             render_service._run(
                 [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
                  "-ss", f"{body_start:.6f}", "-i", str(output),
-                 "-t", f"{body_duration:.6f}", "-vf", "fps=12,scale=180:320:flags=lanczos",
-                 "-q:v", "3", str(shot_root / "frame-%03d.jpg")],
+                 "-t", f"{body_duration:.6f}", "-vf", "fps=60,scale=180:320:flags=lanczos",
+                 "-compression_level", "6", str(shot_root / "frame-%03d.png")],
                 timeout=240,
                 step="review_shot_motion_frames",
             )
         except render_service.RenderError as exc:
             raise ReviewPreviewError("review.motion_measurement_failed") from exc
-        paths = sorted(shot_root.glob("frame-*.jpg"))
+        paths = sorted(shot_root.glob("frame-*.png"))
         if len(paths) < 6:
             raise ReviewPreviewError("review.motion_measurement_missing")
         metrics = _frame_motion_audit(paths, body_duration)
-        near_identical = float(metrics.get("near_identical_fraction", 1.0))
+        micro_hold_fraction = float(metrics.get("micro_hold_fraction", 1.0))
         mean_diff = float(metrics.get("mean_frame_diff", 0.0))
         static = mean_diff < 0.03
-        stair_step = near_identical > 0.55
+        stair_step = micro_hold_fraction > reference_profile.REVIEW_MOTION_MAX_MICRO_HOLD_FRACTION
         reports.append({
             "shot_index": index,
             "panel_id": str(shot.get("panel_id") or shot.get("source_asset_id") or ""),
@@ -743,10 +757,15 @@ def _rendered_shot_motion_audit(
             "stair_step": stair_step,
         })
     return {
-        "contract_version": "rendered-shot-motion-audit-v1",
+        "contract_version": "rendered-shot-motion-audit-v2",
+        "sampling_fps": 60,
+        "sampling_format": "lossless_png",
         "shot_count": len(reports),
         "static_shot_count": sum(bool(row["static"]) for row in reports),
         "stair_step_shot_count": sum(bool(row["stair_step"]) for row in reports),
+        "max_micro_hold_fraction": max(
+            (float(row["micro_hold_fraction"]) for row in reports), default=1.0
+        ),
         "max_near_identical_fraction": max(
             (float(row["near_identical_fraction"]) for row in reports), default=1.0
         ),

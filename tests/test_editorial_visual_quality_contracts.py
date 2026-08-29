@@ -216,6 +216,29 @@ def test_frame_edge_audit_detects_a_near_uniform_left_sidebar():
     assert metrics["max_edge_blank_fraction"] > 0.10
 
 
+def test_frame_motion_audit_detects_sixty_fps_micro_hold_cadence(tmp_path):
+    from app.services import reference_profile, review_preview
+
+    frame_paths = []
+    for index in range(60):
+        # Move only once every four frames: this models integer-pixel zoompan
+        # quantization at 60 fps (hold, hold, hold, jump).
+        offset = index // 4
+        image = Image.new("RGB", (64, 114), "#202038")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((8 + offset, 18, 30 + offset, 92), fill="#f0d040")
+        path = tmp_path / f"frame-{index:03d}.png"
+        image.save(path)
+        frame_paths.append(path)
+
+    metrics = review_preview._frame_motion_audit(frame_paths, 1.0)
+
+    assert metrics["micro_hold_fraction"] > (
+        reference_profile.REVIEW_MOTION_MAX_MICRO_HOLD_FRACTION
+    )
+    assert metrics["max_micro_hold_run_s"] >= 0.04
+
+
 def test_motion_trajectory_audit_rejects_alternating_viewport_jumps():
     from app.services import review_preview
 
