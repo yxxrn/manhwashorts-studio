@@ -267,3 +267,21 @@ def test_reference_duration_window_matches_narration_contract():
     assert profile.shot_max <= math.floor(
         profile.duration_max_s / profile.mean_shot_min_s
     )
+
+
+def test_review_framing_quality_key_stops_overcropping_inside_three_percent_target():
+    reference_profile = _profile_module()
+    inside_less_zoom = reference_profile.review_framing_quality_key(
+        0.028, 1.875, 1.0
+    )
+    inside_more_zoom = reference_profile.review_framing_quality_key(
+        0.0, 2.5, 1.0
+    )
+    outside = reference_profile.review_framing_quality_key(
+        0.0469, 1.5, 1.0
+    )
+
+    assert inside_less_zoom < inside_more_zoom
+    assert inside_more_zoom < outside
+    assert reference_profile.REVIEW_PREFERRED_FRAME_EDGE_BLANK_FRACTION == 0.03
+    assert reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION == 0.08

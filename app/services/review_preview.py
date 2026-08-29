@@ -345,6 +345,55 @@ def _corroborated_frame_edge_blank_max(
     return max(effective, default=raw_max)
 
 
+def _panel_repetition_audit(shots: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    window = reference_profile.REVIEW_PANEL_REUSE_WINDOW_SHOTS
+    ids = [str(shot.get("panel_id") or shot.get("source_asset_id") or "") for shot in shots]
+    immediate: list[int] = []
+    near: list[dict[str, object]] = []
+    last_seen: dict[str, int] = {}
+    for index, panel_id in enumerate(ids):
+        if not panel_id:
+            continue
+        previous = last_seen.get(panel_id)
+        if previous is not None:
+            distance = index - previous
+            if distance == 1:
+                immediate.append(index)
+            elif distance <= window:
+                reasons = shots[index].get("alignment_reasons", ())
+                exempt = isinstance(reasons, Sequence) and not isinstance(reasons, (str, bytes)) and "reuse_purpose:grounded_capacity_exhausted" in {str(value) for value in reasons}
+                near.append({"shot_index": index, "panel_id": panel_id, "distance": distance, "grounded_capacity_exhausted": exempt})
+        last_seen[panel_id] = index
+    non_exempt_near = [item for item in near if not bool(item["grounded_capacity_exhausted"])]
+    if immediate or non_exempt_near:
+        raise ReviewPreviewError("review.panel_repetition_excessive")
+    counts: dict[str, int] = {}
+    for panel_id in ids:
+        if panel_id:
+            counts[panel_id] = counts.get(panel_id, 0) + 1
+    return {
+        "window_shots": window,
+        "immediate_repeat_count": len(immediate),
+        "near_repeat_count": len(near),
+        "avoidable_near_repeat_count": len(non_exempt_near),
+        "max_panel_usage_count": max(counts.values(), default=0),
+        "unique_panel_count": len(counts),
+        "repeat_exceptions": near,
+    }
+
+
+def _fade_transition_policy_audit(shots: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    transitions = [str(shot.get("transition", "cut") or "cut") for shot in shots]
+    missing = [index for index, value in enumerate(transitions[1:], start=1) if value in {"cut", "none"}]
+    non_fade = [index for index, value in enumerate(transitions[1:], start=1) if value not in {"fade", "cut", "none"}]
+    if missing:
+        raise ReviewPreviewError("review.transition_missing")
+    if non_fade:
+        raise ReviewPreviewError("review.transition_policy_invalid")
+    return {"policy": "fade_only_v1", "boundary_count": max(0, len(shots)-1), "missing_transition_count": 0, "non_fade_transition_count": len(non_fade)}
+
+
+
 def _measured_visual_qc(
     sidecar: Mapping[str, object],
     *,
@@ -374,6 +423,11 @@ def _measured_visual_qc(
     if not isinstance(visual_motion, Mapping):
         return measured
     audit = dict(visual_motion)
+    review_shots = [shot for shot in shots if isinstance(shot, Mapping)]
+    repetition_audit = _panel_repetition_audit(review_shots)
+    transition_policy_audit = _fade_transition_policy_audit(review_shots)
+    audit["panel_repetition_audit"] = repetition_audit
+    audit["transition_policy_audit"] = transition_policy_audit
     visual_keys = {
         (
             str(shot.get("panel_id") or shot.get("source_asset_id") or ""),
@@ -395,6 +449,12 @@ def _measured_visual_qc(
         ]
         or [0]
     )
+    if (
+        int(repetition_audit.get("max_panel_usage_count", 0)) > 1
+        and available_capacity >= len(review_shots)
+    ):
+        repetition_audit["avoidable_with_available_capacity"] = True
+        raise ReviewPreviewError("review.panel_repetition_excessive")
     durations = [
         max(0.0, float(shot.get("end_time", 0.0)) - float(shot.get("start_time", 0.0)))
         for shot in shots
@@ -481,6 +541,14 @@ def _measured_visual_qc(
         transition_audit.get("visible_transition_count", 0)
     ) < int(transition_audit.get("planned_transition_count", 0)):
         raise ReviewPreviewError("review.transition_not_visible")
+    rendered_motion = audit.get("rendered_shot_motion_audit")
+    if isinstance(rendered_motion, Mapping):
+        if int(rendered_motion.get("shot_count", -1)) != len(review_shots):
+            raise ReviewPreviewError("review.motion_measurement_missing")
+        if int(rendered_motion.get("static_shot_count", 0)) > 0:
+            raise ReviewPreviewError("review.motion_noop")
+        if int(rendered_motion.get("stair_step_shot_count", 0)) > 0:
+            raise ReviewPreviewError("review.motion_jitter")
     if float(audit.get("max_unchanged_hold_s", 0.0)) > reference_profile.REVIEW_MAX_UNCHANGED_HOLD_SECONDS:
         raise ReviewPreviewError("review.visual_hold_excessive")
     static_modes = {"hold", "static_emphasis"}
@@ -504,8 +572,9 @@ def _measured_visual_qc(
         raise ReviewPreviewError("review.visual_density_insufficient")
     if int(audit.get("reuse_streak_max", reuse_streak)) > 2:
         raise ReviewPreviewError("review.visual_reuse_streak_excessive")
-    if len(shots) >= 2 and len(modes) < 2:
-        raise ReviewPreviewError("review.motion_direction_insufficient")
+    stable_review_modes = {"slow_push", "slow_pull"}
+    if any(mode not in stable_review_modes for mode in modes):
+        raise ReviewPreviewError("review.motion_path_invalid")
     if (
         len(shots) >= 4
         and int(audit.get("motion_mode_diversity", len(modes))) > 0
@@ -611,6 +680,77 @@ def _frame_motion_audit(frame_paths: list[Path], duration: float) -> dict[str, o
         "max_frame_diff": ordered[-1],
         "near_identical_fraction": round(sum(value < 0.5 for value in differences) / len(differences), 4),
         "max_unchanged_hold_s": round((longest_run + 1) * interval, 3),
+    }
+
+
+def _rendered_shot_motion_audit(
+    output: Path,
+    root: Path,
+    shots: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Measure motion inside every rendered shot, excluding fade windows."""
+
+    sample_root = root / "shot-motion-audit"
+    sample_root.mkdir(parents=True, exist_ok=True)
+    reports: list[dict[str, object]] = []
+    for index, shot in enumerate(shots):
+        try:
+            start = float(shot.get("start_time", 0.0))
+            end = float(shot.get("end_time", 0.0))
+            transition = float(shot.get("transition_duration_s", 0.0) or 0.0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ReviewPreviewError("review.motion_measurement_failed") from exc
+        duration = end - start
+        if duration <= 0.0:
+            raise ReviewPreviewError("review.motion_measurement_failed")
+        lead = 0.08 if index == 0 else min(duration * 0.30, transition + 0.08)
+        tail = min(0.08, duration * 0.10)
+        body_start = start + lead
+        body_duration = end - tail - body_start
+        if body_duration < 0.50:
+            body_start = start + min(0.05, duration * 0.10)
+            body_duration = max(0.30, end - min(0.05, duration * 0.10) - body_start)
+        shot_root = sample_root / f"shot-{index:02d}"
+        shot_root.mkdir(parents=True, exist_ok=True)
+        try:
+            render_service._run(
+                [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+                 "-ss", f"{body_start:.6f}", "-i", str(output),
+                 "-t", f"{body_duration:.6f}", "-vf", "fps=12,scale=180:320:flags=lanczos",
+                 "-q:v", "3", str(shot_root / "frame-%03d.jpg")],
+                timeout=240,
+                step="review_shot_motion_frames",
+            )
+        except render_service.RenderError as exc:
+            raise ReviewPreviewError("review.motion_measurement_failed") from exc
+        paths = sorted(shot_root.glob("frame-*.jpg"))
+        if len(paths) < 6:
+            raise ReviewPreviewError("review.motion_measurement_missing")
+        metrics = _frame_motion_audit(paths, body_duration)
+        near_identical = float(metrics.get("near_identical_fraction", 1.0))
+        mean_diff = float(metrics.get("mean_frame_diff", 0.0))
+        static = mean_diff < 0.03
+        stair_step = near_identical > 0.55
+        reports.append({
+            "shot_index": index,
+            "panel_id": str(shot.get("panel_id") or shot.get("source_asset_id") or ""),
+            "motion_mode": str(shot.get("motion_mode", "")),
+            "camera_curve": str(shot.get("camera_curve", "")),
+            "body_start_s": round(body_start, 6),
+            "body_duration_s": round(body_duration, 6),
+            **metrics,
+            "static": static,
+            "stair_step": stair_step,
+        })
+    return {
+        "contract_version": "rendered-shot-motion-audit-v1",
+        "shot_count": len(reports),
+        "static_shot_count": sum(bool(row["static"]) for row in reports),
+        "stair_step_shot_count": sum(bool(row["stair_step"]) for row in reports),
+        "max_near_identical_fraction": max(
+            (float(row["near_identical_fraction"]) for row in reports), default=1.0
+        ),
+        "shots": reports,
     }
 
 
@@ -731,6 +871,9 @@ def _render_audit(
             root,
             shots,
             fps=measured_fps,
+        )
+        frame_audit["rendered_shot_motion_audit"] = _rendered_shot_motion_audit(
+            output, root, shots
         )
     return root / "ffprobe.json", contact_sheet, root / "blackdetect.txt", frame_audit
 

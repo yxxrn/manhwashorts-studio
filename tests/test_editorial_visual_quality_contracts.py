@@ -11,7 +11,7 @@ def _review_sidecar(*, shot_count: int = 8, available_visuals: int = 15) -> dict
     duration = 51.3
     shot_duration = duration / shot_count
     shots = []
-    modes = ("slow_push", "guided_pan", "focus_shift", "slow_pull")
+    modes = ("slow_push",)
     for index in range(shot_count):
         start = index * shot_duration
         shots.append(
@@ -21,7 +21,7 @@ def _review_sidecar(*, shot_count: int = 8, available_visuals: int = 15) -> dict
                 "start_time": start,
                 "end_time": start + shot_duration,
                 "motion_mode": modes[index % len(modes)],
-                "transition": "none" if index == 0 else ("fade", "slide_left", "slide_right")[(index - 1) % 3],
+                "transition": "none" if index == 0 else "fade",
                 "framing_telemetry": {
                     "edge_connected_blank_fraction": 0.0,
                     "available_visual_capacity": available_visuals,
@@ -95,7 +95,7 @@ def test_review_qc_rejects_eight_visuals_when_fifteen_safe_visuals_exist():
     with pytest.raises(review_preview.ReviewPreviewError) as exc:
         review_preview._measured_visual_qc(sidecar)
 
-    assert exc.value.code == "review.visual_density_insufficient"
+    assert exc.value.code == "review.panel_repetition_excessive"
 
 
 def test_reference_planner_uses_profile_independent_density_target():
@@ -552,11 +552,50 @@ def test_review_zoom_motion_is_monotonic_and_never_static():
 
     editorial_visual_planner._enforce_review_zoom_motion(shots)
 
-    assert [shot["motion_mode"] for shot in shots] == [
-        "slow_push", "slow_pull", "slow_push", "slow_pull", "slow_push", "slow_pull"
-    ]
-    assert [shot["camera_curve"] for shot in shots] == [
-        "slow_push_in", "slow_pull_out", "slow_push_in", "slow_pull_out", "slow_push_in", "slow_pull_out"
-    ]
+    assert [shot["motion_mode"] for shot in shots] == ["slow_push"] * 6
+    assert [shot["camera_curve"] for shot in shots] == ["slow_push_in"] * 6
     assert all(shot["focus_end_x"] == shot["focus_x"] for shot in shots)
     assert all(shot["focus_end_y"] == shot["focus_y"] for shot in shots)
+
+
+def test_review_qc_rejects_rendered_static_shot():
+    from app.services import review_preview
+
+    sidecar = _review_sidecar(shot_count=13, available_visuals=15)
+    sidecar["visual_motion_audit"]["rendered_shot_motion_audit"] = {
+        "shot_count": 13,
+        "static_shot_count": 1,
+        "stair_step_shot_count": 0,
+    }
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+    assert exc.value.code == "review.motion_noop"
+
+
+def test_review_qc_rejects_rendered_stair_step_motion():
+    from app.services import review_preview
+
+    sidecar = _review_sidecar(shot_count=13, available_visuals=15)
+    sidecar["visual_motion_audit"]["rendered_shot_motion_audit"] = {
+        "shot_count": 13,
+        "static_shot_count": 0,
+        "stair_step_shot_count": 1,
+    }
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+    assert exc.value.code == "review.motion_jitter"
+
+
+def test_review_qc_accepts_clean_rendered_shot_motion_audit():
+    from app.services import review_preview
+
+    sidecar = _review_sidecar(shot_count=13, available_visuals=15)
+    sidecar["visual_motion_audit"]["rendered_shot_motion_audit"] = {
+        "shot_count": 13,
+        "static_shot_count": 0,
+        "stair_step_shot_count": 0,
+    }
+    result = review_preview._measured_visual_qc(sidecar)
+    assert result["visual_motion_audit"]["rendered_shot_motion_audit"][
+        "stair_step_shot_count"
+    ] == 0

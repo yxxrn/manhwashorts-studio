@@ -10,11 +10,38 @@ REVIEW_VISUAL_SECONDS_PER_UNIQUE_MIN = 3.0
 REVIEW_VISUAL_SECONDS_PER_UNIQUE_MAX = 4.0
 REVIEW_MAX_UNCHANGED_HOLD_SECONDS = 4.0
 REVIEW_MAX_SHOT_SECONDS = 4.0
+REVIEW_PREFERRED_FRAME_EDGE_BLANK_FRACTION = 0.03
 REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION = 0.08
 REVIEW_MIN_TRANSITION_PIXEL_DIFF = 1.0
 REVIEW_MOTION_MAX_NORMALIZED_STEP = 0.08
+REVIEW_MOTION_ZOOM_DELTA = 0.035
+REVIEW_PANEL_REUSE_WINDOW_SHOTS = 4
+REVIEW_TRANSITION_DURATION_SECONDS = 0.22
 REVIEW_MIN_PANEL_CROP_DIMENSION = 32
 REVIEW_MIN_PANEL_CROP_HEIGHT = 400
+
+
+def review_framing_quality_key(
+    blank_fraction: float,
+    base_zoom: float,
+    protected_retained_fraction: float,
+    *,
+    preferred_blank_fraction: float = REVIEW_PREFERRED_FRAME_EDGE_BLANK_FRACTION,
+) -> tuple[float, float, float, float]:
+    """Rank review crops with 3% as a quality band and 8% as admission only.
+
+    Once a crop is inside the preferred blank band, avoid needless extra zoom
+    before chasing the final few blank pixels. Outside that band, reduce blank
+    area first until the crop reaches the preference target.
+    """
+
+    blank = max(0.0, float(blank_fraction))
+    zoom = max(0.0, float(base_zoom))
+    retained = min(1.0, max(0.0, float(protected_retained_fraction)))
+    target = max(0.0, float(preferred_blank_fraction))
+    if blank <= target + 1e-9:
+        return (0.0, zoom, -retained, blank)
+    return (1.0, blank, zoom, -retained)
 
 
 def review_panel_source_geometry_is_renderable(

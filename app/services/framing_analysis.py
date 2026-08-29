@@ -642,6 +642,34 @@ def _mask_crop_fraction(
     return _rounded_fraction(total, crop_area)
 
 
+def edge_connected_blank_fraction_for_crop(
+    border_mask: BorderMaskResult,
+    crop_box: tuple[int, int, int, int],
+) -> float:
+    """Return authoritative border-mask blank fraction for one source-local crop.
+
+    This is the cheap admission primitive used by deterministic ROI search. It
+    intentionally evaluates only the persisted border mask; protected-region,
+    balloon, resolution, and zoom gates remain the responsibility of
+    ``candidate_is_feasible``.
+    """
+
+    left, top, right, bottom = crop_box
+    if (
+        left < 0
+        or top < 0
+        or right > border_mask.source_width
+        or bottom > border_mask.source_height
+        or right <= left
+        or bottom <= top
+    ):
+        raise VisualEvidenceError(
+            "visual.panel_lineage_unavailable",
+            "blank-fraction crop does not match its border mask",
+        )
+    return _mask_crop_fraction(border_mask, crop_box)
+
+
 def _reference_base_dimensions(
     source_size: tuple[int, int], target_size: tuple[int, int]
 ) -> tuple[int, int]:

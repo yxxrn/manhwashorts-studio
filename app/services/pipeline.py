@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import re
 import secrets
 import time
@@ -2851,9 +2852,10 @@ def _review_provisional_spans(
     duration_s: float,
 ) -> list[timeline_svc.AudioSpan]:
     """Build explicitly non-authoritative display pacing for silent review."""
-    if not 50.0 <= float(duration_s) <= 60.0:
+    duration_s = float(duration_s)
+    if not math.isfinite(duration_s) or duration_s <= 0.0:
         raise PipelineError(
-            "review.provisional_duration_invalid: silent review duration must be 50-60 seconds"
+            "review.provisional_duration_invalid: silent review duration must be positive"
         )
     sections: list[tuple[str, str, float]] = []
     for raw in getattr(script, "sections", ()) or ():
@@ -2939,6 +2941,7 @@ def build_timeline(
     silent_reference_review: bool = False,
     review_source_upscale_policy: str | None = None,
     provisional_duration_s: float | None = None,
+    provisional_duration_bounds_s: tuple[float, float] | None = None,
     reference_section_panel_ids: Mapping[str, Sequence[str]] | None = None,
     reference_section_citations: Mapping[str, Sequence[int]] | None = None,
     reference_beats_by_section: Mapping[str, Sequence[str]] | None = None,
@@ -2987,11 +2990,31 @@ def build_timeline(
             raise PipelineError("generate the voice-over before building the timeline")
         audio_duration = max((float(segment.end_time) for segment in segments), default=0.0)
         spans = spans_from_segments(segments)
-    duration_min_s, duration_max_s = (
-        _reference_duration_bounds(profile, silent_reference_review=silent_reference_review)
-        if profile is not None
-        else (0.0, float("inf"))
-    )
+    if silent_reference_review and provisional_duration_bounds_s is not None:
+        try:
+            duration_min_s, duration_max_s = (
+                float(provisional_duration_bounds_s[0]),
+                float(provisional_duration_bounds_s[1]),
+            )
+        except (IndexError, TypeError, ValueError):
+            raise PipelineError(
+                "review.provisional_duration_bounds_invalid: adaptive review bounds are malformed"
+            ) from None
+        if (
+            not math.isfinite(duration_min_s)
+            or not math.isfinite(duration_max_s)
+            or duration_min_s <= 0.0
+            or duration_max_s < duration_min_s
+        ):
+            raise PipelineError(
+                "review.provisional_duration_bounds_invalid: adaptive review bounds are malformed"
+            )
+    else:
+        duration_min_s, duration_max_s = (
+            _reference_duration_bounds(profile, silent_reference_review=silent_reference_review)
+            if profile is not None
+            else (0.0, float("inf"))
+        )
     if profile is not None and not duration_min_s <= audio_duration <= duration_max_s:
         raise PipelineError(
             f"{profile.profile_id} requires audio duration between "
@@ -3068,6 +3091,7 @@ def build_timeline(
             ),
             allow_review_cadence_adaptation=silent_reference_review,
             allow_review_duration=silent_reference_review,
+            review_duration_bounds_s=provisional_duration_bounds_s,
             **(
                 {"allow_conservative_full_panel": True}
                 if allow_conservative_full_panel
@@ -4246,7 +4270,7 @@ def render_silent_review_preview(
             output_dir=root,
             subtitle_contract=request.subtitle_contract,
             subtitle_timing_source=request.subtitle_timing_source,
-            blank_target_fraction=float(request.profile.framing_blank_target_fraction),
+            blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
         )
     except (render_svc.RenderError, PipelineError, review_preview.ReviewPreviewError) as exc:
         job.status = JobStatus.FAILED

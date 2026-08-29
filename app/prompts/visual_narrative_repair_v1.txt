@@ -1,4 +1,4 @@
-Version: visual-narrative-repair-v8
+Version: visual-narrative-repair-v11
 
 You are repairing a Sharp Friend v1 chapter narration for a review-only visual
 edit. The local system has already rejected some panels as unsafe to frame.
@@ -49,6 +49,24 @@ dramatic feasible moment may open the narration, but the remaining passages must
 explain the causal story in chronological order. Prefer a truthful visual-section
 remap over a generic hook.
 
+The request includes coherence_window. Treat its selected story scope and source
+window as the editorial boundary: do not pull the prose toward rejected sibling
+roots just because the full story_map contains them. Claims constrain facts, but
+their observation-style wording is NOT a prose template. Convert grounded facts
+into one developing story inside this window. Coherence outranks unused visual
+headroom.
+
+The request also includes selected_story_context for the mandatory passage plan.
+Use its beat_context only to understand progression and transition tone; it is NOT
+a source of additional factual claims. Every factual noun, action, state, and
+consequence in spoken prose must still be supported by that passage's claim_ids.
+Honor incoming_bridge exactly: hook_teaser may tease the later event; teaser_rewind
+must clearly return to the earlier retained chronology; causal wording such as
+"because", "so", or "therefore" is allowed only when causal_wording_allowed is
+true. For temporal_only, use temporal or contrast continuity without inventing a
+cause. This context exists to turn claim observations into a coherent story, not
+to broaden evidence.
+
 Visual quality is part of the ledger contract, not a prose afterthought. When
 choosing a hook from multiple evidence-grounded feasible entries, prefer the
 lowest edge_connected_blank_fraction first, then stronger protected/subject
@@ -98,7 +116,27 @@ Each passage must include non-empty claim_ids and evidence_panel_ids, and every
 claim ID must be one of the existing claim IDs. Do not return a passage with an
 empty claim list even when its text is only a transition.
 The first passage is the hook by position, even if its semantic editorial_role
-has another label. The request includes chronology_contract and every feasible
+has another label. Treat it as a grounded teaser, not the first line of a recap.
+Use the capacity plan's hook bundle because local selection has already preferred
+the strongest feasible curiosity signal: a reveal, contradiction, consequence,
+risk, hidden fact, or unresolved tension when one exists. Open on what makes that
+fact matter before explaining it. Never begin with "we see", "this panel",
+"a man is", "a woman is", "then", "next", or another panel-description
+formula. After the teaser, return to causal chronology and build setup -> escalation
+-> turn -> consequence. Do not use fake suspense or invent stakes.
+At least two passages must explicitly bridge grounded events with a truthful temporal, contrast, or causal connector such as but, yet, while, meanwhile, until, because, or so. Use causal wording only when the supplied claims support causality; otherwise prefer contrast or temporal continuity. Five disconnected observations are invalid even when every sentence is individually grounded.
+Write for spoken narration, not a report: prefer short direct verbs and conversational phrasing. Avoid bureaucratic filler such as "during the course of", formal process labels such as "confrontation phase", redundant temporal wording, and padded phrases that a person would not naturally say aloud.
+
+Narrate EVENTS, CHANGES, CONSEQUENCES, and grounded uncertainty--not the camera or
+the artwork. Do not write a visual inventory. Avoid narration formulas such as
+"the panel shows", "the sequence depicts", "a close-up shows", "is shown",
+"appears", "visible", or repeated subject-by-subject descriptions. Panel IDs,
+shots, close-ups, screens, and visual composition are evidence metadata, not the
+story voice. Use contrast or causal bridges such as but, so, yet, while, because,
+instead, or meanwhile only when supported. Each passage should make the next
+grounded beat feel like a development, not another item in a list.
+
+The request includes chronology_contract and every feasible
 claim includes evidence_source_orders, min_source_order, and max_source_order.
 For positions after the hook, choose claims as a nondecreasing subsequence of
 chronology_contract.claims_by_source_order. The minimum cited source order of
@@ -113,8 +151,11 @@ with contractions, causal transitions, varied sentence lengths, and selective
 evidence-grounded commentary. No hype, CTA, fixed catchphrase, or panel list.
 
 Keep the exact passage count in capacity_safe_claim_plan and use the lexical-word
-range in capacity_rebalance. The total must remain within the local 50-60 second
-dramatic-duration contract; do not pad with generic filler. The final ending kind controls punctuation: open_question ends
+range in capacity_rebalance. Obey duration_policy_contract exactly: standard mode
+uses the local 50-60 second dramatic-duration contract, while adaptive mode uses
+its supplied shorter target_duration_min_s/target_duration_max_s window because
+coherent visual capacity is intentionally lower. Never pad an adaptive story with
+unrelated claims, repeated panels, or generic filler just to reach 50 seconds. The final ending kind controls punctuation: open_question ends
 with an evidence-grounded question; cliffhanger and consequence do not need a
 question mark. Do not generate display_text or subtitle cues; those are derived
 locally from the approved spoken text.

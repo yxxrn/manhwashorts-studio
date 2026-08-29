@@ -53,10 +53,29 @@ def _review_visual_shot_target(total_duration: float, available_visuals: int) ->
     )
 
 
-def _review_transition_family(rank: int) -> str:
-    """Choose a short, deterministic visible transition family."""
+def _review_effective_section_capacity(
+    section_duration_s: float,
+    roi_capacities: Sequence[int],
+) -> int:
+    """Prefer unique panels; use extra ROI capacity only when cadence requires it."""
 
-    return ("fade", "slide_left", "slide_right")[rank % 3]
+    capacities = [max(0, int(value)) for value in roi_capacities]
+    unique_capacity = sum(1 for value in capacities if value > 0)
+    minimum_required = (
+        max(1, math.ceil(float(section_duration_s) / reference_profile.REVIEW_MAX_SHOT_SECONDS - 1e-9))
+        if section_duration_s > 0.0
+        else 0
+    )
+    if unique_capacity >= minimum_required:
+        return unique_capacity
+    return sum(capacities)
+
+
+def _review_transition_family(rank: int) -> str:
+    """Use one soft fade family for every silent-review boundary."""
+
+    del rank
+    return "fade"
 
 
 def _review_candidate_priority_key(
@@ -153,7 +172,14 @@ def _reference_group_counts(
         for group in groups
     ]
     total = sum(durations)
-    counts = [1] * len(groups)
+    counts = (
+        [
+            max(1, math.ceil(duration / reference_profile.REVIEW_MAX_SHOT_SECONDS - 1e-9))
+            for duration in durations
+        ]
+        if max_counts_by_section is not None
+        else [1] * len(groups)
+    )
     caps = [
         max(
             1,
@@ -161,11 +187,21 @@ def _reference_group_counts(
         )
         for group in groups
     ]
+    if any(count > cap for count, cap in zip(counts, caps, strict=True)):
+        raise ReferencePlanningError(
+            "review cadence section capacity cannot satisfy the four-second ceiling",
+            "visual.capacity_insufficient",
+        )
     if sum(caps) < target_shots:
         raise ReferencePlanningError(
             "review cadence capacity is below the requested section coverage"
         )
-    remaining = max(0, target_shots - len(groups))
+    if sum(counts) > target_shots:
+        raise ReferencePlanningError(
+            "review cadence target is below the per-section four-second minimum",
+            "visual.capacity_insufficient",
+        )
+    remaining = max(0, target_shots - sum(counts))
     exact = [remaining * duration / total for duration in durations]
     counts = [
         min(cap, count + math.floor(value))
@@ -455,15 +491,14 @@ def _enforce_review_zoom_motion(shots: list[dict]) -> None:
     static hold.
     """
 
-    for index, shot in enumerate(shots):
-        push = index % 2 == 0
-        shot["motion_mode"] = "slow_push" if push else "slow_pull"
+    for shot in shots:
+        shot["motion_mode"] = "slow_push"
         shot["motion_intensity"] = "low"
-        shot["camera_curve"] = "slow_push_in" if push else "slow_pull_out"
+        shot["camera_curve"] = "slow_push_in"
         shot["focus_end_x"] = float(shot.get("focus_x", 0.5))
         shot["focus_end_y"] = float(shot.get("focus_y", 0.5))
         reason = str(shot.get("motion_reason", "") or "").strip()
-        suffix = "review:monotonic_fixed_focus_zoom"
+        suffix = "review:stabilized_fixed_focus_zoom_v2"
         shot["motion_reason"] = f"{reason}; {suffix}" if reason else suffix
 
 
@@ -961,7 +996,11 @@ def _reference_panel_attempt(
             candidate.border_mask,
             candidate.panel_size,
             (profile.final_width, profile.final_height),
-            blank_target_fraction=profile.framing_blank_target_fraction,
+            blank_target_fraction=(
+                reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+                if review_aggressive_crop
+                else profile.framing_blank_target_fraction
+            ),
             allow_conservative_full_panel=allow_conservative_full_panel,
             **feasibility_kwargs,
         )
@@ -1093,7 +1132,11 @@ def _feasible_roi_capacity(
             candidate.border_mask,
             candidate.panel_size,
             (profile.final_width, profile.final_height),
-            blank_target_fraction=profile.framing_blank_target_fraction,
+            blank_target_fraction=(
+                reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+                if review_aggressive_crop
+                else profile.framing_blank_target_fraction
+            ),
             allow_conservative_full_panel=allow_conservative_full_panel,
             **feasibility_kwargs,
         )
@@ -1110,6 +1153,7 @@ def _plan_reference_panel_candidates(
     allow_source_resolution_warning: bool = False,
     allow_review_cadence_adaptation: bool = False,
     allow_review_duration: bool = False,
+    review_duration_bounds_s: tuple[float, float] | None = None,
     allow_conservative_full_panel: bool = False,
 ) -> list[dict]:
     if not panel_candidates:
@@ -1201,11 +1245,20 @@ def _plan_reference_panel_candidates(
         ]
         for candidate, capacity in zip(eligible_for_section, capacities, strict=True):
             review_capacity_by_panel[candidate.panel_id] = capacity
-        # A safe ROI is a distinct visual alternative, not just metadata. Use
-        # every bounded alternative before extending a continuous hold. A
-        # single evidence panel may repeat only through distinct feasible ROIs;
-        # selection still avoids reuse when another grounded panel is available.
-        section_capacity[section] = sum(capacities)
+        section_spans = [span for span in spans if str(span.section) == section]
+        section_duration = (
+            max(float(span.end_time) for span in section_spans)
+            - min(float(span.start_time) for span in section_spans)
+            if section_spans
+            else 0.0
+        )
+        # Distinct safe ROIs remain available as an emergency cadence fallback,
+        # but they must not inflate the preferred shot target when unique panels
+        # already satisfy the four-second ceiling. This prevents avoidable panel
+        # repetition while preserving a safe fallback for genuinely sparse evidence.
+        section_capacity[section] = _review_effective_section_capacity(
+            section_duration, capacities
+        )
     if allow_review_cadence_adaptation and any(
         capacity < 1 for capacity in section_capacity.values()
     ):
@@ -1222,10 +1275,12 @@ def _plan_reference_panel_candidates(
         max_shots_by_section=(section_capacity if allow_review_cadence_adaptation else None),
         allow_review_cadence_adaptation=allow_review_cadence_adaptation,
         allow_review_duration=allow_review_duration,
+        review_duration_bounds_s=review_duration_bounds_s,
     )
     uses: dict[str, int] = {}
     used_rois: dict[str, set[tuple[object, ...]]] = {}
     last_panel_id = ""
+    recent_panel_ids: list[str] = []
     selected_shots: list[dict] = []
     for shot_index, shot in enumerate(base_shots):
         section = str(shot.get("section", ""))
@@ -1243,14 +1298,21 @@ def _plan_reference_panel_candidates(
                 else panel_uses_cap
             )
         ]
+        recent_set: set[str] = set()
         if allow_review_cadence_adaptation:
-            non_reused = [
-                candidate for candidate in eligible if candidate.panel_id != last_panel_id
+            recent_set = set(
+                recent_panel_ids[-reference_profile.REVIEW_PANEL_REUSE_WINDOW_SHOTS:]
+            )
+            not_recent = [
+                candidate for candidate in eligible if candidate.panel_id not in recent_set
             ]
-            # If this is the only grounded panel for the section, a second
-            # shot is allowed only while another safe ROI remains. The
-            # fallback attempt ledger records that exception.
-            eligible = non_reused or eligible
+            if not_recent:
+                eligible = not_recent
+            else:
+                non_reused = [
+                    candidate for candidate in eligible if candidate.panel_id != last_panel_id
+                ]
+                eligible = non_reused or eligible
         else:
             eligible = [
                 candidate for candidate in eligible if candidate.panel_id != last_panel_id
@@ -1332,7 +1394,7 @@ def _plan_reference_panel_candidates(
                     for roi in roi_alternatives
                 )
             accepted_attempts: list[
-                tuple[float, object, object, object, str]
+                tuple[tuple[float, float, float, float], object, object, object, str]
             ] = []
             for roi, phase_kind in roi_plan:
                 accepted, telemetry, entry = _reference_panel_attempt(
@@ -1353,24 +1415,39 @@ def _plan_reference_panel_candidates(
                     # full webtoon page crops to its dominant subject instead of
                     # the first (largest) feasible window. Evaluate every ROI
                     # before choosing; the regular path keeps first-wins.
-                    blank = float(
-                        getattr(telemetry, "edge_connected_blank_fraction", 0.0)
-                        if not isinstance(telemetry, Mapping)
-                        else telemetry.get("edge_connected_blank_fraction", 0.0)
+                    if isinstance(telemetry, Mapping):
+                        blank = float(telemetry.get("edge_connected_blank_fraction", 0.0))
+                        base_zoom = float(telemetry.get("base_zoom", 999.0))
+                        protected_retained = float(
+                            telemetry.get("protected_retained_fraction", 0.0)
+                        )
+                    else:
+                        blank = float(getattr(telemetry, "edge_connected_blank_fraction", 0.0))
+                        base_zoom = float(getattr(telemetry, "base_zoom", 999.0))
+                        protected_retained = float(
+                            getattr(telemetry, "protected_retained_fraction", 0.0)
+                        )
+                    quality_key = reference_profile.review_framing_quality_key(
+                        blank,
+                        base_zoom,
+                        protected_retained,
+                        preferred_blank_fraction=profile.framing_blank_target_fraction,
                     )
-                    accepted_attempts.append((blank, roi, telemetry, entry, phase_kind))
+                    accepted_attempts.append(
+                        (quality_key, roi, telemetry, entry, phase_kind)
+                    )
                     if not allow_review_cadence_adaptation:
                         break
             if accepted_attempts:
                 if allow_review_cadence_adaptation:
                     accepted_attempts.sort(key=lambda item: item[0])
-                    _blank, roi, telemetry, entry, phase_kind = accepted_attempts[0]
+                    _quality, roi, telemetry, entry, phase_kind = accepted_attempts[0]
                     chosen = entry
-                    for _b2, _r2, _t2, other_entry, _p2 in accepted_attempts:
+                    for _q2, _r2, _t2, other_entry, _p2 in accepted_attempts:
                         if other_entry is not chosen and isinstance(other_entry, dict):
                             other_entry["accepted"] = False
                 else:
-                    _blank, roi, telemetry, entry, phase_kind = accepted_attempts[0]
+                    _quality, roi, telemetry, entry, phase_kind = accepted_attempts[0]
                 accepted_candidate = candidate
                 accepted_roi = roi
                 accepted_telemetry = telemetry
@@ -1398,7 +1475,10 @@ def _plan_reference_panel_candidates(
         if candidate.panel_id != candidate.source_asset_id:
             reasons.append("panel_keyed_candidate")
         if uses[candidate.panel_id] > 1:
-            reasons.append(f"reuse_purpose:distinct_roi:{roi.roi_label}")
+            if allow_review_cadence_adaptation and candidate.panel_id in recent_set:
+                reasons.append("reuse_purpose:grounded_capacity_exhausted")
+            else:
+                reasons.append(f"reuse_purpose:distinct_roi:{roi.roi_label}")
         if accepted_phase == "alternate_roi":
             reasons.append("fallback:alternate_roi")
         elif accepted_phase == "tighter_crop":
@@ -1502,6 +1582,7 @@ def _plan_reference_panel_candidates(
             }
         )
         selected_shots.append(shot)
+        recent_panel_ids.append(candidate.panel_id)
         last_panel_id = candidate.panel_id
     # A pan/focus_shift curve with no focus travel renders as sub-pixel zoom
     # jitter. Degrade those shots to a pure zoom curve.
@@ -1543,6 +1624,7 @@ def _plan_reference(
     allow_review_cadence_adaptation: bool = False,
     max_shots_by_section: Mapping[str, int] | None = None,
     allow_review_duration: bool = False,
+    review_duration_bounds_s: tuple[float, float] | None = None,
 ) -> list[dict]:
     if not spans or not candidates:
         raise ReferencePlanningError(
@@ -1551,8 +1633,21 @@ def _plan_reference(
     origin = min(float(span.start_time) for span in spans)
     end = max(float(span.end_time) for span in spans)
     total_duration = end - origin
-    duration_min_s = 50.0 if allow_review_duration else profile.duration_min_s
-    duration_max_s = 60.0 if allow_review_duration else profile.duration_max_s
+    if allow_review_duration and review_duration_bounds_s is not None:
+        try:
+            duration_min_s = float(review_duration_bounds_s[0])
+            duration_max_s = float(review_duration_bounds_s[1])
+        except (IndexError, TypeError, ValueError):
+            raise ReferencePlanningError(
+                f"{profile.profile_id} received malformed review duration bounds"
+            ) from None
+        if duration_min_s <= 0.0 or duration_max_s < duration_min_s:
+            raise ReferencePlanningError(
+                f"{profile.profile_id} received malformed review duration bounds"
+            )
+    else:
+        duration_min_s = 50.0 if allow_review_duration else profile.duration_min_s
+        duration_max_s = 60.0 if allow_review_duration else profile.duration_max_s
     if not duration_min_s <= total_duration <= duration_max_s:
         raise ReferencePlanningError(
             f"{profile.profile_id} requires duration between "
@@ -1844,6 +1939,7 @@ def plan(
     allow_source_resolution_warning: bool = False,
     allow_review_cadence_adaptation: bool = False,
     allow_review_duration: bool = False,
+    review_duration_bounds_s: tuple[float, float] | None = None,
     allow_conservative_full_panel: bool = False,
 ) -> list[dict]:
     """Create a beat-aware, ROI-driven shot list before rendering."""
@@ -1856,6 +1952,7 @@ def plan(
             allow_source_resolution_warning=allow_source_resolution_warning,
             allow_review_cadence_adaptation=allow_review_cadence_adaptation,
             allow_review_duration=allow_review_duration,
+            review_duration_bounds_s=review_duration_bounds_s,
             allow_conservative_full_panel=allow_conservative_full_panel,
         )
     if profile is not None:
@@ -1867,6 +1964,7 @@ def plan(
             citation_alignment_reasons_by_section,
             allow_review_cadence_adaptation=allow_review_cadence_adaptation,
             allow_review_duration=allow_review_duration,
+            review_duration_bounds_s=review_duration_bounds_s,
         )
     beats = _coalesce_beats(director.analyze_story(span_list))
     shots = visual_scoring.plan_content_aware_scenes(beats, candidates)

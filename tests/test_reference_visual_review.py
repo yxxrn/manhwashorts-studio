@@ -211,6 +211,108 @@ def test_roi_enumeration_adds_deterministic_content_scan_alternatives():
     assert any(roi.roi_label.startswith("content_scan_") for roi in first)
 
 
+def _synthetic_border_mask(width: int, height: int, *, blank: bool):
+    from app.services import framing_analysis
+
+    grid_width = 10
+    grid_height = 80
+    edge = tuple(tuple(bool(blank) for _ in range(grid_width)) for _ in range(grid_height))
+    empty = tuple(tuple(False for _ in range(grid_width)) for _ in range(grid_height))
+    return framing_analysis.BorderMaskResult(
+        detector_version="test-mask-v1",
+        source_width=width,
+        source_height=height,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        edge_connected_mask=edge,
+        non_discardable_low_information_mask=empty,
+        protected_mask=empty,
+        edge_connected_blank_fraction=1.0 if blank else 0.0,
+        non_discardable_low_information_fraction=0.0,
+        protected_retained_fraction=1.0,
+        mask_sha256="blank" if blank else "content",
+    )
+
+
+def test_roi_rescue_trigger_uses_authoritative_border_mask_not_pixel_preview():
+    from app.services import reference_visual_review
+
+    image = Image.new("RGB", (100, 800), (40, 70, 120))
+    candidate = _candidate("asset-a", 3, "rescue-mask")
+    profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
+
+    blocked = reference_visual_review.enumerate_reference_roi_alternatives(
+        image.size,
+        candidate,
+        profile,
+        image=image,
+        border_mask=_synthetic_border_mask(*image.size, blank=True),
+    )
+    safe = reference_visual_review.enumerate_reference_roi_alternatives(
+        image.size,
+        candidate,
+        profile,
+        image=image,
+        border_mask=_synthetic_border_mask(*image.size, blank=False),
+    )
+
+    assert any(roi.roi_label.startswith("content_rescue_") for roi in blocked)
+    assert not any(roi.roi_label.startswith("content_rescue_") for roi in safe)
+    rescue_scales = {
+        round(roi.crop_box[2] - roi.crop_box[0], 6)
+        for roi in blocked
+        if roi.roi_label.startswith("content_rescue_")
+    }
+    assert rescue_scales
+
+
+def test_blank_quality_target_three_percent_is_stricter_than_review_hard_gate_eight_percent():
+    from app.services import framing_analysis
+
+    width = height = 100
+    grid = 20
+    edge = tuple(
+        tuple(y == 0 for _ in range(grid))
+        for y in range(grid)
+    )
+    empty = tuple(tuple(False for _ in range(grid)) for _ in range(grid))
+    mask = framing_analysis.BorderMaskResult(
+        detector_version="test-mask-v1",
+        source_width=width,
+        source_height=height,
+        grid_width=grid,
+        grid_height=grid,
+        edge_connected_mask=edge,
+        non_discardable_low_information_mask=empty,
+        protected_mask=empty,
+        edge_connected_blank_fraction=0.05,
+        non_discardable_low_information_fraction=0.0,
+        protected_retained_fraction=1.0,
+        mask_sha256="five-percent",
+    )
+    evidence = _evidence("panel-a", "asset-a", 3)
+    crop_box = (0, 0, width, height)
+
+    quality_ok, quality_telemetry = framing_analysis.candidate_is_feasible(
+        crop_box, evidence, mask, (width, height), (width, height), blank_target_fraction=0.03
+    )
+    review_ok, review_telemetry = framing_analysis.candidate_is_feasible(
+        crop_box,
+        evidence,
+        mask,
+        (width, height),
+        (width, height),
+        blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+    )
+
+    assert quality_ok is False
+    assert quality_telemetry.rejection_code == "visual.blank_infeasible"
+    assert review_ok is True
+    assert review_telemetry.edge_connected_blank_fraction == pytest.approx(0.05)
+    assert reference_profile.REFERENCE_MATCHED_SHORTS_V1.framing_blank_target_fraction == 0.03
+    assert reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION == 0.08
+
+
 def test_reference_loader_excludes_order_zero_front_matter_before_candidate_build(monkeypatch):
     import io
 
@@ -399,7 +501,7 @@ def test_review_sidecar_preserves_motion_and_transition_intent():
     assert sidecar["shots"][0]["motion_mode"] == "slow_push"
     assert sidecar["shots"][0]["camera_curve"] == "slow_push_in"
     assert sidecar["shots"][0]["transition"] == "fade"
-    assert sidecar["shots"][0]["transition_duration_s"] == 0.18
+    assert sidecar["shots"][0]["transition_duration_s"] == 0.22
 
 
 def test_review_frame_motion_audit_measures_non_noop_change(tmp_path):
@@ -1378,6 +1480,22 @@ def test_silent_render_video_uses_persisted_roi_without_reselection(monkeypatch,
     assert result.sidecar_path is not None
 
 
+def test_review_provisional_spans_accept_adaptive_positive_duration():
+    script = SimpleNamespace(
+        sections=[
+            {"section": "hook", "spoken_text": "Blades meet as the duel turns.", "estimated_duration": 12.0},
+            {"section": "setup", "spoken_text": "Earlier the fighters prepared before advancing.", "estimated_duration": 15.83},
+        ]
+    )
+
+    spans = pipeline._review_provisional_spans(script, 27.83)
+
+    assert len(spans) == 2
+    assert spans[0].start_time == 0.0
+    assert spans[-1].end_time == 27.83
+    assert sum(len(span.word_timings) for span in spans) > 0
+
+
 def test_silent_reference_duration_uses_review_window_without_relaxing_voice_profile():
     from app.services import pipeline
 
@@ -1418,6 +1536,46 @@ def test_silent_review_duration_matches_rounded_rendered_scene_sum():
     assert subtitle_karaoke.validate_sentence_groups((group,), duration=absolute_end) == ()
 
 
+def test_review_section_capacity_prefers_unique_panels_when_four_second_ceiling_is_met():
+    from app.services import editorial_visual_planner
+
+    assert editorial_visual_planner._review_effective_section_capacity(9.57, [3, 2, 4]) == 3
+    assert editorial_visual_planner._review_effective_section_capacity(7.39, [4, 5]) == 2
+    assert editorial_visual_planner._review_effective_section_capacity(3.48, [6]) == 1
+
+
+def test_review_section_capacity_uses_roi_fallback_only_when_unique_panels_are_insufficient():
+    from app.services import editorial_visual_planner
+
+    assert editorial_visual_planner._review_effective_section_capacity(9.57, [2, 2]) == 4
+
+
+def test_review_group_counts_reserve_four_second_minimum_per_section():
+    from app.services import editorial_visual_planner
+
+    durations = [7.39, 9.57, 3.91, 3.48, 3.48]
+    sections = ["hook", "setup", "conflict", "twist", "cta"]
+    cursor = 0.0
+    beats = []
+    for section, duration in zip(sections, durations, strict=True):
+        beats.append(SimpleNamespace(section=section, start_time=cursor, end_time=cursor + duration))
+        cursor += duration
+
+    counts = editorial_visual_planner._reference_group_counts(
+        beats,
+        9,
+        max_counts_by_section={"hook": 2, "setup": 3, "conflict": 1, "twist": 2, "cta": 2},
+    )
+
+    assert counts[0] >= 2
+    assert counts[1] >= 3
+    assert counts[2] >= 1
+    assert counts[3] >= 1
+    assert counts[4] >= 1
+    assert sum(counts) == 9
+    assert all(duration / count <= 4.0 for duration, count in zip(durations, counts, strict=True))
+
+
 def test_silent_reference_planner_receives_explicit_review_duration_flag(monkeypatch):
     from app.services import editorial_visual_planner
 
@@ -1425,6 +1583,7 @@ def test_silent_reference_planner_receives_explicit_review_duration_flag(monkeyp
 
     def fake_panel_plan(*_args, **kwargs):
         captured["allow_review_duration"] = kwargs["allow_review_duration"]
+        captured["review_duration_bounds_s"] = kwargs["review_duration_bounds_s"]
         return []
 
     monkeypatch.setattr(
@@ -1438,9 +1597,11 @@ def test_silent_reference_planner_receives_explicit_review_duration_flag(monkeyp
         profile=reference_profile.REFERENCE_MATCHED_SHORTS_V2,
         reference_panel_candidates=(),
         allow_review_duration=True,
+        review_duration_bounds_s=(24.35, 31.3),
     )
 
     assert captured["allow_review_duration"] is True
+    assert captured["review_duration_bounds_s"] == (24.35, 31.3)
 
 
 
@@ -1616,6 +1777,18 @@ def test_review_qc_accepts_measured_pixel_safe_subtitle_and_three_percent_blank(
 
     assert subtitle["font_file_sha256"] == "abc"
     assert visual["max_edge_blank_fraction"] == 0.03
+
+
+def test_silent_review_qc_accepts_between_quality_target_and_hard_blank_gate():
+    from app.services import review_preview
+
+    visual = review_preview._measured_visual_qc(
+        {"shots": [{"framing_telemetry": {"edge_connected_blank_fraction": 0.05}}]},
+        blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+    )
+
+    assert visual["blank_target_fraction"] == 0.08
+    assert visual["max_edge_blank_fraction"] == 0.05
 
 
 def test_review_qc_rejects_excessive_visual_hold_and_missing_diversity_metrics():

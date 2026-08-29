@@ -947,7 +947,286 @@ def test_repair_prompt_specifies_distributed_claim_evidence_binding():
     assert "mandatory" in prompt
 
 
-def test_visual_capacity_rebalances_sixteen_requested_slots_to_thirteen_grounded_slots():
+
+def _coherence_claim(claim_id: str, panel_id: str, order: int):
+    return {
+        "claim_id": claim_id,
+        "evidence_panel_ids": [panel_id],
+        "evidence_panel_slot_capacity": {panel_id: 1},
+        "min_source_order": order,
+        "max_source_order": order,
+    }
+
+
+
+def test_selected_story_context_scopes_transition_semantics_without_broadening_evidence():
+    module = _module()
+    story_map = {
+        "beats": [
+            {"beat_id": "beat-a", "panel_ids": ["panel-a", "other-a"], "summary": "Setup context."},
+            {"beat_id": "beat-b", "panel_ids": ["panel-b"], "summary": "Escalation context."},
+            {"beat_id": "beat-c", "panel_ids": ["panel-c"], "summary": "Action context."},
+            {"beat_id": "beat-d", "panel_ids": ["panel-d"], "summary": "Aftermath context."},
+        ],
+        "causal_chain": [
+            {"from_beat": "beat-a", "to_beat": "beat-b", "reason": "the setup leads into escalation"},
+            {"from_beat": "beat-b", "to_beat": "beat-c", "reason": "the escalation leads into action"},
+        ],
+    }
+    plan = {"rows": [
+        {"passage_index": 0, "section": "hook", "claim_ids": ["claim-c"], "evidence_panel_ids": ["panel-c"]},
+        {"passage_index": 1, "section": "setup", "claim_ids": ["claim-a"], "evidence_panel_ids": ["panel-a"]},
+        {"passage_index": 2, "section": "conflict", "claim_ids": ["claim-b"], "evidence_panel_ids": ["panel-b"]},
+        {"passage_index": 3, "section": "ending", "claim_ids": ["claim-d"], "evidence_panel_ids": ["panel-d"]},
+    ]}
+    context = module._selected_story_context(story_map, plan)
+    assert [row["evidence_panel_ids"] for row in context] == [["panel-c"], ["panel-a"], ["panel-b"], ["panel-d"]]
+    assert context[0]["incoming_bridge"]["kind"] == "hook_teaser"
+    assert context[1]["incoming_bridge"]["kind"] == "teaser_rewind"
+    assert context[2]["incoming_bridge"] == {"kind": "causal", "causal_wording_allowed": True, "reason": "the setup leads into escalation"}
+    assert context[3]["incoming_bridge"]["kind"] == "temporal_only"
+    assert context[3]["incoming_bridge"]["causal_wording_allowed"] is False
+    assert context[1]["beat_context"][0]["summary"] == "Setup context."
+    assert context[1]["context_is_transition_only"] is True
+
+
+def test_lock_capacity_plan_references_overrides_provider_grounding_metadata():
+    module = _module()
+    passages = [{
+        "passage_id": "p0",
+        "text": "Provider prose remains editable.",
+        "claim_ids": ["wrong-claim"],
+        "evidence_panel_ids": ["wrong-panel"],
+        "panel_ids": ["alias-panel"],
+    }]
+    plan = {"rows": [{
+        "claim_ids": ["claim-safe"],
+        "evidence_panel_ids": ["panel-safe"],
+    }]}
+    locked = module.lock_capacity_plan_references(passages, plan)
+    assert locked == [{
+        "passage_id": "p0",
+        "text": "Provider prose remains editable.",
+        "claim_ids": ["claim-safe"],
+        "evidence_panel_ids": ["panel-safe"],
+    }]
+    assert passages[0]["claim_ids"] == ["wrong-claim"]
+
+def test_hook_quality_rejects_clinical_gender_nouns_and_missing_sword_object():
+    module = _module()
+    passages = [
+        {"text": "Swords clash as two fighters meet above the ground.", "claim_ids": ["c1"]},
+        {"text": "Before that the female raised her sword while the male swung his forward.", "claim_ids": ["c2"]},
+        {"text": "Sparks flew when the blades met.", "claim_ids": ["c3"]},
+        {"text": "Energy flashed as another strike followed.", "claim_ids": ["c4"]},
+        {"text": "Their expressions changed when the clash ended.", "claim_ids": ["c5"]},
+    ]
+    claims = [
+        {"claim_id": f"c{i}", "text": "combat claim", "evidence_panel_ids": [f"p{i}"]}
+        for i in range(1, 6)
+    ]
+    with pytest.raises(module.VisualNarrativeRepairError) as caught:
+        module.validate_repaired_hook_quality(passages, claims, {"rows": [{"hook_priority_score": 4}]})
+    assert caught.value.code == "cloud.narrative_style_stiff"
+
+
+def test_hook_quality_rejects_duel_freezes_in_place_metaphor():
+    module = _module()
+    passages = [
+        {"text": "Swords meet as the duel freezes in place.", "claim_ids": ["c1"]},
+        {"text": "Before that two fighters prepared their weapons.", "claim_ids": ["c2"]},
+        {"text": "Sparks flew when the blades met.", "claim_ids": ["c3"]},
+        {"text": "Energy flashed as another strike followed.", "claim_ids": ["c4"]},
+        {"text": "Their expressions changed when the clash ended.", "claim_ids": ["c5"]},
+    ]
+    claims = [{"claim_id": f"c{i}", "text": "combat claim", "evidence_panel_ids": [f"p{i}"]} for i in range(1, 6)]
+    with pytest.raises(module.VisualNarrativeRepairError) as caught:
+        module.validate_repaired_hook_quality(passages, claims, {"rows": [{"hook_priority_score": 4}]})
+    assert caught.value.code == "cloud.narrative_style_stiff"
+
+
+def test_hook_quality_rejects_padded_counter_and_now_at_last_prose():
+    module = _module()
+    passages = [
+        {"text": "A sword clash changes the duel as both fighters hold position.", "claim_ids": ["c1"]},
+        {"text": "They trained together before stepping into position together now at last.", "claim_ids": ["c2"]},
+        {"text": "Sparks erupted as their blades collided.", "claim_ids": ["c3"]},
+        {"text": "Energy flashed from every counter swing that followed.", "claim_ids": ["c4"]},
+        {"text": "Shock crossed their faces when the clash ended.", "claim_ids": ["c5"]},
+    ]
+    claims = [
+        {"claim_id": f"c{i}", "text": "combat claim", "evidence_panel_ids": [f"p{i}"]}
+        for i in range(1, 6)
+    ]
+    with pytest.raises(module.VisualNarrativeRepairError) as caught:
+        module.validate_repaired_hook_quality(passages, claims, {"rows": [{"hook_priority_score": 4}]})
+    assert caught.value.code == "cloud.narrative_style_stiff"
+
+
+def test_hook_quality_counts_as_and_when_as_temporal_story_bridges():
+    module = _module()
+    passages = [
+        {"text": "Sparks fly when blades meet high above the ground.", "claim_ids": ["c1"]},
+        {"text": "Earlier they readied weapons before moving into position.", "claim_ids": ["c2"]},
+        {"text": "Blades met as bright sparks opened the clash.", "claim_ids": ["c3"]},
+        {"text": "Energy flared as reactions rippled through the fight.", "claim_ids": ["c4"]},
+        {"text": "Expressions hardened when the blades locked again.", "claim_ids": ["c5"]},
+    ]
+    claims = [
+        {"claim_id": "c1", "text": "sword clash combat"},
+        {"claim_id": "c2", "text": "weapon preparation"},
+        {"claim_id": "c3", "text": "sword clash"},
+        {"claim_id": "c4", "text": "energy reactions"},
+        {"claim_id": "c5", "text": "sword clash reactions"},
+    ]
+    report = module.validate_repaired_hook_quality(
+        passages, claims, {"rows": [{"hook_priority_score": 4}]}
+    )
+    assert report["story_bridge_count"] >= 2
+
+
+def test_coherence_window_prefers_deepest_scope_that_can_sustain_narration():
+    module = _module()
+    claims = []
+    for index in range(7):
+        claims.append(_coherence_claim(f"b0__sub0__unit{index}__claim1", f"b0a-{index}", index))
+    for index in range(6):
+        claims.append(_coherence_claim(f"b0__sub1__unit{index}__claim1", f"b0b-{index}", 20 + index))
+    for index in range(13):
+        claims.append(_coherence_claim(f"b1__sub2__unit{index}__claim1", f"b1-{index}", 100 + index * 10))
+
+    selected, metadata = module._select_coherent_claim_window(
+        claims, minimum_unique_panels=13
+    )
+
+    assert metadata["feasible"] is True
+    assert metadata["selected_scope_prefix"] == "b1__sub2"
+    assert metadata["selected_scope_depth"] == 2
+    assert len({p for row in selected for p in row["evidence_panel_ids"]}) == 13
+
+
+
+def test_coherence_window_rejects_interleaved_common_prefix_stitching():
+    module = _module()
+    orders = [210, 230, 252, 253, 257, 283, 295, 298, 322, 327, 341, 346, 347, 368, 378]
+    claims = [
+        _coherence_claim(
+            f"b1__sub{index % 3}__unit{index}__claim1",
+            f"panel-{order}",
+            order,
+        )
+        for index, order in enumerate(orders)
+    ]
+
+    selected, metadata = module._select_coherent_claim_window(
+        claims, minimum_unique_panels=13
+    )
+
+    assert selected == []
+    assert metadata["feasible"] is False
+    assert metadata["reason"] == "no_single_story_scope_has_required_visual_capacity"
+
+
+
+def test_coherence_window_accepts_connected_adjacent_combat_subbranches():
+    module = _module()
+    claims = [
+        _coherence_claim(f"b1__sub2__sub1__claim{index}", f"combat-a-{order}", order)
+        for index, order in enumerate((337, 341, 344, 349), start=1)
+    ] + [
+        _coherence_claim(f"b1__sub2__sub2__claim{index}", f"combat-b-{order}", order)
+        for index, order in enumerate((355, 361, 368, 378), start=1)
+    ]
+
+    selected, metadata = module._select_coherent_claim_window(
+        claims, minimum_unique_panels=8
+    )
+
+    assert metadata["feasible"] is True
+    assert metadata["rule"] == "story_coherence_window_v2"
+    assert metadata["selected_scope_prefix"] == "b1__sub2"
+    assert metadata["selected_connected_scope_chain"] == [
+        "b1__sub2__sub1",
+        "b1__sub2__sub2",
+    ]
+    assert metadata["selected_source_order_min"] == 337
+    assert metadata["selected_source_order_max"] == 378
+    assert metadata["selected_unique_panel_count"] == 8
+    assert len(selected) == 8
+
+
+
+def test_coherence_window_prefers_eight_panel_combat_arc_over_shorter_distractor():
+    module = _module()
+    claims = [
+        _coherence_claim("b1__sub2__sub0__claim4", "distractor-327", 327),
+        *[
+            _coherence_claim(
+                f"b1__sub2__sub1__claim{index}",
+                f"combat-a-{order}",
+                order,
+            )
+            for index, order in enumerate((337, 341, 343, 344, 346), start=1)
+        ],
+        *[
+            _coherence_claim(
+                f"b1__sub2__sub2__claim{index}",
+                f"combat-b-{order}",
+                order,
+            )
+            for index, order in enumerate((347, 349, 361), start=1)
+        ],
+    ]
+    for row in claims:
+        if row["claim_id"].startswith(("b1__sub2__sub1", "b1__sub2__sub2")):
+            row["text"] = "Sword combat clash with weapon effects and reactions."
+        else:
+            row["text"] = "A distressed expression appears."
+
+    selected, metadata = module._select_coherent_claim_window(
+        claims,
+        minimum_unique_panels=7,
+        preferred_unique_panels=8,
+    )
+
+    assert metadata["feasible"] is True
+    assert metadata["selected_preferred_capacity_met"] is True
+    assert metadata["selected_scope_prefix"] == "b1__sub2"
+    assert metadata["selected_connected_scope_chain"] == [
+        "b1__sub2__sub1",
+        "b1__sub2__sub2",
+    ]
+    assert metadata["selected_source_order_min"] == 337
+    assert metadata["selected_source_order_max"] == 361
+    assert metadata["selected_unique_panel_count"] == 8
+    assert all(
+        not row["claim_id"].startswith("b1__sub2__sub0") for row in selected
+    )
+
+
+def test_coherence_window_rejects_cross_root_capacity_stitching():
+    module = _module()
+    claims = [
+        *[
+            _coherence_claim(f"b0__sub0__unit{i}__claim1", f"b0-{i}", i)
+            for i in range(7)
+        ],
+        *[
+            _coherence_claim(f"b1__sub0__unit{i}__claim1", f"b1-{i}", 100 + i)
+            for i in range(6)
+        ],
+    ]
+
+    selected, metadata = module._select_coherent_claim_window(
+        claims, minimum_unique_panels=13
+    )
+
+    assert selected == []
+    assert metadata["feasible"] is False
+    assert metadata["reason"] == "no_single_story_scope_has_required_visual_capacity"
+
+
+def test_visual_capacity_rebalances_sixteen_raw_roi_slots_to_thirteen_unique_panels():
     module = _module()
     requirements = [
         {"passage_index": 0, "section": "hook", "required_visual_slots": 2},
@@ -961,7 +1240,7 @@ def test_visual_capacity_rebalances_sixteen_requested_slots_to_thirteen_grounded
             "claim_id": f"claim-{index}",
             "evidence_panel_slot_capacity": {f"panel-{index}": capacity},
         }
-        for index, capacity in enumerate((2, 1, 1, 1, 2, 1, 1, 2, 1, 1))
+        for index, capacity in enumerate((2, 1, 1, 1, 2, 1, 1, 2, 1, 1, 1, 1, 1))
     ]
 
     rows, metadata = module._rebalance_visual_capacity_requirements(
@@ -971,7 +1250,9 @@ def test_visual_capacity_rebalances_sixteen_requested_slots_to_thirteen_grounded
     )
 
     assert [row["required_visual_slots"] for row in rows] == [2, 3, 3, 2, 3]
-    assert metadata["claim_backed_visual_slots"] == 13
+    assert metadata["claim_backed_visual_slots"] == 16
+    assert metadata["claim_backed_unique_panels"] == 13
+    assert metadata["usable_nonrepeating_visual_slots"] == 13
     assert metadata["minimum_visual_slots_for_narration"] == 13
     assert metadata["target_visual_slots"] == 13
     assert metadata["target_word_count_min"] == 115
@@ -997,13 +1278,89 @@ def test_visual_capacity_uses_grounded_headroom_when_available():
     rows, metadata = module._rebalance_visual_capacity_requirements(
         requirements, claims, max_words_per_visual_slot=9
     )
-    assert metadata["rule"] == "visual_capacity_rebalance_v2"
+    assert metadata["rule"] == "visual_capacity_rebalance_v3"
     assert metadata["minimum_visual_slots_for_narration"] == 13
     assert metadata["preferred_visual_slots_for_narration"] == 15
     assert metadata["preferred_words_per_visual_slot"] == 8
     assert metadata["target_visual_slots"] == 15
     assert metadata["target_word_count_goal"] == 120
-    assert [row["required_visual_slots"] for row in rows] == [3, 3, 3, 3, 3]
+    assert [row["required_visual_slots"] for row in rows] == [2, 3, 4, 3, 3]
+    assert metadata["hook_visual_slot_cap"] == 2
+
+
+def test_claim_bundle_aware_rebalance_fits_atomic_combat_claims_without_repeats():
+    module = _module()
+    claims = [
+        {
+            "claim_id": "combat-setup",
+            "text": "Characters prepare weapons before combat.",
+            "min_source_order": 337,
+            "max_source_order": 343,
+            "evidence_panel_slot_capacity": {"a1": 1, "a2": 1, "a3": 1},
+        },
+        {
+            "claim_id": "combat-hook",
+            "text": "Sword clash attack with weapon effects.",
+            "min_source_order": 344,
+            "max_source_order": 346,
+            "evidence_panel_slot_capacity": {"b1": 1, "b2": 1},
+        },
+        {
+            "claim_id": "combat-turn-1",
+            "text": "Sword combat continues.",
+            "min_source_order": 347,
+            "max_source_order": 347,
+            "evidence_panel_slot_capacity": {"c1": 1},
+        },
+        {
+            "claim_id": "combat-turn-2",
+            "text": "Energy effects follow the clash.",
+            "min_source_order": 349,
+            "max_source_order": 349,
+            "evidence_panel_slot_capacity": {"d1": 1},
+        },
+        {
+            "claim_id": "combat-payoff",
+            "text": "A sword clash and reaction close the exchange.",
+            "min_source_order": 361,
+            "max_source_order": 361,
+            "evidence_panel_slot_capacity": {"e1": 1},
+        },
+    ]
+    requirements = [
+        {
+            "passage_index": index,
+            "section": section,
+            "required_visual_slots": required,
+        }
+        for index, (section, required) in enumerate(
+            zip(("hook", "setup", "conflict", "twist", "cta"), (2, 2, 2, 1, 1), strict=True)
+        )
+    ]
+
+    rows, plan, metadata = module._claim_bundle_aware_capacity_plan(
+        claims, requirements
+    )
+
+    assert metadata["applied"] is True
+    assert metadata["original_allocation"] == [2, 2, 2, 1, 1]
+    assert metadata["selected_allocation"] == [2, 3, 1, 1, 1]
+    assert [row["required_visual_slots"] for row in rows] == [2, 3, 1, 1, 1]
+    assert plan["feasible"] is True
+    assert [row["claim_ids"] for row in plan["rows"]] == [
+        ["combat-hook"],
+        ["combat-setup"],
+        ["combat-turn-1"],
+        ["combat-turn-2"],
+        ["combat-payoff"],
+    ]
+    assert len(
+        {
+            panel_id
+            for row in plan["rows"]
+            for panel_id in row["evidence_panel_ids"]
+        }
+    ) == 8
 
 
 def test_capacity_safe_claim_plan_backtracks_when_early_overshoot_strands_late_passage():
@@ -1013,37 +1370,37 @@ def test_capacity_safe_claim_plan_backtracks_when_early_overshoot_strands_late_p
             "claim_id": "claim-greedy-trap",
             "min_source_order": 10,
             "max_source_order": 10,
-            "evidence_panel_slot_capacity": {"panel-1": 2, "panel-6-shared": 1},
+            "evidence_panel_slot_capacity": {"panel-h1": 1, "panel-cta-shared": 1},
         },
         {
             "claim_id": "claim-hook-exact",
             "min_source_order": 11,
             "max_source_order": 11,
-            "evidence_panel_slot_capacity": {"panel-1": 2},
+            "evidence_panel_slot_capacity": {"panel-h1": 1, "panel-h2": 1},
         },
         {
             "claim_id": "claim-setup",
             "min_source_order": 20,
             "max_source_order": 20,
-            "evidence_panel_slot_capacity": {"panel-2": 3},
+            "evidence_panel_slot_capacity": {"panel-s1": 1, "panel-s2": 1, "panel-s3": 1},
         },
         {
             "claim_id": "claim-conflict",
             "min_source_order": 30,
             "max_source_order": 30,
-            "evidence_panel_slot_capacity": {"panel-3": 3},
+            "evidence_panel_slot_capacity": {"panel-c1": 1, "panel-c2": 1, "panel-c3": 1},
         },
         {
             "claim_id": "claim-twist",
             "min_source_order": 40,
             "max_source_order": 40,
-            "evidence_panel_slot_capacity": {"panel-4": 2},
+            "evidence_panel_slot_capacity": {"panel-t1": 1, "panel-t2": 1},
         },
         {
             "claim_id": "claim-cta",
             "min_source_order": 50,
             "max_source_order": 50,
-            "evidence_panel_slot_capacity": {"panel-6-shared": 1, "panel-5": 2},
+            "evidence_panel_slot_capacity": {"panel-cta-shared": 1, "panel-z1": 1, "panel-z2": 1},
         },
     ]
     requirements = [
@@ -1057,7 +1414,7 @@ def test_capacity_safe_claim_plan_backtracks_when_early_overshoot_strands_late_p
     plan = module._capacity_safe_claim_plan(claims, requirements)
 
     assert plan["feasible"] is True
-    assert plan["rule"] == "ordered_unique_panel_capacity_search_v2"
+    assert plan["rule"] == "ordered_unique_panel_capacity_search_v4"
     assert [row["available_visual_slots"] for row in plan["rows"]] == [2, 3, 3, 2, 3]
     assert plan["rows"][0]["claim_ids"] == ["claim-hook-exact"]
     assert plan["rows"][-1]["claim_ids"] == ["claim-cta"]
@@ -1171,36 +1528,16 @@ def test_capacity_safe_plan_is_mandatory_for_repaired_passage_evidence_and_words
 def test_capacity_safe_claim_plan_groups_unique_panels_in_source_order():
     module = _module()
     claims = [
-        {
-            "claim_id": "claim-a",
-            "min_source_order": 10,
-            "max_source_order": 10,
-            "evidence_panel_slot_capacity": {"panel-a": 2},
-        },
-        {
-            "claim_id": "claim-a-duplicate",
-            "min_source_order": 11,
-            "max_source_order": 11,
-            "evidence_panel_slot_capacity": {"panel-a": 2},
-        },
-        {
-            "claim_id": "claim-b",
-            "min_source_order": 20,
-            "max_source_order": 20,
-            "evidence_panel_slot_capacity": {"panel-b": 1},
-        },
-        {
-            "claim_id": "claim-c",
-            "min_source_order": 30,
-            "max_source_order": 30,
-            "evidence_panel_slot_capacity": {"panel-c": 1},
-        },
-        {
-            "claim_id": "claim-d",
-            "min_source_order": 40,
-            "max_source_order": 40,
-            "evidence_panel_slot_capacity": {"panel-d": 2},
-        },
+        {"claim_id": "claim-a", "min_source_order": 10, "max_source_order": 10,
+         "evidence_panel_slot_capacity": {"panel-a1": 1, "panel-a2": 1}},
+        {"claim_id": "claim-a-duplicate", "min_source_order": 11, "max_source_order": 11,
+         "evidence_panel_slot_capacity": {"panel-a1": 1, "panel-a2": 1}},
+        {"claim_id": "claim-b", "min_source_order": 20, "max_source_order": 20,
+         "evidence_panel_slot_capacity": {"panel-b": 1}},
+        {"claim_id": "claim-c", "min_source_order": 30, "max_source_order": 30,
+         "evidence_panel_slot_capacity": {"panel-c": 1}},
+        {"claim_id": "claim-d", "min_source_order": 40, "max_source_order": 40,
+         "evidence_panel_slot_capacity": {"panel-d1": 1, "panel-d2": 1}},
     ]
     requirements = [
         {"passage_index": 0, "section": "hook", "required_visual_slots": 2},
@@ -1212,18 +1549,9 @@ def test_capacity_safe_claim_plan_groups_unique_panels_in_source_order():
 
     assert plan["feasible"] is True
     assert plan["preserve_passage_count"] is True
-    assert [row["claim_ids"] for row in plan["rows"]] == [
-        ["claim-a"],
-        ["claim-b", "claim-c"],
-        ["claim-d"],
-    ]
     assert [row["available_visual_slots"] for row in plan["rows"]] == [2, 2, 2]
-    assert [row["claim_min_source_orders"] for row in plan["rows"]] == [
-        [10],
-        [20, 30],
-        [40],
-    ]
-    assert len({panel for row in plan["rows"] for panel in row["evidence_panel_ids"]}) == 4
+    assert len({panel for row in plan["rows"] for panel in row["evidence_panel_ids"]}) == 6
+    assert all(row["unique_panel_shortfall"] == 0 for row in plan["rows"])
 
 
 def test_feasible_render_plan_is_deterministic_and_shared_by_repair_payload():
@@ -1629,3 +1957,177 @@ def test_repaired_visual_capacity_rejects_single_long_panel():
         module.validate_repaired_visual_capacity(passages, ledger)
 
     assert exc.value.code == "visual.narrative_repair_ungrounded"
+
+
+def test_hook_quality_rejects_flat_panel_description():
+    module = _module()
+    passages = [{"text": "We see a man standing by the door.", "claim_ids": ["c1"]}]
+    claims = [{"claim_id": "c1", "text": "He discovers a hidden door."}]
+    plan = {"rows": [{"hook_priority_score": 1}]}
+    with pytest.raises(module.VisualNarrativeRepairError) as exc:
+        module.validate_repaired_hook_quality(passages, claims, plan)
+    assert exc.value.code == "cloud.narrative_flat_recap"
+
+
+
+def test_hook_quality_rejects_majority_visual_description_prose():
+    module = _module()
+    passages = [
+        {"text": "A close-up shows a worried face.", "claim_ids": ["c1"]},
+        {"text": "The girl appears beside a white cat.", "claim_ids": ["c2"]},
+        {"text": "The sequence depicts two figures with swords.", "claim_ids": ["c3"]},
+        {"text": "A blue mark changes the situation.", "claim_ids": ["c4"]},
+        {"text": "That choice leaves the group exposed.", "claim_ids": ["c5"]},
+    ]
+    claims = [
+        {"claim_id": f"c{index}", "text": "Grounded fact."}
+        for index in range(1, 6)
+    ]
+    plan = {"rows": [{"hook_priority_score": 0}]}
+    with pytest.raises(module.VisualNarrativeRepairError) as exc:
+        module.validate_repaired_hook_quality(passages, claims, plan)
+    assert exc.value.code == "cloud.narrative_flat_recap"
+
+
+def test_hook_quality_rejects_disconnected_observation_sequence():
+    module = _module()
+    passages = [
+        {"text": "The hidden trap changes the room.", "claim_ids": ["c1"]},
+        {"text": "She reaches the desk.", "claim_ids": ["c2"]},
+        {"text": "Weapons wait nearby.", "claim_ids": ["c3"]},
+        {"text": "The sword fight starts.", "claim_ids": ["c4"]},
+        {"text": "The group leaves the building.", "claim_ids": ["c5"]},
+    ]
+    claims = [{"claim_id": f"c{i}", "text": "Grounded fact."} for i in range(1, 6)]
+    plan = {"rows": [{"hook_priority_score": 0}]}
+    with pytest.raises(module.VisualNarrativeRepairError) as exc:
+        module.validate_repaired_hook_quality(passages, claims, plan)
+    assert exc.value.code == "cloud.narrative_flat_recap"
+
+
+def test_hook_quality_rejects_ignoring_grounded_curiosity_claim():
+    module = _module()
+    passages = [{"text": "He walks toward the room.", "claim_ids": ["plain"]}]
+    claims = [
+        {"claim_id": "plain", "text": "He walks toward the room."},
+        {"claim_id": "turn", "text": "He discovers a hidden trap."},
+    ]
+    plan = {"rows": [{"hook_priority_score": 2}]}
+    with pytest.raises(module.VisualNarrativeRepairError) as exc:
+        module.validate_repaired_hook_quality(passages, claims, plan)
+    assert exc.value.code == "cloud.narrative_hook_weak"
+
+
+def test_hook_quality_accepts_grounded_curiosity_opening():
+    module = _module()
+    passages = [{"text": "The hidden trap changes what this room means.", "claim_ids": ["turn"]}]
+    claims = [{"claim_id": "turn", "text": "He discovers a hidden trap."}]
+    plan = {"rows": [{"hook_priority_score": 2}]}
+    result = module.validate_repaired_hook_quality(passages, claims, plan)
+    assert result["status"] == "pass"
+    assert result["hook_claim_score"] > 0
+
+
+def test_capacity_plan_uses_strongest_grounded_hook_then_resets_chronology():
+    module = _module()
+    claims = [
+        {"claim_id": "c10", "text": "He enters the hall.", "min_source_order": 10,
+         "max_source_order": 10, "evidence_panel_slot_capacity": {"p10": 1}},
+        {"claim_id": "c20", "text": "He meets the guard.", "min_source_order": 20,
+         "max_source_order": 20, "evidence_panel_slot_capacity": {"p20": 1}},
+        {"claim_id": "c30", "text": "He finds the key.", "min_source_order": 30,
+         "max_source_order": 30, "evidence_panel_slot_capacity": {"p30": 1}},
+        {"claim_id": "c40", "text": "The hidden door reveals an unexpected threat.",
+         "qualification": "visible danger beyond the door", "min_source_order": 40,
+         "max_source_order": 40, "evidence_panel_slot_capacity": {"p40": 1}},
+        {"claim_id": "c50", "text": "He reacts to the threat.", "min_source_order": 50,
+         "max_source_order": 50, "evidence_panel_slot_capacity": {"p50": 1}},
+        {"claim_id": "c60", "text": "He escapes the room.", "min_source_order": 60,
+         "max_source_order": 60, "evidence_panel_slot_capacity": {"p60": 1}},
+    ]
+    requirements = [
+        {"passage_index": i, "section": name, "required_visual_slots": 1}
+        for i, name in enumerate(("hook", "setup", "conflict", "twist", "cta"))
+    ]
+    plan = module._capacity_safe_claim_plan(claims, requirements)
+    assert plan["feasible"] is True
+    assert plan["rows"][0]["claim_ids"] == ["c40"]
+    later_orders = [row["claim_min_source_orders"][0] for row in plan["rows"][1:]]
+    assert later_orders == sorted(later_orders)
+    assert later_orders[0] < 40
+
+
+def test_capacity_plan_reference_match_is_exact_and_ordered():
+    module = _module()
+    plan = {
+        "rows": [
+            {
+                "claim_ids": ["claim-a", "claim-b"],
+                "evidence_panel_ids": ["panel-a", "panel-b"],
+            }
+        ]
+    }
+    passages = [
+        {
+            "claim_ids": ["claim-a", "claim-b"],
+            "evidence_panel_ids": ["panel-a", "panel-b"],
+        }
+    ]
+    assert module.repaired_references_match_capacity_plan(passages, plan) is True
+    assert module.repaired_references_match_capacity_plan(
+        [dict(passages[0], evidence_panel_ids=["panel-b", "panel-a"])], plan
+    ) is False
+    assert module.repaired_references_match_capacity_plan(
+        [dict(passages[0], claim_ids=["claim-b", "claim-a"])], plan
+    ) is False
+
+
+
+def test_hook_quality_accepts_truthful_temporal_story_bridges():
+    module = _module()
+    passages = [
+        {"text": "A hidden risk comes into focus without an easy answer.", "claim_ids": ["c0"]},
+        {"text": "Earlier, the group settles into a quieter routine.", "claim_ids": ["c1"]},
+        {"text": "Later, the mood shifts as surprise interrupts that calm.", "claim_ids": ["c2"]},
+        {"text": "Pressure builds around a choice nobody can ignore.", "claim_ids": ["c3"]},
+        {"text": "The conflict returns and leaves the next step uncertain.", "claim_ids": ["c4"]},
+    ]
+    claims = [{"claim_id": f"c{i}", "text": "grounded event"} for i in range(5)]
+    audit = module.validate_repaired_hook_quality(passages, claims, {"rows": [{"hook_priority_score": 0}]})
+    assert audit["story_bridge_count"] >= 2
+    assert audit["flat_recap_detected"] is False
+
+
+def test_hook_quality_rejects_stiff_bureaucratic_spoken_prose():
+    module = _module()
+    passages = [
+        {"text": "Blades collide as the duel turns decisive.", "claim_ids": ["c0"]},
+        {"text": "They prepared during the course of earlier drills before the confrontation phase.", "claim_ids": ["c1"]},
+        {"text": "Sparks fly when the blades meet.", "claim_ids": ["c2"]},
+        {"text": "Energy flares as the exchange continues.", "claim_ids": ["c3"]},
+    ]
+    claims = [
+        {"claim_id": f"c{index}", "text": "combat clash", "evidence_panel_ids": [f"p{index}"]}
+        for index in range(4)
+    ]
+    plan = {"rows": [{"hook_priority_score": 4}]}
+    with pytest.raises(module.VisualNarrativeRepairError) as caught:
+        module.validate_repaired_hook_quality(passages, claims, plan)
+    assert caught.value.code == "cloud.narrative_style_stiff"
+
+
+def test_hook_quality_accepts_direct_conversational_spoken_prose():
+    module = _module()
+    passages = [
+        {"text": "Blades collide as the duel turns decisive.", "claim_ids": ["c0"]},
+        {"text": "Earlier they readied their weapons before moving in.", "claim_ids": ["c1"]},
+        {"text": "Sparks fly when the blades meet.", "claim_ids": ["c2"]},
+        {"text": "Energy flares as the exchange continues.", "claim_ids": ["c3"]},
+    ]
+    claims = [
+        {"claim_id": f"c{index}", "text": "combat clash", "evidence_panel_ids": [f"p{index}"]}
+        for index in range(4)
+    ]
+    plan = {"rows": [{"hook_priority_score": 4}]}
+    result = module.validate_repaired_hook_quality(passages, claims, plan)
+    assert result["stiff_spoken_passage_count"] == 0

@@ -26,13 +26,57 @@ from app.services import (
     script as script_service,
 )
 
-REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v7"
+REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v8"
 VISUAL_SECTION_REMAP_VERSION = "visual_section_remap_v1"
-REPAIR_PROMPT_VERSION = "visual-narrative-repair-v8"
+REPAIR_PROMPT_VERSION = "visual-narrative-repair-v11"
 REPAIR_TARGET_WORD_MIN = 115
 REPAIR_TARGET_WORD_GOAL = 120
 REPAIR_TARGET_WORD_MAX = 125
+REPAIR_ADAPTIVE_MIN_UNIQUE_PANELS = 7
+REPAIR_ADAPTIVE_MIN_SHOT_SECONDS = 3.0
+REPAIR_ADAPTIVE_TARGET_SHOT_SECONDS = 3.5
+REPAIR_DURATION_POLICY_STANDARD = "standard_50_60_v1"
+REPAIR_DURATION_POLICY_ADAPTIVE = "coherent_capacity_adaptive_v1"
 MAX_REPAIR_ATTEMPTS = 3
+HOOK_STORY_SELECTION_VERSION = "grounded_hook_selection_v1"
+_HOOK_CURIOSITY_MARKERS = frozenset({
+    "but", "however", "instead", "only", "until", "except", "secret",
+    "reveals", "revealed", "realizes", "discovers", "hidden", "trap",
+    "danger", "risk", "threat", "betrayal", "attack", "impossible",
+    "unexpected", "consequence", "cost", "fails", "wrong", "mystery",
+})
+_FLAT_HOOK_PREFIXES = (
+    "we see ", "this panel ", "the panel ", "a man is ", "a woman is ",
+    "a character is ", "someone is ", "next ", "then ", "after that ",
+)
+_VISUAL_RECAP_PATTERNS = (
+    r"\bpanels?\b",
+    r"\bsequence\b",
+    r"\bclose[- ]?ups?\b",
+    r"\b(?:is|are|was|were) shown\b",
+    r"\bdepicts?\b",
+    r"\bvisible\b",
+)
+_VISUAL_APPEARANCE_PATTERN = r"\b(?:appears?|reappears?)\b"
+_STIFF_SPOKEN_PROSE_PATTERNS = (
+    r"\bduring the course of\b",
+    r"\b(?:main|primary) confrontation phase\b",
+    r"\b(?:phase|stage) now\b",
+    r"\b(?:responding|following|counter) \w+ that followed\b",
+    r"\b(?:together )?now at last\b",
+    r"\bthe (?:male|female)\b",
+    r"\bswung (?:his|her) forward\b",
+    r"\bduel freezes in place\b",
+)
+_STORY_BRIDGE_PATTERN = (
+    r"\b(?:but|so|yet|because|however|instead|while|meanwhile|until|therefore|later|earlier|afterward|before|when|as)\b"
+)
+_HOOK_ACTION_MARKERS = frozenset({
+    "combat", "sword", "swords", "weapon", "weapons", "clash", "attack",
+})
+_HOOK_REACTION_MARKERS = frozenset({
+    "distressed", "surprised", "danger", "threat", "explosion",
+})
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "visual_narrative_repair_v1.txt"
 
 
@@ -51,6 +95,105 @@ def _canonical(value: object) -> str:
 
 def _hash(value: object) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+def _hook_claim_score(claim: Mapping[str, Any]) -> int:
+    """Rank grounded claims for curiosity without inventing new stakes."""
+    text = str(claim.get("text", "") or "").casefold()
+    tokens = set(re.findall(r"[a-z']+", text))
+    score = sum(marker in tokens for marker in _HOOK_CURIOSITY_MARKERS)
+    if any(phrase in text for phrase in ("turns out", "doesn't know", "cannot", "can't", "no longer")):
+        score += 2
+    if any(word in tokens for word in ("reveal", "twist", "shock", "surprise", "betray")):
+        score += 2
+    if tokens.intersection(_HOOK_ACTION_MARKERS):
+        score += 4
+    if tokens.intersection(_HOOK_REACTION_MARKERS):
+        score += 2
+    return int(score)
+
+
+def validate_repaired_hook_quality(
+    passages: Sequence[Mapping[str, Any]],
+    claims: Sequence[Mapping[str, Any]],
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fail obvious flat recap while keeping hook selection evidence-grounded."""
+    if not passages:
+        raise VisualNarrativeRepairError("hook passage is missing", "cloud.narrative_hook_weak")
+    claim_map = {str(item.get("claim_id", "")): item for item in claims if isinstance(item, Mapping)}
+    first = passages[0]
+    text = str(first.get("text", "")).strip()
+    lower = text.casefold()
+    flat_opening = any(lower.startswith(prefix) for prefix in _FLAT_HOOK_PREFIXES)
+    first_claim_ids = [str(value) for value in first.get("claim_ids", ())]
+    first_score = max(
+        (_hook_claim_score(claim_map[claim_id]) for claim_id in first_claim_ids if claim_id in claim_map),
+        default=0,
+    )
+    rows = plan.get("rows") if isinstance(plan, Mapping) else None
+    planned_score = 0
+    if isinstance(rows, list) and rows and isinstance(rows[0], Mapping):
+        planned_score = int(rows[0].get("hook_priority_score", 0) or 0)
+    recap_prefix_count = sum(
+        str(item.get("text", "")).strip().casefold().startswith(("then ", "next ", "after that "))
+        for item in passages
+    )
+    visual_recap_flags = [
+        any(re.search(pattern, str(item.get("text", "")).casefold()) for pattern in _VISUAL_RECAP_PATTERNS)
+        or bool(re.search(_VISUAL_APPEARANCE_PATTERN, str(item.get("text", "")).casefold()))
+        for item in passages
+    ]
+    visual_recap_passages = sum(visual_recap_flags)
+    appearance_recap_passages = sum(
+        bool(re.search(_VISUAL_APPEARANCE_PATTERN, str(item.get("text", "")).casefold()))
+        for item in passages
+    )
+    recap_threshold = max(2, math.ceil(len(passages) * 0.6))
+    story_bridge_count = sum(
+        bool(re.search(_STORY_BRIDGE_PATTERN, str(item.get("text", "")).casefold()))
+        for item in passages
+    )
+    stiff_spoken_passages = sum(
+        any(
+            re.search(pattern, str(item.get("text", "")).casefold())
+            for pattern in _STIFF_SPOKEN_PROSE_PATTERNS
+        )
+        for item in passages
+    )
+    if flat_opening:
+        raise VisualNarrativeRepairError("hook opens as a flat panel description", "cloud.narrative_flat_recap")
+    if recap_prefix_count >= 2:
+        raise VisualNarrativeRepairError("narration reads as a flat sequential recap", "cloud.narrative_flat_recap")
+    if visual_recap_passages >= recap_threshold or appearance_recap_passages >= recap_threshold:
+        raise VisualNarrativeRepairError(
+            "narration reads as visual-description prose instead of a story",
+            "cloud.narrative_flat_recap",
+        )
+    if len(passages) >= 4 and story_bridge_count < 2:
+        raise VisualNarrativeRepairError(
+            "narration lacks enough story bridges between grounded events",
+            "cloud.narrative_flat_recap",
+        )
+    if stiff_spoken_passages:
+        raise VisualNarrativeRepairError(
+            "narration uses stiff bureaucratic spoken prose",
+            "cloud.narrative_style_stiff",
+        )
+    if planned_score > 0 and first_score <= 0:
+        raise VisualNarrativeRepairError("hook ignores the grounded curiosity claim", "cloud.narrative_hook_weak")
+    return {
+        "version": HOOK_STORY_SELECTION_VERSION,
+        "status": "pass",
+        "hook_claim_score": first_score,
+        "planned_hook_score": planned_score,
+        "flat_recap_detected": False,
+        "visual_recap_passage_count": visual_recap_passages,
+        "appearance_recap_passage_count": appearance_recap_passages,
+        "visual_recap_threshold": recap_threshold,
+        "story_bridge_count": story_bridge_count,
+        "stiff_spoken_passage_count": stiff_spoken_passages,
+    }
 
 
 def load_repair_prompt() -> tuple[str, str, str]:
@@ -230,8 +373,11 @@ class FeasibleRenderPlan:
             selected = min(
                 entry.feasible_rois,
                 key=lambda roi: (
-                    float(dict(roi.get("telemetry", {})).get("edge_connected_blank_fraction", 1.0)),
-                    -float(dict(roi.get("telemetry", {})).get("protected_retained_fraction", 0.0)),
+                    *editorial_visual_planner.reference_profile.review_framing_quality_key(
+                        float(dict(roi.get("telemetry", {})).get("edge_connected_blank_fraction", 1.0)),
+                        float(dict(roi.get("telemetry", {})).get("base_zoom", 999.0)),
+                        float(dict(roi.get("telemetry", {})).get("protected_retained_fraction", 0.0)),
+                    ),
                     str(roi.get("kind", "")),
                     str(roi.get("roi_label", "")),
                     tuple(int(value) for value in roi.get("crop_box", ())),
@@ -389,7 +535,7 @@ def build_feasible_visual_ledger(
                     allow_source_resolution_warning=allow_low_resolution,
                     allow_conservative_full_panel=allow_conservative_full_panel,
                     review_aggressive_crop=allow_source_resolution_warning,
-                    blank_target_fraction=getattr(profile, "framing_blank_target_fraction", None),
+                    blank_target_fraction=editorial_visual_planner.reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
                 )
             except Exception:
                 continue
@@ -411,6 +557,24 @@ def build_feasible_visual_ledger(
             })
         if not feasible_rois:
             continue
+        feasible_rois.sort(
+            key=lambda item: (
+                *editorial_visual_planner.reference_profile.review_framing_quality_key(
+                    float(item["telemetry"].get("edge_connected_blank_fraction", 1.0)),
+                    float(item["telemetry"].get("base_zoom", 999.0)),
+                    float(item["telemetry"].get("protected_retained_fraction", 0.0)),
+                    preferred_blank_fraction=float(
+                        getattr(
+                            profile,
+                            "framing_blank_target_fraction",
+                            editorial_visual_planner.reference_profile.REVIEW_PREFERRED_FRAME_EDGE_BLANK_FRACTION,
+                        )
+                    ),
+                ),
+                str(item.get("kind", "")),
+                str(item.get("roi_label", "")),
+            )
+        )
         best = feasible_rois[0]["telemetry"]
         strength_fields = (
             "protected_retained_fraction",
@@ -1350,37 +1514,271 @@ def _largest_remainder_slot_allocation(
     return tuple(1 + value for value in extras)
 
 
+
+def _claim_story_prefixes(claim_id: str) -> tuple[str, ...]:
+    """Return hierarchical story scopes from broadest to most specific."""
+
+    raw = str(claim_id).strip()
+    if not raw:
+        return ()
+    parts = raw.split("__")
+    story_parts: list[str] = []
+    for part in parts:
+        if part.startswith("claim"):
+            break
+        story_parts.append(part)
+    return tuple(
+        "__".join(story_parts[:depth])
+        for depth in range(1, len(story_parts) + 1)
+    )
+
+
+
+def _connected_story_scope_chain(
+    prefix: str,
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    """Return a connected immediate-child chain, or empty when rows only share a prefix.
+
+    A broad story prefix is not enough to establish continuity. When a window
+    crosses sibling scopes, it may only move forward through adjacent numbered
+    siblings (for example ``sub1 -> sub2``), may never revisit a sibling, and
+    must preserve the chronological row ordering. A window contained entirely
+    within one scope remains connected.
+    """
+
+    prefix_parts = tuple(str(prefix).split("__"))
+    if not prefix_parts or not rows:
+        return ()
+    blocks: list[str] = []
+    for row in rows:
+        story_parts: list[str] = []
+        for part in str(row.get("claim_id", "")).split("__"):
+            if part.startswith("claim"):
+                break
+            story_parts.append(part)
+        if tuple(story_parts[: len(prefix_parts)]) != prefix_parts:
+            return ()
+        if len(story_parts) == len(prefix_parts):
+            child_scope = str(prefix)
+        else:
+            child_scope = "__".join((*prefix_parts, story_parts[len(prefix_parts)]))
+        if not blocks or child_scope != blocks[-1]:
+            blocks.append(child_scope)
+
+    if len(blocks) <= 1:
+        return tuple(blocks)
+    if str(prefix) in blocks or len(set(blocks)) != len(blocks):
+        return ()
+
+    numbered: list[tuple[str, int]] = []
+    for scope in blocks:
+        leaf = scope.rsplit("__", 1)[-1]
+        match = re.fullmatch(r"(?P<stem>.*?)(?P<number>\d+)", leaf)
+        if match is None:
+            return ()
+        numbered.append((match.group("stem"), int(match.group("number"))))
+    if len({stem for stem, _number in numbered}) != 1:
+        return ()
+    if any(right != left + 1 for (_stem, left), (_stem2, right) in zip(numbered, numbered[1:], strict=False)):
+        return ()
+    return tuple(blocks)
+
+
+def _select_coherent_claim_window(
+    feasible_claim_rows: Sequence[Mapping[str, Any]],
+    *,
+    minimum_unique_panels: int,
+    preferred_unique_panels: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select the narrowest sufficiently deep story scope with enough unique visuals.
+
+    Story-map claim IDs encode a hierarchy (for example b1__sub2__sub1__claim_2).
+    We first prefer the deepest scope that can independently sustain the full
+    narration cadence. Inside that scope we then choose the narrowest chronological
+    claim window that still owns the required number of unique feasible panels.
+    This prevents unrelated roots from being mixed merely to gain visual headroom.
+    """
+
+    minimum = max(1, int(minimum_unique_panels))
+    preferred = max(
+        minimum,
+        int(preferred_unique_panels) if preferred_unique_panels is not None else minimum,
+    )
+    rows = [dict(row) for row in feasible_claim_rows]
+    rows.sort(
+        key=lambda row: (
+            int(row.get("min_source_order", 0)),
+            int(row.get("max_source_order", 0)),
+            str(row.get("claim_id", "")),
+        )
+    )
+
+    scopes: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        claim_id = str(row.get("claim_id", "")).strip()
+        for prefix in _claim_story_prefixes(claim_id):
+            scopes.setdefault(prefix, []).append(row)
+
+    def row_panels(row: Mapping[str, Any]) -> tuple[str, ...]:
+        raw = row.get("evidence_panel_ids", ())
+        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+            return ()
+        return tuple(str(panel_id) for panel_id in raw if str(panel_id).strip())
+
+    candidates: list[dict[str, Any]] = []
+    for prefix, scoped_rows in scopes.items():
+        unique_scope_panels = {
+            panel_id for row in scoped_rows for panel_id in row_panels(row)
+        }
+        if len(unique_scope_panels) < minimum:
+            continue
+        depth = prefix.count("__") + 1
+        for start in range(len(scoped_rows)):
+            unique_panels: set[str] = set()
+            for end in range(start, len(scoped_rows)):
+                unique_panels.update(row_panels(scoped_rows[end]))
+                if len(unique_panels) < minimum:
+                    continue
+                window = scoped_rows[start : end + 1]
+                connected_scope_chain = _connected_story_scope_chain(prefix, window)
+                if not connected_scope_chain:
+                    continue
+                min_order = min(int(row.get("min_source_order", 0)) for row in window)
+                max_order = max(int(row.get("max_source_order", 0)) for row in window)
+                candidates.append(
+                    {
+                        "prefix": prefix,
+                        "depth": depth,
+                        "rows": window,
+                        "unique_panels": set(unique_panels),
+                        "source_min": min_order,
+                        "source_max": max_order,
+                        "connected_scope_chain": connected_scope_chain,
+                    }
+                )
+                if len(unique_panels) >= preferred:
+                    break
+
+    if not candidates and not scopes and rows:
+        all_panels = {panel_id for row in rows for panel_id in row_panels(row)}
+        if len(all_panels) >= minimum:
+            candidates.append(
+                {
+                    "prefix": "unstructured",
+                    "depth": 0,
+                    "rows": rows,
+                    "unique_panels": all_panels,
+                    "source_min": min(int(row.get("min_source_order", 0)) for row in rows),
+                    "source_max": max(int(row.get("max_source_order", 0)) for row in rows),
+                }
+            )
+
+    if not candidates:
+        aggregate_panels = {panel_id for row in rows for panel_id in row_panels(row)}
+        aggregate_insufficient = len(aggregate_panels) < minimum
+        selected_rows = rows if aggregate_insufficient else []
+        return selected_rows, {
+            "rule": "story_coherence_window_v2",
+            "feasible": False,
+            "minimum_unique_panels": minimum,
+            "preferred_unique_panels": preferred,
+            "selected_scope_prefix": "",
+            "selected_scope_depth": 0,
+            "selected_unique_panel_count": len(aggregate_panels) if aggregate_insufficient else 0,
+            "selected_claim_count": len(selected_rows),
+            "reason": (
+                "aggregate_visual_capacity_below_narration_minimum"
+                if aggregate_insufficient
+                else "no_single_story_scope_has_required_visual_capacity"
+            ),
+        }
+
+    def candidate_key(candidate: Mapping[str, Any]) -> tuple[object, ...]:
+        window_rows = candidate["rows"]
+        hook_score = max((_hook_claim_score(row) for row in window_rows), default=0)
+        story_signal_score = sum(_hook_claim_score(row) for row in window_rows)
+        unique_count = len(candidate["unique_panels"])
+        source_min = int(candidate["source_min"])
+        source_max = int(candidate["source_max"])
+        return (
+            -int(candidate["depth"]),
+            max(0, preferred - unique_count),
+            -story_signal_score,
+            source_max - source_min,
+            max(0, unique_count - preferred),
+            len(window_rows),
+            -hook_score,
+            source_min,
+            str(candidate["prefix"]),
+        )
+
+    selected = min(candidates, key=candidate_key)
+    selected_rows = [dict(row) for row in selected["rows"]]
+    selected_panels = sorted(
+        {panel_id for row in selected_rows for panel_id in row_panels(row)}
+    )
+    return selected_rows, {
+        "rule": "story_coherence_window_v2",
+        "feasible": True,
+        "minimum_unique_panels": minimum,
+        "preferred_unique_panels": preferred,
+        "selected_preferred_capacity_met": len(selected_panels) >= preferred,
+        "selected_story_signal_score": sum(
+            _hook_claim_score(row) for row in selected_rows
+        ),
+        "selected_scope_prefix": str(selected["prefix"]),
+        "selected_scope_depth": int(selected["depth"]),
+        "selected_connected_scope_chain": list(selected.get("connected_scope_chain", ())),
+        "selected_source_order_min": int(selected["source_min"]),
+        "selected_source_order_max": int(selected["source_max"]),
+        "selected_source_order_span": int(selected["source_max"]) - int(selected["source_min"]),
+        "selected_unique_panel_count": len(selected_panels),
+        "selected_panel_ids": selected_panels,
+        "selected_claim_count": len(selected_rows),
+        "selected_claim_ids": [str(row.get("claim_id", "")) for row in selected_rows],
+        "rejected_claim_count": max(0, len(rows) - len(selected_rows)),
+    }
+
+
 def _rebalance_visual_capacity_requirements(
     visual_capacity_requirements: Sequence[Mapping[str, Any]],
     feasible_claim_rows: Sequence[Mapping[str, Any]],
     *,
     max_words_per_visual_slot: int,
+    target_word_min: int = REPAIR_TARGET_WORD_MIN,
+    target_word_goal: int = REPAIR_TARGET_WORD_GOAL,
+    target_word_max: int = REPAIR_TARGET_WORD_MAX,
+    duration_policy: str = REPAIR_DURATION_POLICY_STANDARD,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Make passage cadence feasible before prose generation, never after rendering."""
 
     rows = [dict(row) for row in visual_capacity_requirements]
     panel_capacity = _unique_claim_panel_capacity(feasible_claim_rows)
     total_claim_slots = sum(panel_capacity.values())
+    total_unique_claim_panels = len(panel_capacity)
     slot_word_capacity = max(1, int(max_words_per_visual_slot))
     minimum_slots_for_narration = math.ceil(
-        REPAIR_TARGET_WORD_MIN / slot_word_capacity
+        target_word_min / slot_word_capacity
     )
     preferred_words_per_slot = max(1, slot_word_capacity - 1)
     preferred_slots_for_narration = math.ceil(
-        REPAIR_TARGET_WORD_MIN / preferred_words_per_slot
+        target_word_min / preferred_words_per_slot
     )
     if not rows:
         return rows, {
-            "rule": "visual_capacity_rebalance_v2",
+            "rule": "visual_capacity_rebalance_v3",
             "feasible": False,
             "reason": "no_passage_requirements",
             "claim_backed_visual_slots": total_claim_slots,
+            "claim_backed_unique_panels": total_unique_claim_panels,
+            "usable_nonrepeating_visual_slots": total_unique_claim_panels,
             "minimum_visual_slots_for_narration": minimum_slots_for_narration,
         }
     original = [max(1, int(row.get("required_visual_slots", 1))) for row in rows]
     original_total = sum(original)
     target_slots = min(
-        total_claim_slots,
+        total_unique_claim_panels,
         max(
             minimum_slots_for_narration,
             preferred_slots_for_narration,
@@ -1388,7 +1786,7 @@ def _rebalance_visual_capacity_requirements(
         ),
     )
     feasible = (
-        total_claim_slots >= minimum_slots_for_narration
+        total_unique_claim_panels >= minimum_slots_for_narration
         and target_slots >= len(rows)
     )
     allocation = (
@@ -1396,6 +1794,21 @@ def _rebalance_visual_capacity_requirements(
         if feasible
         else tuple(0 for _ in rows)
     )
+    if feasible and allocation and allocation[0] > 2:
+        adjusted = list(allocation)
+        excess = adjusted[0] - 2
+        adjusted[0] = 2
+        for _ in range(excess):
+            deficits = [original[index] - adjusted[index] for index in range(1, len(adjusted))]
+            if deficits and max(deficits) > 0:
+                best = max(
+                    range(1, len(adjusted)),
+                    key=lambda index: (original[index] - adjusted[index], index),
+                )
+            else:
+                best = min(2, len(adjusted) - 1)
+            adjusted[best] += 1
+        allocation = tuple(adjusted)
     rebalanced: list[dict[str, Any]] = []
     for row, old_required, new_required in zip(rows, original, allocation, strict=True):
         updated = dict(row)
@@ -1404,27 +1817,31 @@ def _rebalance_visual_capacity_requirements(
         updated["capacity_rebalanced"] = bool(new_required != old_required)
         rebalanced.append(updated)
     max_total_words = min(
-        REPAIR_TARGET_WORD_MAX,
+        target_word_max,
         target_slots * max(1, int(max_words_per_visual_slot)),
     ) if feasible else 0
     return rebalanced, {
-        "rule": "visual_capacity_rebalance_v2",
-        "feasible": bool(feasible and max_total_words >= REPAIR_TARGET_WORD_MIN),
+        "rule": "visual_capacity_rebalance_v3",
+        "feasible": bool(feasible and max_total_words >= target_word_min),
         "claim_backed_visual_slots": total_claim_slots,
+        "claim_backed_unique_panels": total_unique_claim_panels,
+        "usable_nonrepeating_visual_slots": total_unique_claim_panels,
         "minimum_visual_slots_for_narration": minimum_slots_for_narration,
         "preferred_visual_slots_for_narration": preferred_slots_for_narration,
         "preferred_words_per_visual_slot": preferred_words_per_slot,
+        "hook_visual_slot_cap": 2,
         "original_required_visual_slots": original_total,
         "target_visual_slots": target_slots if feasible else 0,
-        "target_word_count_min": REPAIR_TARGET_WORD_MIN,
+        "target_word_count_min": target_word_min,
         "target_word_count_max": max_total_words,
         "target_word_count_goal": (
-            REPAIR_TARGET_WORD_GOAL
-            if max_total_words >= REPAIR_TARGET_WORD_GOAL
-            else REPAIR_TARGET_WORD_MIN
-            if max_total_words >= REPAIR_TARGET_WORD_MIN
+            target_word_goal
+            if max_total_words >= target_word_goal
+            else target_word_min
+            if max_total_words >= target_word_min
             else 0
         ),
+        "duration_policy": duration_policy,
         "rebalanced": bool(feasible and tuple(original) != allocation),
     }
 
@@ -1511,7 +1928,7 @@ def _capacity_safe_claim_plan(
     ]
     if not requirements or any(required <= 0 for required in requirements):
         return {
-            "rule": "ordered_unique_panel_capacity_search_v2",
+            "rule": "ordered_unique_panel_capacity_search_v4",
             "preserve_passage_count": True,
             "rows": [
                 {
@@ -1552,6 +1969,7 @@ def _capacity_safe_claim_plan(
                 "ordered_index": index,
                 "claim_id": claim_id,
                 "min_source_order": int(claim.get("min_source_order", 0)),
+                "hook_score": _hook_claim_score(claim),
                 "panel_caps": caps,
             }
         )
@@ -1569,12 +1987,14 @@ def _capacity_safe_claim_plan(
                 if panel in used_panels:
                     continue
                 panel_caps[panel] = max(panel_caps.get(panel, 0), int(raw_capacity))
-        return sum(panel_caps.values())
+        return len(panel_caps)
 
     def candidate_bundles(
         start_index: int,
         used_panels: frozenset[str],
         required: int,
+        *,
+        hook_mode: bool = False,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
 
@@ -1583,13 +2003,15 @@ def _capacity_safe_claim_plan(
             selected: tuple[dict[str, Any], ...],
             selected_caps: dict[str, int],
         ) -> None:
-            capacity = sum(selected_caps.values())
+            capacity = len(selected_caps)
             if selected and capacity >= required:
                 results.append(
                     {
                         "claims": selected,
                         "panel_caps": dict(selected_caps),
                         "capacity": capacity,
+                        "hook_score": max(int(item.get("hook_score", 0)) for item in selected),
+                        "hook_score_sum": sum(int(item.get("hook_score", 0)) for item in selected),
                         "last_index": int(selected[-1]["ordered_index"]),
                     }
                 )
@@ -1612,8 +2034,12 @@ def _capacity_safe_claim_plan(
         walk(0, (), {})
         results.sort(
             key=lambda item: (
+                max(0, required - len(item["panel_caps"])),
+                -int(item.get("hook_score", 0)) if hook_mode else 0,
+                -int(item.get("hook_score_sum", 0)) if hook_mode else 0,
+                abs(len(item["panel_caps"]) - required),
+                max(0, int(item["capacity"]) - len(item["panel_caps"])),
                 int(item["capacity"]) - required,
-                len(item["panel_caps"]),
                 int(item["last_index"]),
                 tuple(str(claim["claim_id"]) for claim in item["claims"]),
             )
@@ -1631,12 +2057,16 @@ def _capacity_safe_claim_plan(
         if available_capacity(start_index, used_panels) < required_remaining:
             return None
         required = requirements[passage_index]
-        for candidate in candidate_bundles(start_index, used_panels, required):
+        hook_mode = passage_index == 0
+        candidate_start = 0 if hook_mode else start_index
+        for candidate in candidate_bundles(
+            candidate_start, used_panels, required, hook_mode=hook_mode
+        ):
             panel_caps = candidate["panel_caps"]
             candidate_panels = frozenset(str(panel_id) for panel_id in panel_caps)
             tail = solve(
                 passage_index + 1,
-                int(candidate["last_index"]) + 1,
+                0 if hook_mode else int(candidate["last_index"]) + 1,
                 used_panels | candidate_panels,
             )
             if tail is not None:
@@ -1654,13 +2084,20 @@ def _capacity_safe_claim_plan(
             if isinstance(candidate, Mapping)
             else {}
         )
-        available = sum(panel_caps.values())
+        available = len(panel_caps)
+        raw_roi_capacity = sum(panel_caps.values())
         plan_rows.append(
             {
                 "passage_index": int(requirement.get("passage_index", index)),
                 "section": str(requirement.get("section", "")),
                 "required_visual_slots": required,
                 "available_visual_slots": available,
+                "unique_panel_count": len(panel_caps),
+                "unique_panel_shortfall": max(0, required - len(panel_caps)),
+                "raw_roi_slot_capacity": raw_roi_capacity,
+                "panel_reuse_slots": max(0, raw_roi_capacity - len(panel_caps)),
+                "hook_teaser": index == 0,
+                "hook_priority_score": int(candidate.get("hook_score", 0)) if isinstance(candidate, Mapping) else 0,
                 "claim_ids": [str(claim["claim_id"]) for claim in claims],
                 "evidence_panel_ids": list(panel_caps),
                 "evidence_panel_slot_capacity": panel_caps,
@@ -1671,11 +2108,83 @@ def _capacity_safe_claim_plan(
             }
         )
     return {
-        "rule": "ordered_unique_panel_capacity_search_v2",
+        "rule": "ordered_unique_panel_capacity_search_v4",
         "preserve_passage_count": True,
         "rows": plan_rows,
         "feasible": solution is not None and all(bool(row["feasible"]) for row in plan_rows),
     }
+
+
+def _claim_bundle_aware_capacity_plan(
+    feasible_claim_rows: Sequence[Mapping[str, Any]],
+    visual_capacity_requirements: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """Repair slot allocation when atomic claim evidence bundles make it impossible.
+
+    Total unique-panel demand remains unchanged. Only the per-passage split may
+    move, preserving a two-slot hook cap and preferring the smallest deviation
+    from the cadence rebalance. This prevents false capacity failures such as
+    an 8-panel story whose atomic claim bundles are sized 3/2/1/1/1 while the
+    generic proportional split happened to be 2/2/2/1/1.
+    """
+
+    rows = [dict(row) for row in visual_capacity_requirements]
+    initial_plan = _capacity_safe_claim_plan(feasible_claim_rows, rows)
+    current = tuple(max(1, int(row.get("required_visual_slots", 1))) for row in rows)
+    metadata: dict[str, Any] = {
+        "rule": "claim_bundle_aware_slot_rebalance_v1",
+        "applied": False,
+        "original_allocation": list(current),
+        "selected_allocation": list(current),
+        "target_visual_slots": sum(current),
+    }
+    if initial_plan.get("feasible") or not rows:
+        return rows, initial_plan, metadata
+
+    total = sum(current)
+    count = len(rows)
+    if total < count:
+        return rows, initial_plan, metadata
+
+    allocations: list[tuple[int, ...]] = []
+
+    def compose(remaining: int, index: int, prefix: tuple[int, ...]) -> None:
+        if index == count - 1:
+            if remaining >= 1:
+                allocations.append((*prefix, remaining))
+            return
+        minimum_tail = count - index - 1
+        max_value = remaining - minimum_tail
+        if index == 0:
+            max_value = min(max_value, 2)
+        for value in range(1, max_value + 1):
+            compose(remaining - value, index + 1, (*prefix, value))
+
+    compose(total, 0, ())
+    allocations = [allocation for allocation in allocations if allocation != current]
+    allocations.sort(
+        key=lambda allocation: (
+            sum(abs(value - current[index]) for index, value in enumerate(allocation)),
+            abs(allocation[0] - current[0]),
+            tuple(-value for value in allocation[1:]),
+            allocation,
+        )
+    )
+    for allocation in allocations:
+        candidate_rows: list[dict[str, Any]] = []
+        for index, (row, required) in enumerate(zip(rows, allocation, strict=True)):
+            updated = dict(row)
+            updated["required_visual_slots"] = int(required)
+            updated["claim_bundle_rebalanced"] = int(required) != current[index]
+            candidate_rows.append(updated)
+        candidate_plan = _capacity_safe_claim_plan(feasible_claim_rows, candidate_rows)
+        if candidate_plan.get("feasible"):
+            return candidate_rows, candidate_plan, {
+                **metadata,
+                "applied": True,
+                "selected_allocation": list(allocation),
+            }
+    return rows, initial_plan, metadata
 
 
 def recover_missing_capacity_plan_references(
@@ -1712,6 +2221,51 @@ def recover_missing_capacity_plan_references(
             ]
         recovered.append(passage)
     return recovered
+
+
+
+def lock_capacity_plan_references(
+    passages: Sequence[object],
+    plan: Mapping[str, Any],
+) -> list[object]:
+    """Make local capacity-plan claim/evidence refs authoritative by passage index."""
+    rows = plan.get("rows") if isinstance(plan, Mapping) else None
+    if not isinstance(rows, list) or len(rows) != len(passages):
+        return [dict(item) if isinstance(item, Mapping) else item for item in passages]
+    locked: list[object] = []
+    for raw_passage, plan_row in zip(passages, rows, strict=True):
+        if not isinstance(raw_passage, Mapping) or not isinstance(plan_row, Mapping):
+            locked.append(raw_passage)
+            continue
+        passage = dict(raw_passage)
+        passage["claim_ids"] = [str(value) for value in plan_row.get("claim_ids", ())]
+        passage["evidence_panel_ids"] = [
+            str(value) for value in plan_row.get("evidence_panel_ids", ())
+        ]
+        passage.pop("panel_ids", None)
+        locked.append(passage)
+    return locked
+
+def repaired_references_match_capacity_plan(
+    passages: Sequence[Mapping[str, Any]],
+    plan: Mapping[str, Any],
+) -> bool:
+    """Return whether provider reference metadata exactly matches the local plan."""
+    rows = plan.get("rows") if isinstance(plan, Mapping) else None
+    if not isinstance(rows, list) or len(passages) != len(rows):
+        return False
+    for passage, row in zip(passages, rows, strict=True):
+        if not isinstance(passage, Mapping) or not isinstance(row, Mapping):
+            return False
+        claim_ids = passage.get("claim_ids")
+        panel_ids = passage.get("evidence_panel_ids")
+        if not isinstance(claim_ids, list) or not isinstance(panel_ids, list):
+            return False
+        if [str(value) for value in claim_ids] != [str(value) for value in row.get("claim_ids", ())]:
+            return False
+        if [str(value) for value in panel_ids] != [str(value) for value in row.get("evidence_panel_ids", ())]:
+            return False
+    return True
 
 
 def validate_repaired_capacity_safe_claim_plan(
@@ -1762,6 +2316,71 @@ def validate_repaired_capacity_safe_claim_plan(
             )
 
 
+
+def _selected_story_context(
+    story_map: Mapping[str, Any],
+    capacity_plan: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return transition-only story semantics for the mandatory passage plan."""
+    beats = [dict(item) for item in story_map.get("beats", ()) if isinstance(item, Mapping)]
+    causal = [dict(item) for item in story_map.get("causal_chain", ()) if isinstance(item, Mapping)]
+    plan_rows = [dict(item) for item in capacity_plan.get("rows", ()) if isinstance(item, Mapping)]
+    beat_order = {str(beat.get("beat_id", "")): index for index, beat in enumerate(beats)}
+
+    selected: list[dict[str, Any]] = []
+    previous_beat_ids: set[str] = set()
+    for index, row in enumerate(plan_rows):
+        evidence = {str(value) for value in row.get("evidence_panel_ids", ()) if str(value).strip()}
+        relevant = [
+            beat for beat in beats
+            if evidence.intersection({str(value) for value in beat.get("panel_ids", ())})
+        ]
+        relevant.sort(key=lambda beat: beat_order.get(str(beat.get("beat_id", "")), 10**9))
+        beat_ids = [str(beat.get("beat_id", "")) for beat in relevant if str(beat.get("beat_id", "")).strip()]
+        if index == 0:
+            bridge = {"kind": "hook_teaser", "causal_wording_allowed": False, "reason": ""}
+        elif index == 1:
+            bridge = {
+                "kind": "teaser_rewind",
+                "causal_wording_allowed": False,
+                "reason": "return to the earliest retained chronology after the teaser",
+            }
+        else:
+            current_ids = set(beat_ids)
+            direct = [
+                edge for edge in causal
+                if str(edge.get("from_beat", "")) in previous_beat_ids
+                and str(edge.get("to_beat", "")) in current_ids
+                and str(edge.get("reason", "")).strip()
+            ]
+            if direct:
+                bridge = {
+                    "kind": "causal",
+                    "causal_wording_allowed": True,
+                    "reason": str(direct[0]["reason"]),
+                }
+            else:
+                bridge = {
+                    "kind": "temporal_only",
+                    "causal_wording_allowed": False,
+                    "reason": "chronological continuation only; do not invent causality",
+                }
+        selected.append({
+            "passage_index": int(row.get("passage_index", index)),
+            "section": str(row.get("section", "")),
+            "claim_ids": [str(value) for value in row.get("claim_ids", ())],
+            "evidence_panel_ids": [str(value) for value in row.get("evidence_panel_ids", ())],
+            "beat_ids": beat_ids,
+            "beat_context": [
+                {"beat_id": str(beat.get("beat_id", "")), "summary": str(beat.get("summary", ""))}
+                for beat in relevant
+            ],
+            "incoming_bridge": bridge,
+            "context_is_transition_only": True,
+        })
+        previous_beat_ids = set(beat_ids)
+    return selected
+
 def build_repair_payload(
     *,
     narration: Mapping[str, Any],
@@ -1772,7 +2391,8 @@ def build_repair_payload(
 ) -> dict[str, Any]:
     missing = repair_scope_sections(narration, ledger, section_to_beats)
     render_plan = FeasibleRenderPlan.from_ledger(ledger)
-    feasible_claim_rows = feasible_story_claims(story_map, ledger)
+    all_feasible_claim_rows = feasible_story_claims(story_map, ledger)
+    feasible_claim_rows = list(all_feasible_claim_rows)
     passages = [
         dict(item) for item in narration.get("passages", ()) if isinstance(item, Mapping)
     ]
@@ -1814,29 +2434,111 @@ def build_repair_payload(
             reference_profile.REVIEW_MAX_SHOT_SECONDS * narration_words_per_second
         ),
     )
+    standard_minimum_panels = math.ceil(
+        REPAIR_TARGET_WORD_MIN / max_words_per_visual_slot
+    )
+    adaptive_minimum_panels = max(
+        len(section_names),
+        min(REPAIR_ADAPTIVE_MIN_UNIQUE_PANELS, standard_minimum_panels),
+    )
+    feasible_claim_rows, coherence_window = _select_coherent_claim_window(
+        feasible_claim_rows,
+        minimum_unique_panels=adaptive_minimum_panels,
+        preferred_unique_panels=min(
+            standard_minimum_panels,
+            adaptive_minimum_panels + 1,
+        ),
+    )
+    selected_unique_panels = int(coherence_window.get("selected_unique_panel_count", 0))
+    if selected_unique_panels >= standard_minimum_panels:
+        duration_policy = REPAIR_DURATION_POLICY_STANDARD
+        target_word_min = REPAIR_TARGET_WORD_MIN
+        target_word_goal = REPAIR_TARGET_WORD_GOAL
+        target_word_max = REPAIR_TARGET_WORD_MAX
+    else:
+        duration_policy = REPAIR_DURATION_POLICY_ADAPTIVE
+        min_words_per_slot = max(1, math.ceil(
+            REPAIR_ADAPTIVE_MIN_SHOT_SECONDS * narration_words_per_second
+        ))
+        target_words_per_slot = max(min_words_per_slot, round(
+            REPAIR_ADAPTIVE_TARGET_SHOT_SECONDS * narration_words_per_second
+        ))
+        target_word_min = selected_unique_panels * min_words_per_slot
+        target_word_goal = selected_unique_panels * target_words_per_slot
+        target_word_max = selected_unique_panels * max_words_per_visual_slot
     visual_capacity_requirements, capacity_rebalance = (
         _rebalance_visual_capacity_requirements(
             original_visual_capacity_requirements,
             feasible_claim_rows,
             max_words_per_visual_slot=max_words_per_visual_slot,
+            target_word_min=target_word_min,
+            target_word_goal=target_word_goal,
+            target_word_max=target_word_max,
+            duration_policy=duration_policy,
         )
     )
-    capacity_safe_claim_plan = _capacity_safe_claim_plan(
+    coherence_feasible = bool(coherence_window.get("feasible"))
+    if not coherence_feasible:
+        capacity_rebalance = {
+            **capacity_rebalance,
+            "feasible": False,
+            "reason": str(coherence_window.get("reason", "coherence_window_infeasible")),
+        }
+    (
+        visual_capacity_requirements,
+        capacity_safe_claim_plan,
+        claim_bundle_rebalance,
+    ) = _claim_bundle_aware_capacity_plan(
         feasible_claim_rows,
         visual_capacity_requirements,
     )
+    capacity_rebalance = {
+        **capacity_rebalance,
+        "claim_bundle_rebalance": claim_bundle_rebalance,
+    }
+    if not coherence_feasible:
+        capacity_safe_claim_plan = {
+            **capacity_safe_claim_plan,
+            "feasible": False,
+            "word_budget_feasible": False,
+        }
     capacity_safe_claim_plan = _attach_capacity_word_budgets(
         capacity_safe_claim_plan,
         max_words_per_visual_slot=max_words_per_visual_slot,
         target_word_count=int(capacity_rebalance.get("target_word_count_goal", 0)),
     )
+    selected_story_context = _selected_story_context(story_map, capacity_safe_claim_plan)
+    target_duration_min_s = script_service.estimate_narration_duration(
+        " ".join(["word"] * int(capacity_rebalance.get("target_word_count_min", 0))),
+        "dramatic",
+    )
+    target_duration_max_s = script_service.estimate_narration_duration(
+        " ".join(["word"] * int(capacity_rebalance.get("target_word_count_max", 0))),
+        "dramatic",
+    )
+    duration_policy_contract = {
+        "version": duration_policy,
+        "adaptive": duration_policy == REPAIR_DURATION_POLICY_ADAPTIVE,
+        "selected_unique_panel_count": selected_unique_panels,
+        "standard_minimum_unique_panels": standard_minimum_panels,
+        "target_word_min": int(capacity_rebalance.get("target_word_count_min", 0)),
+        "target_word_goal": int(capacity_rebalance.get("target_word_count_goal", 0)),
+        "target_word_max": int(capacity_rebalance.get("target_word_count_max", 0)),
+        "target_duration_min_s": target_duration_min_s,
+        "target_duration_max_s": target_duration_max_s,
+        "max_shot_duration_s": reference_profile.REVIEW_MAX_SHOT_SECONDS,
+    }
     return {
         "repair_contract_version": REPAIR_CONTRACT_VERSION,
         "feasible_ledger": ledger.as_dict(),
         "feasible_render_plan": render_plan.as_dict(),
         "feasible_panel_ids": list(ledger.feasible_panel_ids),
+        "all_feasible_claim_ids": [
+            str(row["claim_id"]) for row in all_feasible_claim_rows
+        ],
         "feasible_claim_ids": [str(row["claim_id"]) for row in feasible_claim_rows],
         "feasible_claims": feasible_claim_rows,
+        "coherence_window": coherence_window,
         "chronology_contract": {
             "hook_exception": True,
             "non_hook_rule": "nondecreasing_min_source_order",
@@ -1872,6 +2574,8 @@ def build_repair_payload(
         "visual_capacity_requirements": visual_capacity_requirements,
         "capacity_rebalance": capacity_rebalance,
         "capacity_safe_claim_plan": capacity_safe_claim_plan,
+        "selected_story_context": selected_story_context,
+        "duration_policy_contract": duration_policy_contract,
         "capacity_contract": {
             "max_shot_duration_s": reference_profile.REVIEW_MAX_SHOT_SECONDS,
             "narration_words_per_second": narration_words_per_second,
@@ -1881,7 +2585,10 @@ def build_repair_payload(
             "prefer_unique_panels_before_second_roi": True,
             "requirements_by_passage": visual_capacity_requirements,
             "rebalance": capacity_rebalance,
+            "coherence_window": coherence_window,
+            "coherence_precedes_headroom": True,
             "plan_is_mandatory": True,
+            "duration_policy": duration_policy_contract,
         },
         "section_to_beats": {str(key): [str(value) for value in values] for key, values in sorted(section_to_beats.items())},
         "story_map": dict(story_map),
@@ -1902,7 +2609,9 @@ def build_repair_payload(
             "no_invented_facts": True,
             "target_passages": "4-6",
             "target_words": f"{capacity_rebalance.get('target_word_count_min', REPAIR_TARGET_WORD_MIN)}-{capacity_rebalance.get('target_word_count_max', REPAIR_TARGET_WORD_MAX)}",
-            "target_duration_s": "50-60",
+            "target_duration_s": (
+                f"{target_duration_min_s:.2f}-{target_duration_max_s:.2f}"
+            ),
             "max_shot_duration_s": reference_profile.REVIEW_MAX_SHOT_SECONDS,
             "visual_capacity_must_cover_every_passage": True,
             "passage_panels_must_belong_to_passage_claims": True,
@@ -2072,6 +2781,7 @@ __all__ = [
     "MAX_REPAIR_ATTEMPTS",
     "REPAIR_CONTRACT_VERSION",
     "REPAIR_PROMPT_VERSION",
+    "HOOK_STORY_SELECTION_VERSION",
     "VISUAL_SECTION_REMAP_VERSION",
     "VisualNarrativeRepairError",
     "build_feasible_visual_ledger",
@@ -2086,7 +2796,10 @@ __all__ = [
     "repair_scope_sections",
     "repair_cache_key",
     "validate_repaired_panel_references",
+    "validate_repaired_hook_quality",
     "recover_missing_capacity_plan_references",
+    "lock_capacity_plan_references",
+    "repaired_references_match_capacity_plan",
     "validate_repaired_capacity_safe_claim_plan",
     "validate_repaired_visual_capacity",
     "validate_repaired_section_visual_coverage",

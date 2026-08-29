@@ -10,7 +10,12 @@ from typing import Any
 
 from PIL import Image
 
-from app.services import editorial_visual_planner, framing_analysis, visual_scoring
+from app.services import (
+    editorial_visual_planner,
+    framing_analysis,
+    reference_profile,
+    visual_scoring,
+)
 
 
 class ReferenceReviewError(ValueError):
@@ -42,6 +47,7 @@ def enumerate_reference_roi_alternatives(
     profile: object,
     *,
     image: Image.Image | None = None,
+    border_mask: framing_analysis.BorderMaskResult | None = None,
 ) -> tuple[editorial_visual_planner.ReferenceROIAlternative, ...]:
     """Build deduplicated panel-local ROI phases using render's box geometry."""
     from app.services import render
@@ -125,6 +131,33 @@ def enumerate_reference_roi_alternatives(
                     1.0,
                     travel=(travel_x, travel_y),
                 )
+    hard_blank = reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+    # The expensive multi-focus rescue is triggered only when every normal ROI
+    # still fails the authoritative source-local border-mask 8% hard gate. The
+    # pixel-preview edge metric remains diagnostic/ranking data; it must not
+    # decide whether rescue runs because TV-range resampling can produce false
+    # negatives near otherwise admissible panel edges.
+    if border_mask is not None and panel_size[1] > panel_size[0]:
+        has_hard_safe_view = any(
+            framing_analysis.edge_connected_blank_fraction_for_crop(
+                border_mask, tuple(int(value) for value in roi.crop_box)
+            )
+            <= hard_blank + 1e-9
+            for roi in alternatives
+        )
+        if not has_hard_safe_view:
+            rescue_x = (0.38, 0.50, 0.62)
+            rescue_y = (0.44, 0.60, 0.76)
+            rescue_scales = (0.60, 0.45, 0.32, 0.24)
+            for scale_index, scale in enumerate(rescue_scales):
+                for row, focus_y in enumerate(rescue_y):
+                    for column, focus_x in enumerate(rescue_x):
+                        add(
+                            "aggressive_crop",
+                            f"content_rescue_{scale_index:02d}_{row:02d}_{column:02d}",
+                            (focus_x, focus_y),
+                            scale,
+                        )
     return tuple(alternatives)
 
 
@@ -354,6 +387,7 @@ def build_reference_panel_fallback_candidates(
                             candidate,
                             profile,
                             image=crop,
+                            border_mask=mask,
                         )
                     ),
                     panel_candidate=candidate,
@@ -525,10 +559,6 @@ def bind_reference_panel_shots(
                 entry for entry in attempts
                 if isinstance(entry, Mapping) and entry.get("accepted") is True
             ]
-            print("BIND_DEBUG accepted count:", len(accepted), "entries:", json.dumps([{
-                "roi_label": e.get("roi_label"), "crop": e.get("crop_box"),
-                "attempt_order": e.get("attempt_order"), "kind": e.get("kind"),
-            } for e in accepted], indent=None)[:600])
             if len(accepted) != 1:
                 raise ValueError("planner fallback ledger must contain one accepted entry")
             accepted_entry = accepted[0]
@@ -554,10 +584,6 @@ def bind_reference_panel_shots(
                 if accepted_entry.get(key) != expected:
                     raise ValueError(f"accepted fallback ledger mismatch: {key}")
             if _canonical(accepted_entry.get("telemetry")) != _canonical(telemetry):
-                import difflib
-                _a = json.dumps(accepted_entry.get("telemetry"), indent=None, sort_keys=True)
-                _b = json.dumps(telemetry, indent=None, sort_keys=True)
-                print("TELEM_DIFF:\n", "\n".join(list(difflib.unified_diff(_a.splitlines(), _b.splitlines(), lineterm=""))[:24]))
                 raise ValueError("accepted fallback telemetry does not match scene")
             nested_roi = telemetry.get("selected_roi")
             if not isinstance(nested_roi, Mapping):

@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from app.services.visual_scoring import PanelVisualEvidence
 
 _SECTION_TRANSITION_MIN = 0.12
-_SECTION_TRANSITION_MAX = 0.18
+_SECTION_TRANSITION_MAX = reference_profile.REVIEW_TRANSITION_DURATION_SECONDS
 _XFADE_TRANSITIONS = {
     "fade": "fade",
     "dissolve": "fade",
@@ -811,6 +811,7 @@ def _motion_filter(
     focus_x: float = 0.5, focus_y: float = 0.4,
     focus_end_x: float = 0.5, focus_end_y: float = 0.4,
     profile: ReferenceProfileConfig | None = None,
+    review_stabilized: bool = False,
 ) -> str:
     """Build one smooth, bounded crop trajectory with even coordinates."""
     static = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
@@ -829,6 +830,22 @@ def _motion_filter(
     fx = f"((1-{smooth})*{max(0.05, min(0.95, focus_x))}+{smooth}*{max(0.05, min(0.95, focus_end_x))})"
     fy = f"((1-{smooth})*{max(0.05, min(0.95, focus_y))}+{smooth}*{max(0.05, min(0.95, focus_end_y))})"
     normal_delta = (profile.normal_zoom_max - 1.0) if profile else 0.06
+    if review_stabilized:
+        normal_delta = min(normal_delta, reference_profile.REVIEW_MOTION_ZOOM_DELTA)
+        review_progress = f"(on/{last})"
+        review_smooth = f"({review_progress}*{review_progress}*(3-2*{review_progress}))"
+        fixed_fx = max(0.05, min(0.95, focus_x))
+        fixed_fy = max(0.05, min(0.95, focus_y))
+        if safe_effect == "slow_pull_out":
+            z = f"({1.0 + normal_delta:.4f}-{normal_delta:.4f}*{review_smooth})"
+        else:
+            z = f"(1+{normal_delta:.4f}*{review_smooth})"
+        x = rf"max(0\,min(iw-iw/zoom\,(iw-iw/zoom)*{fixed_fx:.6f}))"
+        y = rf"max(0\,min(ih-ih/zoom\,(ih-ih/zoom)*{fixed_fy:.6f}))"
+        return (
+            f"zoompan=z='{z}':x='{x}':y='{y}':d=1:"
+            f"s={width}x{height}:fps={fps}"
+        )
     impact_delta = (profile.impact_zoom_max - 1.0) if profile else 0.08
     if safe_effect == "slow_push_in":
         z = f"(1+{normal_delta:.2f}*{smooth})"
@@ -938,7 +955,9 @@ def _reference_motion_pixel_safety(
         fy = (1.0 - smooth) * max(0.05, min(0.95, scene.focus_y)) + smooth * max(
             0.05, min(0.95, scene.focus_end_y)
         )
-        normal_delta = profile.normal_zoom_max - 1.0
+        normal_delta = min(
+            profile.normal_zoom_max - 1.0, reference_profile.REVIEW_MOTION_ZOOM_DELTA
+        )
         impact_delta = profile.impact_zoom_max - 1.0
         if safe_curve == "slow_push_in":
             zoom = 1.0 + normal_delta * smooth
@@ -1055,6 +1074,7 @@ def render_scene_clip(
     encoder: encoders.Selection | None = None,
     preview: bool = False,
     profile: ReferenceProfileConfig | None = None,
+    stabilized_review_motion: bool = False,
 ) -> Path:
     """Render one silent scene clip.
 
@@ -1068,7 +1088,7 @@ def render_scene_clip(
         _motion_filter(
             scene.camera_curve or scene.effect, width, height, duration, fps,
             scene.focus_x, scene.focus_y, scene.focus_end_x, scene.focus_end_y,
-            profile=profile,
+            profile=profile, review_stabilized=stabilized_review_motion,
         )
         if settings.motion_enabled
         else f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
@@ -1936,7 +1956,7 @@ def _refine_review_pixel_blank_crop(
                     mask,
                     panel_size,
                     target_size,
-                    blank_target_fraction=profile.framing_blank_target_fraction,
+                    blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
                     allow_conservative_full_panel=True,
                     **dict(feasibility_kwargs),
                 )
@@ -1976,7 +1996,7 @@ def _refine_review_pixel_blank_crop(
             mask,
             panel_size,
             target_size,
-            blank_target_fraction=profile.framing_blank_target_fraction,
+            blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
             allow_conservative_full_panel=True,
             **dict(feasibility_kwargs),
         )
@@ -2139,7 +2159,11 @@ def _prepare_exact_reference_frame(
             mask,
             panel_size,
             (width, height),
-            blank_target_fraction=profile.framing_blank_target_fraction,
+            blank_target_fraction=(
+                reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+                if scene.publish_allowed is False
+                else profile.framing_blank_target_fraction
+            ),
             allow_conservative_full_panel=allow_conservative_full_panel,
             **feasibility_kwargs,
         )
@@ -2707,6 +2731,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         render_scene_clip(
             scene, prepared, clip, width, height, fps,
             encoder=selection, preview=request.preview, profile=request.profile,
+            stabilized_review_motion=request.silent_reference_review,
         )
         clips.append(clip)
         report(5 + int(45 * (i + 1) / len(request.scenes)), f"scene {i + 1}/{len(request.scenes)}")
