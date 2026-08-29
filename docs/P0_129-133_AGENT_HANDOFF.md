@@ -1,3 +1,9 @@
+> **HISTORICAL RECORD — DO NOT EXECUTE AS CURRENT RUNBOOK.** This document
+> preserves a past checkpoint and may contain removed test paths, superseded SHAs,
+> old gate behavior, and machine-specific commands. Current agents must follow
+> `../AGENTS.md`, `docs/STATUS.md`, `docs/ARCHITECTURE.md`, and
+> `docs/MAINTAINER_GUIDE.md` instead.
+
 # LATEST INTERRUPTION-SAFE HANDOFF - 2026-08-21
 
 ## Feasible-ledger title-policy checkpoint - 2026-08-24

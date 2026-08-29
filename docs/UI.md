@@ -43,7 +43,7 @@ backgrounds behind it — no pastel-on-pastel text anywhere.
 | `--muted` | `#4a4a60` | 7.98:1 on paper | Secondary text |
 
 **Every pair clears WCAG 2.1 AAA (7:1)**, not merely AA (4.5:1). The lowest is
-coral at 8.4:1. These are measured, not estimated — `tests/test_ui.py` computes
+coral at 8.4:1. These are measured, not estimated — `tests/api/test_ui.py` computes
 the ratios from the CSS variables and fails the build if any drops below AA.
 
 An earlier muted grey (`#7a7a95`) measured 3.86:1 and failed. It was replaced
@@ -162,7 +162,7 @@ Steps are colour-coded so the flow is scannable while scrolling.
 
 ## Extending it
 
-Keep these invariants; each is enforced by a test in `tests/test_ui.py`:
+Keep these invariants; each is enforced by a test in `tests/api/test_ui.py`:
 
 1. **Never assign `innerHTML`.** Use `el()` and `textContent`, so user text
    cannot execute as markup.

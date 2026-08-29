@@ -1,3 +1,18 @@
+# 2026-08-29 — maintainability/documentation synchronization
+
+- Documented the refactored pipeline facade + `pipeline_stages` and cloud runner +
+  `cloud_runner_parts` boundaries.
+- Replaced the chronological scratchpad at `docs/STATUS.md` with a concise current
+  state; verbose pre-refactor status/agent handoffs remain in Git history and
+  `docs/history/README.md` explains how to retrieve them safely.
+- Added `docs/MAINTAINER_GUIDE.md`, current test-layout/migration guidance, runtime
+  safety rules, and explicit instructions not to bypass compatibility facades.
+- Corrected active documentation to match production rights policy:
+  `MS_REQUIRE_RIGHTS_DECLARATION=false` by default; rights remain auditable but
+  non-blocking unless enforcement is intentionally enabled.
+- Added a documentation contract regression so removed test paths and obsolete
+  rights-blocker claims cannot silently return to active docs. Current collection is 1,525 tests (five documentation-contract checks added).
+
 - Added the isolated compact narration-repair checkpoint. The durable
   160-word/64.35-second candidate remains typed repair-only; final cache
   admission still requires 115-125 words, 50-60 seconds, complete grounding,

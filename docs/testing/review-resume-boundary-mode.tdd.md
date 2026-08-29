@@ -1,3 +1,8 @@
+> **HISTORICAL TDD EVIDENCE:** Commands below record the test layout at the time
+> of the incident. Current equivalents live under `tests/production/`,
+> `tests/unit/`, and `tests/cloud/`; see `../MAINTAINER_GUIDE.md`. Do not recreate
+> removed monolithic test files to reproduce this historical command.
+
 # Review resume boundary-mode TDD evidence
 
 ## Source and user journey

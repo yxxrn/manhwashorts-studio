@@ -108,7 +108,7 @@ Review state is kept under the existing ignored paths
 shows only safe job IDs, states, stable error codes, review counts, provider
 labels, key hints, and selected model IDs. `READY_TO_RENDER` means the AI and
 narrative stages passed their gates. It does not authorize voiced/final render:
-voice timing, editorial approval, rights, and publication gates remain active.
+voice timing, editorial approval, media/QC, and publication gates remain active; rights metadata remains auditable and is blocking only when enforcement is explicitly enabled.
 
 No voice/TTS/audio, publication, local vision fallback, source-media commit, or
 provider call is part of the CLI implementation. Without a verified BYOK

@@ -27,7 +27,7 @@ Current release contract for the CPU-only motion-comic pipeline.
 - QC also blocks per-asset reuse above the deterministic 12 percent cap, speech-balloon/UI/blank dominance, fewer than four normal motion modes, unexplained motion dominance above 55 percent, and non-cut action boundaries.
 - Captions are grouped to 4-7 words across at most two lines, avoid dangling function words and one-word final cues, and are clamped to media duration.
 - Final delivery uses H.264 High, yuv420p, 1080x1920 at 60fps by default, loudness normalization toward -14 LUFS and -1.5 dBTP true peak; preview remains the fast path.
-- Music and SFX are optional and must be publishable/licensed; rights and source cleanliness remain hard blockers.
+- Music and SFX are optional. Rights/source metadata remains auditable; rights enforcement is non-blocking by default unless explicitly enabled, while source/media cleanliness and strict QC remain blockers.
 
 ## Review artifacts
 
@@ -43,7 +43,7 @@ source_rights_report.json
 contact_sheet.jpg
 ```
 
-`publish_allowed` is false when rights are undeclared or marked test-only. Internal sample renders remain review artifacts, never publication proof.
+`publish_allowed` is affected by rights declarations only when rights enforcement is explicitly enabled. Test-only/source-cleanliness flags, exact approval, and strict QC remain independent gates. Internal sample renders remain review artifacts, never publication proof.
 
 ## Font
 

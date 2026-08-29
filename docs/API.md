@@ -1,3 +1,7 @@
+> **RIGHTS POLICY NOTE:** Rights fields remain part of asset/audit payloads. With
+> the default `MS_REQUIRE_RIGHTS_DECLARATION=false`, rights findings are non-blocking;
+> `rights.*` becomes blocking only when enforcement is intentionally enabled.
+
 # API reference
 
 Base URL: `http://127.0.0.1:8000`. Interactive docs at `/docs` (Swagger) and
@@ -242,7 +246,7 @@ Logout clears the cookie. The other two return the current user / workspace.
 }
 ```
 
-Only `title` is required. `target_duration` must be 10–60.
+Only `title` is required. `target_duration` must be 10–90.
 
 Enums: `content_type` ∈ `chapter_recap | character_profile | fun_facts | theory |
 cliffhanger`; `spoiler_level` ∈ `minimal | medium | full`; `narration_style` ∈
@@ -422,7 +426,7 @@ is rejected; `end_time <= start_time` is rejected.
 
 Reason must be ≥5 characters. Attempting to override an `error` returns 422.
 
-Common blocking codes: `rights.undeclared_assets`, `policy.not_transformative`,
+Common blocking codes include `policy.not_transformative`,
 `script.not_approved`, `audio.missing`, `timeline.no_scenes`,
 `subtitle.overlap`, `duration.too_long`, `render.wrong_aspect`.
 

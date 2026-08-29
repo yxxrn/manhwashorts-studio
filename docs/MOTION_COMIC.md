@@ -10,8 +10,8 @@ code that exists now; planning history belongs in Git history, not here.
 - Default voice: American English, `en-US`, `the-explainer-american`.
 - Timeline clock: measured narration audio.
 - Output: `1080×1920`, `60 FPS` by default, H.264/AAC.
-- Target duration: `60–90s`; ideal `70–85s`.
-- Publication: explicit approval + rights + QC.
+- Project target default: `41s` (schema range `10–90s`). The currently accepted production artifact is ~25s; do not raise the product baseline to 70–85s without an explicit product decision.
+- Publication/render readiness: exact approval + evidence/media integrity + strict QC. Rights metadata is non-blocking by default unless enforcement is explicitly enabled.
 - Determinism: identical input and seed produce the same plan.
 - No generative replacement, scraping, watermark removal, or automatic public upload.
 
@@ -84,8 +84,8 @@ panel_to_script_mapping.json · panel_catalog.json · contact_sheet.jpg · sourc
 
 Blocking checks include:
 
-- duration outside `60–90s`;
-- average shot outside `1.2–2.4s`;
+- invalid/unknown duration, duration above the configured Shorts ceiling, or profile-specific duration contract failure;
+- profile-specific shot/average-duration contract failure (adaptive/reference shots remain capped at four seconds);
 - excessive same-panel/same-crop hold;
 - single-word caption ratio `>=15%`;
 - invalid or repetitive motion;
@@ -133,8 +133,8 @@ caption pixels, audio, drift, and black frames.
 
 ## Release state
 
-Technical pipeline: implemented and exercised on the Google execution host.
-Production publication: blocked until a real source has verified rights. Synthetic
+Technical pipeline: implemented and exercised on the designated execution host (Oracle in the current deployment).
+Production publication: rights metadata is audited and non-blocking by default; approval and strict QC remain blocking. Synthetic
 fixtures and user-provided archives are review material, not rights evidence.
 
 See [STATUS.md](STATUS.md), [OPERATIONS.md](OPERATIONS.md), and

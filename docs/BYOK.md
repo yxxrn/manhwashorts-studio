@@ -114,7 +114,7 @@ Full route reference in [API.md](API.md#byok-credentials).
 - **Deleted means deleted.** Removing a credential deletes the row and its
   ciphertext rather than flagging it inactive.
 
-There is a test for each of those claims in `tests/test_byok.py`, including one
+There is a test for each of those claims in `tests/api/test_byok.py`, including one
 that opens the SQLite file directly and asserts the plaintext key is not in it.
 
 ### What this does not protect against

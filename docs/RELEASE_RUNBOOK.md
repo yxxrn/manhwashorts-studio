@@ -1,52 +1,58 @@
-# Motion-Comic Release Runbook
+# Release Runbook
 
-## Preconditions
+Use this checklist for code releases and production-output verification. It reflects
+the current refactored architecture.
 
-1. Use only panels with documented rights. `NOT_FOR_PUBLICATION` fixtures are test-only.
-2. Run on the VPS execution host. Do not persist production media in the local checkout.
-3. Verify FFmpeg, FFprobe, subtitle font, and local TTS:
+## Code preconditions
 
-```bash
-.venv/bin/python -c "from app.services.render import check_environment; print(check_environment() or 'OK')"
-```
+- Working tree contains only intended source/docs changes; runtime data is unstaged.
+- Public facade signatures remain compatible unless a deliberate breaking change is
+  documented and migrated.
+- Application import graph remains acyclic.
+- Historical docs are not being used as current commands or gate definitions.
 
-## Pipeline
-
-1. Ingest text and panels with rights metadata.
-2. Generate analysis, script, voice, timeline, subtitles.
-3. Review/approve the script.
-4. Run QC. Blocking errors cannot be overridden.
-5. Review QC history and any warning overrides. Every override needs an actor and reason.
-6. Queue a final render. Confirm actual encoder, fallback reason, wall time, RSS, and scratch size.
-7. Confirm `final.qc.json`, playback, duration, H.264/AAC, 1080x1920, and checksum.
-8. Confirm normal-motion diversity, action hard cuts, caption 4-7-word groups,
-   caption end times, -14 LUFS/-1.5 dBTP audio metrics, and the contact sheet.
-9. Confirm `source_rights_report.json` before any publication decision; a failed
-   rights/source gate keeps `publish_allowed` false.
-8. Publish only after explicit per-request confirmation. Private is the default.
-
-## Recovery
-
-- Worker startup requeues expired render leases.
-- Retry preserves the previous job record and creates a new attempt.
-- Failed render scratch directories are removed automatically.
-- Missing audio/assets: regenerate the affected stage; never present a partial render.
-- QC history is append-only; do not delete snapshots or override events.
-
-## Release blockers
-
-- Any rights/source-cleanliness failure.
-- Failed playback, black frame over 0.4s, or audio/video drift over one frame.
-- No clean-source sample with a rights declaration.
-- Unreviewed script or unresolved blocking QC error.
-
-## Verification
+## Verification gate
 
 ```bash
-.venv/bin/ruff check app tests scripts
-.venv/bin/python -m compileall -q app tests scripts alembic
-unset MS_DATABASE_URL
-.venv/bin/python -m pytest -q -m 'not slow'
-.venv/bin/python -m pytest -q
+.venv/bin/ruff check app tests
+.venv/bin/python -m compileall -q app tests
+.venv/bin/pytest -q tests/contracts/test_service_dependency_graph.py
+.venv/bin/pytest -q <affected paths>
+.venv/bin/pytest -q
 git diff --check
 ```
+
+For docs-only changes, the documentation/architecture contract tests plus lint and
+diff check are sufficient unless the docs change a code/test contract. For a
+refactor, run the full suite before merging to `main`.
+
+## Production artifact gate
+
+- exact approved script identity is current
+- evidence/source lineage checks pass
+- TTS voice profile is consistent
+- timeline/subtitle contracts pass
+- final render succeeds and post-render QC passes
+- final checksum and file size are recorded
+- automatic thumbnail package exists and thumbnail QC passes
+
+## Rights policy
+
+Rights/source metadata must be retained and reviewable. Under the current default
+`MS_REQUIRE_RIGHTS_DECLARATION=false`, rights findings are non-blocking audit/warning
+information. Do not list missing rights metadata as a mandatory release blocker
+unless enforcement was explicitly enabled for that deployment.
+
+## Do not bypass
+
+A release must not be made green by editing database rows, deleting QC history,
+rewriting output checksums, patching a rendered MP4, or calling internal stage
+modules to avoid facade validation. Fix generic defects in source, add regression
+coverage, and rerun the appropriate supported boundary.
+
+## Git publication
+
+Merge only after the relevant gate is green. Confirm local `main` is a fast-forward
+of the tested commit and verify the remote SHA after push. If GitHub credentials
+exist only on the bridge, use a Git bundle from the execution host and push from
+the authenticated bridge; never expose tokens in commands.

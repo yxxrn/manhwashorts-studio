@@ -144,7 +144,7 @@ This is deliberately a deterministic editorial ceiling. A future director can
 replace ROI ranking or scheduling without changing `VisualFeatures`, the DB scene
 contract, or FFmpeg.
 
-Regression coverage: `tests/test_visual_scoring.py` covers ROI exhaustion, motion
+Regression coverage: `tests/unit/test_visual_scoring.py` covers ROI exhaustion, motion
 diversity, anticipation, and semantic action curves.
 
 ## Deliberate ceiling
@@ -152,10 +152,9 @@ diversity, anticipation, and semantic action curves.
 This is a deterministic CPU heuristic, not a general vision-language model. It
 avoids adding a heavy dependency or hallucinating panel semantics. Upgrade path:
 attach a local vision encoder to `VisualFeatures`, preserving the scorer and
-planner APIs. Human review remains the final authority for rights, continuity,
-and publish decisions.
+planner APIs. Human review remains the final authority for continuity and publish decisions; rights metadata remains available for audit and optional enforcement.
 
-Regression coverage: `tests/test_visual_scoring.py` checks pixel analysis,
+Regression coverage: `tests/unit/test_visual_scoring.py` checks pixel analysis,
 semantic selection, repetition penalty, camera mapping, and tunable weights.
 
 ## Shot Sequencer

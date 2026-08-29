@@ -1,40 +1,44 @@
 # Documentation index
 
-ManhwaShorts Studio is a review-first, rights-aware motion-comic renderer.
+ManhwaShorts Studio documentation is split into **current operational truth** and
+**historical evidence**. Agents must not treat old handoffs as current commands.
 
-## Start
+## Start here
 
-| Need | Document |
+| Need | Authoritative document |
 |---|---|
-| Understand the product | [README](../README.md) |
-| Know what is actually done | [Current status](STATUS.md) |
-| Run a render | [Operations](OPERATIONS.md) |
-| Prepare a release | [Release runbook](RELEASE_RUNBOOK.md) |
-| Understand the pipeline | [Architecture](ARCHITECTURE.md) |
-| Inspect motion/QC rules | [Motion-comic pipeline](MOTION_COMIC.md) |
+| Agent coding rules | [AGENTS.md](../AGENTS.md) |
+| Current verified state | [Current status](STATUS.md) |
+| Current module boundaries | [Architecture](ARCHITECTURE.md) |
+| Extend/refactor safely | [Maintainer guide](MAINTAINER_GUIDE.md) |
+| Operate the service | [Operations](OPERATIONS.md) |
+| Release/verification gate | [Release runbook](RELEASE_RUNBOOK.md) |
+| Drive the HTTP API | [Agent API guide](AGENT.md) |
 
-## Product and safety
+## Product/reference docs
 
-- [Copyright and rights handling](COPYRIGHT.md)
-- [TTS options and voice consistency](TTS_OPTIONS.md)
-- [BYOK provider keys](BYOK.md)
-- [UI/accessibility](UI.md)
+- [Motion-comic pipeline](MOTION_COMIC.md)
 - [Visual selection](VISUAL_SELECTION.md)
+- [API reference](API.md)
+- [TTS options](TTS_OPTIONS.md)
+- [BYOK provider keys](BYOK.md)
+- [Copyright/rights metadata](COPYRIGHT.md)
+- [GPU encoding](GPU.md)
+- [UI](UI.md)
 - [YouTube setup](YOUTUBE_SETUP.md)
 
-## Engineering
+## Historical evidence
 
-- [API reference](API.md)
-- [AI-agent operation](AGENT.md)
-- [GPU encoding](GPU.md)
-- [Changelog](../CHANGELOG.md)
+`docs/history/`, `docs/superpowers/`, `tasks/`, and documents explicitly marked
+HISTORICAL preserve incident reports, benchmarks, old test paths, and old product
+assumptions. They are useful for forensic context only.
 
-## Documentation policy
+## Documentation rules
 
-- `STATUS.md` is the source of truth for implementation state.
-- `RELEASE_RUNBOOK.md` is the source of truth for release checks.
-- `ARCHITECTURE.md` describes the current code, not the original plan.
-- Historical requirements do not live in the active docs tree. Update current
-  documents instead of adding another planning file.
-- Examples using third-party panels, fonts, voices, or models are review-only
-  unless their rights are explicitly verified.
+- `STATUS.md` describes current verified state, not a chronological scratchpad.
+- `ARCHITECTURE.md` describes current code, not the original design.
+- `AGENTS.md` and `MAINTAINER_GUIDE.md` define safe modification boundaries.
+- Update active docs in the same change when module paths, gates, tests, or output
+  contracts change.
+- If historical text conflicts with current code/docs, current code plus the active
+  contract documents win; investigate before changing behavior.

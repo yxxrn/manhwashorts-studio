@@ -27,7 +27,7 @@ authorized material → analysis → English script → American English VO
 - Deterministic camera motion, crop, transitions, effects, and panel cooldown.
 - Audio is the timeline clock; subtitles follow measured speech.
 - CPU-first FFmpeg render: `1080×1920`, `60 FPS` by default, H.264/AAC.
-- Human approval before publication. Rights failures block release.
+- Human approval and strict QC gate production. Rights metadata is audited; enforcement is disabled by default.
 - Offline defaults. BYOK LLM/TTS providers are optional.
 
 ## Project rules
@@ -38,7 +38,7 @@ authorized material → analysis → English script → American English VO
 - Indonesian is explicit opt-in: set `language: "id"` and an Indonesian `voice_id`.
 - Never treat a fixture or user-provided panel as publication-cleared.
 - No scraping, watermark removal, generative replacement, or automatic public upload.
-- A render is a review artifact until source rights, script approval, and QC pass.
+- A render is a review artifact until exact script approval and QC pass; rights metadata is audited separately unless enforcement is explicitly enabled.
 
 ## Quick start
 
@@ -77,7 +77,7 @@ All settings are optional. Important defaults:
 |---|---|---|
 | `MS_TTS_PROVIDER` | `espeak` | `espeak`, `http`, or `null` |
 | `MS_LLM_PROVIDER` | `rules` | Offline rules or BYOK-compatible LLM |
-| `MS_REQUIRE_RIGHTS_DECLARATION` | `true` | Require owner + licence basis |
+| `MS_REQUIRE_RIGHTS_DECLARATION` | `false` | Optional rights-enforcement switch; metadata is still audited |
 | `MS_ALLOW_PUBLIC_PUBLISH` | `false` | Keep public upload disabled |
 | `MS_VIDEO_ENCODER` | `auto` | Resolve CPU/GPU encoder per job |
 
@@ -89,12 +89,14 @@ model, voice ID, locale, speed, and voice controls fixed across all beats.
 ```text
 FastAPI UI/API
       │
-      ├── ingest → rights metadata
-      ├── analysis → script → TTS
-      ├── timeline → subtitles → FFmpeg
-      └── quality/policy → review/publish gate
+      ├── app.services.pipeline (stable facade)
+      │      └── pipeline_stages/{analysis,script,media,quality,production,rendering}
+      ├── cloud_multimodal (stable runner facade)
+      │      └── cloud_runner_parts/{provider,visual,story,narration,repair,...}
+      ├── render / quality / policy / thumbnail
+      └── dependency-light contracts + SQLAlchemy persistence
 
-SQLite + content-addressed filesystem
+SQLite + content-addressed filesystem + FFmpeg
 ```
 
 The app is intentionally boring: small services, local storage, no required GPU,
@@ -122,7 +124,8 @@ black frames, and drift.
 Start here: **[Documentation index](docs/INDEX.md)**.
 
 - [Current status](docs/STATUS.md) — implemented, pending, and explicit blockers.
-- [Architecture](docs/ARCHITECTURE.md) — services, data flow, and invariants.
+- [Architecture](docs/ARCHITECTURE.md) — current services, facades, data flow, and invariants.
+- [Maintainer guide](docs/MAINTAINER_GUIDE.md) — safe refactor/extension rules and test migration map.
 - [Motion-comic pipeline](docs/MOTION_COMIC.md) — director, renderer, QC.
 - [Operations](docs/OPERATIONS.md) — run, recover, back up, verify.
 - [Release runbook](docs/RELEASE_RUNBOOK.md) — production checklist.
@@ -132,7 +135,7 @@ Start here: **[Documentation index](docs/INDEX.md)**.
 - [UI](docs/UI.md) — design system and accessibility constraints.
 - [Visual selection](docs/VISUAL_SELECTION.md) — panel scoring and focus.
 - [GPU rendering](docs/GPU.md) — optional encoder acceleration.
-- [Copyright](docs/COPYRIGHT.md) — rights gate and limitations.
+- [Copyright](docs/COPYRIGHT.md) — rights metadata, optional enforcement, and limitations.
 - [YouTube setup](docs/YOUTUBE_SETUP.md) — OAuth and private-by-default upload.
 - [Agent operation](docs/AGENT.md) — API-driven execution.
 - [Changelog](CHANGELOG.md) — release history.
@@ -152,9 +155,10 @@ commercial publication. This project does not provide legal advice.
 
 ## Status
 
-Development / review-only. The pipeline is technically exercised; production
-publication remains blocked until a real source has a verified rights declaration.
-See [docs/STATUS.md](docs/STATUS.md).
+The production pipeline and maintainability refactor are regression-tested. Script
+approval, evidence/media integrity, and strict QC remain blocking; rights metadata is
+non-blocking by default unless enforcement is explicitly enabled. See
+[docs/STATUS.md](docs/STATUS.md).
 
 Maintainer: [yxxrn](https://github.com/yxxrn)
 

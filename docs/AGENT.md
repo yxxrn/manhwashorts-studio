@@ -1,3 +1,8 @@
+> **MAINTAINER NOTE — CURRENT ARCHITECTURE:** This document describes the HTTP
+> journey. Coding agents must also read `../AGENTS.md` and `MAINTAINER_GUIDE.md`
+> before modifying implementation. Use the stable `app.services.pipeline` facade;
+> do not call `pipeline_stages` directly to bypass orchestration.
+
 # Driving the app from an AI agent
 
 Every stage is reachable over REST, so an agent can take material in and hand a
@@ -37,7 +42,7 @@ request from `X-Forwarded-Proto`, not from `MS_ENVIRONMENT`. A cookie marked
 `Secure` is never sent back over `http://127.0.0.1`, which would make login
 return `200` and the next call `401`. Because the decision is per request, the
 browser (HTTPS, Secure) and a local agent (HTTP, not Secure) both work at the
-same time. Covered by `tests/test_agent_api.py`.
+same time. Covered by `tests/api/test_agent_api.py`.
 
 ## Auth
 
@@ -81,7 +86,7 @@ _, project = call("POST", "/api/projects", {
     "title": "Menara Kelabu ch.7",
     "manhwa_title": "Menara Kelabu",
     "chapter": "7",
-    "target_duration": 40,          # seconds, max 60
+    "target_duration": 40,          # seconds, max 90
     "narration_style": "dramatic",  # dramatic|casual|mysterious|fast|informative
     "spoiler_level": "medium",      # minimal|medium|full
 })
@@ -158,9 +163,11 @@ Things worth knowing:
 
 ## What blocks an agent, by design
 
-**Rights.** Every asset needs an owner and a concrete licence basis. Ticking
-`declared` alone is not enough. Missing either one produces
-`rights.undeclared_assets` and the final render is refused outright.
+**Rights metadata.** Keep owner/licence/source fields when available because they
+remain part of the audit trail. In the current default configuration
+`MS_REQUIRE_RIGHTS_DECLARATION=false`, missing rights metadata produces a
+non-blocking policy finding rather than refusing the final render. Do not enable
+enforcement implicitly; that is a separate product/configuration decision.
 
 **Script approval.** `POST /script/approve` is mandatory before a final render.
 An agent can call it, but the call is explicit — nothing approves itself.

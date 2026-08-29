@@ -1,3 +1,8 @@
+> **CURRENT POLICY — 2026-08-29:** Rights metadata is retained for audit, but
+> enforcement is disabled by default (`MS_REQUIRE_RIGHTS_DECLARATION=false`).
+> Missing/rejected declarations are not production blockers unless enforcement is
+> explicitly enabled. This policy does not grant or imply legal permission.
+
 # Copyright and rights handling
 
 **This is not legal advice.** This document explains what the software does. It
@@ -38,7 +43,7 @@ def status(self) -> str:
 ```
 
 Ticking "I have the right" with no owner named leaves the asset `UNDECLARED`, and
-`rights.undeclared_assets` blocks the render. This is deliberate: a checkbox
+`rights.undeclared_assets` is blocking only when rights enforcement is explicitly enabled. Under the default disabled policy it is audit/warning information. A checkbox
 alone is not a record of anything.
 
 Licence bases recognised: `owned`, `licensed`, `permission_granted`,
@@ -157,6 +162,6 @@ completely and quickly.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `MS_REQUIRE_RIGHTS_DECLARATION` | `true` | The primary safeguard. Setting `false` logs a warning and weakens the gate — do not do this on a channel you care about. |
+| `MS_REQUIRE_RIGHTS_DECLARATION` | `false` | Rights metadata remains auditable. Set `true` only for an intentional deployment that wants rights findings to block. |
 | `MS_MAX_CONSECUTIVE_PANELS_PER_CHAPTER` | `8` | Panel volume warning threshold. |
 | `MS_ALLOW_PUBLIC_PUBLISH` | `false` | Must be `true` before any public upload is possible. |
