@@ -181,6 +181,11 @@ def test_build_render_request_carries_selected_reference_profile(monkeypatch, tm
 
     monkeypatch.setattr(pipeline, "get_project", lambda _db, _id: project)
     monkeypatch.setattr(pipeline, "current_script", lambda _db, _id: script)
+    monkeypatch.setattr(
+        pipeline,
+        "_approved_adaptive_reference_policy",
+        lambda _script: {"adaptive": True},
+    )
     monkeypatch.setattr(pipeline, "audio_segments", lambda _db, _id: [segment])
     monkeypatch.setattr(pipeline, "project_scenes", lambda _db, _id: [scene])
     monkeypatch.setattr(pipeline, "project_cues", lambda _db, _id: [])
@@ -222,6 +227,7 @@ def test_build_render_request_carries_selected_reference_profile(monkeypatch, tm
     assert request.profile is profile
     assert request.profile.profile_id == "reference_matched_shorts_v1"
     assert request.title_text == ""
+    assert request.stabilized_reference_motion is True
     assert all(not item.overlay_text for item in request.scenes)
 
 

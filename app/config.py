@@ -191,7 +191,7 @@ class Settings(BaseSettings):
     youtube_enabled: bool = False
 
     # --- Policy guardrails ---
-    require_rights_declaration: bool = True
+    require_rights_declaration: bool = False
     max_consecutive_panels_per_chapter: int = 8
     allow_public_publish: bool = False
 

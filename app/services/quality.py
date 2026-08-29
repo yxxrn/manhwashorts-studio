@@ -373,6 +373,7 @@ def check_reference_framing(
     ],
     *,
     profile: object,
+    adaptive_reference: bool = False,
 ) -> list[CheckResult]:
     """Validate the exact panel snapshot and the scene's accepted telemetry."""
 
@@ -618,7 +619,19 @@ def check_reference_framing(
                     "Reference crop intersects a speech-balloon mask.",
                 )
             )
-        elif (
+        elif adaptive_reference and (
+            not isinstance(_telemetry_field(telemetry, "editorial_crop_quality"), Mapping)
+            or int(_telemetry_field(telemetry, "editorial_crop_quality").get("face_cutoff_count", 0) or 0) > 0
+            or int(_telemetry_field(telemetry, "editorial_crop_quality").get("face_margin_violation_count", 0) or 0) > 0
+            or bool(_telemetry_field(telemetry, "editorial_crop_quality").get("face_omission", False))
+            or bool(_telemetry_field(telemetry, "editorial_crop_quality").get("unjustified_detail_crop", False))
+        ):
+            results.append(_fail(
+                "visual.editorial_composition_invalid",
+                CheckSeverity.ERROR,
+                "Adaptive reference crop violates the approved editorial composition contract.",
+            ))
+        elif not adaptive_reference and (
             subject < 0.98
             or face < 0.98
             or action < 0.95
@@ -643,7 +656,11 @@ def check_reference_framing(
                     "Reference crop telemetry contains a hard rejection.",
                 )
             )
-        elif blank > float(profile.framing_blank_target_fraction):
+        elif blank > (
+            reference_profile.review_frame_edge_blank_threshold(dict(telemetry))
+            if adaptive_reference
+            else float(profile.framing_blank_target_fraction)
+        ):
             results.append(
                 _fail(
                     "visual.blank_infeasible",
@@ -657,6 +674,35 @@ def check_reference_framing(
     for result in results:
         unique[result.code] = result
     return list(unique.values())
+
+
+def check_adaptive_reference_profile(
+    scenes: list, duration: float, contract: Mapping[str, object]
+) -> list[CheckResult]:
+    """Validate an explicitly approved short-form adaptive reference timeline."""
+    results: list[CheckResult] = []
+    try:
+        lower = float(contract["target_duration_min_s"])
+        upper = float(contract["target_duration_max_s"])
+    except (KeyError, TypeError, ValueError):
+        return [_fail("reference.adaptive_contract_invalid", CheckSeverity.ERROR, "Adaptive reference duration contract is invalid.")]
+    if not lower <= duration <= upper:
+        results.append(_fail("reference.adaptive_duration_outside_contract", CheckSeverity.ERROR, f"Adaptive reference output must be between {lower:.2f} and {upper:.2f} seconds."))
+    durations = [max(0.0, float(scene.end_time) - float(scene.start_time)) for scene in scenes]
+    minimum_required = max(1, math.ceil(max(0.0, duration) / reference_profile.REVIEW_MAX_SHOT_SECONDS))
+    if len(scenes) < minimum_required:
+        results.append(_fail("reference.adaptive_shot_density_low", CheckSeverity.ERROR, "Adaptive reference output does not meet the four-second visual cadence ceiling."))
+    if any(value <= 0.50 or value > reference_profile.REVIEW_MAX_SHOT_SECONDS + 1e-9 for value in durations):
+        results.append(_fail("reference.adaptive_shot_duration_invalid", CheckSeverity.ERROR, "Adaptive reference shots must remain above 0.5 seconds and at or below four seconds."))
+    keys = [
+        str(getattr(scene, "panel_region_id", "") or getattr(scene, "panel_id", "") or getattr(scene, "asset_id", ""))
+        for scene in scenes
+    ]
+    if any(key and key in keys[max(0, index - reference_profile.REVIEW_PANEL_REUSE_WINDOW_SHOTS):index] for index, key in enumerate(keys)):
+        results.append(_fail("reference.adaptive_panel_repeat", CheckSeverity.ERROR, "Adaptive reference output repeats a panel inside the review reuse window."))
+    if len(scenes) > 1 and any(getattr(scene, "transition", "cut") != "fade" for scene in scenes[1:]):
+        results.append(_fail("reference.adaptive_transition_policy", CheckSeverity.ERROR, "Adaptive reference shot boundaries must use the approved fade transition policy."))
+    return results or [_pass("reference.adaptive_profile", "Approved adaptive reference pacing contract is valid.")]
 
 
 def check_reference_profile(scenes: list, duration: float, profile) -> list[CheckResult]:
@@ -1111,6 +1157,7 @@ def run_all(
     caption_groups: Sequence[object] | None = None,
     subtitle_contract: Mapping[str, object] | None = None,
     subtitle_timing_error: str | None = None,
+    adaptive_reference_contract: Mapping[str, object] | None = None,
 ) -> list[CheckResult]:
     """Full pre-publication sweep, combining policy and technical checks."""
     results: list[CheckResult] = []
@@ -1139,13 +1186,20 @@ def run_all(
     results += check_audio(audio_segments)
     results += check_scenes(scenes, assets)
     results += check_panel_alignment(scenes)
-    results += check_repetition_and_motion(scenes, profile=profile)
+    results += check_repetition_and_motion(
+        scenes, profile=None if adaptive_reference_contract is not None else profile
+    )
     results += check_subtitles(cues)
 
     effective_duration = duration if duration is not None else (job.duration if job else 0.0)
     if effective_duration or job:
         if profile is not None:
-            results += check_reference_profile(scenes, effective_duration, profile)
+            if adaptive_reference_contract is not None:
+                results += check_adaptive_reference_profile(
+                    scenes, effective_duration, adaptive_reference_contract
+                )
+            else:
+                results += check_reference_profile(scenes, effective_duration, profile)
             if caption_groups is not None or subtitle_timing_error is not None:
                 results += check_sentence_karaoke(
                     caption_groups,

@@ -1882,6 +1882,60 @@ def test_exact_reference_preparation_honors_coherence_blank_rescue_threshold(mon
     assert destination.exists()
 
 
+
+def test_exact_reference_refinement_updates_accepted_fallback_ledger(monkeypatch, tmp_path):
+    import importlib
+    from dataclasses import asdict, replace
+
+    framing = importlib.import_module("app.services.framing_analysis")
+    source = Image.new("RGB", (100, 200), (80, 80, 80))
+    source_path = tmp_path / "panel-refine-lineage.png"
+    source.save(source_path)
+    evidence = _evidence("panel-a", "asset-a", 3)
+    mask = framing.build_color_agnostic_border_mask(source, evidence)
+    original = (0, 0, 100, 200)
+    refined = (0, 10, 100, 190)
+    telemetry = framing.FramingTelemetry(
+        contract_version=reference_profile.REFERENCE_MATCHED_SHORTS_V1.framing_contract_version,
+        detector_version=mask.detector_version, mask_sha256=mask.mask_sha256,
+        crop_box=original, base_zoom=1.0, source_resolution_zoom_cap=1.35,
+        protected_region_zoom_cap=1.35, edge_connected_blank_fraction=0.0,
+        non_discardable_low_information_fraction=0.0, protected_retained_fraction=1.0,
+        balloon_mask_intersection_ratio=0.0, subject_coverage=1.0, face_coverage=1.0,
+        action_coverage=1.0, effect_coverage=1.0, continuity_context_coverage=1.0,
+        mask_confidence=0.96, mask_source="vision_geometry_v1",
+    )
+    monkeypatch.setattr(framing, "candidate_is_feasible", lambda *_a, **_k: (True, telemetry))
+    def refine(_panel, _box, *, initial_telemetry, **_kwargs):
+        return refined, replace(initial_telemetry, crop_box=refined), {
+            "version": "test-refine-lineage-v1", "applied": True,
+            "original_crop_box": list(original), "refined_crop_box": list(refined),
+            "attempt_count": 1, "attempts": [],
+            "final_edge_blank_fractions": {"max_edge_blank_fraction": 0.0},
+        }
+
+    monkeypatch.setattr(render, "_refine_review_pixel_blank_crop", refine)
+    selected = {"kind": "primary", "roi_label": "selected", "crop_box": list(original)}
+    persisted = asdict(telemetry) | {"selected_roi": selected}
+    scene = render.SceneInput(
+        image_path=source_path, start_time=0.0, end_time=1.0,
+        panel_region_id="region-a", panel_id="panel-a", source_asset_id="asset-a",
+        source_order=3, panel_size=(100, 200),
+        evidence_hash=visual_scoring.visual_evidence_hash(evidence),
+        visual_evidence=visual_scoring.panel_visual_evidence_json(evidence),
+        border_mask=asdict(mask), selected_roi=selected, framing_telemetry=persisted,
+        fallback_attempts=[{"accepted": True, "crop_box": list(original), "telemetry": persisted}],
+        publish_allowed=False,
+    )
+    render._prepare_exact_reference_frame(
+        scene=scene, dest=tmp_path / "prepared-refined.jpg", width=1080, height=1920,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    accepted = scene.fallback_attempts[0]
+    assert scene.selected_roi["crop_box"] == list(refined)
+    assert accepted["crop_box"] == list(refined)
+    assert tuple(accepted["telemetry"]["crop_box"]) == refined
+
 def test_review_qc_accepts_sixteen_percent_blank_when_explicit_coherence_rescue():
     from app.services import reference_profile, review_preview
 

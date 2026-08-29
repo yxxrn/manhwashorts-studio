@@ -1444,6 +1444,35 @@ def _script_content_hash(script: ScriptVersion) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _approved_adaptive_reference_policy(script: ScriptVersion | None) -> dict[str, object] | None:
+    """Return the approved adaptive review pacing contract, if this exact script owns one."""
+    if script is None:
+        return None
+    raw_metadata = getattr(script, "editorial_metadata", {})
+    metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+    approved_at = getattr(script, "approved_at", None)
+    approved_by = str(getattr(script, "approved_by", "") or "")
+    version = getattr(script, "version", None)
+    if approved_at is None or not approved_by or version is None:
+        return None
+    if (
+        metadata.get("approved_script_hash") != _script_content_hash(script)
+        or metadata.get("approved_script_version") != version
+    ):
+        return None
+    raw = metadata.get("duration_policy_contract")
+    if not isinstance(raw, Mapping) or raw.get("adaptive") is not True:
+        return None
+    try:
+        lower = float(raw["target_duration_min_s"])
+        upper = float(raw["target_duration_max_s"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not math.isfinite(lower) or not math.isfinite(upper) or lower <= 0.0 or upper < lower:
+        return None
+    return {**dict(raw), "target_duration_min_s": lower, "target_duration_max_s": upper}
+
+
 def _script_requires_explicit_approval(script: ScriptVersion) -> bool:
     """Return whether an evidence-generated script needs operator approval.
 
@@ -2034,6 +2063,10 @@ def generate_script(
         script_row.editorial_metadata["duration_contract"] = (
             script_svc.narration_duration_contract(project.narration_style)
         )
+        reconciliation = row.reconciliation_json if isinstance(row.reconciliation_json, Mapping) else {}
+        duration_policy = reconciliation.get("duration_policy_contract")
+        if isinstance(duration_policy, Mapping) and duration_policy.get("adaptive") is True:
+            script_row.editorial_metadata["duration_policy_contract"] = dict(duration_policy)
     db.add(script_row)
     row.state = "SCRIPT_DRAFT"
     project.status = ProjectStatus.REVIEW
@@ -2947,6 +2980,8 @@ def build_timeline(
     reference_beats_by_section: Mapping[str, Sequence[str]] | None = None,
     review_source_root: Path | None = None,
     allow_conservative_full_panel: bool = False,
+    adaptive_reference_production: bool = False,
+    adaptive_reference_duration_bounds_s: tuple[float, float] | None = None,
 ) -> list[TimelineScene]:
     """Derive scenes/cues from voice timing or explicit silent-review pacing."""
     project = get_project(db, project_id)
@@ -2990,11 +3025,18 @@ def build_timeline(
             raise PipelineError("generate the voice-over before building the timeline")
         audio_duration = max((float(segment.end_time) for segment in segments), default=0.0)
         spans = spans_from_segments(segments)
-    if silent_reference_review and provisional_duration_bounds_s is not None:
+    adaptive_duration_bounds = (
+        provisional_duration_bounds_s
+        if silent_reference_review
+        else adaptive_reference_duration_bounds_s
+        if adaptive_reference_production
+        else None
+    )
+    if (silent_reference_review or adaptive_reference_production) and adaptive_duration_bounds is not None:
         try:
             duration_min_s, duration_max_s = (
-                float(provisional_duration_bounds_s[0]),
-                float(provisional_duration_bounds_s[1]),
+                float(adaptive_duration_bounds[0]),
+                float(adaptive_duration_bounds[1]),
             )
         except (IndexError, TypeError, ValueError):
             raise PipelineError(
@@ -3086,12 +3128,13 @@ def build_timeline(
             citation_alignment_reasons_by_section=None if profile is not None else None,
             reference_panel_candidates=reference_candidates,
             allow_source_resolution_warning=bool(
-                review_policy is not None
+                adaptive_reference_production
+                or review_policy is not None
                 and review_policy.allow_low_source_resolution_warning
             ),
-            allow_review_cadence_adaptation=silent_reference_review,
-            allow_review_duration=silent_reference_review,
-            review_duration_bounds_s=provisional_duration_bounds_s,
+            allow_review_cadence_adaptation=(silent_reference_review or adaptive_reference_production),
+            allow_review_duration=(silent_reference_review or adaptive_reference_production),
+            review_duration_bounds_s=adaptive_duration_bounds,
             **(
                 {"allow_conservative_full_panel": True}
                 if allow_conservative_full_panel
@@ -3123,7 +3166,7 @@ def build_timeline(
                 except reference_visual_review.ReferenceReviewError as exc:
                     raise PipelineError(f"{exc.code}: {exc}") from exc
 
-    if profile is not None and silent_reference_review and len(planned) > 1:
+    if profile is not None and (silent_reference_review or adaptive_reference_production) and len(planned) > 1:
         # Silent review requires a visible animation at every shot boundary.
         # Reassert this after panel binding so no downstream sparse-cut policy
         # can erase the planner's transition contract.
@@ -3513,14 +3556,26 @@ def run_quality_checks(
         duration = job.duration
 
     profile = reference_profile.resolve_reference_profile(project.template)
+    adaptive_reference_contract = _approved_adaptive_reference_policy(script)
     caption_groups: tuple[object, ...] | None = None
     subtitle_contract: dict[str, object] | None = None
     subtitle_timing_error: str | None = None
     if profile is not None:
         subtitle_contract = subtitle_karaoke.contract_manifest(profile)
+        from app.services import render as render_svc
         try:
             caption_groups = subtitle_karaoke.build_sentence_groups_from_segments(segments)
-        except ValueError as exc:
+            caption_groups = render_svc.fit_sentence_karaoke_groups(
+                caption_groups,
+                profile.final_width,
+                profile.final_height,
+                max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
+                max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
+                active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
+                font_height_ratio=subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO,
+                safe_margin_px=subtitle_karaoke.CAPTION_SAFE_MARGIN_PX,
+            )
+        except (ValueError, render_svc.RenderError) as exc:
             subtitle_timing_error = str(exc)
 
     results = quality_svc.run_all(
@@ -3535,6 +3590,7 @@ def run_quality_checks(
         caption_groups=caption_groups,
         subtitle_contract=subtitle_contract,
         subtitle_timing_error=subtitle_timing_error,
+        adaptive_reference_contract=adaptive_reference_contract,
     )
 
     for old in db.scalars(select(QualityCheck).where(QualityCheck.project_id == project_id)):
@@ -3639,6 +3695,7 @@ def enqueue_render(
     actor_id: str = "",
     encoder: str = "auto",
     profile: str = "Auto",
+    allow_nonpublishable_artifact: bool = False,
 ) -> RenderJob:
     """Queue a render. Final renders require passing quality checks.
 
@@ -3670,10 +3727,22 @@ def enqueue_render(
     if kind == "final":
         results = run_quality_checks(db, project_id, actor_id=actor_id)
         blocking = [r for r in results if r.blocking]
-        if blocking:
+        nonpublishable_codes = {"rights.undeclared_assets"}
+        can_render_nonpublishable = bool(
+            allow_nonpublishable_artifact
+            and blocking
+            and all(result.code in nonpublishable_codes for result in blocking)
+        )
+        if blocking and not can_render_nonpublishable:
             raise PipelineError(
                 "Quality checks must pass before a final render: "
                 + "; ".join(r.message for r in blocking[:3])
+            )
+        if can_render_nonpublishable:
+            audit(
+                db, "render.enqueue_nonpublishable", "project", project_id, actor_id,
+                blocking_codes=[result.code for result in blocking],
+                publish_allowed=False,
             )
 
     job = RenderJob(
@@ -3800,8 +3869,28 @@ def run_production(
     # from the last completed stage rather than repeating provider work.
     db.commit()
 
-    if not _timeline_stage_ready(db, project_id):
-        build_timeline(db, project_id, actor_id=actor_id)
+    adaptive_policy = _approved_adaptive_reference_policy(script)
+    timeline_reusable = (
+        production.get("timeline_script_hash") == script_hash
+        and _timeline_stage_ready(db, project_id)
+    )
+    if not timeline_reusable:
+        bounds = (
+            (
+                float(adaptive_policy["target_duration_min_s"]),
+                float(adaptive_policy["target_duration_max_s"]),
+            )
+            if adaptive_policy is not None
+            else None
+        )
+        build_timeline(
+            db,
+            project_id,
+            actor_id=actor_id,
+            allow_conservative_full_panel=adaptive_policy is not None,
+            adaptive_reference_production=adaptive_policy is not None,
+            adaptive_reference_duration_bounds_s=bounds,
+        )
     production["timeline_script_hash"] = script_hash
     metadata["production"] = production
     script.editorial_metadata = metadata
@@ -4351,6 +4440,10 @@ def build_render_request(
     script = current_script(db, job.project_id)
     if script is None:
         raise PipelineError("no script to render")
+    stabilized_reference_motion = bool(
+        editorial_profile is not None
+        and _approved_adaptive_reference_policy(script) is not None
+    )
 
     segments = audio_segments(db, script.id)
     if not segments:
@@ -4599,6 +4692,7 @@ def build_render_request(
         subtitle_timing_source=subtitle_timing_source,
         subtitle_contract=subtitle_contract,
         persisted_reference_framing=bool(editorial_profile),
+        stabilized_reference_motion=stabilized_reference_motion,
     )
 
 
@@ -4677,7 +4771,11 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
         or "NOT_FOR_PUBLICATION" in (asset.source_name or "").upper()
         for asset in assets
     )
-    rights_confidence = 0 if test_only else (5 if all(asset.is_publishable for asset in assets) else 0)
+    rights_confidence = (
+        5
+        if not settings.require_rights_declaration
+        else 0 if test_only else (5 if all(asset.is_publishable for asset in assets) else 0)
+    )
     source_cleanliness = 0 if test_only or source_findings else 5
     if test_only and not any(getattr(f, "code", "") == "source.test_only" for f in source_findings):
         source_findings.append(policy_svc.PolicyFinding("source.test_only", policy_svc.CheckSeverity.ERROR, "NOT_FOR_PUBLICATION source is test-only."))
@@ -4728,6 +4826,9 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
                 panel_sizes_by_key[key] = tuple(input_scene.panel_size)
             telemetry_by_key[key] = input_scene.framing_telemetry
         qc_scenes = enriched
+    adaptive_reference_contract = _approved_adaptive_reference_policy(
+        current_script(db, job.project_id)
+    )
     qc = editorial_qc.build_report(
         scenes=qc_scenes,
         cues=cues,
@@ -4745,6 +4846,7 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
         panel_border_masks_by_key=panel_border_masks_by_key if render_profile is not None else None,
         panel_sizes_by_key=panel_sizes_by_key if render_profile is not None else None,
         telemetry_by_key=telemetry_by_key if render_profile is not None else None,
+        adaptive_reference_contract=adaptive_reference_contract,
     )
     report_dir = Path(result.output_path).parent
     report_dir.mkdir(parents=True, exist_ok=True)

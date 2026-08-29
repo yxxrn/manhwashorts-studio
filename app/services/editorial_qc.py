@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from app.config import settings
-from app.services import motion_director, subtitle_karaoke
+from app.services import motion_director, reference_profile, subtitle_karaoke
 
 
 @dataclass
@@ -446,6 +446,33 @@ def _reference_qc_failures(scenes: list[object], duration: float, profile) -> li
     return sorted(set(failures))
 
 
+def _adaptive_reference_qc_failures(
+    scenes: list[object], duration: float, contract: Mapping[str, object]
+) -> list[str]:
+    failures: list[str] = []
+    try:
+        lower = float(contract["target_duration_min_s"])
+        upper = float(contract["target_duration_max_s"])
+    except (KeyError, TypeError, ValueError):
+        return ["reference.adaptive_contract_invalid"]
+    if not lower <= duration <= upper:
+        failures.append("reference.adaptive_duration_outside_contract")
+    durations = [max(0.0, float(scene.end_time) - float(scene.start_time)) for scene in scenes]
+    if len(scenes) < max(1, __import__("math").ceil(max(0.0, duration) / reference_profile.REVIEW_MAX_SHOT_SECONDS)):
+        failures.append("reference.adaptive_shot_density_low")
+    if any(value <= 0.50 or value > reference_profile.REVIEW_MAX_SHOT_SECONDS + 1e-9 for value in durations):
+        failures.append("reference.adaptive_shot_duration_invalid")
+    keys = [
+        str(getattr(scene, "panel_region_id", "") or getattr(scene, "panel_id", "") or getattr(scene, "asset_id", ""))
+        for scene in scenes
+    ]
+    if any(key and key in keys[max(0, index - reference_profile.REVIEW_PANEL_REUSE_WINDOW_SHOTS):index] for index, key in enumerate(keys)):
+        failures.append("reference.adaptive_panel_repeat")
+    if len(scenes) > 1 and any(getattr(scene, "transition", "cut") != "fade" for scene in scenes[1:]):
+        failures.append("reference.adaptive_transition_policy")
+    return failures
+
+
 def build_report(
     *, scenes: list[object], cues: list[object], duration: float, job_path: Path | None = None,
     rights_confidence: int = 5, source_cleanliness: int = 5, voice_profile_count: int = 0, minimum_duration: float = 45.0,
@@ -457,6 +484,7 @@ def build_report(
     caption_groups: Sequence[object] | None = None,
     subtitle_contract: Mapping[str, object] | None = None,
     subtitle_timing_error: str | None = None,
+    adaptive_reference_contract: Mapping[str, object] | None = None,
 ) -> EditorialQC:
     average, longest_same, crops, total = _shot_metrics(scenes)
     frozen = _freeze_duration(job_path) if job_path and job_path.is_file() else 0.0
@@ -540,7 +568,12 @@ def build_report(
     report.audio_integrated_lufs, report.audio_true_peak_dbfs = _audio_metrics(job_path)
     report.failures.extend(motion_director.audit_camera_sequence(scenes))
     if profile is not None:
-        report.failures.extend(_reference_qc_failures(scenes, duration, profile))
+        if adaptive_reference_contract is not None:
+            report.failures.extend(
+                _adaptive_reference_qc_failures(scenes, duration, adaptive_reference_contract)
+            )
+        else:
+            report.failures.extend(_reference_qc_failures(scenes, duration, profile))
         if caption_groups is not None or subtitle_timing_error is not None:
             if subtitle_timing_error:
                 report.failures.append(str(subtitle_timing_error).split(":", 1)[0])
@@ -556,6 +589,7 @@ def build_report(
                 panel_sizes_by_key or {},
                 telemetry_by_key or {},
                 profile=profile,
+                adaptive_reference=adaptive_reference_contract is not None,
             )
             report.failures.extend(
                 result.code for result in panel_results if not result.passed
@@ -574,30 +608,31 @@ def build_report(
     if longest_same > 4.0:
         report.failures.append("same_panel_same_crop_over_2.5s")
     if not preview:
-        if len(scenes) >= 4 and motion_diversity < 4:
-            report.failures.append("motion_mode_diversity_lt_4")
-        dominant_mode = max(motion_counts, key=motion_counts.get, default="")
-        dominant_reasons = [
-            str(getattr(scene, "motion_reason", "")).lower()
-            for scene in scenes
-            if getattr(scene, "motion_mode", "hold") == dominant_mode
-        ]
-        explicitly_justified = bool(dominant_reasons) and all(
-            any(token in reason for token in ("justif", "override", "exception"))
-            for reason in dominant_reasons
-        )
-        if dominant_motion_ratio > 0.55 and not explicitly_justified:
-            report.failures.append("dominant_motion_over_55pct_without_justification")
-        if action_transition_failures:
-            report.failures.append("action_transition_not_hard_cut")
-        transition_lengths = [
-            float(scene.transition_duration)
-            for scene in scenes
-            if getattr(scene, "transition", "") == "fade"
-            and hasattr(scene, "transition_duration")
-        ]
-        if any(length < 0.12 or length > 0.18 for length in transition_lengths):
-            report.failures.append("section_transition_outside_0.12_0.18s")
+        if adaptive_reference_contract is None:
+            if len(scenes) >= 4 and motion_diversity < 4:
+                report.failures.append("motion_mode_diversity_lt_4")
+            dominant_mode = max(motion_counts, key=motion_counts.get, default="")
+            dominant_reasons = [
+                str(getattr(scene, "motion_reason", "")).lower()
+                for scene in scenes
+                if getattr(scene, "motion_mode", "hold") == dominant_mode
+            ]
+            explicitly_justified = bool(dominant_reasons) and all(
+                any(token in reason for token in ("justif", "override", "exception"))
+                for reason in dominant_reasons
+            )
+            if dominant_motion_ratio > 0.55 and not explicitly_justified:
+                report.failures.append("dominant_motion_over_55pct_without_justification")
+            if action_transition_failures:
+                report.failures.append("action_transition_not_hard_cut")
+            transition_lengths = [
+                float(scene.transition_duration)
+                for scene in scenes
+                if getattr(scene, "transition", "") == "fade"
+                and hasattr(scene, "transition_duration")
+            ]
+            if any(length < 0.12 or length > 0.18 for length in transition_lengths):
+                report.failures.append("section_transition_outside_0.12_0.18s")
         if caption_contract_invalid:
             report.failures.append("caption_display_contract_invalid")
         if caption_overflow > 0.01:
@@ -714,6 +749,7 @@ def check_reference_framing(
     telemetry_by_key: Mapping[tuple[str, str], object | None],
     *,
     profile: object,
+    adaptive_reference: bool = False,
 ):
     """Expose the exact panel QC boundary without changing legacy reports."""
     from app.services import quality
@@ -725,6 +761,7 @@ def check_reference_framing(
         panel_sizes_by_key,
         telemetry_by_key,
         profile=profile,
+        adaptive_reference=adaptive_reference,
     )
 
 

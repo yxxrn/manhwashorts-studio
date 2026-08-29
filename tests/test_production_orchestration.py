@@ -138,3 +138,51 @@ def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp
 
     assert first.id == second.id
     assert calls == {"audio": 1, "timeline": 1, "enqueue": 1, "execute": 1}
+
+
+def test_nonpublishable_final_enqueue_allows_only_rights_blocker(db, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.constants import CheckSeverity, JobStatus
+    from app.services import pipeline as pl
+    from app.services.quality import CheckResult
+    from tests.test_script_evidence_gate import _project
+
+    project = _project(db)
+    monkeypatch.setattr(pl, "project_scenes", lambda *_args: [SimpleNamespace()])
+    rights = CheckResult(
+        code="rights.undeclared_assets",
+        severity=CheckSeverity.ERROR,
+        message="rights missing",
+        passed=False,
+    )
+    monkeypatch.setattr(pl, "run_quality_checks", lambda *_args, **_kwargs: [rights])
+    job = pl.enqueue_render(
+        db, project.id, "final", actor_id="operator", allow_nonpublishable_artifact=True
+    )
+    assert job.status == JobStatus.QUEUED
+
+
+def test_nonpublishable_final_enqueue_still_blocks_technical_failure(db, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.constants import CheckSeverity
+    from app.services import pipeline as pl
+    from app.services.quality import CheckResult
+    from tests.test_script_evidence_gate import _project
+
+    project = _project(db)
+    monkeypatch.setattr(pl, "project_scenes", lambda *_args: [SimpleNamespace()])
+    failures = [
+        CheckResult("rights.undeclared_assets", CheckSeverity.ERROR, "rights missing", False),
+        CheckResult("subtitle.overflow", CheckSeverity.ERROR, "subtitle invalid", False),
+    ]
+    monkeypatch.setattr(pl, "run_quality_checks", lambda *_args, **_kwargs: failures)
+    try:
+        pl.enqueue_render(
+            db, project.id, "final", actor_id="operator", allow_nonpublishable_artifact=True
+        )
+    except pl.PipelineError as exc:
+        assert "Quality checks must pass" in str(exc)
+    else:
+        raise AssertionError("technical blocker was bypassed")

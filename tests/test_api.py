@@ -547,8 +547,8 @@ def test_scene_edit_validates_asset_and_times(
     assert backwards.status_code == 422
 
 
-def test_quality_blocks_when_rights_undeclared(auth_client, recap_text, panel_bytes):
-    """The rights gate must produce a blocking error, not a warning."""
+def test_quality_warns_when_rights_enforcement_disabled(auth_client, recap_text, panel_bytes):
+    """Undeclared rights remain visible but do not block when enforcement is disabled."""
     project_id = _make_project(auth_client)
     auth_client.post(
         f"/api/projects/{project_id}/assets/text",
@@ -562,11 +562,11 @@ def test_quality_blocks_when_rights_undeclared(auth_client, recap_text, panel_by
     auth_client.post(f"/api/projects/{project_id}/draft?seed=42")
 
     summary = auth_client.post(f"/api/projects/{project_id}/quality").json()
-    assert summary["can_publish"] is False
-    assert "rights.undeclared_assets" in summary["error_codes"]
+    assert "rights.undeclared_assets" not in summary["error_codes"]
+    assert "rights.enforcement_disabled" in summary["warning_codes"]
 
 
-def test_render_blocked_until_quality_passes(auth_client, recap_text, panel_bytes):
+def test_render_not_blocked_by_undeclared_rights_when_enforcement_disabled(auth_client, recap_text, panel_bytes):
     project_id = _make_project(auth_client, template="classic")
     auth_client.post(
         f"/api/projects/{project_id}/assets/text", json={"text": recap_text, "rights": {}}
@@ -595,8 +595,8 @@ def test_render_blocked_until_quality_passes(auth_client, recap_text, panel_byte
     timeline = auth_client.post(f"/api/projects/{project_id}/timeline")
     assert timeline.status_code == 200, timeline.text
     response = auth_client.post(f"/api/projects/{project_id}/render", json={"kind": "final"})
-    assert response.status_code == 422
-    assert "quality" in response.json()["detail"].lower()
+    assert response.status_code == 200, response.text
+    assert response.json()["kind"] == "final"
 
 
 def test_error_check_cannot_be_overridden(auth_client, recap_text, panel_bytes):
@@ -609,7 +609,7 @@ def test_error_check_cannot_be_overridden(auth_client, recap_text, panel_bytes):
 
     response = auth_client.post(
         f"/api/projects/{project_id}/quality/override",
-        json={"code": "rights.undeclared_assets", "reason": "saya terima risikonya"},
+        json={"code": "audio.missing", "reason": "saya terima risikonya"},
     )
     assert response.status_code == 422
     assert "cannot be overridden" in response.json()["detail"]

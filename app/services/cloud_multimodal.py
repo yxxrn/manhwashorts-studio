@@ -12705,6 +12705,20 @@ def persist_cloud_chapter(
     except Exception:
         raise CloudStageError("cloud.narrative_not_grounded", reviewable=True) from None
 
+    narration_qc = result.narration.qc_report if isinstance(result.narration.qc_report, Mapping) else {}
+    raw_duration_policy = narration_qc.get("duration_policy_contract")
+    if not isinstance(raw_duration_policy, Mapping):
+        for container_key in ("visual_repair_text_only_duration_repair_v1", "narration_repair"):
+            container = narration_qc.get(container_key)
+            if isinstance(container, Mapping) and isinstance(container.get("duration_policy_contract"), Mapping):
+                raw_duration_policy = container["duration_policy_contract"]
+                break
+    duration_policy_contract = (
+        _narration_repair_contract_bounds(raw_duration_policy)
+        if isinstance(raw_duration_policy, Mapping)
+        else None
+    )
+
     row = StoryAnalysis(
         project_id=project_id,
         analysis_run_id=f"cloud-{result.visual.source_hash[:24]}",
@@ -12746,6 +12760,7 @@ def persist_cloud_chapter(
                 result.narration.qc_report.get("warnings", [])
             ),
             "requires_voice_timing": True,
+            "duration_policy_contract": duration_policy_contract,
         },
     )
     pipeline._derive_legacy_fields(row, output)

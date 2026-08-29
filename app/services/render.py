@@ -187,6 +187,7 @@ class RenderRequest:
     encoder: str | None = None
     profile: ReferenceProfileConfig | None = None
     silent_reference_review: bool = False
+    stabilized_reference_motion: bool = False
     output_override: Path | None = None
     sidecar_path: Path | None = None
     sentence_groups: list[KaraokeSentenceGroup] = field(default_factory=list)
@@ -2094,6 +2095,27 @@ def _reference_telemetry_mapping(value: object) -> Mapping[str, Any]:
     )
 
 
+def _sync_accepted_reference_fallback(scene: SceneInput) -> None:
+    """Keep the accepted fallback snapshot identical to the frame actually rendered."""
+    if not isinstance(scene.fallback_attempts, list):
+        return
+    selected = scene.selected_roi if isinstance(scene.selected_roi, Mapping) else {}
+    crop_box = selected.get("crop_box")
+    telemetry = scene.framing_telemetry if isinstance(scene.framing_telemetry, Mapping) else {}
+    updated: list[object] = []
+    for raw_attempt in scene.fallback_attempts:
+        if not isinstance(raw_attempt, Mapping):
+            updated.append(raw_attempt)
+            continue
+        attempt = dict(raw_attempt)
+        if attempt.get("accepted") is True:
+            if isinstance(crop_box, (list, tuple)):
+                attempt["crop_box"] = list(crop_box)
+            attempt["telemetry"] = dict(telemetry)
+        updated.append(attempt)
+    scene.fallback_attempts = updated
+
+
 _REFERENCE_PIXEL_BLANK_REFINE_VERSION = "review-pixel-blank-refine-v1"
 _REFERENCE_PIXEL_BLANK_REFINE_MAX_PASSES = 8
 _REFERENCE_PIXEL_BLANK_REFINE_MIN_RETAINED = 0.65
@@ -2458,6 +2480,7 @@ def _prepare_exact_reference_frame(
     updated_telemetry["pixel_blank_refinement"] = refinement
     scene.selected_roi = refined_selected
     scene.framing_telemetry = updated_telemetry
+    _sync_accepted_reference_fallback(scene)
     panel_crop = panel.crop(crop_box)
     output_size = (_reference_even(round(width * 1.15)), _reference_even(round(height * 1.15)))
     prepared = panel_crop.resize(output_size, Image.Resampling.LANCZOS)
@@ -2760,6 +2783,10 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     if request.profile is not None and not request.preview:
         _validate_reference_encoder(selection, request.profile)
 
+    stabilized_reference_motion = bool(
+        request.silent_reference_review or request.stabilized_reference_motion
+    )
+
     from app.services import storage
 
     work = storage.workspace_dir(request.project_id, "render")
@@ -2885,7 +2912,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 ) from exc
         else:
             placeholder_image(prepared, width, height, scene.overlay_text or "no image")
-        effects = [] if request.silent_reference_review else local_effects(
+        effects = [] if stabilized_reference_motion else local_effects(
             scene.motion_mode, scene.disabled_effects, request.profile
         )
         if effects:
@@ -2899,7 +2926,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 effected.save(prepared, "JPEG", quality=94)
         prepared_cache[cache_key] = prepared
 
-        if request.silent_reference_review and request.profile is not None:
+        if stabilized_reference_motion and request.profile is not None:
             motion_safe, motion_blank = _reference_motion_pixel_safety(
                 prepared, scene, width, height, request.profile
             )
@@ -2913,6 +2940,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 "threshold": reference_profile.review_frame_edge_blank_threshold(telemetry),
             }
             scene.framing_telemetry = telemetry
+            _sync_accepted_reference_fallback(scene)
             if not motion_safe:
                 raise RenderError(
                     "review.motion_unsafe: animated review viewport violates pixel safety",
@@ -2923,7 +2951,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         render_scene_clip(
             scene, prepared, clip, width, height, fps,
             encoder=selection, preview=request.preview, profile=request.profile,
-            stabilized_review_motion=request.silent_reference_review,
+            stabilized_review_motion=stabilized_reference_motion,
         )
         clips.append(clip)
         report(5 + int(45 * (i + 1) / len(request.scenes)), f"scene {i + 1}/{len(request.scenes)}")
@@ -2937,7 +2965,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         fps,
         selection,
         request.preview,
-        require_transitions=request.silent_reference_review,
+        require_transitions=stabilized_reference_motion,
     )
 
     report(65, "burning subtitles")

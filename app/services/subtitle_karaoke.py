@@ -18,9 +18,10 @@ CAPTION_ACTIVE_SCALE = 1.08
 CAPTION_FONT_HEIGHT_RATIO = 0.04
 CAPTION_SAFE_MARGIN_PX = 120
 CAPTION_MIN_CHUNK_WORDS = 2
-# Two-word chunks at the provisional review pacing (~0.43s/word) run about
-# 0.87s; a 1.0s floor left many valid two-line sentences unpartitionable.
-CAPTION_MIN_CHUNK_DURATION_SECONDS = 0.8
+# Fast but authoritative neural-TTS timings can place a two-word display chunk
+# around 0.7s. Keep a 0.65s floor so orphan-avoidance can rebalance 2+2 words
+# without fabricating timing or changing the spoken narration.
+CAPTION_MIN_CHUNK_DURATION_SECONDS = 0.65
 SEMANTIC_BREAK_WORDS = frozenset(
     {
         "AND",
