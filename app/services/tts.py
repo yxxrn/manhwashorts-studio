@@ -375,7 +375,9 @@ class HttpProvider:
             for index, text in enumerate(texts):
                 path = work_dir / f"{index:02d}_session.wav"
                 if index == 0:
-                    path.write_bytes(ref_path.read_bytes())
+                    # Preserve the exact polished reference bytes without
+                    # materializing the whole audio file in Python memory.
+                    shutil.copyfile(ref_path, path)
                 else:
                     # Reuse the same provider settings for every section. A
                     # transient 503 must not silently switch voices or providers.
