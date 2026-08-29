@@ -1815,3 +1815,96 @@ def test_review_qc_rejects_excessive_visual_hold_and_missing_diversity_metrics()
         review_preview._measured_visual_qc(sidecar)
 
     assert exc.value.code == "review.visual_hold_excessive"
+
+
+def test_exact_reference_preparation_honors_coherence_blank_rescue_threshold(monkeypatch, tmp_path):
+    import importlib
+    from dataclasses import asdict
+
+    framing = importlib.import_module("app.services.framing_analysis")
+    source = Image.new("RGB", (100, 200), (80, 80, 80))
+    source_path = tmp_path / "panel-coherence-rescue.png"
+    source.save(source_path)
+    evidence = _evidence("panel-a", "asset-a", 3)
+    mask = framing.build_color_agnostic_border_mask(source, evidence)
+    selected_box = (0, 0, 100, 200)
+    telemetry = framing.FramingTelemetry(
+        contract_version=reference_profile.REFERENCE_MATCHED_SHORTS_V1.framing_contract_version,
+        detector_version=mask.detector_version, mask_sha256=mask.mask_sha256,
+        crop_box=selected_box, base_zoom=1.0, source_resolution_zoom_cap=1.35,
+        protected_region_zoom_cap=1.35, edge_connected_blank_fraction=0.12,
+        non_discardable_low_information_fraction=0.0, protected_retained_fraction=1.0,
+        balloon_mask_intersection_ratio=0.0, subject_coverage=1.0, face_coverage=1.0,
+        action_coverage=1.0, effect_coverage=1.0, continuity_context_coverage=1.0,
+        mask_confidence=0.96, mask_source="vision_geometry_v1",
+        fallback_reason=reference_profile.REVIEW_COHERENCE_RESCUE_REASON,
+    )
+    framing_thresholds = []
+    refine_thresholds = []
+
+    def feasible(_box, *_args, **kwargs):
+        framing_thresholds.append(kwargs["blank_target_fraction"])
+        return True, telemetry
+
+    def refine(_panel, box, *, blank_threshold, initial_telemetry, **_kwargs):
+        refine_thresholds.append(blank_threshold)
+        return box, initial_telemetry, {
+            "version": "test-rescue-refine-v1", "applied": False,
+            "original_crop_box": list(box), "refined_crop_box": list(box),
+            "attempt_count": 0, "attempts": [],
+            "final_edge_blank_fractions": {"max_edge_blank_fraction": 0.12},
+        }
+
+    monkeypatch.setattr(framing, "candidate_is_feasible", feasible)
+    monkeypatch.setattr(render, "_refine_review_pixel_blank_crop", refine)
+    selected = {"kind": "primary", "roi_label": "selected", "crop_box": list(selected_box)}
+    persisted = asdict(telemetry) | {"selected_roi": selected}
+    scene = render.SceneInput(
+        image_path=source_path, start_time=0.0, end_time=1.0,
+        panel_region_id="region-a", panel_id="panel-a", source_asset_id="asset-a",
+        source_order=3, panel_size=(100, 200),
+        evidence_hash=visual_scoring.visual_evidence_hash(evidence),
+        visual_evidence=visual_scoring.panel_visual_evidence_json(evidence),
+        border_mask=asdict(mask), selected_roi=selected,
+        framing_telemetry=persisted, publish_allowed=False,
+    )
+    destination = tmp_path / "prepared-coherence-rescue.jpg"
+    render._prepare_exact_reference_frame(
+        scene=scene, dest=destination, width=1080, height=1920,
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert framing_thresholds == [pytest.approx(
+        reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION
+    )]
+    assert refine_thresholds == [pytest.approx(
+        reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION
+    )]
+    assert destination.exists()
+
+
+def test_review_qc_accepts_sixteen_percent_blank_when_explicit_coherence_rescue():
+    from app.services import reference_profile, review_preview
+
+    result = review_preview._measured_visual_qc(
+        {"shots": [{"framing_telemetry": {
+            "edge_connected_blank_fraction": 0.16,
+            "fallback_reason": reference_profile.REVIEW_COHERENCE_RESCUE_REASON,
+        }}]},
+        blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+    )
+    assert result["max_edge_blank_fraction"] == pytest.approx(0.16)
+    assert result["per_shot_blank_threshold_fraction"] == [pytest.approx(0.17)]
+
+
+def test_review_qc_rejects_eighteen_percent_blank_even_with_coherence_rescue():
+    from app.services import reference_profile, review_preview
+
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(
+            {"shots": [{"framing_telemetry": {
+                "edge_connected_blank_fraction": 0.18,
+                "fallback_reason": reference_profile.REVIEW_COHERENCE_RESCUE_REASON,
+            }}]},
+            blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+        )
+    assert exc.value.code == "review.blank_space_exceeds_target"

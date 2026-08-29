@@ -86,6 +86,7 @@ class VisualFeatures:
     semantic_tags: frozenset[str] = frozenset()
     focal_points: tuple[tuple[float, float], ...] = ((0.5, 0.4),)
     face_points: tuple[tuple[float, float], ...] = ()
+    face_boxes: tuple[tuple[float, float, float, float], ...] = ()
     visual_signature: str = ""
 
 
@@ -107,8 +108,8 @@ class VisualEvidenceError(ValueError):
         super().__init__(f"{code}: {message}")
 
 
-VISUAL_EVIDENCE_PROMPT_VERSION = "balloon-free-visual-evidence-v1"
-VISUAL_EVIDENCE_REPAIR_PROMPT_VERSION = "balloon-free-visual-evidence-repair-v1"
+VISUAL_EVIDENCE_PROMPT_VERSION = "balloon-free-visual-evidence-v2"
+VISUAL_EVIDENCE_REPAIR_PROMPT_VERSION = "balloon-free-visual-evidence-repair-v2"
 CONSERVATIVE_FULL_PANEL_EVIDENCE_SOURCE = "conservative_full_panel_v1"
 
 
@@ -619,7 +620,14 @@ def _ocr(image: Image.Image) -> str:
         return ""
 
 
-def _face_stats(image: Image.Image) -> tuple[float, float, list[tuple[float, float]]]:
+def _face_stats(
+    image: Image.Image,
+) -> tuple[
+    float,
+    float,
+    list[tuple[float, float]],
+    list[tuple[float, float, float, float]],
+]:
     try:
         import cv2
         import numpy as np
@@ -630,14 +638,26 @@ def _face_stats(image: Image.Image) -> tuple[float, float, list[tuple[float, flo
         )
         faces = cascade.detectMultiScale(gray, 1.1, 4, minSize=(18, 18))
         if len(faces) == 0:
-            return 0.0, 0.0, []
+            return 0.0, 0.0, [], []
         width, height = image.size
         area = sum(float(fw * fh) for _, _, fw, fh in faces) / (width * height)
         expression = _clip(float(gray.std()) / 75.0)
-        points = [(float(x + fw / 2) / width, float(y + fh / 2) / height) for x, y, fw, fh in faces]
-        return _clip(area * 7.0), expression, points
+        points = [
+            (float(x + fw / 2) / width, float(y + fh / 2) / height)
+            for x, y, fw, fh in faces
+        ]
+        boxes = [
+            (
+                float(x) / width,
+                float(y) / height,
+                float(x + fw) / width,
+                float(y + fh) / height,
+            )
+            for x, y, fw, fh in faces
+        ]
+        return _clip(area * 7.0), expression, points, boxes
     except (ImportError, OSError):
-        return 0.0, 0.0, []
+        return 0.0, 0.0, [], []
 
 
 def _edge_features(image: Image.Image) -> tuple[float, float, float]:
@@ -726,7 +746,7 @@ def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0, source_
     variance = min(1.0, ImageStat.Stat(gray).var[0] / (255.0 * 255.0))
     edge_density, motion, texture = _edge_features(image)
     speech_balloon, ui_overlay, blank_dominance = _layout_dominance(image)
-    face, expression, face_points = _face_stats(image)
+    face, expression, face_points, face_boxes = _face_stats(image)
     text = _ocr(image)
     tags = _tokens(text)
     weapons = _clip(0.85 if tags & _WEAPON else edge_density * 0.35)
@@ -757,6 +777,7 @@ def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0, source_
         semantic_tags=frozenset(tags),
         focal_points=tuple(face_points or _focal_points(image)),
         face_points=tuple(face_points),
+        face_boxes=tuple(face_boxes),
         visual_signature=_visual_signature(image),
     )
     positive = sum(

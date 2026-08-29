@@ -622,3 +622,254 @@ def test_review_qc_accepts_clean_rendered_shot_motion_audit():
     assert result["visual_motion_audit"]["rendered_shot_motion_audit"][
         "stair_step_shot_count"
     ] == 0
+
+
+def _editorial_candidate_for_crop(*, face=True, subject=True, face_score=0.8, action_score=0.4):
+    from types import SimpleNamespace
+
+    from app.services import visual_scoring
+
+    protected = []
+    if face:
+        protected.append(
+            visual_scoring.ProtectedRegionEvidence(
+                region_id="face-1", kind="face",
+                normalized_bbox=(0.35, 0.10, 0.65, 0.30),
+                normalized_polygon=(), confidence=0.98,
+                evidence_source="test_geometry", required=True,
+                minimum_coverage=0.96,
+            )
+        )
+    if subject:
+        protected.append(
+            visual_scoring.ProtectedRegionEvidence(
+                region_id="subject-1", kind="subject",
+                normalized_bbox=(0.25, 0.06, 0.75, 0.88),
+                normalized_polygon=(), confidence=0.98,
+                evidence_source="test_geometry", required=True,
+                minimum_coverage=0.72,
+            )
+        )
+    evidence = SimpleNamespace(protected_regions=tuple(protected))
+    panel_candidate = visual_scoring.PanelCandidate(
+        "asset", 10,
+        visual_scoring.VisualFeatures(
+            face_visibility=face_score,
+            facial_expression=face_score,
+            action_pose=action_score,
+            impact_frame=action_score,
+            dramatic_composition=0.8,
+            face_boxes=((0.35, 0.10, 0.65, 0.30),) if face else (),
+        ),
+        visual_score=4.0,
+    )
+    return SimpleNamespace(
+        panel_id="panel", panel_region_id="region", source_order=10,
+        panel_size=(1000, 2000), visual_evidence=evidence,
+        panel_candidate=panel_candidate,
+    )
+
+
+def test_review_editorial_crop_detects_face_cutoff_and_prefers_safe_face_crop():
+    from app.services import editorial_visual_planner
+
+    candidate = _editorial_candidate_for_crop()
+    safe = editorial_visual_planner.ReferenceROIAlternative(
+        kind="aggressive_crop", roi_label="safe", crop_box=(200, 100, 800, 1200),
+        focus=(0.5, 0.3, 0.5, 0.3),
+    )
+    cut = editorial_visual_planner.ReferenceROIAlternative(
+        kind="aggressive_crop", roi_label="cut", crop_box=(500, 100, 800, 650),
+        focus=(0.65, 0.2, 0.65, 0.2),
+    )
+    safe_metrics = editorial_visual_planner._review_crop_editorial_metrics(
+        candidate, safe, {"base_zoom": 1.6, "subject_coverage": 1.0},
+        section="setup", beat="neutral",
+    )
+    cut_metrics = editorial_visual_planner._review_crop_editorial_metrics(
+        candidate, cut, {"base_zoom": 3.2, "subject_coverage": 0.5},
+        section="setup", beat="neutral",
+    )
+    assert safe_metrics["face_cutoff_count"] == 0
+    assert cut_metrics["face_cutoff_count"] > 0
+    safe_key = editorial_visual_planner._review_editorial_crop_quality_key(
+        safe_metrics, blank_fraction=0.02, base_zoom=1.6,
+        protected_retained_fraction=0.9, preferred_blank_fraction=0.03,
+    )
+    cut_key = editorial_visual_planner._review_editorial_crop_quality_key(
+        cut_metrics, blank_fraction=0.0, base_zoom=3.2,
+        protected_retained_fraction=1.0, preferred_blank_fraction=0.03,
+    )
+    assert safe_key < cut_key
+
+
+def test_review_editorial_crop_rejects_unjustified_extreme_detail_without_face_context():
+    from app.services import editorial_visual_planner
+
+    candidate = _editorial_candidate_for_crop(face=False, subject=False)
+    roi = editorial_visual_planner.ReferenceROIAlternative(
+        kind="aggressive_crop", roi_label="content_rescue_tiny",
+        crop_box=(400, 700, 650, 1100), focus=(0.5, 0.45, 0.5, 0.45),
+    )
+    metrics = editorial_visual_planner._review_crop_editorial_metrics(
+        candidate, roi, {"base_zoom": 3.4, "subject_coverage": 1.0},
+        section="conflict", beat="action",
+    )
+    assert metrics["extreme_crop"] is True
+    assert metrics["unjustified_detail_crop"] is True
+    assert "unjustified_detail_crop" in metrics["anomaly_flags"]
+
+
+def test_review_beat_fit_prefers_face_for_reaction_and_action_for_conflict():
+    from types import SimpleNamespace
+
+    from app.services import editorial_visual_planner, visual_scoring
+
+    face = SimpleNamespace(
+        panel_candidate=visual_scoring.PanelCandidate(
+            "face", 1,
+            visual_scoring.VisualFeatures(
+                face_visibility=1.0, facial_expression=1.0,
+                action_pose=0.1, dramatic_composition=0.8,
+            ), 5.0,
+        )
+    )
+    action = SimpleNamespace(
+        panel_candidate=visual_scoring.PanelCandidate(
+            "action", 2,
+            visual_scoring.VisualFeatures(
+                face_visibility=0.1, action_pose=1.0, impact_frame=1.0,
+                dramatic_composition=0.9, visual_effects=0.8,
+            ), 5.0,
+        )
+    )
+    assert editorial_visual_planner._review_candidate_visual_fit_score(
+        face, "twist", "reaction"
+    ) > editorial_visual_planner._review_candidate_visual_fit_score(
+        action, "twist", "reaction"
+    )
+    assert editorial_visual_planner._review_candidate_visual_fit_score(
+        action, "conflict", "action"
+    ) > editorial_visual_planner._review_candidate_visual_fit_score(
+        face, "conflict", "action"
+    )
+
+
+def test_review_editorial_qc_rejects_face_cutoff_and_non_hook_reversal():
+    from app.services import review_preview
+
+    sidecar = _review_sidecar(shot_count=8, available_visuals=8)
+    for index, shot in enumerate(sidecar["shots"]):
+        shot["source_order"] = 100 + index
+        shot["framing_telemetry"]["selection_context"] = {
+            "section": "hook" if index < 2 else "setup",
+        }
+        shot["framing_telemetry"]["editorial_crop_quality"] = {
+            "role": "action" if index < 2 else "setup",
+            "face_cutoff_count": 0,
+            "face_omission": False,
+            "unjustified_detail_crop": False,
+            "subject_region_count": 1,
+            "subject_completeness_score": 1.0,
+            "anomaly_flags": [],
+        }
+    sidecar["shots"][3]["framing_telemetry"]["editorial_crop_quality"]["face_cutoff_count"] = 1
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+    assert exc.value.code == "review.face_cutoff"
+
+    sidecar["shots"][3]["framing_telemetry"]["editorial_crop_quality"]["face_cutoff_count"] = 0
+    sidecar["shots"][4]["source_order"] = 99
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+    assert exc.value.code == "review.sequence_incoherent"
+
+
+def _wide_rescue_telemetry(framing_analysis, *, zoom: float, blank: float, code=None):
+    return framing_analysis.FramingTelemetry(
+        contract_version="test", detector_version="test", mask_sha256="m" * 64,
+        crop_box=(0, 0, 100, 200), base_zoom=zoom,
+        source_resolution_zoom_cap=5.0, protected_region_zoom_cap=5.0,
+        edge_connected_blank_fraction=blank,
+        non_discardable_low_information_fraction=0.0,
+        protected_retained_fraction=1.0, balloon_mask_intersection_ratio=0.0,
+        subject_coverage=1.0, face_coverage=1.0, action_coverage=1.0,
+        effect_coverage=1.0, continuity_context_coverage=1.0,
+        mask_confidence=1.0, mask_source="test", rejection_code=code,
+    )
+
+
+def test_review_wide_crop_rescue_only_retries_blank_infeasible(monkeypatch):
+    from app.services import editorial_visual_planner, framing_analysis, reference_profile
+
+    calls = []
+    def fake(*_args, blank_target_fraction, **_kwargs):
+        calls.append(blank_target_fraction)
+        if len(calls) == 1:
+            return False, _wide_rescue_telemetry(
+                framing_analysis, zoom=1.2, blank=0.12, code="visual.blank_infeasible"
+            )
+        return True, _wide_rescue_telemetry(framing_analysis, zoom=1.2, blank=0.12)
+    monkeypatch.setattr(framing_analysis, "candidate_is_feasible", fake)
+    ok, telemetry = editorial_visual_planner._review_framing_candidate_is_feasible(
+        (0, 0, 100, 200), object(), object(), (100, 200), (100, 200),
+        review_aggressive_crop=True, standard_blank_target=0.08,
+        allow_conservative_full_panel=False,
+    )
+    assert ok is True
+    assert calls == [0.08, reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION]
+    assert telemetry.fallback_reason == reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+
+
+def test_review_wide_crop_rescue_rejects_excessive_zoom(monkeypatch):
+    from app.services import editorial_visual_planner, framing_analysis
+
+    def fake(*_args, blank_target_fraction, **_kwargs):
+        if blank_target_fraction <= 0.08:
+            return False, _wide_rescue_telemetry(
+                framing_analysis, zoom=1.6, blank=0.12, code="visual.blank_infeasible"
+            )
+        return True, _wide_rescue_telemetry(framing_analysis, zoom=1.6, blank=0.12)
+    monkeypatch.setattr(framing_analysis, "candidate_is_feasible", fake)
+    ok, telemetry = editorial_visual_planner._review_framing_candidate_is_feasible(
+        (0, 0, 100, 200), object(), object(), (100, 200), (100, 200),
+        review_aggressive_crop=True, standard_blank_target=0.08,
+        allow_conservative_full_panel=False,
+    )
+    assert ok is False
+    assert telemetry.rejection_code == "visual.blank_infeasible"
+
+
+def test_review_frame_blank_accepts_tagged_coherence_rescue_within_rescue_limit():
+    from app.services import reference_profile, review_preview
+
+    sidecar = _review_sidecar(shot_count=15, available_visuals=15)
+    shot = sidecar["shots"][5]
+    shot["framing_telemetry"]["fallback_reason"] = (
+        reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+    )
+    audit = sidecar["visual_motion_audit"]
+    audit["max_frame_edge_blank_fraction"] = 0.15
+    audit["per_frame_edge_blank_fractions"] = [{"max_edge_blank_fraction": 0.15}]
+    audit["sample_frame_times_s"] = [shot["start_time"] + 0.5]
+    result = review_preview._measured_visual_qc(sidecar)
+    measured = result["visual_motion_audit"]
+    assert measured["raw_max_frame_edge_blank_fraction"] == 0.15
+    assert measured["corroborated_max_frame_edge_blank_fraction"] == pytest.approx(0.08)
+
+
+def test_review_frame_blank_rejects_tagged_rescue_above_rescue_limit():
+    from app.services import reference_profile, review_preview
+
+    sidecar = _review_sidecar(shot_count=15, available_visuals=15)
+    shot = sidecar["shots"][5]
+    shot["framing_telemetry"]["fallback_reason"] = (
+        reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+    )
+    audit = sidecar["visual_motion_audit"]
+    audit["max_frame_edge_blank_fraction"] = 0.18
+    audit["per_frame_edge_blank_fractions"] = [{"max_edge_blank_fraction": 0.18}]
+    audit["sample_frame_times_s"] = [shot["start_time"] + 0.5]
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._measured_visual_qc(sidecar)
+    assert exc.value.code == "review.blank_edge_visible"

@@ -1204,6 +1204,51 @@ def test_coherence_window_prefers_eight_panel_combat_arc_over_shorter_distractor
     )
 
 
+def test_coherence_window_reselects_when_preferred_window_is_not_section_safe():
+    module = _module()
+    attractive = [
+        _coherence_claim(
+            f"b1__sub0__claim{index}",
+            f"unsafe-{index}",
+            10 + index,
+        )
+        for index in range(1, 6)
+    ]
+    safe = [
+        _coherence_claim(
+            f"b1__sub1__claim{index}",
+            f"safe-{index}",
+            30 + index,
+        )
+        for index in range(1, 6)
+    ]
+    for row in attractive:
+        row["text"] = "Sword attack clash danger threat reveals hidden trap."
+    for row in safe:
+        row["text"] = "Characters continue the same grounded scene."
+
+    selected_without_guard, metadata_without_guard = module._select_coherent_claim_window(
+        [*attractive, *safe],
+        minimum_unique_panels=5,
+        preferred_unique_panels=5,
+    )
+    selected, metadata = module._select_coherent_claim_window(
+        [*attractive, *safe],
+        minimum_unique_panels=5,
+        preferred_unique_panels=5,
+        window_is_feasible=lambda rows: all(
+            "__sub0__" not in str(row.get("claim_id", "")) for row in rows
+        ),
+    )
+
+    assert metadata_without_guard["selected_scope_prefix"] == "b1__sub0"
+    assert all("__sub0__" in row["claim_id"] for row in selected_without_guard)
+    assert metadata["feasible"] is True
+    assert metadata["section_capacity_aware"] is True
+    assert metadata["selected_scope_prefix"] == "b1__sub1"
+    assert all("__sub1__" in row["claim_id"] for row in selected)
+
+
 def test_coherence_window_rejects_cross_root_capacity_stitching():
     module = _module()
     claims = [
@@ -2131,3 +2176,198 @@ def test_hook_quality_accepts_direct_conversational_spoken_prose():
     plan = {"rows": [{"hook_priority_score": 4}]}
     result = module.validate_repaired_hook_quality(passages, claims, plan)
     assert result["stiff_spoken_passage_count"] == 0
+
+
+def test_feasible_ledger_prunes_extreme_crop_without_editorial_context(monkeypatch):
+    from dataclasses import replace
+
+    module = _module()
+    monkeypatch.setattr(
+        module.editorial_visual_planner.visual_scoring,
+        "require_reference_ready_visual_evidence",
+        lambda value, **_kwargs: value,
+    )
+
+    def fake_feasible(crop_box, *_args, **_kwargs):
+        zoom = 3.18 if tuple(crop_box) == (370, 807, 710, 1411) else 1.8
+        return True, replace(_telemetry(module, tuple(crop_box)), base_zoom=zoom)
+
+    monkeypatch.setattr(module.framing_analysis, "candidate_is_feasible", fake_feasible)
+    candidate = SimpleNamespace(
+        panel_region_id="region-editorial",
+        panel_id="panel-editorial",
+        source_asset_id="asset-1",
+        source_order=30,
+        panel_size=(1080, 2521),
+        border_mask=SimpleNamespace(
+            mask_sha256="m" * 64,
+            detector_version="color-agnostic-border-v1",
+        ),
+        visual_evidence=SimpleNamespace(protected_regions=()),
+        panel_candidate=SimpleNamespace(
+            source_family="",
+            features=module.editorial_visual_planner.visual_scoring.VisualFeatures(
+                action_pose=0.8,
+                dramatic_composition=0.8,
+            ),
+        ),
+        evidence_hash="e" * 64,
+        source_upscale_manifest={"resolution_state": "UPSCALED"},
+        eligible_sections=("hook",),
+        eligible_beats=("action",),
+        roi_alternatives=(
+            SimpleNamespace(
+                kind="aggressive_crop",
+                roi_label="extreme",
+                crop_box=(370, 807, 710, 1411),
+                focus=(0.5, 0.44, 0.5, 0.44),
+            ),
+            SimpleNamespace(
+                kind="tighter_crop",
+                roi_label="readable",
+                crop_box=(150, 400, 930, 1787),
+                focus=(0.5, 0.44, 0.5, 0.44),
+            ),
+        ),
+    )
+    ledger = module.build_feasible_visual_ledger(
+        [candidate],
+        profile=SimpleNamespace(
+            final_width=1080,
+            final_height=1920,
+            framing_blank_target_fraction=0.03,
+        ),
+        model_identity_hash="model-hash",
+        allow_source_resolution_warning=True,
+    )
+    assert len(ledger.entries) == 1
+    assert [roi["roi_label"] for roi in ledger.entries[0].feasible_rois] == ["readable"]
+    assert ledger.entries[0].feasible_rois[0]["telemetry"]["editorial_crop_quality"][
+        "unjustified_detail_crop"
+    ] is False
+
+
+def test_feasible_ledger_separates_exact_beat_lineage_from_editorial_roles(monkeypatch):
+    module = _module()
+
+    monkeypatch.setattr(
+        module.framing_analysis,
+        "candidate_is_feasible",
+        lambda *_args, **_kwargs: (True, _telemetry(module)),
+    )
+    monkeypatch.setattr(
+        module.editorial_visual_planner.visual_scoring,
+        "require_reference_ready_visual_evidence",
+        lambda value, **_kwargs: value,
+    )
+    candidate = SimpleNamespace(
+        panel_region_id="region-beat-a",
+        panel_id="panel-beat-a",
+        source_asset_id="asset-a",
+        source_order=10,
+        panel_size=(1080, 1920),
+        border_mask=SimpleNamespace(
+            mask_sha256="m" * 64,
+            detector_version="color-agnostic-border-v1",
+        ),
+        visual_evidence=SimpleNamespace(protected_regions=()),
+        panel_candidate=SimpleNamespace(source_family="", features=None),
+        evidence_hash="e" * 64,
+        source_checksum="s" * 64,
+        source_upscale_manifest={"resolution_state": "UPSCALED"},
+        eligible_sections=("beat-a",),
+        eligible_beats=("beat-a",),
+        roi_alternatives=(
+            SimpleNamespace(
+                kind="primary",
+                roi_label="primary",
+                crop_box=(0, 0, 1080, 1920),
+                focus=(0.5, 0.5, 0.5, 0.5),
+            ),
+        ),
+    )
+
+    ledger = module.build_feasible_visual_ledger(
+        [candidate],
+        profile=SimpleNamespace(
+            final_width=1080,
+            final_height=1920,
+            framing_blank_target_fraction=0.03,
+        ),
+        model_identity_hash="model-hash",
+        editorial_sections=("hook", "setup", "conflict", "twist", "cta"),
+    )
+
+    assert len(ledger.entries) == 1
+    entry = ledger.entries[0]
+    assert entry.eligible_beats == ("beat-a",)
+    assert entry.eligible_sections == ("conflict", "cta", "hook", "setup", "twist")
+    assert all(roi["editorial_safe_beats"] == ["beat-a"] for roi in entry.feasible_rois)
+
+
+def test_capacity_plan_rejects_panels_unsafe_for_target_editorial_section():
+    module = _module()
+    claims = [
+        {
+            "claim_id": "claim-conflict",
+            "min_source_order": 10,
+            "max_source_order": 10,
+            "evidence_panel_slot_capacity": {"panel-conflict": 1},
+            "evidence_panel_slot_capacity_by_section": {
+                "conflict": {"panel-conflict": 1}
+            },
+        },
+        {
+            "claim_id": "claim-setup",
+            "min_source_order": 20,
+            "max_source_order": 20,
+            "evidence_panel_slot_capacity": {"panel-setup": 1},
+            "evidence_panel_slot_capacity_by_section": {
+                "setup": {"panel-setup": 1}
+            },
+        },
+        {
+            "claim_id": "claim-conflict-late",
+            "min_source_order": 30,
+            "max_source_order": 30,
+            "evidence_panel_slot_capacity": {"panel-conflict-late": 1},
+            "evidence_panel_slot_capacity_by_section": {
+                "conflict": {"panel-conflict-late": 1}
+            },
+        },
+    ]
+    requirements = [
+        {"passage_index": 0, "section": "setup", "required_visual_slots": 1},
+        {"passage_index": 1, "section": "conflict", "required_visual_slots": 1},
+    ]
+
+    plan = module._capacity_safe_claim_plan(claims, requirements)
+
+    assert plan["feasible"] is True
+    assert plan["section_capacity_aware"] is True
+    assert plan["rows"][0]["evidence_panel_ids"] == ["panel-setup"]
+    assert plan["rows"][1]["evidence_panel_ids"] in (["panel-conflict"], ["panel-conflict-late"])
+    assert "panel-conflict" not in plan["rows"][0]["evidence_panel_ids"]
+
+
+def test_capacity_plan_fails_closed_when_only_wrong_role_panels_exist():
+    module = _module()
+    claims = [
+        {
+            "claim_id": "claim-conflict",
+            "min_source_order": 10,
+            "max_source_order": 10,
+            "evidence_panel_slot_capacity": {"panel-conflict": 1},
+            "evidence_panel_slot_capacity_by_section": {
+                "conflict": {"panel-conflict": 1}
+            },
+        }
+    ]
+
+    plan = module._capacity_safe_claim_plan(
+        claims,
+        [{"passage_index": 0, "section": "setup", "required_visual_slots": 1}],
+    )
+
+    assert plan["feasible"] is False
+    assert plan["rows"][0]["evidence_panel_ids"] == []

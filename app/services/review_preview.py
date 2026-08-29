@@ -293,9 +293,9 @@ def _corroborated_frame_edge_blank_max(
     shots: Sequence[Mapping[str, object]],
     audit: Mapping[str, object],
 ) -> float:
-    threshold = reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+    standard_threshold = reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
     raw_max = float(audit.get("max_frame_edge_blank_fraction", 0.0))
-    if raw_max <= threshold:
+    if raw_max <= standard_threshold:
         return raw_max
     per_frame = audit.get("per_frame_edge_blank_fractions")
     sample_times = audit.get("sample_frame_times_s")
@@ -312,23 +312,27 @@ def _corroborated_frame_edge_blank_max(
             timestamp = float(sample_time)
         except (TypeError, ValueError, OverflowError):
             return raw_max
-        if raw <= threshold:
+        if raw <= standard_threshold:
             effective.append(raw)
             continue
         active = None
         for shot in reversed(shots):
             try:
-                start = float(shot.get("start_time", 0.0))
-                end = float(shot.get("end_time", 0.0))
+                start_time = float(shot.get("start_time", 0.0))
+                end_time = float(shot.get("end_time", 0.0))
             except (TypeError, ValueError, OverflowError):
                 continue
-            if start - 1e-9 <= timestamp <= end + 1e-9:
+            if start_time - 1e-9 <= timestamp <= end_time + 1e-9:
                 active = shot
                 break
         if active is None:
             effective.append(raw)
             continue
         telemetry = active.get("framing_telemetry")
+        allowed = reference_profile.review_frame_edge_blank_threshold(telemetry)
+        if raw <= allowed + 1e-9:
+            effective.append(min(raw, standard_threshold))
+            continue
         preflight = telemetry.get("motion_pixel_preflight") if isinstance(telemetry, Mapping) else None
         if not isinstance(preflight, Mapping) or preflight.get("status") != "safe":
             effective.append(raw)
@@ -339,12 +343,11 @@ def _corroborated_frame_edge_blank_max(
         except (KeyError, TypeError, ValueError, OverflowError):
             effective.append(raw)
             continue
-        if corroborated <= threshold and preflight_threshold <= threshold + 1e-9:
-            effective.append(min(raw, corroborated))
+        if corroborated <= allowed + 1e-9 and preflight_threshold <= allowed + 1e-9:
+            effective.append(min(corroborated, standard_threshold))
         else:
             effective.append(raw)
     return max(effective, default=raw_max)
-
 
 def _panel_repetition_audit(shots: Sequence[Mapping[str, object]]) -> dict[str, object]:
     window = reference_profile.REVIEW_PANEL_REUSE_WINDOW_SHOTS
@@ -383,6 +386,112 @@ def _panel_repetition_audit(shots: Sequence[Mapping[str, object]]) -> dict[str, 
     }
 
 
+def _editorial_composition_audit(
+    shots: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Fail closed on human-facing crop anomalies and incoherent source order."""
+
+    rows: list[dict[str, object]] = []
+    face_cutoffs = 0
+    face_omissions = 0
+    face_margin_violations = 0
+    detail_violations = 0
+    subject_failures = 0
+    missing_metrics = 0
+    non_hook_orders: list[int] = []
+    previous_zoom: float | None = None
+    max_zoom_ratio = 1.0
+    for index, shot in enumerate(shots):
+        telemetry = shot.get("framing_telemetry")
+        if not isinstance(telemetry, Mapping):
+            continue
+        selection = telemetry.get("selection_context")
+        modern_review = isinstance(selection, Mapping)
+        metrics = telemetry.get("editorial_crop_quality")
+        if modern_review and not isinstance(metrics, Mapping):
+            missing_metrics += 1
+            continue
+        if not isinstance(metrics, Mapping):
+            continue
+        face_cutoff = int(metrics.get("face_cutoff_count", 0) or 0)
+        face_omission = bool(metrics.get("face_omission", False))
+        face_margin = int(metrics.get("face_margin_violation_count", 0) or 0)
+        detail = bool(metrics.get("unjustified_detail_crop", False))
+        subject_count = int(metrics.get("subject_region_count", 0) or 0)
+        subject_score = float(metrics.get("subject_completeness_score", 1.0))
+        role = str(metrics.get("role", "neutral") or "neutral")
+        subject_bad = bool(
+            role in {"setup", "reaction"}
+            and subject_count > 0
+            and subject_score < reference_profile.REVIEW_SUBJECT_MIN_COMPLETENESS
+        )
+        face_cutoffs += face_cutoff
+        face_omissions += int(face_omission)
+        face_margin_violations += face_margin
+        detail_violations += int(detail)
+        subject_failures += int(subject_bad)
+        section = str(selection.get("section", "") if isinstance(selection, Mapping) else "")
+        if section != "hook":
+            raw_order = shot.get("source_order", telemetry.get("source_order"))
+            if isinstance(raw_order, int) and not isinstance(raw_order, bool):
+                non_hook_orders.append(raw_order)
+        try:
+            zoom = float(telemetry.get("base_zoom", 1.0))
+        except (TypeError, ValueError, OverflowError):
+            zoom = 1.0
+        if previous_zoom is not None and zoom > 0.0 and previous_zoom > 0.0:
+            max_zoom_ratio = max(max_zoom_ratio, zoom / previous_zoom, previous_zoom / zoom)
+        previous_zoom = zoom
+        rows.append(
+            {
+                "shot_index": index,
+                "panel_id": str(shot.get("panel_id") or ""),
+                "source_order": shot.get("source_order", telemetry.get("source_order")),
+                "section": section,
+                "role": role,
+                "base_zoom": round(zoom, 6),
+                "face_cutoff_count": face_cutoff,
+                "face_omission": face_omission,
+                "face_margin_violation_count": face_margin,
+                "unjustified_detail_crop": detail,
+                "subject_completeness_score": round(subject_score, 6),
+                "anomaly_flags": list(metrics.get("anomaly_flags", ()) or ()),
+            }
+        )
+    reversals = sum(
+        right < left
+        for left, right in zip(non_hook_orders, non_hook_orders[1:], strict=False)
+    )
+    report = {
+        "contract_version": "review-editorial-composition-audit-v1",
+        "measured_shot_count": len(rows),
+        "missing_editorial_metrics": missing_metrics,
+        "face_cutoff_violations": face_cutoffs,
+        "face_omission_violations": face_omissions,
+        "face_margin_violations": face_margin_violations,
+        "unjustified_detail_crop_violations": detail_violations,
+        "subject_completeness_failures": subject_failures,
+        "non_hook_source_order_reversals": reversals,
+        "max_adjacent_zoom_ratio": round(max_zoom_ratio, 6),
+        "shots": rows,
+    }
+    if missing_metrics:
+        raise ReviewPreviewError("review.editorial_composition_measurement_missing")
+    if face_cutoffs:
+        raise ReviewPreviewError("review.face_cutoff")
+    if face_margin_violations:
+        raise ReviewPreviewError("review.face_edge_crowding")
+    if detail_violations:
+        raise ReviewPreviewError("review.unjustified_detail_crop")
+    if subject_failures:
+        raise ReviewPreviewError("review.subject_incomplete")
+    if face_omissions:
+        raise ReviewPreviewError("review.face_omitted")
+    if reversals:
+        raise ReviewPreviewError("review.sequence_incoherent")
+    return report
+
+
 def _fade_transition_policy_audit(shots: Sequence[Mapping[str, object]]) -> dict[str, object]:
     transitions = [str(shot.get("transition", "cut") or "cut") for shot in shots]
     missing = [index for index, value in enumerate(transitions[1:], start=1) if value in {"cut", "none"}]
@@ -404,6 +513,7 @@ def _measured_visual_qc(
     if not isinstance(shots, list) or not shots:
         raise ReviewPreviewError("review.framing_measurement_missing")
     fractions: list[float] = []
+    thresholds: list[float] = []
     for shot in shots:
         telemetry = shot.get("framing_telemetry") if isinstance(shot, Mapping) else None
         if not isinstance(telemetry, Mapping):
@@ -412,13 +522,21 @@ def _measured_visual_qc(
             fraction = float(telemetry["edge_connected_blank_fraction"])
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise ReviewPreviewError("review.framing_measurement_invalid") from exc
-        if not 0.0 <= fraction <= blank_target_fraction + 1e-9:
+        allowed_fraction = float(blank_target_fraction)
+        if telemetry.get("fallback_reason") == reference_profile.REVIEW_COHERENCE_RESCUE_REASON:
+            allowed_fraction = max(
+                allowed_fraction,
+                reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION,
+            )
+        if not 0.0 <= fraction <= allowed_fraction + 1e-9:
             raise ReviewPreviewError("review.blank_space_exceeds_target")
         fractions.append(fraction)
+        thresholds.append(allowed_fraction)
     measured: dict[str, object] = {
         "blank_target_fraction": blank_target_fraction,
         "max_edge_blank_fraction": max(fractions),
         "per_shot_edge_blank_fraction": fractions,
+        "per_shot_blank_threshold_fraction": thresholds,
     }
     visual_motion = sidecar.get("visual_motion_audit")
     if not isinstance(visual_motion, Mapping):
@@ -427,8 +545,10 @@ def _measured_visual_qc(
     review_shots = [shot for shot in shots if isinstance(shot, Mapping)]
     repetition_audit = _panel_repetition_audit(review_shots)
     transition_policy_audit = _fade_transition_policy_audit(review_shots)
+    editorial_composition_audit = _editorial_composition_audit(review_shots)
     audit["panel_repetition_audit"] = repetition_audit
     audit["transition_policy_audit"] = transition_policy_audit
+    audit["editorial_composition_audit"] = editorial_composition_audit
     visual_keys = {
         (
             str(shot.get("panel_id") or shot.get("source_asset_id") or ""),

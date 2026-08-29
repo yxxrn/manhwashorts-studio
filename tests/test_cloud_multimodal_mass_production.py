@@ -30,7 +30,7 @@ def _identity(module):
         model_version="pinned",
         endpoint="http://mock.invalid/v1",
         prompt_versions={
-            "visual": "balloon-free-visual-evidence-v1",
+            "visual": "balloon-free-visual-evidence-v2",
             "story_map": "cloud-causal-map-v2",
             "narration": "vision-first-story-analyzer-v3",
         },
@@ -752,7 +752,7 @@ def test_visual_repair_contract_bump_scopes_stale_provider_cache():
         contract_version=repair.REPAIR_CONTRACT_VERSION,
     )
 
-    assert repair.REPAIR_CONTRACT_VERSION == "visual_narrative_repair_v8"
+    assert repair.REPAIR_CONTRACT_VERSION == "visual_narrative_repair_v11"
     assert repair.REPAIR_PROMPT_VERSION == "visual-narrative-repair-v11"
     assert old_key != current_key
 
@@ -1488,6 +1488,7 @@ def test_repaired_narration_checkpoint_requires_exact_current_repair_metadata():
     (
         "cloud.narrative_not_grounded",
         "cloud.narrative_duration_out_of_range",
+        "cloud.narrative_repair_micro_compaction_unavailable",
         "visual.narrative_repair_ungrounded",
         "subtitle.overflow",
     ),
@@ -1565,7 +1566,10 @@ def test_review_project_repairs_after_initial_narration_failure(monkeypatch, fai
         prompts={"visual_narrative_repair": ("repair-v1", "r" * 64, "")},
         _last_narration_result=(
             partial_narration
-            if failure_code == "cloud.narrative_duration_out_of_range"
+            if failure_code in {
+                "cloud.narrative_duration_out_of_range",
+                "cloud.narrative_repair_micro_compaction_unavailable",
+            }
             else None
         ),
     )
@@ -1616,7 +1620,10 @@ def test_review_project_repairs_after_initial_narration_failure(monkeypatch, fai
     result = service.run_project(object(), "project-a", review_only_preview=True)
 
     assert observed["script_row"] is None
-    if failure_code == "cloud.narrative_duration_out_of_range":
+    if failure_code in {
+        "cloud.narrative_duration_out_of_range",
+        "cloud.narrative_repair_micro_compaction_unavailable",
+    }:
         assert observed["result"].narration is partial_narration
     elif failure_code in {"visual.narrative_repair_ungrounded", "subtitle.overflow"}:
         assert observed["result"].narration.spoken_text == persisted_narration.spoken_text
@@ -1647,6 +1654,7 @@ def test_ready_review_resume_repairs_stale_narration_before_first_persistence(mo
         model_identity_hash="m" * 64,
         prompt_version="cloud-causal-map-v2",
         prompt_sha256="c" * 64,
+        visual_evidence_hash=visual.visual_evidence_hash,
     )
     original = module.NarrationResult(
         spoken_text="Original stale narration.",
@@ -1970,8 +1978,8 @@ def test_review_repair_forwards_persisted_panel_crop_fallback(monkeypatch):
     assert observed["allow_conservative_full_panel"] is True
 
 
-def test_review_repair_persisted_loader_maps_sections_to_story_beats(monkeypatch):
-    """Persisted candidates must be eligible by narration section and beat."""
+def test_review_repair_persisted_loader_preserves_exact_story_beat_lineage(monkeypatch):
+    """Persisted candidates must keep exact beat lineage separate from editorial role."""
     module = _module()
     from pathlib import Path
     from types import SimpleNamespace
@@ -2046,8 +2054,8 @@ def test_review_repair_persisted_loader_maps_sections_to_story_beats(monkeypatch
     )
 
     assert outcome[0] is result
-    assert observed["section_evidence_panel_ids"] == {"hook": ("panel-1",)}
-    assert observed["beats_by_section"] == {"hook": ("beat-1",)}
+    assert observed["section_evidence_panel_ids"] == {"beat-1": ("panel-1",)}
+    assert observed["beats_by_section"] == {"beat-1": ("beat-1",)}
 
 
 def test_review_render_map_uses_repaired_feasible_panel_ids_across_beats():
@@ -2766,7 +2774,7 @@ def test_empty_semantic_row_uses_versioned_single_panel_repair():
             self.request_panel_ids.append(tuple(panel["panel_id"] for panel in request.panels))
             self.request_prompt_versions.append(request.visual_instruction_version)
             rows = super().observe(request)
-            if request.visual_instruction_version == "balloon-free-visual-evidence-v1":
+            if request.visual_instruction_version == "balloon-free-visual-evidence-v2":
                 for row in rows:
                     if row["panel_id"] == "chapter-a-panel-1":
                         row["visible_facts"] = []
@@ -2787,8 +2795,8 @@ def test_empty_semantic_row_uses_versioned_single_panel_repair():
         ("chapter-a-panel-1",),
     ]
     assert provider.request_prompt_versions == [
-        "balloon-free-visual-evidence-v1",
-        "balloon-free-visual-evidence-repair-v1",
+        "balloon-free-visual-evidence-v2",
+        "balloon-free-visual-evidence-repair-v2",
     ]
 
 
@@ -3953,6 +3961,47 @@ def test_incomplete_visual_stage_requires_checkpoint_subset_restore():
     assert module._visual_cache_requires_subset_restore(
         runner,
         stale_identity.as_dict(),
+        panels,
+    ) is True
+
+
+def test_review_resume_rejects_stale_visual_prompt_identity():
+    module = _module()
+    panels = _panels(module, "review-prompt-stale")
+    identity = _identity(module)
+    runner = module.CloudStageRunner(
+        provider=_FakeProvider(),
+        model_identity=identity,
+        cache=module.MemoryStageCache(),
+    )
+    visual = runner.run_visual_evidence(panels)
+    story = module.StoryMapResult(
+        panel_ids=visual.panel_ids,
+        beats=({"beat_id": "beat-1", "panel_ids": list(visual.panel_ids)},),
+        causal_chain=(),
+        claims=(),
+        story_map_hash="s" * 64,
+        model_identity_hash=identity.identity_hash,
+        prompt_version=runner.prompts["story_map"][0],
+        prompt_sha256=runner.prompts["story_map"][1],
+        visual_evidence_hash=visual.visual_evidence_hash,
+    )
+
+    assert module._review_resume_visual_story_is_current(runner, visual, story) is True
+
+    stale_visual = replace(
+        visual,
+        prompt_version="balloon-free-visual-evidence-v1",
+        prompt_sha256="f" * 64,
+    )
+    assert module._review_resume_visual_story_is_current(
+        runner,
+        stale_visual,
+        story,
+    ) is False
+    assert module._visual_cache_requires_subset_restore(
+        runner,
+        stale_visual.as_dict(),
         panels,
     ) is True
 
@@ -7206,6 +7255,25 @@ def test_immutable_repair_slots_reject_unknown_duplicate_or_missing_ids(mutation
         runner._reconcile_narration_repair_slots(raw, slots, candidate)
     assert caught.value.code == expected_code
 
+
+def test_narration_retry_feedback_surgically_trims_micro_compaction_overshoot():
+    module = _module()
+    feedback = module._narration_retry_feedback(
+        "cloud.narrative_repair_micro_compaction_unavailable",
+        observed_word_count=127,
+        target_word_min=115,
+        target_word_max=125,
+        target_word_count=120,
+        per_position_word_counts=[14, 16, 15, 17, 15, 16, 17, 17],
+        expected_ranges=[
+            {"position": i, "target": 15, "min": 13, "max": 18}
+            for i in range(8)
+        ],
+    )
+    assert "Remove at least 7 lexical words" in feedback
+    assert "position 1: 16>15 target" in feedback
+    assert "do not compensate by expanding other positions" in feedback
+    assert "115-125" in feedback
 
 def test_narration_contract_diagnostic_keeps_only_field_and_count():
     module = _module()
@@ -11119,3 +11187,68 @@ def test_visual_repair_ending_canonicalization_preserves_passage_text():
     assert normalized["ending_kind"] == "open_question"
     assert passages[0]["text"] == "What could the visible change mean?"
     assert provenance["to"] == "open_question"
+
+
+def test_success_merge_preserves_newer_durable_preflight_checkpoint(tmp_path):
+    module = _module()
+    store = module.JsonJobStore(tmp_path)
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.store = store
+    stale = module.ChapterJobRecord(
+        job_id="success-preflight-checkpoint",
+        stage_results={"narration": {"word_count": 61}},
+    )
+    durable = module.ChapterJobRecord(
+        job_id="success-preflight-checkpoint",
+        stage_results={
+            "feasible_visual_ledger_preflight": {
+                "identity_hash": "j" * 64,
+                "ledger": {
+                    "contract_version": module.visual_narrative_repair.REPAIR_CONTRACT_VERSION
+                },
+            }
+        },
+        review_queue=[{"code": "prior", "reason": "prior"}],
+    )
+    store.save(durable)
+    merged = service._merge_latest_durable_progress(stale)
+    merged.stage_results["review_preview"] = {"output_path": "preview.mp4"}
+    store.save(merged)
+    persisted = store.load("success-preflight-checkpoint")
+    assert persisted is not None
+    assert persisted.stage_results["narration"]["word_count"] == 61
+    assert persisted.stage_results["feasible_visual_ledger_preflight"]["identity_hash"] == "j" * 64
+    assert persisted.stage_results["review_preview"]["output_path"] == "preview.mp4"
+    assert persisted.review_queue == [{"code": "prior", "reason": "prior"}]
+
+
+def test_record_failure_preserves_newer_durable_preflight_checkpoint(tmp_path):
+    module = _module()
+    store = module.JsonJobStore(tmp_path)
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.store = store
+    service.runner = SimpleNamespace(
+        request_count=0, request_counts={}, estimated_cost_usd=0.0
+    )
+    stale = module.ChapterJobRecord(job_id="preflight-checkpoint")
+    durable = module.ChapterJobRecord(
+        job_id="preflight-checkpoint",
+        stage_results={
+            "feasible_visual_ledger_preflight": {
+                "identity_hash": "i" * 64,
+                "ledger": {"contract_version": module.visual_narrative_repair.REPAIR_CONTRACT_VERSION},
+            }
+        },
+        review_queue=[{"code": "prior", "reason": "prior"}],
+    )
+    store.save(durable)
+    service._record_failure(
+        stale,
+        module.CloudStageError("visual.narrative_repair_ungrounded", reviewable=True),
+    )
+    persisted = store.load("preflight-checkpoint")
+    assert persisted is not None
+    assert persisted.stage_results["feasible_visual_ledger_preflight"]["identity_hash"] == "i" * 64
+    assert [row["code"] for row in persisted.review_queue] == [
+        "prior", "visual.narrative_repair_ungrounded"
+    ]

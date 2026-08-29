@@ -883,6 +883,9 @@ def _reference_motion_pixel_safety(
     if sample_count < 2:
         raise ValueError("motion preflight requires at least two samples")
     safe_curve = motion_director.safe_camera_curve(scene.camera_curve or scene.effect)
+    blank_threshold = reference_profile.review_frame_edge_blank_threshold(
+        scene.framing_telemetry
+    )
     try:
         with Image.open(prepared_image) as source:
             image = source.convert("RGB")
@@ -918,7 +921,7 @@ def _reference_motion_pixel_safety(
     ) -> float:
         if (
             not has_reference_geometry
-            or pixel_fraction <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+            or pixel_fraction <= blank_threshold
             or reference_mask is None
             or reference_roi_box is None
         ):
@@ -943,7 +946,7 @@ def _reference_motion_pixel_safety(
             framing_analysis.reference_tv_range_preview(view)
         )["max_edge_blank_fraction"]
         maximum = _effective_blank_fraction(pixel_fraction, (0, 0, iw, ih))
-        return maximum <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION, maximum
+        return maximum <= blank_threshold, maximum
 
     maximum = 0.0
     for index in range(sample_count):
@@ -983,7 +986,7 @@ def _reference_motion_pixel_safety(
             fraction, (x, y, x + crop_w, y + crop_h)
         )
         maximum = max(maximum, effective_fraction)
-        if maximum > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
+        if maximum > blank_threshold:
             return False, maximum
     return True, maximum
 
@@ -1695,9 +1698,17 @@ def fit_sentence_karaoke_groups(
         )
 
     def split_group(group: KaraokeSentenceGroup) -> tuple[KaraokeSentenceGroup, ...]:
+        logical_lines = subtitle_karaoke.sentence_group_lines(
+            group.words, max_chars=max_chars
+        )
+        logical_overflow = len(logical_lines) > max_lines or (
+            len(logical_lines) > 1
+            and any(len(line.split()) < 2 for line in logical_lines)
+        )
         try:
             layout(group.words)
-            return (group,)
+            if not logical_overflow:
+                return (group,)
         except RenderError as exc:
             if exc.code != "reference.subtitle_overflow":
                 raise
@@ -2099,13 +2110,14 @@ def _refine_review_pixel_blank_crop(
     profile: ReferenceProfileConfig,
     feasibility_kwargs: Mapping[str, object],
     initial_telemetry: object | None = None,
+    blank_threshold: float = reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
 ) -> tuple[tuple[int, int, int, int], object, dict[str, Any]]:
     original = crop_box
     current = crop_box
     final_telemetry: object | None = initial_telemetry
     attempts: list[dict[str, Any]] = []
     def _cut(fraction: float, dimension: int, sample_dimension: int) -> int:
-        if fraction <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
+        if fraction <= blank_threshold:
             return 0
         ratio = fraction + (1.0 / sample_dimension)
         return max(1, math.ceil(dimension * ratio))
@@ -2115,7 +2127,7 @@ def _refine_review_pixel_blank_crop(
         fractions = framing_analysis.color_agnostic_edge_blank_span_fractions(
             framing_analysis.reference_tv_range_preview(crop)
         )
-        if fractions["max_edge_blank_fraction"] <= reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
+        if fractions["max_edge_blank_fraction"] <= blank_threshold:
             if final_telemetry is None:
                 _ok, final_telemetry = framing_analysis.candidate_is_feasible(
                     current,
@@ -2123,7 +2135,7 @@ def _refine_review_pixel_blank_crop(
                     mask,
                     panel_size,
                     target_size,
-                    blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+                    blank_target_fraction=blank_threshold,
                     allow_conservative_full_panel=True,
                     **dict(feasibility_kwargs),
                 )
@@ -2163,7 +2175,7 @@ def _refine_review_pixel_blank_crop(
             mask,
             panel_size,
             target_size,
-            blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+            blank_target_fraction=blank_threshold,
             allow_conservative_full_panel=True,
             **dict(feasibility_kwargs),
         )
@@ -2310,6 +2322,14 @@ def _prepare_exact_reference_frame(
             "visual.panel_lineage_unavailable: selected reference ROI is invalid",
             code="visual.panel_lineage_unavailable",
         ) from exc
+    persisted_telemetry = _reference_telemetry_mapping(scene.framing_telemetry)
+    review_blank_threshold = reference_profile.review_frame_edge_blank_threshold(
+        persisted_telemetry
+    )
+    rescue_blank = (
+        scene.publish_allowed is False
+        and review_blank_threshold > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+    )
     try:
         feasibility_kwargs: dict[str, object] = {}
         if allow_source_resolution_warning:
@@ -2327,7 +2347,7 @@ def _prepare_exact_reference_frame(
             panel_size,
             (width, height),
             blank_target_fraction=(
-                reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+                review_blank_threshold
                 if scene.publish_allowed is False
                 else profile.framing_blank_target_fraction
             ),
@@ -2341,6 +2361,11 @@ def _prepare_exact_reference_frame(
             "visual.panel_lineage_unavailable: persisted ROI feasibility failed",
             code="visual.panel_lineage_unavailable",
         ) from exc
+    if rescue_blank and feasible and isinstance(telemetry, framing_analysis.FramingTelemetry):
+        telemetry = replace(
+            telemetry,
+            fallback_reason=reference_profile.REVIEW_COHERENCE_RESCUE_REASON,
+        )
     telemetry_map = _reference_telemetry_mapping(telemetry)
     if not feasible:
         rejection_code = telemetry_map.get("rejection_code") or "visual.visual_unavailable"
@@ -2349,7 +2374,6 @@ def _prepare_exact_reference_frame(
             code=str(rejection_code),
             telemetry=telemetry if isinstance(telemetry, framing_analysis.FramingTelemetry) else None,
         )
-    persisted_telemetry = _reference_telemetry_mapping(scene.framing_telemetry)
     for field_name in _REFERENCE_TELEMETRY_FIELDS:
         if field_name not in persisted_telemetry or field_name not in telemetry_map:
             raise RenderError(
@@ -2372,7 +2396,7 @@ def _prepare_exact_reference_frame(
                     code="visual.panel_lineage_unavailable",
                 )
     final_edge_blank_fraction = float(telemetry_map["edge_connected_blank_fraction"])
-    if final_edge_blank_fraction > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION:
+    if final_edge_blank_fraction > review_blank_threshold:
         raise RenderError(
             "visual.blank_infeasible: persisted reference ROI retains a visible edge blank",
             code="visual.blank_infeasible",
@@ -2399,6 +2423,7 @@ def _prepare_exact_reference_frame(
         profile=profile,
         feasibility_kwargs=feasibility_kwargs,
         initial_telemetry=telemetry,
+        blank_threshold=review_blank_threshold,
     )
     if crop_box != original_crop_box:
         original_width = original_crop_box[2] - original_crop_box[0]
@@ -2885,7 +2910,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 "fallback": "not_needed" if motion_safe else "forbidden",
                 "camera_curve": scene.camera_curve,
                 "max_motion_edge_blank_fraction": round(float(motion_blank), 6),
-                "threshold": reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+                "threshold": reference_profile.review_frame_edge_blank_threshold(telemetry),
             }
             scene.framing_telemetry = telemetry
             if not motion_safe:

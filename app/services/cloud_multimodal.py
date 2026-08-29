@@ -2669,32 +2669,48 @@ def _narration_retry_feedback(
         )
         surgical_guidance = ""
         if (
-            capacity_locked
-            and str(failed_predicate or "") == "passage_word_budget"
-            and isinstance(per_position_word_counts, Sequence)
+            isinstance(per_position_word_counts, Sequence)
             and not isinstance(per_position_word_counts, (str, bytes))
             and isinstance(expected_ranges, Sequence)
             and not isinstance(expected_ranges, (str, bytes))
         ):
             offenders: list[str] = []
+            target_excess: list[str] = []
             for index, (count, expected) in enumerate(
                 zip(per_position_word_counts, expected_ranges, strict=False)
             ):
                 if not isinstance(count, int) or isinstance(count, bool) or not isinstance(expected, Mapping):
                     continue
                 maximum = expected.get("max")
+                target = expected.get("target")
                 if isinstance(maximum, int) and not isinstance(maximum, bool) and count > maximum:
                     offenders.append(f"position {index}: {count}>{maximum}")
+                elif isinstance(target, int) and not isinstance(target, bool) and count > target:
+                    target_excess.append(f"position {index}: {count}>{target} target")
+            minimum_text = (
+                f" Keep the complete vector at or above {valid_min} words."
+                if valid_min is not None
+                else ""
+            )
             if offenders:
-                minimum_text = (
-                    f" Keep the complete vector at or above {valid_min} words."
-                    if valid_min is not None
-                    else ""
-                )
                 surgical_guidance = (
-                    " Shorten ONLY these over-ceiling positions: "
+                    " Shorten ONLY these over-ceiling positions first: "
                     + ", ".join(offenders)
                     + ". Keep every other position at approximately its current length; do not shorten compliant positions."
+                    + minimum_text
+                )
+            elif observed_word_count is not None and valid_max is not None and observed_word_count > valid_max:
+                trim_to = min(valid_max, valid_target if valid_target is not None else valid_max)
+                trim_count = max(1, observed_word_count - trim_to)
+                candidates = target_excess or [
+                    f"position {index}: {count}"
+                    for index, count in enumerate(per_position_word_counts)
+                    if isinstance(count, int) and not isinstance(count, bool)
+                ]
+                surgical_guidance = (
+                    f" Remove at least {trim_count} lexical words from the complete vector, trimming the most verbose positions first"
+                    + (": " + ", ".join(candidates) if candidates else "")
+                    + ". Preserve IDs, evidence, chronology, and meaning; do not compensate by expanding other positions."
                     + minimum_text
                 )
         return (
@@ -8695,11 +8711,14 @@ class CloudStageRunner:
             if position_registry["version"] == NARRATION_REPAIR_POSITION_REGISTRY_VERSION
             else NARRATION_REPAIR_MAX_ATTEMPTS
         )
+        carried_retry_feedback = ""
         for attempt in range(attempt_limit):
             context = {
                 **repair_context,
                 "repair_attempt": attempt + 1,
             }
+            if carried_retry_feedback:
+                context["outer_retry_feedback"] = carried_retry_feedback
             try:
                 repaired = self._run_narration_batched(
                     prompt,
@@ -8814,6 +8833,23 @@ class CloudStageRunner:
                         last_error = exc
                     break
                 last_error = exc
+                metadata = exc.safe_metadata if isinstance(exc.safe_metadata, Mapping) else {}
+                observed = metadata.get("total_word_count")
+                carried_retry_feedback = _narration_retry_feedback(
+                    exc.code,
+                    observed_word_count=(
+                        int(observed)
+                        if isinstance(observed, int) and not isinstance(observed, bool)
+                        else None
+                    ),
+                    target_word_min=int(repair_context["target_word_min"]),
+                    target_word_max=int(repair_context["target_word_max"]),
+                    target_word_count=int(repair_context["target_word_count"]),
+                    capacity_locked=bool(repair_context.get("passage_word_budgets")),
+                    failed_predicate=str(metadata.get("failed_predicate", "")),
+                    per_position_word_counts=metadata.get("per_position_word_counts"),
+                    expected_ranges=metadata.get("expected_ranges"),
+                )
                 if attempt + 1 >= NARRATION_REPAIR_MAX_ATTEMPTS:
                     break
         raise last_error
@@ -8942,7 +8978,11 @@ class CloudStageRunner:
             if targeted_repair is not None:
                 chunk_source["targeted_repair"] = dict(targeted_repair)
             chunk_end = None
-            retry_feedback = ""
+            retry_feedback = (
+                str(targeted_repair.get("outer_retry_feedback", ""))
+                if isinstance(targeted_repair, Mapping)
+                else ""
+            )
             for attempt in range(self.max_attempts):
                 try:
                     request_payload = {**chunk_source, "retry_attempt": attempt}
@@ -12866,20 +12906,21 @@ def _build_ephemeral_review_candidates(
         for panel_id in (claim.get("panel_ids") or ())
         if str(panel_id).strip()
     }
-    section_evidence: dict[str, tuple[str, ...]] = {}
-    for section, beat_ids in section_to_beats.items():
+    beat_evidence: dict[str, tuple[str, ...]] = {}
+    for beat_id, beat in beat_by_id.items():
         panel_ids: list[str] = []
-        for beat_id in beat_ids:
-            beat = beat_by_id.get(str(beat_id))
-            if beat is None:
-                continue
-            for panel_id in beat.get("panel_ids", ()):
-                panel_id = str(panel_id)
-                if panel_id in valid_panel_ids and panel_id not in panel_ids:
-                    panel_ids.append(panel_id)
-        if not panel_ids:
-            raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
-        section_evidence[section] = tuple(panel_ids)
+        for panel_id in beat.get("panel_ids", ()):
+            panel_id = str(panel_id)
+            if (
+                panel_id in valid_panel_ids
+                and (not claim_panel_ids or panel_id in claim_panel_ids)
+                and panel_id not in panel_ids
+            ):
+                panel_ids.append(panel_id)
+        if panel_ids:
+            beat_evidence[beat_id] = tuple(panel_ids)
+    if not beat_evidence:
+        raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
 
     panel_regions: list[object] = []
     panel_candidates: dict[str, object] = {}
@@ -12970,9 +13011,9 @@ def _build_ephemeral_review_candidates(
             panel_regions=panel_regions,
             panel_candidates_by_region_id=panel_candidates,
             panel_crops_by_region_id=panel_crops,
-            section_evidence_panel_ids=section_evidence,
-            section_citations=dict.fromkeys(section_to_beats, ()),
-            beats_by_section=section_to_beats,
+            section_evidence_panel_ids=beat_evidence,
+            section_citations=dict.fromkeys(beat_evidence, ()),
+            beats_by_section={beat_id: (beat_id,) for beat_id in beat_evidence},
             profile=profile,
             source_upscale_manifests_by_region_id=upscale_manifests,
             allow_missing_explicit=True,
@@ -13123,6 +13164,43 @@ def _seed_visual_subset_cache(
     )
 
 
+def _review_resume_visual_story_is_current(
+    runner: Any,
+    visual: VisualStageResult | None,
+    story: StoryMapResult | None,
+) -> bool:
+    """Allow review fast-resume only on current visual/story prompt identities."""
+
+    if visual is None or story is None:
+        return False
+    prompts = getattr(runner, "prompts", {})
+    visual_prompt = prompts.get("visual") if isinstance(prompts, Mapping) else None
+    story_prompt = prompts.get("story_map") if isinstance(prompts, Mapping) else None
+    if not _stage_result_identity_is_compatible(
+        visual.model_identity_hash,
+        runner.model_identity,
+        stage="visual",
+    ):
+        return False
+    if visual_prompt is not None and (
+        visual.prompt_version != visual_prompt[0]
+        or visual.prompt_sha256 != visual_prompt[1]
+    ):
+        return False
+    if not _stage_result_identity_is_compatible(
+        story.model_identity_hash,
+        runner.model_identity,
+        stage="story_map",
+    ):
+        return False
+    if story_prompt is not None and (
+        story.prompt_version != story_prompt[0]
+        or story.prompt_sha256 != story_prompt[1]
+    ):
+        return False
+    return story.visual_evidence_hash == visual.visual_evidence_hash
+
+
 def _visual_cache_requires_subset_restore(
     runner: CloudStageRunner,
     cached: Mapping[str, Any] | None,
@@ -13144,6 +13222,17 @@ def _visual_cache_requires_subset_restore(
         visual = VisualStageResult.from_dict(cached)
         ordered = runner._ordered_panels(tuple(panels))
     except (CloudStageError, KeyError, TypeError, ValueError):
+        return True
+    prompt = runner.prompts["visual"]
+    if (
+        not _stage_result_identity_is_compatible(
+            visual.model_identity_hash,
+            runner.model_identity,
+            stage="visual",
+        )
+        or visual.prompt_version != prompt[0]
+        or visual.prompt_sha256 != prompt[1]
+    ):
         return True
     ordered_ids = tuple(panel.panel_id for panel in ordered)
     if visual.panel_ids != ordered_ids:
@@ -13659,7 +13748,18 @@ class CloudBatchService:
         except CloudStageError as exc:
             return self._record_failure(record, exc)
 
+    def _merge_latest_durable_progress(self, record: ChapterJobRecord) -> ChapterJobRecord:
+        """Merge checkpoints written through a separately loaded durable record."""
+        load_latest = getattr(self.store, "load", None)
+        latest = load_latest(record.job_id) if callable(load_latest) else None
+        if latest is not None and latest is not record:
+            record.stage_results = {**record.stage_results, **latest.stage_results}
+            if len(latest.review_queue) > len(record.review_queue):
+                record.review_queue = list(latest.review_queue)
+        return record
+
     def _record_failure(self, record: ChapterJobRecord, exc: CloudStageError) -> ChapterJobRecord:
+        record = self._merge_latest_durable_progress(record)
         record.stage_results["usage"] = {
             "request_count": self.runner.request_count,
             "request_counts": dict(self.runner.request_counts),
@@ -13802,22 +13902,19 @@ class CloudBatchService:
                 for panel_id in (claim.get("panel_ids") or ())
                 if str(panel_id).strip()
             }
-            section_evidence_panel_ids = {}
-            for section, beat_ids in section_to_beats.items():
+            beat_evidence_panel_ids: dict[str, tuple[str, ...]] = {}
+            for beat_id, beat in beat_by_id.items():
                 panel_ids: list[str] = []
-                for beat_id in beat_ids:
-                    beat = beat_by_id.get(str(beat_id))
-                    if beat is None:
-                        continue
-                    for panel_id in beat.get("panel_ids", ()):
-                        panel_id = str(panel_id)
-                        if (
-                            panel_id in eligible_panel_ids
-                            and (not claim_panel_ids or panel_id in claim_panel_ids)
-                            and panel_id not in panel_ids
-                        ):
-                            panel_ids.append(panel_id)
-                section_evidence_panel_ids[str(section)] = tuple(panel_ids)
+                for panel_id in beat.get("panel_ids", ()):
+                    panel_id = str(panel_id)
+                    if (
+                        panel_id in eligible_panel_ids
+                        and (not claim_panel_ids or panel_id in claim_panel_ids)
+                        and panel_id not in panel_ids
+                    ):
+                        panel_ids.append(panel_id)
+                if panel_ids:
+                    beat_evidence_panel_ids[beat_id] = tuple(panel_ids)
             candidates = pipeline._load_reference_panel_fallback_candidates(
                 db,
                 project_id,
@@ -13825,9 +13922,9 @@ class CloudBatchService:
                 images,
                 profile,
                 review_source_upscale_policy=policy,
-                section_evidence_panel_ids=section_evidence_panel_ids,
-                section_citations=dict.fromkeys(section_to_beats, ()),
-                beats_by_section=section_to_beats,
+                section_evidence_panel_ids=beat_evidence_panel_ids,
+                section_citations=dict.fromkeys(beat_evidence_panel_ids, ()),
+                beats_by_section={beat_id: (beat_id,) for beat_id in beat_evidence_panel_ids},
                 allow_persisted_panel_crop_fallback=policy is not None,
                 review_source_root=review_source_root,
                 allow_conservative_full_panel=policy is not None,
@@ -13838,52 +13935,38 @@ class CloudBatchService:
             model_identity_hash=self.runner.model_identity.identity_hash,
             allow_source_resolution_warning=bool(policy.allow_low_source_resolution_warning),
             allow_conservative_full_panel=policy is not None,
+            editorial_sections=tuple(section_to_beats),
         )
-        if not _carries_payloads and current_narration is None:
-            feasible_claim_rows = visual_narrative_repair.feasible_story_claims(
-                current_story_map.as_dict(), ledger
-            )
-            claim_slot_capacity = sum(
-                visual_narrative_repair._unique_claim_panel_capacity(feasible_claim_rows).values()
-            )
-            minimum_visual_slots = math.ceil(
-                float(profile.duration_min_s) / reference_profile.REVIEW_MAX_SHOT_SECONDS
-            )
-            if claim_slot_capacity < minimum_visual_slots:
-                beat_panel_ids = {
-                    str(beat['beat_id']): tuple(
-                        str(panel_id) for panel_id in (beat.get('panel_ids') or ())
-                        if str(panel_id) in eligible_panel_ids
-                    )
-                    for beat in current_story_map.beats
-                    if isinstance(beat, Mapping) and str(beat.get('beat_id', '')).strip()
+        checkpoint_store = getattr(self, "store", None)
+        if (
+            isinstance(ledger, visual_narrative_repair.FeasibleVisualLedger)
+            and checkpoint_store is not None
+            and callable(getattr(checkpoint_store, "load", None))
+            and callable(getattr(checkpoint_store, "save", None))
+        ):
+            checkpoint_record = checkpoint_store.load(project_id)
+            if checkpoint_record is not None:
+                checkpoint_identity = {
+                    "version": "review-feasible-ledger-preflight-v1",
+                    "repair_contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
+                    "model_identity_hash": self.runner.model_identity.identity_hash,
+                    "visual_evidence_hash": current_visual.visual_evidence_hash,
+                    "visual_source_hash": current_visual.source_hash,
+                    "story_map_hash": current_story_map.story_map_hash,
+                    "story_map_visual_evidence_hash": current_story_map.visual_evidence_hash,
+                    "profile_hash": reference_profile.profile_hash(profile),
+                    "upscale_policy_id": str(getattr(policy, "policy_id", "")),
+                    "section_to_beats": {
+                        str(section): [str(beat) for beat in beats]
+                        for section, beats in sorted(section_to_beats.items())
+                    },
                 }
-                beat_panel_ids = {k: v for k, v in beat_panel_ids.items() if v}
-                if beat_panel_ids:
-                    expanded_candidates = pipeline._load_reference_panel_fallback_candidates(
-                        db, project_id, script_row, images, profile,
-                        review_source_upscale_policy=policy,
-                        section_evidence_panel_ids=beat_panel_ids,
-                        section_citations=dict.fromkeys(beat_panel_ids, ()),
-                        beats_by_section={beat_id: (beat_id,) for beat_id in beat_panel_ids},
-                        allow_persisted_panel_crop_fallback=policy is not None,
-                        review_source_root=review_source_root,
-                        allow_conservative_full_panel=policy is not None,
-                    )
-                    expanded_ledger = visual_narrative_repair.build_feasible_visual_ledger(
-                        expanded_candidates, profile=profile,
-                        model_identity_hash=self.runner.model_identity.identity_hash,
-                        allow_source_resolution_warning=bool(policy.allow_low_source_resolution_warning),
-                        allow_conservative_full_panel=policy is not None,
-                    )
-                    expanded_claim_rows = visual_narrative_repair.feasible_story_claims(
-                        current_story_map.as_dict(), expanded_ledger
-                    )
-                    expanded_capacity = sum(
-                        visual_narrative_repair._unique_claim_panel_capacity(expanded_claim_rows).values()
-                    )
-                    if expanded_capacity > claim_slot_capacity:
-                        ledger = expanded_ledger
+                checkpoint_record.stage_results["feasible_visual_ledger_preflight"] = {
+                    "identity": checkpoint_identity,
+                    "identity_hash": _hash(checkpoint_identity),
+                    "ledger": ledger.as_dict(),
+                }
+                checkpoint_store.save(checkpoint_record)
         missing = visual_narrative_repair.repair_scope_sections(
             current_narration or {},
             ledger,
@@ -14239,10 +14322,16 @@ class CloudBatchService:
                     durable_story = None
                     durable_narration = None
                 current_panel_ids = tuple(panel.panel_id for panel in panels)
+                durable_visual_story_current = _review_resume_visual_story_is_current(
+                    self.runner,
+                    durable_visual,
+                    durable_story,
+                )
                 if (
-                    durable_visual is not None
-                    and durable_story is not None
+                    durable_visual_story_current
                     and durable_narration is not None
+                    and durable_visual is not None
+                    and durable_story is not None
                     and durable_visual.panel_ids == current_panel_ids
                     and durable_story.panel_ids == current_panel_ids
                     and durable_narration.visual_evidence_hash
@@ -14347,6 +14436,7 @@ class CloudBatchService:
                     in {
                         "cloud.narrative_not_grounded",
                         "cloud.narrative_duration_out_of_range",
+                        "cloud.narrative_repair_micro_compaction_unavailable",
                         "visual.narrative_repair_ungrounded",
                         "subtitle.overflow",
                     }
@@ -14393,6 +14483,7 @@ class CloudBatchService:
                             ),
                         )
                     )
+                    record = self._merge_latest_durable_progress(record)
                 except CloudStageError as exc:
                     print("REPAIR_FAILED:", exc.code, file=sys.stderr, flush=True)
                     return self._record_failure(record, exc)
@@ -14440,6 +14531,7 @@ class CloudBatchService:
                             ),
                         )
                     )
+                    record = self._merge_latest_durable_progress(record)
                 except CloudStageError as exc:
                     return self._record_failure(record, exc)
                 result = repaired_result
@@ -14490,6 +14582,7 @@ class CloudBatchService:
                                 ),
                             )
                         )
+                        record = self._merge_latest_durable_progress(record)
                     ledger = repair_ledger
                     missing_sections = repair_missing_sections
                     if ledger is None:

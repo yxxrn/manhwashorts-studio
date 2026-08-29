@@ -176,7 +176,7 @@ def test_metadata_only_panel_cannot_reach_provider_observe():
             model_version="v1",
             endpoint="http://manifest.invalid/v1",
             prompt_versions={
-                "visual": "balloon-free-visual-evidence-v1",
+                "visual": cloud._prompt_specs()["visual"][0],
                 "story_map": "cloud-causal-map-v2",
                 "narration": "vision-first-story-analyzer-v3",
             },
@@ -199,7 +199,7 @@ def test_cached_visual_stage_accepts_metadata_only_manifest_without_provider_cal
         model_version="v1",
         endpoint="http://manifest.invalid/v1",
         prompt_versions={
-            "visual": "balloon-free-visual-evidence-v1",
+            "visual": cloud._prompt_specs()["visual"][0],
             "story_map": "cloud-causal-map-v2",
             "narration": "vision-first-story-analyzer-v3",
         },
@@ -216,8 +216,8 @@ def test_cached_visual_stage_accepts_metadata_only_manifest_without_provider_cal
         ),
         source_hash="v" * 64,
         model_identity_hash=identity.identity_hash,
-        prompt_version="balloon-free-visual-evidence-v1",
-        prompt_sha256="p" * 64,
+        prompt_version=cloud._prompt_specs()["visual"][0],
+        prompt_sha256=cloud._prompt_specs()["visual"][1],
     )
 
     class Cache:

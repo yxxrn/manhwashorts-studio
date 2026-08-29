@@ -12,6 +12,12 @@ REVIEW_MAX_UNCHANGED_HOLD_SECONDS = 4.0
 REVIEW_MAX_SHOT_SECONDS = 4.0
 REVIEW_PREFERRED_FRAME_EDGE_BLANK_FRACTION = 0.03
 REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION = 0.08
+# Coherence rescue is deliberately narrow: it may preserve a wider, human-readable
+# composition when the 8% gate would otherwise force an extreme crop. It never
+# bypasses balloon/protected-region or editorial face/subject guards.
+REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION = 0.17
+REVIEW_COHERENCE_RESCUE_MAX_BASE_ZOOM = 1.35
+REVIEW_COHERENCE_RESCUE_REASON = "review.coherence_blank_rescue"
 REVIEW_MIN_TRANSITION_PIXEL_DIFF = 1.0
 REVIEW_MOTION_MAX_NORMALIZED_STEP = 0.08
 REVIEW_MOTION_ZOOM_DELTA = 0.035
@@ -21,6 +27,26 @@ REVIEW_PANEL_REUSE_WINDOW_SHOTS = 4
 REVIEW_TRANSITION_DURATION_SECONDS = 0.22
 REVIEW_MIN_PANEL_CROP_DIMENSION = 32
 REVIEW_MIN_PANEL_CROP_HEIGHT = 400
+# Human-facing composition guards. These are review-only and intentionally
+# stricter than raw geometric feasibility: a crop can be technically frameable
+# yet still look accidental when it slices a face or isolates a minor extremity.
+REVIEW_FACE_MIN_VISIBLE_FRACTION = 0.96
+REVIEW_FACE_MIN_MARGIN_RATIO = 0.08
+REVIEW_SUBJECT_MIN_COMPLETENESS = 0.72
+REVIEW_DETAIL_CROP_MAX_AREA_FRACTION = 0.12
+REVIEW_EXTREME_CROP_ZOOM = 2.75
+REVIEW_SEQUENCE_MAX_ZOOM_RATIO = 1.85
+
+
+def review_frame_edge_blank_threshold(framing_telemetry: object = None) -> float:
+    """Return the per-shot blank limit, admitting only tagged wide-crop rescue."""
+
+    if (
+        isinstance(framing_telemetry, dict)
+        and framing_telemetry.get("fallback_reason") == REVIEW_COHERENCE_RESCUE_REASON
+    ):
+        return REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION
+    return REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
 
 
 def review_framing_quality_key(

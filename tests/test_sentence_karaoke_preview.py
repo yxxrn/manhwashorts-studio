@@ -244,3 +244,25 @@ def test_sentence_ass_default_splits_any_three_line_group():
 
     assert len(dialogues) == len(words)
     assert all(line.count("\\N") <= 1 for line in dialogues)
+
+
+def test_fit_sentence_karaoke_groups_splits_logical_singleton_line_without_changing_words():
+    from app.services import render, subtitle_karaoke
+
+    words = tuple(
+        render.KaraokeWord(text, index * 0.5, (index + 1) * 0.5)
+        for index, text in enumerate(("HAND", "HOLDS", "TWO", "PHOTOGRAPHS"))
+    )
+    group = render.KaraokeSentenceGroup("logical-orphan", words, 0.0, 2.0)
+    fitted = render.fit_sentence_karaoke_groups(
+        (group,), 1080, 1920,
+        max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
+        max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
+    )
+    assert [tuple(word.text for word in item.words) for item in fitted] == [
+        ("HAND", "HOLDS"), ("TWO", "PHOTOGRAPHS")
+    ]
+    assert [word.text for item in fitted for word in item.words] == [
+        word.text for word in words
+    ]
+    assert subtitle_karaoke.validate_sentence_groups(fitted, duration=2.0) == ()

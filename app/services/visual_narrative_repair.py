@@ -11,14 +11,14 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from app.services import (
     editorial_visual_planner,
-    framing_analysis,
+    framing_analysis,  # noqa: F401 - retained as the test/integration monkeypatch boundary
     reference_profile,
     subtitle_karaoke,
 )
@@ -26,7 +26,8 @@ from app.services import (
     script as script_service,
 )
 
-REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v8"
+REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v11"
+REPAIR_EDITORIAL_SECTIONS = ("hook", "setup", "conflict", "twist", "cta")
 VISUAL_SECTION_REMAP_VERSION = "visual_section_remap_v1"
 REPAIR_PROMPT_VERSION = "visual-narrative-repair-v11"
 REPAIR_TARGET_WORD_MIN = 115
@@ -373,10 +374,12 @@ class FeasibleRenderPlan:
             selected = min(
                 entry.feasible_rois,
                 key=lambda roi: (
-                    *editorial_visual_planner.reference_profile.review_framing_quality_key(
-                        float(dict(roi.get("telemetry", {})).get("edge_connected_blank_fraction", 1.0)),
-                        float(dict(roi.get("telemetry", {})).get("base_zoom", 999.0)),
-                        float(dict(roi.get("telemetry", {})).get("protected_retained_fraction", 0.0)),
+                    *editorial_visual_planner._review_editorial_crop_quality_key(
+                        dict(roi.get("telemetry", {})).get("editorial_crop_quality", {}),
+                        blank_fraction=float(dict(roi.get("telemetry", {})).get("edge_connected_blank_fraction", 1.0)),
+                        base_zoom=float(dict(roi.get("telemetry", {})).get("base_zoom", 999.0)),
+                        protected_retained_fraction=float(dict(roi.get("telemetry", {})).get("protected_retained_fraction", 0.0)),
+                        preferred_blank_fraction=editorial_visual_planner.reference_profile.REVIEW_PREFERRED_FRAME_EDGE_BLANK_FRACTION,
                     ),
                     str(roi.get("kind", "")),
                     str(roi.get("roi_label", "")),
@@ -479,11 +482,19 @@ def build_feasible_visual_ledger(
     model_identity_hash: str,
     allow_source_resolution_warning: bool = False,
     allow_conservative_full_panel: bool = False,
+    editorial_sections: Sequence[str] | None = None,
 ) -> FeasibleVisualLedger:
     """Evaluate every candidate ROI and retain only genuinely feasible panels."""
 
     built: list[FeasibleVisualRecord] = []
     target_size = (int(profile.final_width), int(profile.final_height))
+    target_editorial_sections = tuple(
+        dict.fromkeys(
+            str(value)
+            for value in (editorial_sections or ())
+            if str(value).strip()
+        )
+    )
     for candidate in sorted(
         candidates,
         key=lambda item: (int(item.source_order), str(item.panel_id), str(item.panel_region_id)),
@@ -510,6 +521,8 @@ def build_feasible_visual_ledger(
         if isinstance(manifest, Mapping):
             resolution_state = str(manifest.get("resolution_state") or "NATIVE")
         feasible_rois: list[dict[str, Any]] = []
+        editorial_safe_sections: set[str] = set()
+        editorial_safe_beats: set[str] = set()
         try:
             ready_evidence = editorial_visual_planner.visual_scoring.require_reference_ready_visual_evidence(
                 candidate.visual_evidence,
@@ -526,16 +539,21 @@ def build_feasible_visual_ledger(
         )
         for roi in tuple(getattr(candidate, "roi_alternatives", ()) or ()):
             try:
-                is_feasible, telemetry = framing_analysis.candidate_is_feasible(
-                    tuple(int(value) for value in roi.crop_box),
-                    ready_evidence,
-                    candidate.border_mask,
-                    tuple(int(value) for value in candidate.panel_size),
-                    target_size,
-                    allow_source_resolution_warning=allow_low_resolution,
-                    allow_conservative_full_panel=allow_conservative_full_panel,
-                    review_aggressive_crop=allow_source_resolution_warning,
-                    blank_target_fraction=editorial_visual_planner.reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+                feasibility_kwargs: dict[str, object] = {}
+                if allow_low_resolution:
+                    feasibility_kwargs["allow_source_resolution_warning"] = True
+                is_feasible, telemetry = (
+                    editorial_visual_planner._review_framing_candidate_is_feasible(
+                        tuple(int(value) for value in roi.crop_box),
+                        ready_evidence,
+                        candidate.border_mask,
+                        tuple(int(value) for value in candidate.panel_size),
+                        target_size,
+                        review_aggressive_crop=allow_source_resolution_warning,
+                        standard_blank_target=editorial_visual_planner.reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+                        allow_conservative_full_panel=allow_conservative_full_panel,
+                        **feasibility_kwargs,
+                    )
                 )
             except Exception:
                 continue
@@ -543,26 +561,78 @@ def build_feasible_visual_ledger(
                 continue
             telemetry_dict = asdict(telemetry)
             edge_blank = telemetry_dict.get("edge_connected_blank_fraction")
+            allowed_blank = (
+                editorial_visual_planner.reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION
+                if telemetry_dict.get("fallback_reason")
+                == editorial_visual_planner.reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+                else editorial_visual_planner.reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+            )
             if (
                 isinstance(edge_blank, (int, float))
-                and float(edge_blank)
-                > editorial_visual_planner.reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+                and float(edge_blank) > allowed_blank
             ):
                 continue
+            sections = (
+                target_editorial_sections
+                or tuple(str(value) for value in (candidate.eligible_sections or ()))
+                or ("",)
+            )
+            beats = tuple(str(value) for value in (candidate.eligible_beats or ())) or ("",)
+            safe_contexts: list[tuple[str, str, Mapping[str, object]]] = []
+            for section in sections:
+                for beat in beats:
+                    metrics = editorial_visual_planner._review_crop_editorial_metrics(
+                        candidate,
+                        roi,
+                        telemetry_dict,
+                        section=section,
+                        beat=beat,
+                    )
+                    if editorial_visual_planner._review_editorial_rejection_code(metrics) is None:
+                        safe_contexts.append((section, beat, metrics))
+            if not safe_contexts:
+                continue
+            best_section, best_beat, best_metrics = min(
+                safe_contexts,
+                key=lambda item: editorial_visual_planner._review_editorial_crop_quality_key(
+                    item[2],
+                    blank_fraction=float(telemetry_dict.get("edge_connected_blank_fraction", 1.0)),
+                    base_zoom=float(telemetry_dict.get("base_zoom", 999.0)),
+                    protected_retained_fraction=float(
+                        telemetry_dict.get("protected_retained_fraction", 0.0)
+                    ),
+                    preferred_blank_fraction=float(
+                        getattr(
+                            profile,
+                            "framing_blank_target_fraction",
+                            editorial_visual_planner.reference_profile.REVIEW_PREFERRED_FRAME_EDGE_BLANK_FRACTION,
+                        )
+                    ),
+                ),
+            )
+            del best_section, best_beat
+            telemetry_dict["editorial_crop_quality"] = dict(best_metrics)
+            safe_sections = sorted({section for section, _beat, _metrics in safe_contexts if section})
+            safe_beats = sorted({beat for _section, beat, _metrics in safe_contexts if beat})
+            editorial_safe_sections.update(safe_sections)
+            editorial_safe_beats.update(safe_beats)
             feasible_rois.append({
                 "kind": str(roi.kind),
                 "roi_label": str(roi.roi_label),
                 "crop_box": [int(value) for value in roi.crop_box],
                 "telemetry": telemetry_dict,
+                "editorial_safe_sections": safe_sections,
+                "editorial_safe_beats": safe_beats,
             })
         if not feasible_rois:
             continue
         feasible_rois.sort(
             key=lambda item: (
-                *editorial_visual_planner.reference_profile.review_framing_quality_key(
-                    float(item["telemetry"].get("edge_connected_blank_fraction", 1.0)),
-                    float(item["telemetry"].get("base_zoom", 999.0)),
-                    float(item["telemetry"].get("protected_retained_fraction", 0.0)),
+                *editorial_visual_planner._review_editorial_crop_quality_key(
+                    item["telemetry"].get("editorial_crop_quality", {}),
+                    blank_fraction=float(item["telemetry"].get("edge_connected_blank_fraction", 1.0)),
+                    base_zoom=float(item["telemetry"].get("base_zoom", 999.0)),
+                    protected_retained_fraction=float(item["telemetry"].get("protected_retained_fraction", 0.0)),
                     preferred_blank_fraction=float(
                         getattr(
                             profile,
@@ -597,8 +667,16 @@ def build_feasible_visual_ledger(
                 panel_id=str(candidate.panel_id),
                 source_asset_id=str(candidate.source_asset_id),
                 source_order=int(candidate.source_order),
-                eligible_sections=tuple(sorted(str(value) for value in (candidate.eligible_sections or ()))),
-                eligible_beats=tuple(sorted(str(value) for value in (candidate.eligible_beats or ()))),
+                eligible_sections=tuple(
+                    sorted(editorial_safe_sections)
+                    if editorial_safe_sections
+                    else sorted(str(value) for value in (candidate.eligible_sections or ()))
+                ),
+                eligible_beats=tuple(
+                    sorted(editorial_safe_beats)
+                    if editorial_safe_beats
+                    else sorted(str(value) for value in (candidate.eligible_beats or ()))
+                ),
                 resolution_state=resolution_state,
                 feasible_rois=tuple(feasible_rois),
                 visual_strengths=strengths,
@@ -741,12 +819,15 @@ def _passage_visual_durations(
 def _panel_visual_slot_capacity(
     panel_id: str,
     ledger: FeasibleVisualLedger,
+    *,
+    section: str | None = None,
 ) -> int:
-    """Count distinct feasible ROI slots for one grounded panel."""
+    """Count distinct feasible ROI slots, optionally constrained by editorial role."""
 
     entry = next((item for item in ledger.entries if item.panel_id == panel_id), None)
     if entry is None:
         return 0
+    section_name = str(section or "").strip()
     distinct = {
         (
             str(roi.get("kind", "")),
@@ -755,6 +836,11 @@ def _panel_visual_slot_capacity(
         )
         for roi in entry.feasible_rois
         if isinstance(roi, Mapping)
+        and (
+            not section_name
+            or section_name
+            in {str(value) for value in (roi.get("editorial_safe_sections") or ())}
+        )
     }
     return min(
         len(distinct),
@@ -1460,7 +1546,27 @@ def feasible_story_claims(
             panel_id: _panel_visual_slot_capacity(panel_id, ledger)
             for panel_id in evidence_panel_ids
         }
+        section_slot_capacity = {
+            section: {
+                panel_id: capacity
+                for panel_id in evidence_panel_ids
+                if (capacity := _panel_visual_slot_capacity(
+                    panel_id,
+                    ledger,
+                    section=section,
+                )) > 0
+            }
+            for section in REPAIR_EDITORIAL_SECTIONS
+        }
+        section_slot_capacity = {
+            section: capacities
+            for section, capacities in section_slot_capacity.items()
+            if capacities
+        }
         row["evidence_panel_slot_capacity"] = panel_slot_capacity
+        if section_slot_capacity:
+            row["evidence_panel_slot_capacity_by_section"] = section_slot_capacity
+            row["editorial_safe_sections"] = sorted(section_slot_capacity)
         row["visual_slot_capacity"] = sum(panel_slot_capacity.values())
         row["unique_panel_count"] = len(evidence_panel_ids)
         rows.append(row)
@@ -1590,6 +1696,7 @@ def _select_coherent_claim_window(
     *,
     minimum_unique_panels: int,
     preferred_unique_panels: int | None = None,
+    window_is_feasible: Callable[[Sequence[Mapping[str, Any]]], bool] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Select the narrowest sufficiently deep story scope with enough unique visuals.
 
@@ -1646,6 +1753,8 @@ def _select_coherent_claim_window(
                     continue
                 min_order = min(int(row.get("min_source_order", 0)) for row in window)
                 max_order = max(int(row.get("max_source_order", 0)) for row in window)
+                if window_is_feasible is not None and not window_is_feasible(window):
+                    continue
                 candidates.append(
                     {
                         "prefix": prefix,
@@ -1662,7 +1771,10 @@ def _select_coherent_claim_window(
 
     if not candidates and not scopes and rows:
         all_panels = {panel_id for row in rows for panel_id in row_panels(row)}
-        if len(all_panels) >= minimum:
+        if (
+            len(all_panels) >= minimum
+            and (window_is_feasible is None or window_is_feasible(rows))
+        ):
             candidates.append(
                 {
                     "prefix": "unstructured",
@@ -1690,6 +1802,8 @@ def _select_coherent_claim_window(
             "reason": (
                 "aggregate_visual_capacity_below_narration_minimum"
                 if aggregate_insufficient
+                else "no_coherent_story_scope_has_section_safe_capacity"
+                if window_is_feasible is not None
                 else "no_single_story_scope_has_required_visual_capacity"
             ),
         }
@@ -1720,6 +1834,7 @@ def _select_coherent_claim_window(
     )
     return selected_rows, {
         "rule": "story_coherence_window_v2",
+        "section_capacity_aware": window_is_feasible is not None,
         "feasible": True,
         "minimum_unique_panels": minimum,
         "preferred_unique_panels": preferred,
@@ -1905,13 +2020,12 @@ def _capacity_safe_claim_plan(
     feasible_claim_rows: Sequence[Mapping[str, Any]],
     visual_capacity_requirements: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Find a chronology-safe, globally capacity-feasible claim bundle per passage.
+    """Find a chronology- and section-safe claim bundle per passage.
 
-    A per-passage greedy walk can consume a three-slot claim for a two-slot
-    passage and strand a later passage even when the chapter has enough grounded
-    capacity overall. This search considers skip/include choices globally. Every
-    selected claim keeps its complete feasible evidence bundle, panels are unique
-    across passages, and source order never moves backward.
+    Every selected panel must be feasible for the target editorial section, so
+    a conflict/action crop cannot later be forced into setup, twist, or CTA.
+    Hook remains a teaser exception and may rewind to earlier chronology for the
+    second passage; all later passages preserve nondecreasing claim order.
     """
 
     ordered_claims = sorted(
@@ -1926,14 +2040,16 @@ def _capacity_safe_claim_plan(
         max(0, int(row.get("required_visual_slots", 0)))
         for row in visual_capacity_requirements
     ]
+    sections = [str(row.get("section", "")).strip() for row in visual_capacity_requirements]
     if not requirements or any(required <= 0 for required in requirements):
         return {
             "rule": "ordered_unique_panel_capacity_search_v4",
+            "section_capacity_aware": True,
             "preserve_passage_count": True,
             "rows": [
                 {
                     "passage_index": int(row.get("passage_index", index)),
-                    "section": str(row.get("section", "")),
+                    "section": sections[index],
                     "required_visual_slots": requirements[index],
                     "available_visual_slots": 0,
                     "claim_ids": [],
@@ -1964,6 +2080,24 @@ def _capacity_safe_claim_plan(
                 caps[panel] = capacity
         if not caps:
             continue
+        raw_by_section = claim.get("evidence_panel_slot_capacity_by_section")
+        explicit_section_caps = isinstance(raw_by_section, Mapping)
+        by_section: dict[str, dict[str, int]] = {}
+        if explicit_section_caps:
+            for raw_section, raw_section_caps in raw_by_section.items():
+                if not isinstance(raw_section_caps, Mapping):
+                    continue
+                section_caps: dict[str, int] = {}
+                for panel_id, raw_capacity in raw_section_caps.items():
+                    panel = str(panel_id).strip()
+                    try:
+                        capacity = max(0, int(raw_capacity))
+                    except (TypeError, ValueError):
+                        capacity = 0
+                    if panel in caps and capacity > 0:
+                        section_caps[panel] = capacity
+                if section_caps:
+                    by_section[str(raw_section)] = section_caps
         claim_bundles.append(
             {
                 "ordered_index": index,
@@ -1971,28 +2105,48 @@ def _capacity_safe_claim_plan(
                 "min_source_order": int(claim.get("min_source_order", 0)),
                 "hook_score": _hook_claim_score(claim),
                 "panel_caps": caps,
+                "panel_caps_by_section": by_section,
+                "section_caps_explicit": explicit_section_caps,
             }
         )
 
-    def available_capacity(start_index: int, used_panels: frozenset[str]) -> int:
-        panel_caps: dict[str, int] = {}
+    def bundle_caps(bundle: Mapping[str, Any], section: str) -> dict[str, int]:
+        by_section = bundle.get("panel_caps_by_section")
+        if bool(bundle.get("section_caps_explicit")):
+            if not isinstance(by_section, Mapping):
+                return {}
+            raw = by_section.get(section)
+            if not isinstance(raw, Mapping):
+                return {}
+            return {str(panel_id): int(capacity) for panel_id, capacity in raw.items()}
+        raw = bundle.get("panel_caps")
+        return (
+            {str(panel_id): int(capacity) for panel_id, capacity in raw.items()}
+            if isinstance(raw, Mapping)
+            else {}
+        )
+
+    def available_capacity(
+        start_index: int,
+        used_panels: frozenset[str],
+        passage_index: int,
+    ) -> int:
+        remaining_sections = set(sections[passage_index:])
+        panel_ids: set[str] = set()
         for bundle in claim_bundles:
             if int(bundle["ordered_index"]) < start_index:
                 continue
-            caps = bundle["panel_caps"]
-            if not isinstance(caps, Mapping):
-                continue
-            for panel_id, raw_capacity in caps.items():
-                panel = str(panel_id)
-                if panel in used_panels:
-                    continue
-                panel_caps[panel] = max(panel_caps.get(panel, 0), int(raw_capacity))
-        return len(panel_caps)
+            for section in remaining_sections:
+                for panel_id in bundle_caps(bundle, section):
+                    if panel_id not in used_panels:
+                        panel_ids.add(panel_id)
+        return len(panel_ids)
 
     def candidate_bundles(
         start_index: int,
         used_panels: frozenset[str],
         required: int,
+        section: str,
         *,
         hook_mode: bool = False,
     ) -> list[dict[str, Any]]:
@@ -2021,14 +2175,14 @@ def _capacity_safe_claim_plan(
                 ordered_index = int(bundle["ordered_index"])
                 if ordered_index < start_index:
                     continue
-                caps = bundle["panel_caps"]
-                if not isinstance(caps, Mapping):
+                caps = bundle_caps(bundle, section)
+                if not caps:
                     continue
-                bundle_panels = {str(panel_id) for panel_id in caps}
+                bundle_panels = set(caps)
                 if bundle_panels & used_panels or bundle_panels & set(selected_caps):
                     continue
                 merged = dict(selected_caps)
-                merged.update({str(panel_id): int(value) for panel_id, value in caps.items()})
+                merged.update(caps)
                 walk(next_position + 1, (*selected, bundle), merged)
 
         walk(0, (), {})
@@ -2054,13 +2208,18 @@ def _capacity_safe_claim_plan(
         if passage_index >= len(requirements):
             return []
         required_remaining = sum(requirements[passage_index:])
-        if available_capacity(start_index, used_panels) < required_remaining:
+        if available_capacity(start_index, used_panels, passage_index) < required_remaining:
             return None
         required = requirements[passage_index]
+        section = sections[passage_index]
         hook_mode = passage_index == 0
         candidate_start = 0 if hook_mode else start_index
         for candidate in candidate_bundles(
-            candidate_start, used_panels, required, hook_mode=hook_mode
+            candidate_start,
+            used_panels,
+            required,
+            section,
+            hook_mode=hook_mode,
         ):
             panel_caps = candidate["panel_caps"]
             candidate_panels = frozenset(str(panel_id) for panel_id in panel_caps)
@@ -2089,7 +2248,7 @@ def _capacity_safe_claim_plan(
         plan_rows.append(
             {
                 "passage_index": int(requirement.get("passage_index", index)),
-                "section": str(requirement.get("section", "")),
+                "section": sections[index],
                 "required_visual_slots": required,
                 "available_visual_slots": available,
                 "unique_panel_count": len(panel_caps),
@@ -2101,19 +2260,17 @@ def _capacity_safe_claim_plan(
                 "claim_ids": [str(claim["claim_id"]) for claim in claims],
                 "evidence_panel_ids": list(panel_caps),
                 "evidence_panel_slot_capacity": panel_caps,
-                "claim_min_source_orders": [
-                    int(claim["min_source_order"]) for claim in claims
-                ],
+                "claim_min_source_orders": [int(claim["min_source_order"]) for claim in claims],
                 "feasible": bool(candidate is not None and available >= required),
             }
         )
     return {
         "rule": "ordered_unique_panel_capacity_search_v4",
+        "section_capacity_aware": True,
         "preserve_passage_count": True,
         "rows": plan_rows,
         "feasible": solution is not None and all(bool(row["feasible"]) for row in plan_rows),
     }
-
 
 def _claim_bundle_aware_capacity_plan(
     feasible_claim_rows: Sequence[Mapping[str, Any]],
@@ -2441,6 +2598,64 @@ def build_repair_payload(
         len(section_names),
         min(REPAIR_ADAPTIVE_MIN_UNIQUE_PANELS, standard_minimum_panels),
     )
+    window_feasibility_cache: dict[tuple[str, ...], bool] = {}
+
+    def coherent_window_is_section_safe(
+        window_rows: Sequence[Mapping[str, Any]],
+    ) -> bool:
+        cache_key = tuple(str(row.get("claim_id", "")) for row in window_rows)
+        cached = window_feasibility_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        unique_panels = {
+            str(panel_id)
+            for row in window_rows
+            for panel_id in (row.get("evidence_panel_ids") or ())
+            if str(panel_id).strip()
+        }
+        selected_count = len(unique_panels)
+        if selected_count >= standard_minimum_panels:
+            policy = REPAIR_DURATION_POLICY_STANDARD
+            word_min = REPAIR_TARGET_WORD_MIN
+            word_goal = REPAIR_TARGET_WORD_GOAL
+            word_max = REPAIR_TARGET_WORD_MAX
+        else:
+            policy = REPAIR_DURATION_POLICY_ADAPTIVE
+            min_words_per_slot = max(
+                1,
+                math.ceil(REPAIR_ADAPTIVE_MIN_SHOT_SECONDS * narration_words_per_second),
+            )
+            target_words_per_slot = max(
+                min_words_per_slot,
+                round(REPAIR_ADAPTIVE_TARGET_SHOT_SECONDS * narration_words_per_second),
+            )
+            word_min = selected_count * min_words_per_slot
+            word_goal = selected_count * target_words_per_slot
+            word_max = selected_count * max_words_per_visual_slot
+        requirements, rebalance = _rebalance_visual_capacity_requirements(
+            original_visual_capacity_requirements,
+            window_rows,
+            max_words_per_visual_slot=max_words_per_visual_slot,
+            target_word_min=word_min,
+            target_word_goal=word_goal,
+            target_word_max=word_max,
+            duration_policy=policy,
+        )
+        if not bool(rebalance.get("feasible")):
+            window_feasibility_cache[cache_key] = False
+            return False
+        requirements, plan, _metadata = _claim_bundle_aware_capacity_plan(
+            window_rows, requirements
+        )
+        plan = _attach_capacity_word_budgets(
+            plan,
+            max_words_per_visual_slot=max_words_per_visual_slot,
+            target_word_count=int(rebalance.get("target_word_count_goal", 0)),
+        )
+        feasible = bool(plan.get("feasible"))
+        window_feasibility_cache[cache_key] = feasible
+        return feasible
+
     feasible_claim_rows, coherence_window = _select_coherent_claim_window(
         feasible_claim_rows,
         minimum_unique_panels=adaptive_minimum_panels,
@@ -2448,6 +2663,7 @@ def build_repair_payload(
             standard_minimum_panels,
             adaptive_minimum_panels + 1,
         ),
+        window_is_feasible=coherent_window_is_section_safe,
     )
     selected_unique_panels = int(coherence_window.get("selected_unique_panel_count", 0))
     if selected_unique_panels >= standard_minimum_panels:

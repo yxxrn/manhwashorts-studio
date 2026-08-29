@@ -70,7 +70,7 @@ def _visual_request(module):
     loader = getattr(scoring, "load_visual_evidence_instruction", None)
     assert callable(loader), "visual_instruction_loader_missing"
     version, digest, text = loader()
-    assert version == "balloon-free-visual-evidence-v1"
+    assert version == "balloon-free-visual-evidence-v2"
     assert len(digest) == 64
     request = module.VisionObservationRequest(
         analysis_run_id="run-vision-001",
@@ -102,7 +102,7 @@ def test_versioned_visual_semantic_repair_prompt_requires_grounded_facts():
     body = module._build_payload(request, request.panels, "mock-large")
     rendered = _body_text(body)
 
-    assert version == "balloon-free-visual-evidence-repair-v1"
+    assert version == "balloon-free-visual-evidence-repair-v2"
     assert len(digest) == 64
     assert text.strip() in rendered
     assert "visible_facts" in rendered
@@ -784,7 +784,7 @@ def test_visual_prompt_snapshot_is_normalized_and_local_hash_owned():
     version, digest, text = loader()
     snapshot = Path(__file__).parent / "fixtures" / "visual_evidence_prompt_snapshot.sha256"
     assert snapshot.exists()
-    assert version == "balloon-free-visual-evidence-v1"
+    assert version == "balloon-free-visual-evidence-v2"
     assert snapshot.read_text(encoding="utf-8").strip() == digest
     assert text.endswith("\n")
     assert "evidence_hash" not in text
@@ -792,6 +792,8 @@ def test_visual_prompt_snapshot_is_normalized_and_local_hash_owned():
     assert "every balloon region MUST use kind speech_balloon" in text
     assert "unknown is only for unavailable or insufficient visual geometry" in text
     assert "Geometry must be tight and visibly grounded" in text
+    assert "protected_regions MUST describe the editorially important character geometry" in text
+    assert "Do not mark only a hand, arm, foot, weapon tip" in text
 
 
 @pytest.mark.parametrize(

@@ -17,6 +17,7 @@ from app.services import (
     motion_director,
     reference_profile,
     review_source_upscale,
+    roi_detection,
     visual_scoring,
 )
 
@@ -78,16 +79,336 @@ def _review_transition_family(rank: int) -> str:
     return "fade"
 
 
+def _review_role(section: str, beat: str) -> str:
+    section_key = str(section or "").strip().lower()
+    beat_key = str(beat or "").strip().lower()
+    if any(token in beat_key for token in ("detail", "insert", "object", "weapon", "hands")):
+        return "detail"
+    if any(token in beat_key for token in ("reaction", "surprise", "thinking")):
+        return "reaction"
+    if any(token in beat_key for token in ("attack", "impact", "action", "explosion")):
+        return "action"
+    if section_key == "setup":
+        return "setup"
+    if section_key in {"conflict", "hook"}:
+        return "action"
+    if section_key in {"twist", "cta", "payoff"}:
+        return "reaction"
+    return "neutral"
+
+
+def _review_candidate_visual_fit_score(
+    candidate: object,
+    section: str = "",
+    beat: str = "",
+) -> float:
+    """Score how readable a grounded panel is for the current editorial beat."""
+
+    panel_candidate = getattr(candidate, "panel_candidate", None)
+    features = getattr(panel_candidate, "features", None)
+    if features is None:
+        return 0.0
+    role = _review_role(section, beat)
+    face = float(getattr(features, "face_visibility", 0.0) or 0.0)
+    expression = float(getattr(features, "facial_expression", 0.0) or 0.0)
+    action = float(getattr(features, "action_pose", 0.0) or 0.0)
+    impact = float(getattr(features, "impact_frame", 0.0) or 0.0)
+    composition = float(getattr(features, "dramatic_composition", 0.0) or 0.0)
+    weapons = float(getattr(features, "weapons", 0.0) or 0.0)
+    effects = float(getattr(features, "visual_effects", 0.0) or 0.0)
+    close_up = float(getattr(features, "close_up", 0.0) or 0.0)
+    scenery = float(getattr(features, "scenery_only", 0.0) or 0.0)
+    if role == "setup":
+        score = 2.7 * face + 1.8 * composition + 0.8 * action - 0.8 * close_up
+    elif role == "reaction":
+        score = 3.0 * face + 2.2 * expression + 1.3 * composition + 0.4 * action
+    elif role == "detail":
+        score = 2.0 * weapons + 1.6 * effects + 1.2 * action + 0.8 * composition
+    elif role == "action":
+        score = 2.5 * action + 2.0 * impact + 1.4 * composition + 0.8 * face + 0.8 * effects
+    else:
+        score = 1.4 * face + 1.4 * action + 1.2 * composition + 0.6 * expression
+    return round(score - 1.5 * scenery, 6)
+
+
 def _review_candidate_priority_key(
     candidate: object,
     usage_counts: Mapping[str, int],
+    section: str = "",
+    beat: str = "",
 ) -> tuple[object, ...]:
-    """Prefer an unused grounded panel while retaining source chronology."""
+    """Prefer unused, beat-readable grounded panels with deterministic ties."""
 
     panel_id = str(getattr(candidate, "panel_id", ""))
     return (
         1 if usage_counts.get(panel_id, 0) > 0 else 0,
+        -_review_candidate_visual_fit_score(candidate, section, beat),
         *_review_candidate_order_key(candidate),
+    )
+
+
+def _normalized_region_box(region: object) -> tuple[float, float, float, float] | None:
+    bbox = getattr(region, "normalized_bbox", None)
+    if isinstance(bbox, (tuple, list)) and len(bbox) == 4:
+        try:
+            values = tuple(float(value) for value in bbox)
+        except (TypeError, ValueError):
+            values = ()
+        if len(values) == 4 and values[2] > values[0] and values[3] > values[1]:
+            return values  # type: ignore[return-value]
+    polygon = tuple(getattr(region, "normalized_polygon", ()) or ())
+    if polygon:
+        try:
+            xs = [float(point[0]) for point in polygon]
+            ys = [float(point[1]) for point in polygon]
+        except (IndexError, TypeError, ValueError):
+            return None
+        if xs and ys:
+            return min(xs), min(ys), max(xs), max(ys)
+    return None
+
+
+def _normalized_crop_box(
+    crop_box: Sequence[int], panel_size: tuple[int, int]
+) -> tuple[float, float, float, float]:
+    width, height = panel_size
+    return (
+        float(crop_box[0]) / width,
+        float(crop_box[1]) / height,
+        float(crop_box[2]) / width,
+        float(crop_box[3]) / height,
+    )
+
+
+def _box_intersection_fraction(
+    box: tuple[float, float, float, float],
+    crop: tuple[float, float, float, float],
+) -> float:
+    left = max(box[0], crop[0])
+    top = max(box[1], crop[1])
+    right = min(box[2], crop[2])
+    bottom = min(box[3], crop[3])
+    overlap = max(0.0, right - left) * max(0.0, bottom - top)
+    area = max(1e-9, (box[2] - box[0]) * (box[3] - box[1]))
+    return min(1.0, overlap / area)
+
+
+def _review_face_boxes(candidate: ReferencePanelFallbackCandidate) -> tuple[tuple[float, float, float, float], ...]:
+    boxes: list[tuple[float, float, float, float]] = []
+    evidence = getattr(candidate, "visual_evidence", None)
+    for region in tuple(getattr(evidence, "protected_regions", ()) or ()):
+        if str(getattr(region, "kind", "")) != "face":
+            continue
+        box = _normalized_region_box(region)
+        if box is not None:
+            boxes.append(box)
+    panel_candidate = getattr(candidate, "panel_candidate", None)
+    features = getattr(panel_candidate, "features", None)
+    # Provider geometry is authoritative. Local Haar boxes are only a fallback
+    # for cached/legacy observations that do not expose a face region.
+    if not boxes:
+        boxes.extend(tuple(getattr(features, "face_boxes", ()) or ()))
+    if not boxes:
+        # Older/cached candidates may only have face centres. A conservative
+        # proxy still lets ranking protect the head from an edge crop.
+        for x, y in tuple(getattr(features, "face_points", ()) or ()):
+            boxes.append(
+                (
+                    max(0.0, float(x) - 0.09),
+                    max(0.0, float(y) - 0.075),
+                    min(1.0, float(x) + 0.09),
+                    min(1.0, float(y) + 0.075),
+                )
+            )
+    deduped = {
+        tuple(round(float(value), 5) for value in box)
+        for box in boxes
+        if len(box) == 4 and box[2] > box[0] and box[3] > box[1]
+    }
+    return tuple(sorted(deduped))
+
+
+def _review_subject_boxes(candidate: ReferencePanelFallbackCandidate) -> tuple[tuple[float, float, float, float], ...]:
+    boxes = []
+    evidence = getattr(candidate, "visual_evidence", None)
+    for region in tuple(getattr(evidence, "protected_regions", ()) or ()):
+        if str(getattr(region, "kind", "")) != "subject":
+            continue
+        box = _normalized_region_box(region)
+        if box is not None:
+            boxes.append(box)
+    return tuple(boxes)
+
+
+def _review_crop_editorial_metrics(
+    candidate: ReferencePanelFallbackCandidate,
+    roi: ReferenceROIAlternative,
+    telemetry: object,
+    *,
+    section: str,
+    beat: str,
+) -> dict[str, object]:
+    """Measure human-facing composition quality beyond raw framing feasibility."""
+
+    crop = _normalized_crop_box(roi.crop_box, candidate.panel_size)
+    crop_width = max(1e-9, crop[2] - crop[0])
+    crop_height = max(1e-9, crop[3] - crop[1])
+    crop_area = crop_width * crop_height
+    faces = _review_face_boxes(candidate)
+    face_cutoff_count = 0
+    face_margin_violation_count = 0
+    visible_face_count = 0
+    minimum_face_coverage = 1.0
+    minimum_face_margin = 1.0
+    for face in faces:
+        coverage = _box_intersection_fraction(face, crop)
+        if coverage <= 0.03:
+            continue
+        minimum_face_coverage = min(minimum_face_coverage, coverage)
+        if coverage >= 0.50:
+            visible_face_count += 1
+        if coverage < reference_profile.REVIEW_FACE_MIN_VISIBLE_FRACTION:
+            face_cutoff_count += 1
+            continue
+        face_width = max(1e-9, face[2] - face[0])
+        face_height = max(1e-9, face[3] - face[1])
+        margin = min(
+            (face[0] - crop[0]) / face_width,
+            (crop[2] - face[2]) / face_width,
+            (face[1] - crop[1]) / face_height,
+            (crop[3] - face[3]) / face_height,
+        )
+        minimum_face_margin = min(minimum_face_margin, max(0.0, margin))
+        if margin < reference_profile.REVIEW_FACE_MIN_MARGIN_RATIO:
+            face_margin_violation_count += 1
+
+    subjects = _review_subject_boxes(candidate)
+    if subjects:
+        subject_completeness = max(_box_intersection_fraction(box, crop) for box in subjects)
+    else:
+        subject_completeness = float(
+            telemetry.get("subject_coverage", 1.0)
+            if isinstance(telemetry, Mapping)
+            else getattr(telemetry, "subject_coverage", 1.0)
+        )
+    base_zoom = float(
+        telemetry.get("base_zoom", 1.0)
+        if isinstance(telemetry, Mapping)
+        else getattr(telemetry, "base_zoom", 1.0)
+    )
+    role = _review_role(section, beat)
+    detail_allowed = role == "detail"
+    crop_center_x = (crop[0] + crop[2]) / 2.0
+    crop_center_y = (crop[1] + crop[3]) / 2.0
+    semantic_focus_label = ""
+    semantic_focus_distance = 1.0
+    panel_candidate = getattr(candidate, "panel_candidate", None)
+    try:
+        semantic_rois = roi_detection.rank_rois(panel_candidate)
+    except (AttributeError, TypeError, ValueError):
+        semantic_rois = ()
+    for semantic_roi in semantic_rois:
+        distance = math.hypot(
+            float(semantic_roi.x) - crop_center_x,
+            float(semantic_roi.y) - crop_center_y,
+        )
+        if distance < semantic_focus_distance:
+            semantic_focus_distance = distance
+            semantic_focus_label = str(semantic_roi.label)
+    semantic_detail = any(
+        token in str(roi.roi_label).lower()
+        for token in ("hand", "detail", "insert")
+    ) or (
+        semantic_focus_distance <= 0.18
+        and semantic_focus_label in {"hands", "detail"}
+        and crop_area <= 0.35
+    )
+    production_scale_geometry = (
+        candidate.panel_size[0] >= 720 and candidate.panel_size[1] >= 1280
+    )
+    extreme_crop = (
+        production_scale_geometry
+        and crop_area < reference_profile.REVIEW_DETAIL_CROP_MAX_AREA_FRACTION
+        and base_zoom >= reference_profile.REVIEW_EXTREME_CROP_ZOOM
+    )
+    face_omission = bool(faces) and visible_face_count == 0 and not detail_allowed
+    unjustified_detail = bool(
+        not detail_allowed
+        and (semantic_detail or (extreme_crop and visible_face_count == 0))
+    )
+    anomaly_flags: list[str] = []
+    if face_cutoff_count:
+        anomaly_flags.append("face_cutoff")
+    if face_margin_violation_count:
+        anomaly_flags.append("face_edge_crowding")
+    if face_omission:
+        anomaly_flags.append("face_omitted_by_crop")
+    if unjustified_detail:
+        anomaly_flags.append("unjustified_detail_crop")
+    if subjects and subject_completeness < reference_profile.REVIEW_SUBJECT_MIN_COMPLETENESS:
+        anomaly_flags.append("subject_incomplete")
+    return {
+        "version": "review-editorial-crop-quality-v1",
+        "role": role,
+        "crop_area_fraction": round(crop_area, 6),
+        "face_region_count": len(faces),
+        "visible_face_count": visible_face_count,
+        "face_cutoff_count": face_cutoff_count,
+        "face_margin_violation_count": face_margin_violation_count,
+        "minimum_visible_face_fraction": round(minimum_face_coverage, 6),
+        "minimum_face_margin_ratio": round(minimum_face_margin, 6),
+        "face_omission": face_omission,
+        "subject_region_count": len(subjects),
+        "subject_completeness_score": round(subject_completeness, 6),
+        "semantic_detail_roi": semantic_detail,
+        "semantic_focus_label": semantic_focus_label,
+        "semantic_focus_distance": round(semantic_focus_distance, 6),
+        "extreme_crop": extreme_crop,
+        "unjustified_detail_crop": unjustified_detail,
+        "anomaly_flags": anomaly_flags,
+    }
+
+
+def _review_editorial_rejection_code(metrics: Mapping[str, object]) -> str | None:
+    if int(metrics.get("face_cutoff_count", 0) or 0) > 0:
+        return "visual.face_cutoff"
+    if int(metrics.get("face_margin_violation_count", 0) or 0) > 0:
+        return "visual.face_edge_crowding"
+    if bool(metrics.get("face_omission", False)):
+        return "visual.face_omitted"
+    if bool(metrics.get("unjustified_detail_crop", False)):
+        return "visual.unjustified_detail_crop"
+    if (
+        str(metrics.get("role", "")) in {"setup", "reaction"}
+        and int(metrics.get("subject_region_count", 0) or 0) > 0
+        and float(metrics.get("subject_completeness_score", 1.0))
+        < reference_profile.REVIEW_SUBJECT_MIN_COMPLETENESS
+    ):
+        return "visual.subject_incomplete"
+    return None
+
+
+def _review_editorial_crop_quality_key(
+    metrics: Mapping[str, object],
+    *,
+    blank_fraction: float,
+    base_zoom: float,
+    protected_retained_fraction: float,
+    preferred_blank_fraction: float,
+) -> tuple[object, ...]:
+    subject_score = float(metrics.get("subject_completeness_score", 1.0))
+    return (
+        int(metrics.get("face_cutoff_count", 0) or 0),
+        1 if bool(metrics.get("face_omission", False)) else 0,
+        int(metrics.get("face_margin_violation_count", 0) or 0),
+        1 if bool(metrics.get("unjustified_detail_crop", False)) else 0,
+        round(1.0 - max(0.0, min(1.0, subject_score)), 6),
+        *reference_profile.review_framing_quality_key(
+            blank_fraction,
+            base_zoom,
+            protected_retained_fraction,
+            preferred_blank_fraction=preferred_blank_fraction,
+        ),
     )
 
 
@@ -925,6 +1246,58 @@ def _ordered_roi_alternatives(
     )
 
 
+def _review_framing_candidate_is_feasible(
+    crop_box: tuple[int, int, int, int],
+    ready: object,
+    border_mask: object,
+    panel_size: tuple[int, int],
+    target_size: tuple[int, int],
+    *,
+    review_aggressive_crop: bool,
+    standard_blank_target: float,
+    allow_conservative_full_panel: bool,
+    **feasibility_kwargs: object,
+) -> tuple[bool, object]:
+    """Apply the 8% review gate, then a tightly bounded wide-crop rescue.
+
+    The rescue exists to avoid forcing an extreme detail crop merely to erase
+    modest edge whitespace. Balloon and protected-region constraints are still
+    evaluated by the authoritative framing boundary on the second pass.
+    """
+
+    feasible, telemetry = framing_analysis.candidate_is_feasible(
+        crop_box, ready, border_mask, panel_size, target_size,
+        blank_target_fraction=standard_blank_target,
+        allow_conservative_full_panel=allow_conservative_full_panel,
+        review_aggressive_crop=review_aggressive_crop,
+        **feasibility_kwargs,
+    )
+    rejection = getattr(telemetry, "rejection_code", None)
+    if (
+        feasible
+        or not review_aggressive_crop
+        or rejection != "visual.blank_infeasible"
+    ):
+        return feasible, telemetry
+    rescued, rescue_telemetry = framing_analysis.candidate_is_feasible(
+        crop_box, ready, border_mask, panel_size, target_size,
+        blank_target_fraction=reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION,
+        allow_conservative_full_panel=allow_conservative_full_panel,
+        review_aggressive_crop=review_aggressive_crop,
+        **feasibility_kwargs,
+    )
+    if (
+        rescued
+        and float(getattr(rescue_telemetry, "base_zoom", 999.0))
+        <= reference_profile.REVIEW_COHERENCE_RESCUE_MAX_BASE_ZOOM + 1e-9
+    ):
+        return True, replace(
+            rescue_telemetry,
+            fallback_reason=reference_profile.REVIEW_COHERENCE_RESCUE_REASON,
+        )
+    return feasible, telemetry
+
+
 def _reference_panel_attempt(
     candidate: ReferencePanelFallbackCandidate,
     roi: ReferenceROIAlternative,
@@ -987,16 +1360,15 @@ def _reference_panel_attempt(
     feasibility_kwargs: dict[str, object] = {}
     if allow_low_resolution:
         feasibility_kwargs["allow_source_resolution_warning"] = True
-    if review_aggressive_crop:
-        feasibility_kwargs["review_aggressive_crop"] = True
     try:
-        feasible, telemetry = framing_analysis.candidate_is_feasible(
+        feasible, telemetry = _review_framing_candidate_is_feasible(
             roi.crop_box,
             ready,
             candidate.border_mask,
             candidate.panel_size,
             (profile.final_width, profile.final_height),
-            blank_target_fraction=(
+            review_aggressive_crop=review_aggressive_crop,
+            standard_blank_target=(
                 reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
                 if review_aggressive_crop
                 else profile.framing_blank_target_fraction
@@ -1032,11 +1404,21 @@ def _reference_panel_attempt(
         if review_aggressive_crop
         else roi.edge_blank_fraction
     )
+    telemetry_fallback_reason = (
+        getattr(telemetry, "fallback_reason", None)
+        if not isinstance(telemetry, Mapping)
+        else telemetry.get("fallback_reason")
+    )
+    allowed_pixel_blank_fraction = (
+        reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION
+        if review_aggressive_crop
+        and telemetry_fallback_reason == reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+        else reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+    )
     if (
         accepted
         and pixel_edge_blank_fraction is not None
-        and float(pixel_edge_blank_fraction)
-        > reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+        and float(pixel_edge_blank_fraction) > allowed_pixel_blank_fraction
     ):
         telemetry = _telemetry_json(telemetry)
         telemetry.update(
@@ -1105,6 +1487,8 @@ def _feasible_roi_capacity(
     allow_source_resolution_warning: bool,
     review_aggressive_crop: bool = False,
     allow_conservative_full_panel: bool = False,
+    section: str = "",
+    beat: str = "",
 ) -> int:
     """Count exact feasible ROI alternatives for review cadence allocation."""
     source_manifest = candidate.source_upscale_manifest
@@ -1118,21 +1502,20 @@ def _feasible_roi_capacity(
     feasibility_kwargs: dict[str, object] = {}
     if allow_low_resolution:
         feasibility_kwargs["allow_source_resolution_warning"] = True
-    if review_aggressive_crop:
-        feasibility_kwargs["review_aggressive_crop"] = True
     ready = visual_scoring.require_reference_ready_visual_evidence(
         candidate.visual_evidence,
         allow_conservative_full_panel=allow_conservative_full_panel,
     )
     feasible = 0
     for roi in _ordered_roi_alternatives(candidate):
-        accepted, _telemetry = framing_analysis.candidate_is_feasible(
+        accepted, _telemetry = _review_framing_candidate_is_feasible(
             roi.crop_box,
             ready,
             candidate.border_mask,
             candidate.panel_size,
             (profile.final_width, profile.final_height),
-            blank_target_fraction=(
+            review_aggressive_crop=review_aggressive_crop,
+            standard_blank_target=(
                 reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
                 if review_aggressive_crop
                 else profile.framing_blank_target_fraction
@@ -1141,6 +1524,16 @@ def _feasible_roi_capacity(
             **feasibility_kwargs,
         )
         if accepted:
+            if review_aggressive_crop:
+                metrics = _review_crop_editorial_metrics(
+                    candidate,
+                    roi,
+                    _telemetry,
+                    section=section,
+                    beat=beat,
+                )
+                if _review_editorial_rejection_code(metrics) is not None:
+                    continue
             feasible += 1
     return min(feasible, profile.max_canonical_panel_uses)
 
@@ -1240,6 +1633,7 @@ def _plan_reference_panel_candidates(
                 allow_source_resolution_warning=allow_source_resolution_warning,
                 review_aggressive_crop=allow_review_cadence_adaptation,
                 allow_conservative_full_panel=allow_conservative_full_panel,
+                section=section,
             )
             for candidate in eligible_for_section
         ]
@@ -1282,6 +1676,12 @@ def _plan_reference_panel_candidates(
     last_panel_id = ""
     recent_panel_ids: list[str] = []
     selected_shots: list[dict] = []
+    section_shot_totals: dict[str, int] = {}
+    for base_shot in base_shots:
+        section_key = str(base_shot.get("section", ""))
+        section_shot_totals[section_key] = section_shot_totals.get(section_key, 0) + 1
+    section_shots_done: dict[str, int] = {}
+    last_non_hook_source_order: int | None = None
     for shot_index, shot in enumerate(base_shots):
         section = str(shot.get("section", ""))
         beat = str(shot.get("camera_intent", "") or "")
@@ -1319,15 +1719,6 @@ def _plan_reference_panel_candidates(
             ]
         eligible = list(_prioritize_resolution_candidates(eligible))
         if allow_review_cadence_adaptation:
-            # Silent review must follow the chapter/source order (204 -> 205 ->
-            # 206) so the narration timeline does not jump backwards across
-            # chapters. Sort eligible panels by immutable source order first;
-            # source family and IDs only break deterministic ties.
-            eligible.sort(
-                key=lambda candidate: _review_candidate_priority_key(
-                    candidate, uses
-                )
-            )
             eligible = [
                 candidate
                 for candidate in eligible
@@ -1335,36 +1726,51 @@ def _plan_reference_panel_candidates(
                     candidate,
                     profile,
                     allow_source_resolution_warning=allow_source_resolution_warning,
-                    review_aggressive_crop=allow_review_cadence_adaptation,
+                    review_aggressive_crop=True,
                     allow_conservative_full_panel=allow_conservative_full_panel,
+                    section=section,
+                    beat=beat,
                 )
                 > len(used_rois.get(candidate.panel_id, set()))
             ]
-            if allow_review_cadence_adaptation:
-                # Keep the chapter-ordered sequence for silent review; capacity
-                # only breaks ties after source order is fixed.
-                eligible.sort(
-                    key=lambda candidate: _review_candidate_priority_key(
-                        candidate, uses
-                    )
+            if section != "hook" and last_non_hook_source_order is not None:
+                eligible = [
+                    candidate
+                    for candidate in eligible
+                    if int(candidate.source_order) >= last_non_hook_source_order
+                ]
+            remaining_in_section = max(
+                1,
+                section_shot_totals.get(section, 1)
+                - section_shots_done.get(section, 0),
+            )
+            if remaining_in_section > 1 and eligible:
+                viable_with_future: list[ReferencePanelFallbackCandidate] = []
+                for candidate in eligible:
+                    floor = int(candidate.source_order)
+                    future_capacity = 0
+                    for future in eligible:
+                        if int(future.source_order) < floor:
+                            continue
+                        remaining_capacity = _feasible_roi_capacity(
+                            future,
+                            profile,
+                            allow_source_resolution_warning=allow_source_resolution_warning,
+                            review_aggressive_crop=True,
+                            allow_conservative_full_panel=allow_conservative_full_panel,
+                            section=section,
+                            beat=beat,
+                        ) - len(used_rois.get(future.panel_id, set()))
+                        future_capacity += max(0, remaining_capacity)
+                    if future_capacity >= remaining_in_section:
+                        viable_with_future.append(candidate)
+                if viable_with_future:
+                    eligible = viable_with_future
+            eligible.sort(
+                key=lambda candidate: _review_candidate_priority_key(
+                    candidate, uses, section, beat
                 )
-            else:
-                eligible.sort(
-                    key=lambda candidate: (
-                        -(
-                            _feasible_roi_capacity(
-                                candidate,
-                                profile,
-                                allow_source_resolution_warning=allow_source_resolution_warning,
-                                allow_conservative_full_panel=allow_conservative_full_panel,
-                            )
-                            - len(used_rois.get(candidate.panel_id, set()))
-                        ),
-                        candidate.source_order,
-                        candidate.panel_id,
-                        candidate.panel_region_id,
-                    )
-                )
+            )
         if not eligible:
             raise ReferencePlanningError(
                 f"no exact panel candidate is eligible for section {section}",
@@ -1375,6 +1781,7 @@ def _plan_reference_panel_candidates(
         accepted_candidate: ReferencePanelFallbackCandidate | None = None
         accepted_roi: ReferenceROIAlternative | None = None
         accepted_telemetry: object | None = None
+        accepted_editorial_metrics: Mapping[str, object] | None = None
         accepted_phase: str | None = None
         for candidate in eligible:
             previous_uses = uses.get(candidate.panel_id, 0)
@@ -1394,7 +1801,7 @@ def _plan_reference_panel_candidates(
                     for roi in roi_alternatives
                 )
             accepted_attempts: list[
-                tuple[tuple[float, float, float, float], object, object, object, str]
+                tuple[tuple[object, ...], object, object, object, str, Mapping[str, object] | None]
             ] = []
             for roi, phase_kind in roi_plan:
                 accepted, telemetry, entry = _reference_panel_attempt(
@@ -1427,35 +1834,69 @@ def _plan_reference_panel_candidates(
                         protected_retained = float(
                             getattr(telemetry, "protected_retained_fraction", 0.0)
                         )
-                    quality_key = reference_profile.review_framing_quality_key(
-                        blank,
-                        base_zoom,
-                        protected_retained,
-                        preferred_blank_fraction=profile.framing_blank_target_fraction,
-                    )
+                    editorial_metrics: Mapping[str, object] | None = None
+                    if allow_review_cadence_adaptation:
+                        editorial_metrics = _review_crop_editorial_metrics(
+                            candidate,
+                            roi,
+                            telemetry,
+                            section=section,
+                            beat=beat,
+                        )
+                        if isinstance(entry, dict):
+                            entry["editorial_crop_quality"] = editorial_metrics
+                        hard_editorial_code = _review_editorial_rejection_code(
+                            editorial_metrics
+                        )
+                        if hard_editorial_code is not None:
+                            if isinstance(entry, dict):
+                                entry["accepted"] = False
+                                entry["code"] = hard_editorial_code
+                                entry["reason"] = "editorial crop rejected before review render"
+                            continue
+                        quality_key = _review_editorial_crop_quality_key(
+                            editorial_metrics,
+                            blank_fraction=blank,
+                            base_zoom=base_zoom,
+                            protected_retained_fraction=protected_retained,
+                            preferred_blank_fraction=profile.framing_blank_target_fraction,
+                        )
+                    else:
+                        quality_key = reference_profile.review_framing_quality_key(
+                            blank,
+                            base_zoom,
+                            protected_retained,
+                            preferred_blank_fraction=profile.framing_blank_target_fraction,
+                        )
                     accepted_attempts.append(
-                        (quality_key, roi, telemetry, entry, phase_kind)
+                        (quality_key, roi, telemetry, entry, phase_kind, editorial_metrics)
                     )
                     if not allow_review_cadence_adaptation:
                         break
             if accepted_attempts:
                 if allow_review_cadence_adaptation:
                     accepted_attempts.sort(key=lambda item: item[0])
-                    _quality, roi, telemetry, entry, phase_kind = accepted_attempts[0]
+                    _quality, roi, telemetry, entry, phase_kind, editorial_metrics = accepted_attempts[0]
                     chosen = entry
-                    for _q2, _r2, _t2, other_entry, _p2 in accepted_attempts:
+                    for _q2, _r2, _t2, other_entry, _p2, _m2 in accepted_attempts:
                         if other_entry is not chosen and isinstance(other_entry, dict):
                             other_entry["accepted"] = False
                 else:
-                    _quality, roi, telemetry, entry, phase_kind = accepted_attempts[0]
+                    _quality, roi, telemetry, entry, phase_kind, editorial_metrics = accepted_attempts[0]
                 accepted_candidate = candidate
                 accepted_roi = roi
                 accepted_telemetry = telemetry
+                accepted_editorial_metrics = editorial_metrics
                 accepted_phase = phase_kind
                 break
             if accepted_candidate is not None:
                 break
-        if accepted_candidate is None or accepted_roi is None or accepted_telemetry is None:
+        if (
+            accepted_candidate is None
+            or accepted_roi is None
+            or accepted_telemetry is None
+            or (allow_review_cadence_adaptation and accepted_editorial_metrics is None)
+        ):
             raise ReferencePlanningError(
                 f"no feasible exact panel candidate for section {section}",
                 "visual.visual_unavailable",
@@ -1486,6 +1927,8 @@ def _plan_reference_panel_candidates(
         elif accepted_phase == "alternate_panel":
             reasons.append("fallback:alternate_panel_same_beat")
         telemetry_record = _telemetry_json(accepted_telemetry)
+        if accepted_editorial_metrics is not None:
+            telemetry_record["editorial_crop_quality"] = dict(accepted_editorial_metrics)
         telemetry_record.update(
             {
                 "panel_id": candidate.panel_id,
@@ -1584,6 +2027,9 @@ def _plan_reference_panel_candidates(
         selected_shots.append(shot)
         recent_panel_ids.append(candidate.panel_id)
         last_panel_id = candidate.panel_id
+        section_shots_done[section] = section_shots_done.get(section, 0) + 1
+        if section != "hook":
+            last_non_hook_source_order = int(candidate.source_order)
     # A pan/focus_shift curve with no focus travel renders as sub-pixel zoom
     # jitter. Degrade those shots to a pure zoom curve.
     for shot in selected_shots:
