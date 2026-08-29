@@ -16,8 +16,8 @@ artifacts override historical benchmark notes.
 - Tests are organized by unit/contracts/integration/render/production/cloud/API/
   migrations, with shared builders in `tests/factories/`.
 - Refactor release gate collected 1,520 tests and completed 100% with exit code 0.
-- Documentation synchronization adds five contract checks; current collection is 1,525 tests.
-- Ruff, compileall, and `git diff --check` passed at the refactor gate; documentation sync targeted guards are green.
+- Documentation synchronization added five contract checks; duration-policy hardening adds four more. Current collection is 1,529 tests.
+- The current duration-policy release gate completed the full 1,529-test suite at 100% with exit code 0; Ruff, compileall, and `git diff --check` are green.
 
 ## Production behavior
 
@@ -32,13 +32,18 @@ contains `thumbnail.jpg`, `thumbnail_clean.jpg`, up to three ranked variants,
 `thumbnail_meta.json`, and `thumbnail.qc.json`. Text uses outline/shadow styling
 without the old wide black banner.
 
-The accepted production artifact used for no-op verification remains:
+Duration policy is now explicit and single-sourced: new projects default to 55s, the normal final-production acceptance window is 50-60s, and the general schema/ceiling remains 10-90s. `coherent_capacity_adaptive_v1` may shorten review/diagnostic pacing when grounded visual capacity is insufficient, but a sub-50s adaptive policy is now blocked before TTS/timeline/render in final production.
+
+A historical adaptive production artifact used during the refactor no-op verification remains on disk:
 
 - project: `acdb918636ee4797b759113627432f08`
 - render job: `9b35e931ee814f03a2c3f61efbe82a51`
 - final size: 13,411,158 bytes
 - final SHA-256: `0a75579e7dddecb526453ce2c6ab558711a2cc1cba772437ea4f74e16665406b`
 - thumbnail QC: PASS
+- measured duration: 25.083s (historical adaptive artifact; no longer valid as a new final-production duration)
+
+Preserved acceptance artifacts in `data/p0-aws-acceptance/` remain above 50 seconds (for example a 53.033s silent preview and voiced renders around 51.1-51.2s). They are separate from the later `acdb...` project whose adaptive path produced the 25.083s historical final. The 25.083s file therefore must not be interpreted as the product target. Under the corrected duration contract a new sub-50s adaptive artifact fails final production.
 
 The final MP4 remained byte-identical across the refactor. A last direct remote
 invocation of the production operator entrypoint was prevented by the automation

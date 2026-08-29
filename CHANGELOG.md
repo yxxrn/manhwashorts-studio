@@ -1,3 +1,11 @@
+# 2026-08-30 — production duration contract hardening
+
+- Single-sourced duration policy: project input range 10-90s, default target 55s, normal final production 50-60s.
+- Removed conflicting 41s/75s/60s defaults from schema, ORM, UI, config, rules generation, and environment template.
+- Kept `coherent_capacity_adaptive_v1` for review/diagnosis only; a sub-50s adaptive contract now fails before TTS, timeline, or final render.
+- Documented the preserved >50s acceptance artifacts (`53.033s` silent preview; voiced renders around `51.1-51.2s`) separately from the later `acdb...` adaptive final at `25.083s`, which is no longer valid as a new final-production duration.
+- Added duration-policy and documentation regressions. Full collection is 1,529 tests and the full suite passes.
+
 # 2026-08-29 — maintainability/documentation synchronization
 
 - Documented the refactored pipeline facade + `pipeline_stages` and cloud runner +

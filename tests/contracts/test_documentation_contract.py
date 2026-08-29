@@ -35,6 +35,8 @@ STALE_PHRASES = (
     'Publication: explicit approval + rights + QC.',
     'target_duration` must be 10–60',
     'Target duration: `60–90s`; ideal `70–85s`',
+    'Project target default: `41s`',
+    'currently accepted production artifact is ~25s',
 )
 
 
@@ -87,3 +89,15 @@ def test_active_relative_markdown_links_resolve():
             if not resolved.is_file():
                 failures.append(f"{relative} -> {target}")
     assert failures == [], "broken active documentation links: " + "; ".join(failures)
+
+
+def test_duration_documentation_matches_product_contract():
+    env_example = (ROOT / '.env.example').read_text(encoding='utf-8')
+    status = (ROOT / 'docs/STATUS.md').read_text(encoding='utf-8')
+    runbook = (ROOT / 'docs/RELEASE_RUNBOOK.md').read_text(encoding='utf-8')
+    assert 'MS_DEFAULT_TARGET_SECONDS=55' in env_example
+    assert 'MS_MAX_SHORT_SECONDS=90' in env_example
+    assert 'default to 55s' in status
+    assert '50-60s' in status
+    assert 'final measured duration is within 50-60s' in runbook
+    assert 'adaptive review duration below 50s' in runbook

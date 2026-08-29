@@ -172,7 +172,7 @@
           <input type="text" id="p-chapter" maxlength="60" placeholder="12">
         </label>
         <label for="p-duration">Target durasi (detik, maks {{ max_duration }})
-          <input type="number" id="p-duration" min="10" max="{{ max_duration }}" value="41">
+          <input type="number" id="p-duration" min="10" max="{{ max_duration }}" value="{{ default_target_seconds }}">
         </label>
         <label for="p-template">Editorial profile
           <select id="p-template">

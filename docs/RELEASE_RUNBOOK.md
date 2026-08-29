@@ -29,6 +29,8 @@ refactor, run the full suite before merging to `main`.
 ## Production artifact gate
 
 - exact approved script identity is current
+- configured target defaults to 55s and final measured duration is within 50-60s
+- adaptive review duration below 50s has not been promoted to final production
 - evidence/source lineage checks pass
 - TTS voice profile is consistent
 - timeline/subtitle contracts pass

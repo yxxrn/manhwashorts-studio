@@ -162,6 +162,7 @@ def dashboard(request: Request) -> HTMLResponse:
             "app_name": settings.app_name,
             "version": settings.version,
             "max_duration": settings.max_short_seconds,
+            "default_target_seconds": settings.default_target_seconds,
             "youtube_enabled": settings.youtube_enabled,
         },
     )

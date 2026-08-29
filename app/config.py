@@ -17,6 +17,8 @@ from pathlib import Path
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.constants import DEFAULT_TARGET_SECONDS
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -118,7 +120,7 @@ class Settings(BaseSettings):
     video_height: int = 1920
     video_fps: int = 60
     max_short_seconds: int = 90
-    default_target_seconds: int = 75
+    default_target_seconds: int = DEFAULT_TARGET_SECONDS
 
     # --- Rendering ---
     ffmpeg_bin: str = "ffmpeg"

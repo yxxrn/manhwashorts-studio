@@ -10,6 +10,9 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from app.constants import (
     DEFAULT_ENGLISH_VOICE_ID,
     DEFAULT_PROJECT_LANGUAGE,
+    DEFAULT_TARGET_SECONDS,
+    PROJECT_DURATION_MAX_SECONDS,
+    PROJECT_DURATION_MIN_SECONDS,
     ContentType,
     CredentialKind,
     LicenseType,
@@ -59,9 +62,13 @@ class ProjectCreate(BaseModel):
     language: Literal["en", "id"] = DEFAULT_PROJECT_LANGUAGE
     spoiler_level: SpoilerLevel = SpoilerLevel.MEDIUM
     narration_style: NarrationStyle = NarrationStyle.DRAMATIC
-    # New projects use the reference-matched 41-second target; stored projects
-    # retain their persisted values and legacy template behavior.
-    target_duration: int = Field(default=41, ge=10, le=90)
+    # New projects target the middle of the standard 50-60 second final window.
+    # Stored projects retain their persisted values.
+    target_duration: int = Field(
+        default=DEFAULT_TARGET_SECONDS,
+        ge=PROJECT_DURATION_MIN_SECONDS,
+        le=PROJECT_DURATION_MAX_SECONDS,
+    )
     voice_id: str = Field(default=DEFAULT_ENGLISH_VOICE_ID, max_length=80)
     series_name: str = Field(default="", max_length=200)
     cta_text: str = Field(default="", max_length=500)
@@ -78,7 +85,11 @@ class ProjectUpdate(BaseModel):
     language: Literal["en", "id"] | None = None
     spoiler_level: SpoilerLevel | None = None
     narration_style: NarrationStyle | None = None
-    target_duration: int | None = Field(default=None, ge=10, le=90)
+    target_duration: int | None = Field(
+        default=None,
+        ge=PROJECT_DURATION_MIN_SECONDS,
+        le=PROJECT_DURATION_MAX_SECONDS,
+    )
     voice_id: str | None = Field(default=None, max_length=80)
     series_name: str | None = Field(default=None, max_length=200)
     cta_text: str | None = Field(default=None, max_length=500)

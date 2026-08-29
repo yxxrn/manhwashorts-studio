@@ -28,6 +28,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 
+from app.constants import (
+    STANDARD_FINAL_DURATION_MAX_SECONDS,
+    STANDARD_FINAL_DURATION_MIN_SECONDS,
+)
 from app.services import (
     analyzer_contract,
     cloud_runner_parts,
@@ -2259,8 +2263,8 @@ def _narration_repair_contract_bounds(
         "target_word_min": 115,
         "target_word_goal": 120,
         "target_word_max": 125,
-        "target_duration_min_s": 50.0,
-        "target_duration_max_s": 60.0,
+        "target_duration_min_s": STANDARD_FINAL_DURATION_MIN_SECONDS,
+        "target_duration_max_s": STANDARD_FINAL_DURATION_MAX_SECONDS,
     }
     if value is None:
         return default

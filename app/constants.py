@@ -7,6 +7,12 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+PROJECT_DURATION_MIN_SECONDS = 10
+PROJECT_DURATION_MAX_SECONDS = 90
+DEFAULT_TARGET_SECONDS = 55
+STANDARD_FINAL_DURATION_MIN_SECONDS = 50.0
+STANDARD_FINAL_DURATION_MAX_SECONDS = 60.0
+
 
 class ProjectStatus(StrEnum):
     """Lifecycle of a project, per PRD FR-01."""

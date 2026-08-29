@@ -10,7 +10,7 @@ code that exists now; planning history belongs in Git history, not here.
 - Default voice: American English, `en-US`, `the-explainer-american`.
 - Timeline clock: measured narration audio.
 - Output: `1080×1920`, `60 FPS` by default, H.264/AAC.
-- Project target default: `41s` (schema range `10–90s`). The currently accepted production artifact is ~25s; do not raise the product baseline to 70–85s without an explicit product decision.
+- Project target default: `55s` (schema range `10–90s`). Standard final production must remain within `50–60s`. A shorter adaptive duration may be used only for review/diagnosis when grounded visual capacity is insufficient; it cannot pass the final production gate.
 - Publication/render readiness: exact approval + evidence/media integrity + strict QC. Rights metadata is non-blocking by default unless enforcement is explicitly enabled.
 - Determinism: identical input and seed produce the same plan.
 - No generative replacement, scraping, watermark removal, or automatic public upload.

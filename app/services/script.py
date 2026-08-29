@@ -15,6 +15,7 @@ import re
 from dataclasses import asdict, dataclass, field
 
 from app.constants import (
+    DEFAULT_TARGET_SECONDS,
     SECTION_WEIGHTS,
     WORDS_PER_SECOND,
     NarrationStyle,
@@ -461,7 +462,7 @@ class RulesScriptGenerator:
         *,
         style: str = NarrationStyle.DRAMATIC,
         language: str = "en",
-        target_seconds: float = 60.0,
+        target_seconds: float = DEFAULT_TARGET_SECONDS,
         spoiler_level: str = SpoilerLevel.MEDIUM,
         manhwa_title: str = "",
         chapter: str = "",

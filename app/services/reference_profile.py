@@ -3,6 +3,11 @@ import json
 import math
 from dataclasses import asdict, dataclass, replace
 
+from app.constants import (
+    STANDARD_FINAL_DURATION_MAX_SECONDS,
+    STANDARD_FINAL_DURATION_MIN_SECONDS,
+)
+
 # Review-only editorial cadence policy.  These values are intentionally kept
 # outside the profile hash: they govern the human-review visual density
 # contract, while the published v1/v2 profile bytes remain unchanged.
@@ -190,8 +195,8 @@ class ReferenceProfileConfig:
 REFERENCE_MATCHED_SHORTS_V1 = ReferenceProfileConfig(
     profile_id="reference_matched_shorts_v1",
     version="1.0.0",
-    duration_min_s=50.0,
-    duration_max_s=60.0,
+    duration_min_s=STANDARD_FINAL_DURATION_MIN_SECONDS,
+    duration_max_s=STANDARD_FINAL_DURATION_MAX_SECONDS,
     shot_min=36,
     shot_max=52,
     hold_min_s=0.65,

@@ -149,6 +149,56 @@ def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp
     assert calls == {"audio": 1, "timeline": 1, "enqueue": 1, "execute": 1}
 
 
+def test_production_rejects_sub_50_second_adaptive_policy_before_media(db, monkeypatch):
+    from app.models import ScriptVersion
+    from app.services import pipeline as pl
+    from tests.factories.evidence import _project
+
+    project = _project(db)
+    script = ScriptVersion(
+        project_id=project.id,
+        version=1,
+        generator="vision_evidence_v3",
+        sections=[{"section": "hook", "text": "A grounded hook."}],
+        approved_by="reviewer",
+        approved_at=datetime.now(UTC),
+        editorial_metadata={"approved_script_version": 1},
+    )
+    db.add(script)
+    db.flush()
+    metadata = dict(script.editorial_metadata or {})
+    metadata["approved_script_hash"] = pl._script_content_hash(script)
+    metadata["duration_policy_contract"] = {
+        "version": "coherent_capacity_adaptive_v1",
+        "adaptive": True,
+        "target_duration_min_s": 24.35,
+        "target_duration_max_s": 31.30,
+    }
+    script.editorial_metadata = metadata
+    db.flush()
+
+    media_calls = {"audio": 0, "timeline": 0, "render": 0}
+    monkeypatch.setattr(pl, "generate_voiceover", lambda *_a, **_k: media_calls.__setitem__("audio", 1))
+    monkeypatch.setattr(pl, "build_timeline", lambda *_a, **_k: media_calls.__setitem__("timeline", 1))
+    monkeypatch.setattr(pl, "enqueue_render", lambda *_a, **_k: media_calls.__setitem__("render", 1))
+
+    approved_hash = pl._script_content_hash(script)
+    try:
+        pl.run_production(
+            db,
+            project.id,
+            actor_id="operator",
+            approved_script_hash=approved_hash,
+            approved_script_version=1,
+        )
+    except pl.PipelineError as exc:
+        assert "standard 50-60 second window" in str(exc)
+    else:  # pragma: no cover - contract guard
+        raise AssertionError("sub-50 adaptive review policy reached final production")
+
+    assert media_calls == {"audio": 0, "timeline": 0, "render": 0}
+
+
 def test_nonpublishable_final_enqueue_allows_only_rights_blocker(db, monkeypatch):
     from types import SimpleNamespace
 

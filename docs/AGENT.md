@@ -86,7 +86,7 @@ _, project = call("POST", "/api/projects", {
     "title": "Menara Kelabu ch.7",
     "manhwa_title": "Menara Kelabu",
     "chapter": "7",
-    "target_duration": 40,          # seconds, max 90
+    "target_duration": 55,          # normal final target; allowed input range 10-90
     "narration_style": "dramatic",  # dramatic|casual|mysterious|fast|informative
     "spoiler_level": "medium",      # minimal|medium|full
 })
@@ -132,8 +132,7 @@ while True:
 #    GET /api/projects/{pid}/download/{job_id}  -> MP4 bytes
 ```
 
-Measured on a 2 vCPU box: draft ~1.7s, render ~45s for a 25s video, whole flow
-about a minute.
+Historical performance numbers vary by artifact and host. They are not a duration contract; current normal final production targets 55s and accepts 50-60s.
 
 `seed` makes the draft reproducible — same input, same script.
 

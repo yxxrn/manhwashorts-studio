@@ -246,7 +246,7 @@ Logout clears the cookie. The other two return the current user / workspace.
 }
 ```
 
-Only `title` is required. `target_duration` must be 10–90.
+Only `title` is required. `target_duration` must be 10–90 and defaults to 55. Normal final production is accepted only at 50–60 seconds.
 
 Enums: `content_type` ∈ `chapter_recap | character_profile | fun_facts | theory |
 cliffhanger`; `spoiler_level` ∈ `minimal | medium | full`; `narration_style` ∈

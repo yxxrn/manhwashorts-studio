@@ -19,13 +19,15 @@ raw development server publicly. A standalone render worker is available with
 
 1. Ingest source material and preserve source/rights metadata.
 2. Run the visual/story analysis flow and inspect any review boundary.
-3. Generate/edit the grounded script and approve the exact script identity.
+3. Generate/edit the grounded script and approve the exact script identity. Normal final target is 55s and the accepted final window is 50-60s.
 4. Generate voice/timing and timeline through the normal pipeline facade.
 5. Run quality checks; resolve blocking evidence/media/QC failures.
 6. Queue or resume final render rather than duplicating a valid successful job.
 7. Verify final media integrity and post-render QC.
 8. Verify the automatic thumbnail package and thumbnail QC.
 9. Upload/publish only through the supported explicit operator/API boundary.
+
+A sub-50-second `coherent_capacity_adaptive_v1` result is a review/diagnostic artifact, not a final-production exception. Increase grounded visual/story capacity rather than stretching a few panels or silently accepting a short final.
 
 ## Rights behavior
 

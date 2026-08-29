@@ -50,6 +50,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.constants import (
     MAX_SUBTITLE_CHARS_PER_LINE,
+    STANDARD_FINAL_DURATION_MAX_SECONDS,
+    STANDARD_FINAL_DURATION_MIN_SECONDS,
     JobStatus,
     ProjectStatus,
     ScriptSection,
@@ -2091,7 +2093,7 @@ def _reference_duration_bounds(profile: object, *, silent_reference_review: bool
     """Return review-only pacing bounds without changing voiced profile gates."""
 
     if silent_reference_review:
-        return 50.0, 60.0
+        return STANDARD_FINAL_DURATION_MIN_SECONDS, STANDARD_FINAL_DURATION_MAX_SECONDS
     return float(profile.duration_min_s), float(profile.duration_max_s)
 
 

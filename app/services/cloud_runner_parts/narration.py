@@ -3,6 +3,11 @@
 # ruff: noqa: F821 -- runtime globals are refreshed from the compatibility facade.
 from __future__ import annotations
 
+from app.constants import (
+    STANDARD_FINAL_DURATION_MAX_SECONDS,
+    STANDARD_FINAL_DURATION_MIN_SECONDS,
+)
+
 from .runtime import runtime_bound
 
 _RUNTIME_NAMES = (
@@ -132,8 +137,8 @@ class NarrationMixin:
             "story_map": selected_story.as_dict(),
             "duration_contract": {
                 **script.narration_duration_contract("dramatic"),
-                "minimum_s": 50.0,
-                "maximum_s": 60.0,
+                "minimum_s": STANDARD_FINAL_DURATION_MIN_SECONDS,
+                "maximum_s": STANDARD_FINAL_DURATION_MAX_SECONDS,
                 "target_word_min": 115,
                 "target_word_max": 125,
             },

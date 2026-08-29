@@ -299,7 +299,7 @@ $('project-form').addEventListener('submit', async (event) => {
     title: $('p-title').value.trim(),
     manhwa_title: $('p-manhwa').value.trim(),
     chapter: $('p-chapter').value.trim(),
-    target_duration: Number($('p-duration').value) || 41,
+    target_duration: Number($('p-duration').value) || Number($('p-duration').defaultValue),
     template: $('p-template').value,
     narration_style: $('p-style').value,
     spoiler_level: $('p-spoiler').value,

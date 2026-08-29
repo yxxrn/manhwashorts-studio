@@ -39,6 +39,7 @@ gates. Never use those files to override the current documents above.
   remain real blockers. Do not bypass them with DB edits or direct artifact edits.
 - Automatic thumbnails are part of successful production. Keep the upload-ready
   `thumbnail.jpg`, clean source, variants, metadata, and QC contract intact.
+- Duration has one current contract: project default target 55s; final production 50-60s. Adaptive sub-50s pacing is review-only and must never be promoted to final to compensate for insufficient grounded visual capacity.
 
 ## Runtime safety
 

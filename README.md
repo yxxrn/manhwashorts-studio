@@ -80,6 +80,8 @@ All settings are optional. Important defaults:
 | `MS_REQUIRE_RIGHTS_DECLARATION` | `false` | Optional rights-enforcement switch; metadata is still audited |
 | `MS_ALLOW_PUBLIC_PUBLISH` | `false` | Keep public upload disabled |
 | `MS_VIDEO_ENCODER` | `auto` | Resolve CPU/GPU encoder per job |
+| `MS_DEFAULT_TARGET_SECONDS` | `55` | Normal final target; production acceptance is 50-60s |
+| `MS_MAX_SHORT_SECONDS` | `90` | Absolute project/media ceiling, not the normal final target |
 
 For paid or higher-quality narration, configure a BYOK provider. Keep provider,
 model, voice ID, locale, speed, and voice controls fixed across all beats.

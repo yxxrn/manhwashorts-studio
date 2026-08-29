@@ -11,6 +11,10 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass, replace
 
+from app.constants import (
+    STANDARD_FINAL_DURATION_MAX_SECONDS,
+    STANDARD_FINAL_DURATION_MIN_SECONDS,
+)
 from app.services import (
     director,
     framing_analysis,
@@ -2093,8 +2097,16 @@ def _plan_reference(
                 f"{profile.profile_id} received malformed review duration bounds"
             )
     else:
-        duration_min_s = 50.0 if allow_review_duration else profile.duration_min_s
-        duration_max_s = 60.0 if allow_review_duration else profile.duration_max_s
+        duration_min_s = (
+            STANDARD_FINAL_DURATION_MIN_SECONDS
+            if allow_review_duration
+            else profile.duration_min_s
+        )
+        duration_max_s = (
+            STANDARD_FINAL_DURATION_MAX_SECONDS
+            if allow_review_duration
+            else profile.duration_max_s
+        )
     if not duration_min_s <= total_duration <= duration_max_s:
         raise ReferencePlanningError(
             f"{profile.profile_id} requires duration between "

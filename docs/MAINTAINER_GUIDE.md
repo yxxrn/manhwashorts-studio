@@ -61,6 +61,8 @@ useful audit metadata and may produce warnings. Do not make missing rights a
 blocking error unless the product owner explicitly changes the policy and the
 configuration/tests/docs are updated together.
 
+Duration is also a product contract: new projects default to 55 seconds, normal final production accepts 50-60 seconds, and an adaptive sub-50-second window is review-only. If grounded visual capacity cannot support 50 seconds without repetition/overlong holds, final production must fail closed and the visual/story plan must be repaired instead of silently shortening the deliverable.
+
 The following remain fail-closed boundaries unless explicitly redesigned:
 
 - exact script approval/approved identity

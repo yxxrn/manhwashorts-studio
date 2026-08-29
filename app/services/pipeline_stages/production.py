@@ -5,6 +5,11 @@ Public callers should continue importing app.services.pipeline.
 
 from __future__ import annotations
 
+from app.constants import (
+    STANDARD_FINAL_DURATION_MAX_SECONDS,
+    STANDARD_FINAL_DURATION_MIN_SECONDS,
+)
+
 
 def run_production(api, db, project_id, *, actor_id, approved_script_hash, approved_script_version, speed, provider_name, encoder, profile):
     """Run the explicit, local production path through post-render QC.
@@ -40,6 +45,18 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
     production = dict(metadata.get('production') or {})
     if production.get('script_hash') != script_hash:
         production = {'script_hash': script_hash, 'script_version': script.version}
+    adaptive_policy = _approved_adaptive_reference_policy(script)
+    if adaptive_policy is not None:
+        lower = float(adaptive_policy['target_duration_min_s'])
+        upper = float(adaptive_policy['target_duration_max_s'])
+        if (
+            lower < STANDARD_FINAL_DURATION_MIN_SECONDS
+            or upper > STANDARD_FINAL_DURATION_MAX_SECONDS
+        ):
+            raise PipelineError(
+                'production duration policy must stay within the standard 50-60 second window; '
+                'adaptive shortfall is review-only and requires more grounded visual capacity'
+            )
     existing = _render_stage_ready(db, project_id, script_hash)
     if existing is not None:
         results = run_quality_checks(db, project_id, job=existing, actor_id=actor_id)
@@ -54,7 +71,6 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
         generate_voiceover(db, project_id, speed=speed, provider_name=provider_name, actor_id=actor_id)
     production['audio_script_hash'] = script_hash
     metadata = _persist_production_metadata(db, script, metadata, production)
-    adaptive_policy = _approved_adaptive_reference_policy(script)
     timeline_reusable = production.get('timeline_script_hash') == script_hash and _timeline_stage_ready(db, project_id)
     if not timeline_reusable:
         bounds = (float(adaptive_policy['target_duration_min_s']), float(adaptive_policy['target_duration_max_s'])) if adaptive_policy is not None else None

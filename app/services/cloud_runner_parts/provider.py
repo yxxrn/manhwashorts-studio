@@ -3,6 +3,11 @@
 # ruff: noqa: F821 -- runtime globals are refreshed from the compatibility facade.
 from __future__ import annotations
 
+from app.constants import (
+    STANDARD_FINAL_DURATION_MAX_SECONDS,
+    STANDARD_FINAL_DURATION_MIN_SECONDS,
+)
+
 from .runtime import runtime_bound
 
 _RUNTIME_NAMES = (
@@ -80,7 +85,12 @@ class ProviderMixin:
             reported_word_count = int(result.word_count)
         except (TypeError, ValueError, OverflowError):
             reported_word_count = None
-        if duration is None or not 50.0 <= duration <= 60.0:
+        if (
+            duration is None
+            or not STANDARD_FINAL_DURATION_MIN_SECONDS
+            <= duration
+            <= STANDARD_FINAL_DURATION_MAX_SECONDS
+        ):
             failed.append("duration_bounds")
         elif not math.isclose(
             duration,
