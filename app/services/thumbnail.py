@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from app.config import settings
 from app.services import visual_scoring
 
-THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v1"
+THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v2"
 TARGET_SIZE = (1080, 1920)
 MAX_HEADLINE_WORDS = 7
 MAX_HEADLINE_CHARS = 38
@@ -107,44 +107,44 @@ def _fallback_headlines(sections: Mapping[str, str], language: str) -> list[Head
     def add(text: str, section: str, *anchors: str, strength: float = 1.0) -> None:
         clean = _clean_headline(text)
         if clean:
-            rows.append(HeadlineCandidate(clean, section, "clickbait", tuple(anchors), strength))
+            rows.append(HeadlineCandidate(clean, section, "clickbait_v2", tuple(anchors), strength))
 
     if language == "id":
         triggers = (
-            (("hood", "hooded", "berkerudung", "berjubah"), "SIAPA SOSOK MISTERIUS INI?", "twist", 2.1),
-            (("sword", "pedang", "blade", "bilah"), "PEDANG INI MENGUBAH SEGALANYA", "hook", 2.0),
-            (("photo", "photograph", "foto"), "FOTO INI MEMBONGKAR SEMUANYA", "cta", 1.9),
-            (("smile", "smiling", "senyum", "tersenyum"), "SENYUMNYA MENYIMPAN RAHASIA", "conflict", 2.0),
-            (("surprise", "surprised", "shock", "kaget", "terkejut"), "DIA GAK NYANGKA INI TERJADI", "conflict", 2.1),
-            (("secret", "truth", "rahasia", "kebenaran"), "RAHASIANYA AKHIRNYA TERBONGKAR", "twist", 2.2),
-            (("power", "energy", "kekuatan", "energi"), "KEKUATAN INI GAK MASUK AKAL", "hook", 2.0),
-            (("monster", "demon", "iblis", "monster"), "TERNYATA DIA BUKAN MANUSIA", "twist", 2.2),
+            (("hood", "hooded", "berkerudung", "berjubah"), "SIAPA SEBENARNYA SOSOK INI?!", "twist", 3.15),
+            (("sword", "pedang", "blade", "bilah"), "APA YANG BARUSAN DIBANGKITKAN PEDANG INI?!", "hook", 3.35),
+            (("photo", "photograph", "foto"), "APA YANG DISEMBUNYIKAN FOTO INI?!", "cta", 3.05),
+            (("smile", "smiling", "senyum", "tersenyum"), "KENAPA DIA MALAH TERSENYUM?!", "conflict", 3.2),
+            (("surprise", "surprised", "shock", "kaget", "terkejut"), "DIA SADAR SAAT SUDAH TERLAMBAT", "conflict", 3.1),
+            (("secret", "truth", "rahasia", "kebenaran"), "MEREKA GAK BOLEH TAHU INI", "twist", 3.25),
+            (("power", "energy", "kekuatan", "energi"), "KEKUATAN APA YANG BARUSAN BANGKIT?!", "hook", 3.25),
+            (("monster", "demon", "iblis", "monster"), "ITU BENERAN BUKAN MANUSIA?!", "twist", 3.35),
         )
     else:
         triggers = (
-            (("hood", "hooded"), "WHO IS THIS MYSTERIOUS FIGURE?", "twist", 2.1),
-            (("sword", "blade"), "THIS SWORD CHANGED EVERYTHING", "hook", 2.0),
-            (("photo", "photograph", "picture"), "THESE PHOTOS EXPOSE EVERYTHING", "cta", 1.9),
-            (("smile", "smiling"), "SOMETHING ABOUT THIS FEELS WRONG", "conflict", 2.0),
-            (("surprise", "surprised", "shock", "shocked"), "NO ONE SAW THIS COMING", "conflict", 2.1),
-            (("secret", "truth"), "THE TRUTH FINALLY CAME OUT", "twist", 2.2),
-            (("power", "energy"), "THIS POWER SHOULD NOT EXIST", "hook", 2.0),
-            (("monster", "demon"), "THAT THING WASN'T HUMAN", "twist", 2.2),
+            (("hood", "hooded"), "WHO IS REALLY UNDER THAT HOOD?!", "twist", 3.15),
+            (("sword", "blade"), "WHAT DID THAT SWORD JUST AWAKEN?!", "hook", 3.35),
+            (("photo", "photograph", "picture"), "WHAT ARE THESE PHOTOS HIDING?!", "cta", 3.05),
+            (("smile", "smiling"), "WHY IS SHE SMILING RIGHT NOW?!", "conflict", 3.2),
+            (("surprise", "surprised", "shock", "shocked"), "HE REALIZED IT WAY TOO LATE", "conflict", 3.1),
+            (("secret", "truth"), "THEY WERE NEVER MEANT TO KNOW", "twist", 3.25),
+            (("power", "energy"), "WHAT POWER DID SHE JUST AWAKEN?!", "hook", 3.25),
+            (("monster", "demon"), "THAT THING ISN'T EVEN HUMAN?!", "twist", 3.35),
         )
     for needles, text, section, strength in triggers:
         if any(needle in story for needle in needles):
             add(text, section, *needles, strength=strength)
 
     if language == "id":
-        add("TERNYATA INI YANG TERJADI", "twist", "ternyata", strength=1.7)
-        add("DIA GAK PERNAH MENYANGKA INI", "conflict", "surprise", strength=1.6)
-        add("SATU MOMEN INI MENGUBAH SEMUANYA", "conflict", "change", strength=1.5)
-        add("AKHIRNYA SEMUA TERUNGKAP", "twist", "akhirnya", strength=1.6)
+        add("KENAPA SEMUA ORANG DIAM SOAL INI?!", "twist", strength=2.35)
+        add("DIA BARU SADAR SAAT TERLAMBAT", "conflict", strength=2.4)
+        add("APA YANG SEBENARNYA TERJADI DI SINI?!", "conflict", strength=2.25)
+        add("MEREKA GAK SIAP MELIHAT INI", "twist", strength=2.2)
     else:
-        add("THIS CHANGED EVERYTHING", "conflict", "change", strength=1.7)
-        add("THEY NEVER SAW THIS COMING", "conflict", "surprise", strength=1.6)
-        add("THE TRUTH WAS RIGHT THERE", "twist", "truth", strength=1.6)
-        add("WHAT HAPPENED NEXT?!", "twist", "next", strength=1.5)
+        add("WHY IS NOBODY TALKING ABOUT THIS?!", "twist", strength=2.35)
+        add("THEY REALIZED IT TOO LATE", "conflict", strength=2.4)
+        add("WHAT ACTUALLY HAPPENED HERE?!", "conflict", strength=2.25)
+        add("THEY WEREN'T READY TO SEE THIS", "twist", strength=2.2)
 
     unique: list[HeadlineCandidate] = []
     seen: set[str] = set()
@@ -160,14 +160,17 @@ def _llm_headlines(sections: Mapping[str, str], language: str) -> list[HeadlineC
         return []
     story = json.dumps(dict(sections), ensure_ascii=False)
     system = (
-        "You write extremely clickable short-form manhwa thumbnail headlines. "
-        "Stay grounded in the supplied story, but curiosity-gap and mild exaggeration are allowed. "
+        "You write high-CTR short-form manhwa thumbnail headlines, not summaries. "
+        "Create an unresolved curiosity gap around one concrete story object, action, reaction, mystery, or danger. "
+        "Aggressive clickbait and provocative inference are allowed, but do not invent a completed outcome absent from the story. "
+        "Avoid generic cliches such as THIS CHANGED EVERYTHING, NO ONE SAW THIS COMING, or WHAT HAPPENED NEXT. "
+        "Prefer WHY/WHAT/WHO questions, TOO LATE, hidden motives, forbidden-looking power, suspicious reactions, or dangerous discoveries. "
         "Each headline must be 3-7 words, at most 38 characters, visually punchy, and usable in two lines. "
         "Return strict JSON: {\"headlines\":[{\"text\":str,\"section\":\"hook|setup|conflict|twist|cta\"}]}"
     )
     user = (
         f"Language: {'Indonesian' if language == 'id' else 'English'}\n"
-        "Generate six distinct thumbnail headlines. Prioritize conflict, reveal, shock, mystery, or emotional stakes.\n"
+        "Generate eight distinct thumbnail headlines. Make every option feel impossible to ignore and specific to this story.\n"
         f"Story sections: {story[:5000]}"
     )
     try:
@@ -403,6 +406,38 @@ def _tokens(value: str) -> set[str]:
     return set(re.findall(r"[a-zA-ZÀ-ÿ]+", value.lower()))
 
 
+def _headline_bait_score(headline: HeadlineCandidate) -> float:
+    text = headline.text.upper()
+    tokens = _tokens(text)
+    score = 0.0
+    if "?" in text:
+        score += 1.05
+    if "!" in text:
+        score += 0.3
+    hooks = {
+        "why", "what", "who", "how", "kenapa", "apa", "siapa",
+        "hiding", "hidden", "rahasia", "secret", "late", "terlambat",
+        "never", "gak", "bukan", "really", "sebenarnya", "forbidden",
+        "danger", "dangerous", "bahaya", "awaken", "bangkit", "dibangkitkan",
+    }
+    score += min(1.8, 0.38 * len(tokens & hooks))
+    if headline.anchor_terms:
+        score += 0.75
+    generic = (
+        "CHANGED EVERYTHING",
+        "NO ONE SAW THIS COMING",
+        "THIS CHANGED EVERYTHING",
+        "WHAT HAPPENED NEXT",
+        "AKHIRNYA SEMUA TERUNGKAP",
+        "MENGUBAH SEGALANYA",
+    )
+    if any(phrase in text for phrase in generic):
+        score -= 1.75
+    if len(text.split()) <= 6:
+        score += 0.25
+    return round(score, 4)
+
+
 def rank_pairs(
     visuals: Sequence[VisualCandidate],
     headlines: Sequence[HeadlineCandidate],
@@ -412,10 +447,19 @@ def rank_pairs(
     for visual in visuals:
         narration_tokens = _tokens(section_texts.get(visual.section, ""))
         for headline in headlines:
-            section_match = 1.9 if headline.source_section == visual.section else 0.0
+            section_match = 2.15 if headline.source_section == visual.section else 0.0
             anchor_overlap = len(narration_tokens & set(headline.anchor_terms))
-            cross_match = 0.5 if visual.section in {"conflict", "twist"} and headline.source_section in {"conflict", "twist"} else 0.0
-            pair_score = visual.score + headline.strength + section_match + cross_match + 0.55 * anchor_overlap
+            cross_match = 0.45 if visual.section in {"conflict", "twist"} and headline.source_section in {"conflict", "twist"} else 0.0
+            specificity = 0.8 * anchor_overlap
+            bait = _headline_bait_score(headline)
+            pair_score = (
+                visual.score
+                + headline.strength
+                + section_match
+                + cross_match
+                + specificity
+                + 1.35 * bait
+            )
             ranked.append((round(pair_score, 4), visual, headline))
     ranked.sort(key=lambda item: item[0], reverse=True)
     return ranked
@@ -504,34 +548,54 @@ def _render_variant(
     canvas = base.convert("RGBA")
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    max_width = int(TARGET_SIZE[0] * 0.88)
+    max_width = int(TARGET_SIZE[0] * 0.90)
     font, lines = _fit_headline(headline.text, max_width)
-    stroke = max(5, int(getattr(font, "size", 80) * 0.055))
-    line_gap = max(8, int(getattr(font, "size", 80) * 0.08))
+    font_size = int(getattr(font, "size", 80))
+    stroke = max(7, int(font_size * 0.072))
+    line_gap = max(8, int(font_size * 0.07))
+    shadow = max(3, int(font_size * 0.025))
     measure = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-    boxes = [measure.textbbox((0, 0), line, font=font, stroke_width=stroke) for line in lines]
+    boxes = [
+        measure.textbbox((0, 0), line, font=font, stroke_width=stroke)
+        for line in lines
+    ]
     widths = [box[2] - box[0] for box in boxes]
     heights = [box[3] - box[1] for box in boxes]
     block_h = sum(heights) + line_gap * max(0, len(lines) - 1)
-    top_y = 105 if visual.placement == "top" else TARGET_SIZE[1] - block_h - 145
-    block_x1 = max(36, int((TARGET_SIZE[0] - max(widths, default=0)) / 2) - 34)
-    block_x2 = min(TARGET_SIZE[0] - 36, TARGET_SIZE[0] - block_x1)
-    block_rect = (block_x1, max(40, top_y - 30), block_x2, min(TARGET_SIZE[1] - 40, top_y + block_h + 34))
-    draw.rounded_rectangle(block_rect, radius=28, fill=(0, 0, 0, 118))
+    top_y = 92 if visual.placement == "top" else TARGET_SIZE[1] - block_h - 125
     y = top_y
     line_rects: list[tuple[int, int, int, int]] = []
-    for index, (line, width, height) in enumerate(zip(lines, widths, heights, strict=True)):
+    for index, (line, width, height) in enumerate(
+        zip(lines, widths, heights, strict=True)
+    ):
         x = int((TARGET_SIZE[0] - width) / 2)
-        fill = (255, 255, 255, 255) if index == 0 else (255, 222, 54, 255)
-        shadow = max(3, stroke // 2)
+        fill = (255, 255, 255, 255) if index == 0 else (255, 218, 38, 255)
         draw.text(
-            (x + shadow, y + shadow), line, font=font, fill=(0, 0, 0, 210), stroke_width=stroke, stroke_fill=(0, 0, 0, 210)
+            (x + shadow, y + shadow),
+            line,
+            font=font,
+            fill=(0, 0, 0, 185),
+            stroke_width=stroke + 3,
+            stroke_fill=(0, 0, 0, 205),
         )
         draw.text(
-            (x, y), line, font=font, fill=fill, stroke_width=stroke, stroke_fill=(8, 8, 8, 255)
+            (x, y),
+            line,
+            font=font,
+            fill=fill,
+            stroke_width=stroke,
+            stroke_fill=(5, 5, 5, 255),
         )
-        line_rects.append((x, y, x + width, y + height))
+        pad = stroke + shadow + 3
+        line_rects.append((x - pad, y - pad, x + width + pad, y + height + pad))
         y += height + line_gap
+
+    text_rect = (
+        max(0, min(rect[0] for rect in line_rects)),
+        max(0, min(rect[1] for rect in line_rects)),
+        min(TARGET_SIZE[0], max(rect[2] for rect in line_rects)),
+        min(TARGET_SIZE[1], max(rect[3] for rect in line_rects)),
+    )
     composed = Image.alpha_composite(canvas, overlay).convert("RGB")
     destination.parent.mkdir(parents=True, exist_ok=True)
     composed.save(destination, "JPEG", quality=94, optimize=True)
@@ -540,8 +604,11 @@ def _render_variant(
     stats = ImageStat.Stat(gray)
     mean = float(stats.mean[0]) / 255.0
     variance = float(stats.var[0]) / (255.0 * 255.0)
-    overflow = any(x1 < 24 or y1 < 24 or x2 > TARGET_SIZE[0] - 24 or y2 > TARGET_SIZE[1] - 24 for x1, y1, x2, y2 in line_rects)
-    face_overlap = _rect_face_overlap(block_rect, visual.face_boxes, TARGET_SIZE)
+    overflow = any(
+        x1 < 18 or y1 < 18 or x2 > TARGET_SIZE[0] - 18 or y2 > TARGET_SIZE[1] - 18
+        for x1, y1, x2, y2 in line_rects
+    )
+    face_overlap = _rect_face_overlap(text_rect, visual.face_boxes, TARGET_SIZE)
     qc_pass = (
         destination.is_file()
         and destination.stat().st_size >= 20_000
@@ -563,6 +630,9 @@ def _render_variant(
         "luma_variance": round(variance, 6),
         "file_size": destination.stat().st_size if destination.is_file() else 0,
         "placement": visual.placement,
+        "background_style": "outline_only",
+        "stroke_width": stroke,
+        "shadow_offset": shadow,
     }
 
 

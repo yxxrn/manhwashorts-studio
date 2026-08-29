@@ -64,13 +64,14 @@ def test_generate_thumbnail_package_is_upload_ready(tmp_path, monkeypatch):
     )
 
     assert manifest["qc_pass"] is True
-    assert manifest["headline"] == "THIS SWORD CHANGED EVERYTHING"
+    assert manifest["headline"] == "WHAT DID THAT SWORD JUST AWAKEN?!"
     assert 1 <= len(manifest["variants"]) <= 3
     assert (tmp_path / "thumbnail.jpg").is_file()
     assert (tmp_path / "thumbnail_clean.jpg").is_file()
     with Image.open(tmp_path / "thumbnail.jpg") as rendered:
         assert rendered.size == thumbnail.TARGET_SIZE
     assert all(row["qc"]["qc_pass"] for row in manifest["variants"])
+    assert all(row["qc"]["background_style"] == "outline_only" for row in manifest["variants"])
     assert len(manifest["headline"].split()) <= thumbnail.MAX_HEADLINE_WORDS
 
     reused = thumbnail.generate_thumbnail_package(
