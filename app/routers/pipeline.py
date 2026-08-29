@@ -503,3 +503,17 @@ def download_video(job_id: str, project: OwnedProject, db: DbSession):
         media_type="video/mp4",
         filename=f"{project.id}_{job.kind}.mp4",
     )
+
+
+@router.get("/download/{job_id}/thumbnail")
+def download_thumbnail(job_id: str, project: OwnedProject, db: DbSession):
+    """Download the auto-generated upload thumbnail for a successful final render."""
+    job = db.get(RenderJob, job_id)
+    if job is None or job.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Render job not found.")
+    if job.status != JobStatus.SUCCEEDED or not job.output_key:
+        raise HTTPException(status_code=409, detail="This render has no publishable thumbnail.")
+    path = Path(job.output_key).parent / "thumbnail.jpg"
+    if not path.is_file():
+        raise HTTPException(status_code=410, detail="The thumbnail is no longer on disk.")
+    return FileResponse(path, media_type="image/jpeg", filename=f"{project.id}_thumbnail.jpg")

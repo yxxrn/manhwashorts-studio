@@ -150,6 +150,12 @@ class Settings(BaseSettings):
     # the output frame rate and rounds crop coordinates to whole pixels.
     motion_enabled: bool = True
 
+    # --- Automatic thumbnail package ---
+    auto_thumbnail_enabled: bool = True
+    thumbnail_variants: int = 3
+    thumbnail_clickbait_level: str = "high"
+    thumbnail_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
 
     # --- Cleanup (Fase 0.1 - keep the project light) ---
     # How old scratch files in data/tmp can be before being deleted.

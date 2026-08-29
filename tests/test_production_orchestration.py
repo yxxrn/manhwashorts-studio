@@ -88,6 +88,15 @@ def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp
     monkeypatch.setattr(pl, "_audio_stage_ready", lambda *_args: calls["audio"] > 0)
     monkeypatch.setattr(pl, "_timeline_stage_ready", lambda *_args: calls["timeline"] > 0)
     monkeypatch.setattr(pl, "run_quality_checks", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        pl,
+        "_ensure_final_thumbnail",
+        lambda *_args, **_kwargs: {
+            "thumbnail_path": str(tmp_path / "thumbnail.jpg"),
+            "headline": "THIS CHANGED EVERYTHING",
+            "variants": [],
+        },
+    )
 
     def fake_audio(*args, **kwargs):
         calls["audio"] += 1

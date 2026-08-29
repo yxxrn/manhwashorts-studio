@@ -227,7 +227,13 @@ def cleanup_output(older_than_days: int | None = None, aggressive: bool = False)
             ).all()
             for job in jobs:
                 if job.output_key:
-                    referenced.add(str(Path(job.output_key).resolve()))
+                    output_path = Path(job.output_key).resolve()
+                    referenced.add(str(output_path))
+                    for thumbnail_name in (
+                        "thumbnail.jpg", "thumbnail_clean.jpg",
+                        "thumbnail_v1.jpg", "thumbnail_v2.jpg", "thumbnail_v3.jpg",
+                    ):
+                        referenced.add(str((output_path.parent / thumbnail_name).resolve()))
     except Exception:
         # If DB is unavailable or models not ready, be conservative.
         return 0

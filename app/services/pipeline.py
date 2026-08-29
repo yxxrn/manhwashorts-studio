@@ -87,6 +87,9 @@ from app.services import policy as policy_svc
 from app.services import quality as quality_svc
 from app.services import resolver as resolver_svc
 from app.services import script as script_svc
+from app.services import (
+    thumbnail as thumbnail_svc,
+)
 from app.services import timeline as timeline_svc
 from app.services import tts as tts_svc
 from app.services.vision_adapter import (
@@ -3807,6 +3810,57 @@ def _render_stage_ready(
     return job
 
 
+def _ensure_final_thumbnail(
+    db: Session,
+    job: RenderJob,
+    *,
+    script: ScriptVersion | None = None,
+    required: bool = False,
+) -> dict[str, Any] | None:
+    """Build or reuse the upload-ready thumbnail package for a final render."""
+    if not settings.auto_thumbnail_enabled or job.kind != "final":
+        return None
+    if not job.output_key:
+        if required:
+            raise PipelineError("thumbnail.video_missing: final render has no output path")
+        return None
+    active_script = script or current_script(db, job.project_id)
+    if active_script is None:
+        if required:
+            raise PipelineError("thumbnail.script_missing: approved script is unavailable")
+        return None
+    assets: dict[str, SourceAsset | None] = {}
+
+    def resolve_asset_path(asset_id: str) -> Path | None:
+        if asset_id not in assets:
+            assets[asset_id] = db.get(SourceAsset, asset_id)
+        asset = assets[asset_id]
+        if asset is None or not asset.storage_key or not storage.exists(asset.storage_key):
+            return None
+        return storage.path_for(asset.storage_key)
+
+    try:
+        manifest = thumbnail_svc.generate_thumbnail_package(
+            video_path=Path(job.output_key),
+            output_dir=Path(job.output_key).parent,
+            script=active_script,
+            scenes=project_scenes(db, job.project_id),
+            resolve_asset_path=resolve_asset_path,
+        )
+    except thumbnail_svc.ThumbnailError as exc:
+        audit(db, "thumbnail.failed", "render_job", job.id, error=str(exc))
+        if required:
+            raise PipelineError(str(exc)) from exc
+        return None
+    audit(
+        db, "thumbnail.succeeded", "render_job", job.id,
+        headline=manifest.get("headline", ""),
+        thumbnail_path=manifest.get("thumbnail_path", ""),
+        variant_count=len(manifest.get("variants", [])),
+    )
+    return manifest
+
+
 def run_production(
     db: Session,
     project_id: str,
@@ -3851,6 +3905,17 @@ def run_production(
         results = run_quality_checks(db, project_id, job=existing, actor_id=actor_id)
         if any(result.blocking for result in results):
             raise PipelineError("post-render QC failed for the existing artifact")
+        thumbnail_manifest = _ensure_final_thumbnail(db, existing, script=script, required=True)
+        if thumbnail_manifest is not None:
+            production.update({
+                "thumbnail_status": "passed",
+                "thumbnail_path": thumbnail_manifest.get("thumbnail_path", ""),
+                "thumbnail_headline": thumbnail_manifest.get("headline", ""),
+            })
+            metadata = {**metadata, "production": dict(production)}
+            script.editorial_metadata = metadata
+            db.flush()
+            db.commit()
         return existing
 
     if not _audio_stage_ready(db, script):
@@ -3862,7 +3927,7 @@ def run_production(
             actor_id=actor_id,
         )
     production["audio_script_hash"] = script_hash
-    metadata["production"] = production
+    metadata = {**metadata, "production": dict(production)}
     script.editorial_metadata = metadata
     db.flush()
     # Commit each successful boundary so an interrupted production run resumes
@@ -3892,7 +3957,7 @@ def run_production(
             adaptive_reference_duration_bounds_s=bounds,
         )
     production["timeline_script_hash"] = script_hash
-    metadata["production"] = production
+    metadata = {**metadata, "production": dict(production)}
     script.editorial_metadata = metadata
     db.flush()
     db.commit()
@@ -3922,15 +3987,19 @@ def run_production(
             "post-render QC failed: "
             + "; ".join(result.message for result in postflight if result.blocking)[:1000]
         )
+    thumbnail_manifest = _ensure_final_thumbnail(db, job, script=script, required=True)
     production.update(
         {
             "script_hash": script_hash,
             "script_version": script.version,
             "render_job_id": job.id,
             "post_render_qc": "passed",
+            "thumbnail_status": "passed" if thumbnail_manifest is not None else "disabled",
+            "thumbnail_path": (thumbnail_manifest or {}).get("thumbnail_path", ""),
+            "thumbnail_headline": (thumbnail_manifest or {}).get("headline", ""),
         }
     )
-    metadata["production"] = production
+    metadata = {**metadata, "production": dict(production)}
     script.editorial_metadata = metadata
     db.flush()
     db.commit()
@@ -4938,6 +5007,8 @@ def execute_render(db: Session, job_id: str) -> RenderJob:
     except (OSError, ValueError):
         pass
     audit(db, "editorial.qc", "render_job", job.id, qc=qc.as_dict())
+    if qc.qc_pass and job.kind == "final":
+        _ensure_final_thumbnail(db, job, required=False)
     # A rendered file is not a successful production artifact until the
     # independent post-render report passes.  Keep the bytes for diagnosis,
     # but mark the job failed so callers cannot mistake a queued/encoded file
