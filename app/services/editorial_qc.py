@@ -38,6 +38,8 @@ class EditorialQC:
     alternating_pattern_max: int = 0
     motion_mode_diversity: int = 0
     dominant_motion_ratio: float = 0.0
+    rendered_motion_endpoint_mean: float = 0.0
+    rendered_motion_low_diff_ratio: float = 0.0
     action_transition_failures: int = 0
     caption_word_count_min: int = 0
     caption_word_count_max: int = 0
@@ -471,6 +473,32 @@ def _standard_reference_qc_failures(scenes: list[object], duration: float, profi
         failures.append("reference.standard_panel_repeat")
     if len(scenes) > 1 and any(getattr(scene, "transition", "cut") != "fade" for scene in scenes[1:]):
         failures.append("reference.standard_transition_policy")
+    stable_modes = {"slow_push", "slow_pull", "guided_pan", "focus_shift"}
+    modes = [str(getattr(scene, "motion_mode", "") or "") for scene in scenes]
+    if any(mode not in stable_modes for mode in modes):
+        failures.append("reference.standard_motion_path_invalid")
+    if len(scenes) >= 8:
+        counts = Counter(modes)
+        if len(counts) < reference_profile.REVIEW_MOTION_MIN_MODE_DIVERSITY:
+            failures.append("reference.standard_motion_diversity_low")
+        if max(counts.values(), default=0) / max(1, len(modes)) > reference_profile.REVIEW_MOTION_MAX_DOMINANT_MODE_RATIO + 1e-9:
+            failures.append("reference.standard_motion_dominant")
+    imperceptible = 0
+    for scene in scenes:
+        mode = str(getattr(scene, "motion_mode", "") or "")
+        focus_travel = __import__("math").hypot(
+            float(getattr(scene, "focus_end_x", 0.5)) - float(getattr(scene, "focus_x", 0.5)),
+            float(getattr(scene, "focus_end_y", 0.5)) - float(getattr(scene, "focus_y", 0.5)),
+        )
+        zoom_ok = (
+            mode in {"slow_push", "slow_pull"}
+            and reference_profile.REVIEW_MOTION_ZOOM_DELTA >= reference_profile.REVIEW_MOTION_MIN_ZOOM_DELTA - 1e-9
+        )
+        focus_ok = focus_travel >= reference_profile.REVIEW_MOTION_MIN_FOCUS_TRAVEL - 1e-9
+        if not (zoom_ok or focus_ok):
+            imperceptible += 1
+    if imperceptible:
+        failures.append("reference.standard_motion_imperceptible")
     return failures
 
 
@@ -597,6 +625,16 @@ def build_report(
     )
     report.audio_video_drift, report.black_frame_duration = _media_integrity(job_path, duration)
     report.audio_integrated_lufs, report.audio_true_peak_dbfs = _audio_metrics(job_path)
+    if not preview and standard_reference_cadence and job_path is not None:
+        rendered_motion = _rendered_motion_endpoint_audit(job_path, scenes)
+        if rendered_motion is None:
+            report.failures.append("reference.standard_rendered_motion_measurement_missing")
+        else:
+            report.rendered_motion_endpoint_mean, report.rendered_motion_low_diff_ratio = rendered_motion
+            if report.rendered_motion_endpoint_mean < reference_profile.RENDERED_MOTION_ENDPOINT_MEAN_MIN:
+                report.failures.append("reference.standard_rendered_motion_weak")
+            if report.rendered_motion_low_diff_ratio > reference_profile.RENDERED_MOTION_LOW_DIFF_MAX_RATIO:
+                report.failures.append("reference.standard_rendered_motion_sparse")
     report.failures.extend(motion_director.audit_camera_sequence(scenes))
     if profile is not None:
         if adaptive_reference_contract is not None:
@@ -744,6 +782,54 @@ def _media_integrity(path: Path | None, expected: float) -> tuple[float, float]:
     except (OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
         return expected, 0.0
 
+
+
+def _rendered_motion_endpoint_audit(
+    path: Path | None, scenes: Sequence[object]
+) -> tuple[float, float] | None:
+    """Measure real per-shot camera change away from subtitle/transition pixels."""
+    if not path or not path.is_file() or not scenes:
+        return None
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        return None
+    fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+    if fps <= 0.0:
+        capture.release()
+        return None
+    values: list[float] = []
+    try:
+        for scene in scenes:
+            start = float(getattr(scene, "start_time", 0.0))
+            end = float(getattr(scene, "end_time", 0.0))
+            if end - start <= 0.8:
+                continue
+            samples = []
+            for moment in (start + 0.35, end - 0.25):
+                capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(round(moment * fps))))
+                ok, frame = capture.read()
+                if not ok or frame is None:
+                    return None
+                top = frame[: max(1, int(frame.shape[0] * 0.42))]
+                small = cv2.resize(top, (128, 96), interpolation=cv2.INTER_AREA)
+                samples.append(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY))
+            values.append(float(np.mean(cv2.absdiff(samples[0], samples[1]))))
+    except (TypeError, ValueError, cv2.error):
+        return None
+    finally:
+        capture.release()
+    if not values:
+        return None
+    mean = sum(values) / len(values)
+    low_ratio = sum(
+        value < reference_profile.RENDERED_MOTION_LOW_DIFF_THRESHOLD for value in values
+    ) / len(values)
+    return round(mean, 4), round(low_ratio, 4)
 
 def _audio_metrics(path: Path | None) -> tuple[float | None, float | None]:
     """Read integrated loudness and true peak from FFmpeg's ebur128 filter."""

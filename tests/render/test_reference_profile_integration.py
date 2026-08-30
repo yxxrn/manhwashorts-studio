@@ -489,10 +489,24 @@ def test_reference_qc_uses_corrected_duration_bands_and_ratios():
 
 def test_standard_reference_qc_accepts_long_hold_unique_panel_cadence():
     scenes = _qc_scenes(15, 50.652, cadence=False)
+    motion_pattern = (
+        ("slow_push", "slow_push_in"),
+        ("guided_pan", "pan_horizontal"),
+        ("slow_pull", "slow_pull_out"),
+        ("focus_shift", "focus_shift"),
+    )
     for index, scene in enumerate(scenes):
         scene.panel_region_id = f"region-{index}"
         scene.panel_id = f"panel-{index}"
         scene.transition = "none" if index == 0 else "fade"
+        scene.motion_mode, scene.camera_curve = motion_pattern[index % len(motion_pattern)]
+        if scene.motion_mode == "guided_pan":
+            scene.focus_x, scene.focus_end_x = 0.35, 0.51
+        elif scene.motion_mode == "focus_shift":
+            scene.focus_x, scene.focus_end_x = 0.40, 0.51
+            scene.focus_y, scene.focus_end_y = 0.56, 0.45
+        else:
+            scene.focus_end_x, scene.focus_end_y = scene.focus_x, scene.focus_y
     results = quality.check_standard_reference_profile(
         scenes, 50.652, reference_profile.REFERENCE_MATCHED_SHORTS_V1
     )
@@ -1635,6 +1649,12 @@ def test_editorial_qc_accepts_standard_production_cadence_without_legacy_hold_ga
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
     scenes = _qc_scenes(15, 50.652, cadence=False)
     width = 50.652 / 15
+    motion_pattern = (
+        ("slow_push", "slow_push_in"),
+        ("guided_pan", "pan_horizontal"),
+        ("slow_pull", "slow_pull_out"),
+        ("focus_shift", "focus_shift"),
+    )
     for index, scene in enumerate(scenes):
         scene.start_time = index * width
         scene.end_time = (index + 1) * width
@@ -1642,6 +1662,14 @@ def test_editorial_qc_accepts_standard_production_cadence_without_legacy_hold_ga
         scene.panel_id = f"panel-standard-{index}"
         scene.transition = "none" if index == 0 else "fade"
         scene.transition_duration = 0.15 if index else 0.0
+        scene.motion_mode, scene.camera_curve = motion_pattern[index % len(motion_pattern)]
+        if scene.motion_mode == "guided_pan":
+            scene.focus_x, scene.focus_end_x = 0.35, 0.51
+        elif scene.motion_mode == "focus_shift":
+            scene.focus_x, scene.focus_end_x = 0.40, 0.51
+            scene.focus_y, scene.focus_end_y = 0.56, 0.45
+        else:
+            scene.focus_end_x, scene.focus_end_y = scene.focus_x, scene.focus_y
     report = editorial_qc.build_report(
         scenes=scenes,
         cues=[],
@@ -1653,3 +1681,66 @@ def test_editorial_qc_accepts_standard_production_cadence_without_legacy_hold_ga
     assert not any(code.startswith("reference.standard_") for code in report.failures)
     assert "reference.shot_count_outside_36_52" not in report.failures
     assert "reference.hold_ratio_below_70pct" not in report.failures
+
+
+def test_standard_final_qc_blocks_rendered_motion_that_only_moves_on_paper(
+    monkeypatch, tmp_path
+):
+    profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    scenes = _qc_scenes(15, 50.652, cadence=False)
+    width = 50.652 / len(scenes)
+    pattern = (
+        ("slow_push", "slow_push_in"),
+        ("guided_pan", "pan_horizontal"),
+        ("slow_pull", "slow_pull_out"),
+        ("focus_shift", "focus_shift"),
+    )
+    for index, scene in enumerate(scenes):
+        scene.start_time = index * width
+        scene.end_time = (index + 1) * width
+        scene.panel_region_id = f"region-motion-{index}"
+        scene.panel_id = f"panel-motion-{index}"
+        scene.transition = "none" if index == 0 else "fade"
+        scene.motion_mode, scene.camera_curve = pattern[index % len(pattern)]
+        if scene.motion_mode == "guided_pan":
+            scene.focus_x, scene.focus_end_x = 0.3, 0.7
+        elif scene.motion_mode == "focus_shift":
+            scene.focus_x, scene.focus_end_x = 0.36, 0.64
+            scene.focus_y, scene.focus_end_y = 0.64, 0.36
+        else:
+            scene.focus_x = scene.focus_end_x = 0.5
+            scene.focus_y = scene.focus_end_y = 0.5
+    media = tmp_path / "final.mp4"
+    media.write_bytes(b"fixture")
+    monkeypatch.setattr(editorial_qc, "_freeze_duration", lambda _path: 0.0)
+    monkeypatch.setattr(editorial_qc, "_media_integrity", lambda *_a: (0.0, 0.0))
+    monkeypatch.setattr(editorial_qc, "_audio_metrics", lambda _path: (None, None))
+    monkeypatch.setattr(
+        editorial_qc, "_rendered_motion_endpoint_audit", lambda *_a: (0.5, 1.0)
+    )
+    weak = editorial_qc.build_report(
+        scenes=scenes,
+        cues=[],
+        duration=50.652,
+        job_path=media,
+        profile=profile,
+        preview=False,
+        standard_reference_cadence=True,
+    )
+    assert "reference.standard_rendered_motion_weak" in weak.failures
+    assert "reference.standard_rendered_motion_sparse" in weak.failures
+
+    monkeypatch.setattr(
+        editorial_qc, "_rendered_motion_endpoint_audit", lambda *_a: (18.0, 0.0)
+    )
+    strong = editorial_qc.build_report(
+        scenes=scenes,
+        cues=[],
+        duration=50.652,
+        job_path=media,
+        profile=profile,
+        preview=False,
+        standard_reference_cadence=True,
+    )
+    assert "reference.standard_rendered_motion_weak" not in strong.failures
+    assert "reference.standard_rendered_motion_sparse" not in strong.failures

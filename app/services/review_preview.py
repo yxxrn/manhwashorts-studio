@@ -121,14 +121,28 @@ def _audit_motion_trajectory(
         > reference_profile.REVIEW_MOTION_MAX_NORMALIZED_STEP
         for delta in deltas
     )
+    focus_travel = math.hypot(
+        normalized[-1][0] - normalized[0][0],
+        normalized[-1][1] - normalized[0][1],
+    )
+    scale_travel = abs(normalized[-1][2] - normalized[0][2])
+    perceptible = bool(
+        focus_travel >= reference_profile.REVIEW_MOTION_MIN_FOCUS_TRAVEL - 1e-9
+        or scale_travel >= reference_profile.REVIEW_MOTION_MIN_ZOOM_DELTA - 1e-9
+    )
     result = {
         "sample_count": len(normalized),
         "max_normalized_step": round(max_step, 6),
         "direction_reversals": direction_reversals,
         "jitter_violations": int(violations),
+        "focus_travel": round(focus_travel, 6),
+        "scale_travel": round(scale_travel, 6),
+        "perceptible": perceptible,
     }
     if violations:
         raise ReviewPreviewError("review.motion_jitter")
+    if not perceptible:
+        raise ReviewPreviewError("review.motion_imperceptible")
     return result
 
 
@@ -694,9 +708,16 @@ def _measured_visual_qc(
         raise ReviewPreviewError("review.visual_density_insufficient")
     if int(audit.get("reuse_streak_max", reuse_streak)) > 2:
         raise ReviewPreviewError("review.visual_reuse_streak_excessive")
-    stable_review_modes = {"slow_push", "slow_pull"}
+    stable_review_modes = {"slow_push", "slow_pull", "guided_pan", "focus_shift"}
     if any(mode not in stable_review_modes for mode in modes):
         raise ReviewPreviewError("review.motion_path_invalid")
+    if len(shots) >= 8:
+        diversity = int(audit.get("motion_mode_diversity", len(modes)))
+        if diversity < reference_profile.REVIEW_MOTION_MIN_MODE_DIVERSITY:
+            raise ReviewPreviewError("review.motion_diversity_low")
+        dominant_ratio = max(mode_counts.values(), default=0) / max(1, len(shots))
+        if dominant_ratio > reference_profile.REVIEW_MOTION_MAX_DOMINANT_MODE_RATIO + 1e-9:
+            raise ReviewPreviewError("review.motion_dominant")
     if (
         len(shots) >= 4
         and int(audit.get("motion_mode_diversity", len(modes))) > 0

@@ -11,7 +11,7 @@ def _review_sidecar(*, shot_count: int = 8, available_visuals: int = 15) -> dict
     duration = 51.3
     shot_duration = duration / shot_count
     shots = []
-    modes = ("slow_push",)
+    modes = ("slow_push", "guided_pan", "slow_pull", "focus_shift")
     for index in range(shot_count):
         start = index * shot_duration
         shots.append(
@@ -253,6 +253,17 @@ def test_motion_trajectory_audit_rejects_alternating_viewport_jumps():
         review_preview._audit_motion_trajectory(alternating)
 
     assert exc.value.code == "review.motion_jitter"
+
+
+def test_motion_trajectory_audit_rejects_imperceptible_travel():
+    from app.services import review_preview
+
+    subtle = tuple((0.50, 0.50, 1.00 + index * 0.001) for index in range(8))
+
+    with pytest.raises(review_preview.ReviewPreviewError) as exc:
+        review_preview._audit_motion_trajectory(subtle)
+
+    assert exc.value.code == "review.motion_imperceptible"
 
 
 def test_motion_trajectory_audit_accepts_monotonic_smooth_path():
@@ -557,8 +568,8 @@ def test_review_qc_rejects_static_motion_mode():
     assert exc.value.code == "review.motion_static"
 
 
-def test_review_zoom_motion_is_monotonic_and_never_static():
-    from app.services import editorial_visual_planner
+def test_review_living_frame_motion_is_varied_perceptible_and_never_static():
+    from app.services import editorial_visual_planner, reference_profile
 
     shots = [
         {
@@ -570,15 +581,26 @@ def test_review_zoom_motion_is_monotonic_and_never_static():
             "camera_curve": "pan_horizontal",
             "motion_reason": "old",
         }
-        for index in range(6)
+        for index in range(8)
     ]
 
     editorial_visual_planner._enforce_review_zoom_motion(shots)
 
-    assert [shot["motion_mode"] for shot in shots] == ["slow_push"] * 6
-    assert [shot["camera_curve"] for shot in shots] == ["slow_push_in"] * 6
-    assert all(shot["focus_end_x"] == shot["focus_x"] for shot in shots)
-    assert all(shot["focus_end_y"] == shot["focus_y"] for shot in shots)
+    assert [shot["motion_mode"] for shot in shots] == [
+        "slow_push", "guided_pan", "slow_pull", "focus_shift",
+        "slow_push", "guided_pan", "slow_pull", "focus_shift",
+    ]
+    assert len({shot["motion_mode"] for shot in shots}) == 4
+    for shot in shots:
+        travel = (
+            (shot["focus_end_x"] - shot["focus_x"]) ** 2
+            + (shot["focus_end_y"] - shot["focus_y"]) ** 2
+        ) ** 0.5
+        if shot["motion_mode"] in {"guided_pan", "focus_shift"}:
+            assert travel >= reference_profile.REVIEW_MOTION_MIN_FOCUS_TRAVEL
+        else:
+            assert travel == pytest.approx(0.0)
+    assert reference_profile.REVIEW_MOTION_ZOOM_DELTA >= reference_profile.REVIEW_MOTION_MIN_ZOOM_DELTA
 
 
 def test_review_qc_rejects_rendered_static_shot():

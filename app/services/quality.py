@@ -764,6 +764,49 @@ def check_standard_reference_profile(
             CheckSeverity.ERROR,
             "Standard reference shot boundaries must use the approved fade transition policy.",
         ))
+    stable_modes = {"slow_push", "slow_pull", "guided_pan", "focus_shift"}
+    modes = [str(getattr(scene, "motion_mode", "") or "") for scene in scenes]
+    if any(mode not in stable_modes for mode in modes):
+        results.append(_fail(
+            "reference.standard_motion_path_invalid",
+            CheckSeverity.ERROR,
+            "Standard reference motion must use a stable living-frame path.",
+        ))
+    if len(scenes) >= 8:
+        counts = Counter(modes)
+        if len(counts) < reference_profile.REVIEW_MOTION_MIN_MODE_DIVERSITY:
+            results.append(_fail(
+                "reference.standard_motion_diversity_low",
+                CheckSeverity.ERROR,
+                "Standard reference motion is too repetitive to read as intentional animation.",
+            ))
+        if max(counts.values(), default=0) / max(1, len(modes)) > reference_profile.REVIEW_MOTION_MAX_DOMINANT_MODE_RATIO + 1e-9:
+            results.append(_fail(
+                "reference.standard_motion_dominant",
+                CheckSeverity.ERROR,
+                "One motion mode dominates the standard reference sequence.",
+            ))
+    imperceptible = []
+    for index, scene in enumerate(scenes):
+        mode = str(getattr(scene, "motion_mode", "") or "")
+        focus_travel = math.hypot(
+            float(getattr(scene, "focus_end_x", 0.5)) - float(getattr(scene, "focus_x", 0.5)),
+            float(getattr(scene, "focus_end_y", 0.5)) - float(getattr(scene, "focus_y", 0.5)),
+        )
+        zoom_ok = (
+            mode in {"slow_push", "slow_pull"}
+            and reference_profile.REVIEW_MOTION_ZOOM_DELTA >= reference_profile.REVIEW_MOTION_MIN_ZOOM_DELTA - 1e-9
+        )
+        focus_ok = focus_travel >= reference_profile.REVIEW_MOTION_MIN_FOCUS_TRAVEL - 1e-9
+        if not (zoom_ok or focus_ok):
+            imperceptible.append(index)
+    if imperceptible:
+        results.append(_fail(
+            "reference.standard_motion_imperceptible",
+            CheckSeverity.ERROR,
+            "Standard reference motion travel is too small to be visible at normal playback speed.",
+            {"scene_indexes": imperceptible[:20]},
+        ))
     return results or [_pass(
         "reference.standard_profile",
         "Standard evidence-unique reference pacing contract is valid.",

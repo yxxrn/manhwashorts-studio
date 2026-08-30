@@ -63,13 +63,17 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
     existing = _render_stage_ready(db, project_id, script_hash)
     if existing is not None:
         results = run_quality_checks(db, project_id, job=existing, actor_id=actor_id)
-        if any(result.blocking for result in results):
-            raise PipelineError('post-render QC failed for the existing artifact')
-        thumbnail_manifest = _ensure_final_thumbnail(db, existing, script=script, required=True)
-        if thumbnail_manifest is not None:
-            production.update({'thumbnail_status': 'passed', 'thumbnail_path': thumbnail_manifest.get('thumbnail_path', ''), 'thumbnail_headline': thumbnail_manifest.get('headline', '')})
-            metadata = _persist_production_metadata(db, script, metadata, production)
-        return existing
+        if not any(result.blocking for result in results):
+            thumbnail_manifest = _ensure_final_thumbnail(db, existing, script=script, required=True)
+            if thumbnail_manifest is not None:
+                production.update({'thumbnail_status': 'passed', 'thumbnail_path': thumbnail_manifest.get('thumbnail_path', ''), 'thumbnail_headline': thumbnail_manifest.get('headline', '')})
+                metadata = _persist_production_metadata(db, script, metadata, production)
+            return existing
+        # A stricter/new QC contract may invalidate a previously successful
+        # artifact even when the approved script is unchanged.  Do not strand
+        # production behind the stale render: fall through and rebuild the
+        # timeline/render under the current policy.
+        existing = None
     project = get_project(db, project_id)
     resolved_profile = reference_profile.resolve_reference_profile(project.template)
     audio_duration_bounds = (

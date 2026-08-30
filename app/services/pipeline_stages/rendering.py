@@ -105,7 +105,7 @@ def build_render_request(api, db, job, *, silent_reference_review, output_overri
     script = current_script(db, job.project_id)
     if script is None:
         raise PipelineError('no script to render')
-    stabilized_reference_motion = bool(editorial_profile is not None and _approved_adaptive_reference_policy(script) is not None)
+    stabilized_reference_motion = bool(editorial_profile is not None)
     segments = audio_segments(db, script.id)
     if not segments:
         if editorial_profile is not None:

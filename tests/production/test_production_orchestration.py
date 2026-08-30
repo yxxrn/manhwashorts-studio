@@ -149,6 +149,88 @@ def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp
     assert calls == {"audio": 1, "timeline": 1, "enqueue": 1, "execute": 1}
 
 
+def test_production_rerenders_when_existing_artifact_fails_current_qc(db, monkeypatch, tmp_path):
+    from app.constants import CheckSeverity, JobStatus
+    from app.models import RenderJob, ScriptVersion
+    from app.services import pipeline as pl
+    from app.services.quality import CheckResult
+    from tests.factories.evidence import _project
+
+    project = _project(db)
+    script = ScriptVersion(
+        project_id=project.id,
+        version=1,
+        generator="vision_evidence_v3",
+        sections=[{"section": "hook", "text": "A grounded hook."}],
+        approved_by="reviewer",
+        approved_at=datetime.now(UTC),
+        editorial_metadata={"approved_script_version": 1},
+    )
+    db.add(script)
+    db.flush()
+    approved_hash = pl._script_content_hash(script)
+    script.editorial_metadata = {
+        **script.editorial_metadata,
+        "approved_script_hash": approved_hash,
+    }
+
+    old_output = tmp_path / "old-final.mp4"
+    old_output.write_bytes(b"old")
+    existing = RenderJob(
+        project_id=project.id, kind="final", status=JobStatus.SUCCEEDED,
+        output_key=str(old_output), checksum="old",
+    )
+    db.add(existing)
+    db.flush()
+
+    calls = {"timeline": 0, "enqueue": 0}
+    monkeypatch.setattr(pl, "_render_stage_ready", lambda *_a, **_k: existing)
+    monkeypatch.setattr(pl, "_audio_stage_ready", lambda *_a, **_k: False)
+    monkeypatch.setattr(pl, "_timeline_stage_ready", lambda *_a, **_k: False)
+    monkeypatch.setattr(pl, "generate_voiceover", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        pl, "build_timeline",
+        lambda *_a, **_k: calls.__setitem__("timeline", calls["timeline"] + 1),
+    )
+    monkeypatch.setattr(
+        pl, "_ensure_final_thumbnail",
+        lambda *_a, **_k: {"thumbnail_path": str(tmp_path / "thumb.jpg"), "headline": "H", "variants": []},
+    )
+
+    blocker = CheckResult(
+        code="reference.standard_motion_diversity_low",
+        severity=CheckSeverity.ERROR, message="stale motion contract", passed=False,
+    )
+    def fake_quality(_db, _project_id, job=None, **_kwargs):
+        return [blocker] if job is existing else []
+    monkeypatch.setattr(pl, "run_quality_checks", fake_quality)
+
+    new_output = tmp_path / "new-final.mp4"
+    new_output.write_bytes(b"new")
+    def fake_enqueue(db, project_id, **_kwargs):
+        calls["enqueue"] += 1
+        job = RenderJob(project_id=project_id, kind="final", status=JobStatus.QUEUED)
+        db.add(job)
+        db.flush()
+        return job
+    def fake_execute(db, job_id):
+        job = db.get(RenderJob, job_id)
+        job.status = JobStatus.SUCCEEDED
+        job.output_key = str(new_output)
+        job.checksum = "new"
+        return job
+    monkeypatch.setattr(pl, "enqueue_render", fake_enqueue)
+    monkeypatch.setattr(pl, "execute_render", fake_execute)
+
+    result = pl.run_production(
+        db, project.id, actor_id="operator",
+        approved_script_hash=approved_hash, approved_script_version=1,
+    )
+
+    assert result.id != existing.id
+    assert calls == {"timeline": 1, "enqueue": 1}
+
+
 def test_production_invalidates_legacy_audio_checkpoint_without_timing_identity(db, monkeypatch, tmp_path):
     from app.constants import JobStatus
     from app.models import RenderJob, ScriptVersion

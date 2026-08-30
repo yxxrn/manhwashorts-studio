@@ -69,6 +69,10 @@ def sample_camera_curve(
     focus_y: float = 0.4,
     focus_end_x: float = 0.5,
     focus_end_y: float = 0.4,
+    *,
+    normal_zoom_delta: float | None = None,
+    impact_zoom_delta: float | None = None,
+    pan_zoom_delta: float | None = None,
 ) -> tuple[tuple[float, float, float], ...]:
     """Sample a deterministic monotonic ``(focus_x, focus_y, scale)`` path."""
     if frames < 2:
@@ -76,6 +80,15 @@ def sample_camera_curve(
     safe = safe_camera_curve(curve)
     start_x, start_y = _clamp_focus(focus_x), _clamp_focus(focus_y)
     end_x, end_y = _clamp_focus(focus_end_x), _clamp_focus(focus_end_y)
+    normal_delta = max(
+        0.0,
+        float(NORMAL_ZOOM_MAX - 1.0 if normal_zoom_delta is None else normal_zoom_delta),
+    )
+    impact_delta = max(
+        0.0,
+        float(IMPACT_ZOOM_MAX - 1.0 if impact_zoom_delta is None else impact_zoom_delta),
+    )
+    pan_delta = max(normal_delta, float(normal_delta if pan_zoom_delta is None else pan_zoom_delta))
     samples: list[tuple[float, float, float]] = []
     for index in range(frames):
         progress = index / (frames - 1)
@@ -86,22 +99,25 @@ def sample_camera_curve(
             x = start_x + (end_x - start_x) * eased
             y = start_y + (end_y - start_y) * eased
         if safe == "slow_push_in":
-            scale = 1.0 + 0.06 * eased
+            scale = 1.0 + normal_delta * eased
         elif safe == "slow_pull_out":
-            scale = NORMAL_ZOOM_MAX - 0.06 * eased
+            scale = 1.0 + normal_delta - normal_delta * eased
         elif safe in _EMPHASIS_CURVES:
-            scale = 1.0 + 0.08 * eased
+            scale = 1.0 + impact_delta * eased
         elif safe == "static_emphasis":
-            scale = 1.02
+            scale = 1.0 + normal_delta * 0.45
         elif safe == "atmospheric":
-            scale = 1.03
+            scale = 1.0 + normal_delta * 0.55 * eased
         elif safe == "static":
             scale = 1.0
+        elif safe in {"pan_horizontal", "pan_vertical", "pan_diagonal", "focus_shift"}:
+            # Directional moves need headroom from the first frame; otherwise
+            # normalized focus travel collapses to only a few output pixels.
+            scale = 1.0 + pan_delta
         else:
-            scale = 1.04
+            scale = 1.0 + normal_delta * eased
         samples.append((round(x, 9), round(y, 9), round(scale, 9)))
     return tuple(samples)
-
 
 def _seed(seed: int, index: int, text: str) -> int:
     raw = f"{seed}:{index}:{text}".encode()

@@ -912,14 +912,21 @@ def _reference_motion_pixel_safety(
         fy = (1.0 - smooth) * max(0.05, min(0.95, scene.focus_y)) + smooth * max(
             0.05, min(0.95, scene.focus_end_y)
         )
-        normal_delta = min(
-            profile.normal_zoom_max - 1.0, reference_profile.REVIEW_MOTION_ZOOM_DELTA
-        )
         impact_delta = profile.impact_zoom_max - 1.0
+        normal_delta = min(
+            impact_delta,
+            max(profile.normal_zoom_max - 1.0, reference_profile.REVIEW_MOTION_ZOOM_DELTA),
+        )
+        pan_delta = min(
+            impact_delta,
+            max(normal_delta, reference_profile.REVIEW_MOTION_PAN_ZOOM_DELTA),
+        )
         if safe_curve == "slow_push_in":
             zoom = 1.0 + normal_delta * smooth
         elif safe_curve == "slow_pull_out":
             zoom = 1.0 + normal_delta - normal_delta * smooth
+        elif safe_curve in {"pan_horizontal", "pan_vertical", "pan_diagonal", "focus_shift"}:
+            zoom = 1.0 + pan_delta
         elif safe_curve in {"push_in", "reveal"}:
             zoom = 1.0 + impact_delta * smooth
         elif safe_curve == "static_emphasis":
@@ -1064,9 +1071,15 @@ def _render_subpixel_review_scene_clip(
 
     frames = max(2, int(round(scene.duration * fps)))
     safe_curve = motion_director.safe_camera_curve(scene.camera_curve or scene.effect)
-    normal_delta = (profile.normal_zoom_max - 1.0) if profile else 0.06
-    normal_delta = min(normal_delta, reference_profile.REVIEW_MOTION_ZOOM_DELTA)
-    impact_delta = (profile.impact_zoom_max - 1.0) if profile else 0.08
+    impact_delta = (profile.impact_zoom_max - 1.0) if profile else 0.14
+    normal_delta = min(
+        impact_delta,
+        max((profile.normal_zoom_max - 1.0) if profile else 0.06, reference_profile.REVIEW_MOTION_ZOOM_DELTA),
+    )
+    pan_delta = min(
+        impact_delta,
+        max(normal_delta, reference_profile.REVIEW_MOTION_PAN_ZOOM_DELTA),
+    )
 
     filter_chain = encoders.apply_filter_suffix(encoder, "format=yuv420p")
     command = [
@@ -1128,6 +1141,8 @@ def _render_subpixel_review_scene_clip(
                 zoom = 1.0
             elif safe_curve == "slow_pull_out":
                 zoom = 1.0 + normal_delta - normal_delta * smooth
+            elif safe_curve in {"pan_horizontal", "pan_vertical", "pan_diagonal", "focus_shift"}:
+                zoom = 1.0 + pan_delta
             elif safe_curve in {"push_in", "reveal"}:
                 zoom = 1.0 + impact_delta * smooth
             elif safe_curve == "static_emphasis":
@@ -2511,6 +2526,18 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
             scene.focus_y,
             scene.focus_end_x,
             scene.focus_end_y,
+            normal_zoom_delta=min(
+                request.profile.impact_zoom_max - 1.0,
+                max(
+                    request.profile.normal_zoom_max - 1.0,
+                    reference_profile.REVIEW_MOTION_ZOOM_DELTA,
+                ),
+            ),
+            impact_zoom_delta=request.profile.impact_zoom_max - 1.0,
+            pan_zoom_delta=min(
+                request.profile.impact_zoom_max - 1.0,
+                reference_profile.REVIEW_MOTION_PAN_ZOOM_DELTA,
+            ),
         )
         transition_name = _xfade_transition_name(scene.transition)
         shots.append(

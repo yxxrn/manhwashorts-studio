@@ -808,23 +808,58 @@ def _apply_reference_motion(shots: list[dict], beats: list[director.StoryBeat]) 
         shot["overlay_text"] = ""
 
 
-def _enforce_review_zoom_motion(shots: list[dict]) -> None:
-    """Use monotonic fixed-focus zooms for every review shot.
+def _review_focus_span(anchor: float, travel: float, *, reverse: bool) -> tuple[float, float]:
+    """Return a bounded focus sweep centered as closely as possible on ``anchor``."""
 
-    Translating a viewport by sub-pixel increments can look like camera shake
-    after video quantization. Review motion therefore alternates push/pull
-    zooms around the already approved focus point and never falls back to a
-    static hold.
+    center = max(0.05, min(0.95, float(anchor)))
+    travel = max(0.0, min(0.40, float(travel)))
+    low = max(0.05, min(center - travel / 2.0, 0.95 - travel))
+    high = min(0.95, low + travel)
+    return (high, low) if reverse else (low, high)
+
+
+def _enforce_review_zoom_motion(shots: list[dict]) -> None:
+    """Apply visible, monotonic living-frame motion to every reference shot.
+
+    The stabilized renderer uses floating-point affine sampling, so the old
+    fixed-focus-only workaround is no longer necessary.  Keep motion smooth and
+    deterministic, but require enough zoom/focus travel to read as intentional
+    animation at normal playback speed.
     """
 
-    for shot in shots:
-        shot["motion_mode"] = "slow_push"
-        shot["motion_intensity"] = "low"
-        shot["camera_curve"] = "slow_push_in"
-        shot["focus_end_x"] = float(shot.get("focus_x", 0.5))
-        shot["focus_end_y"] = float(shot.get("focus_y", 0.5))
+    pattern = (
+        ("slow_push", "slow_push_in"),
+        ("guided_pan", "pan_horizontal"),
+        ("slow_pull", "slow_pull_out"),
+        ("focus_shift", "focus_shift"),
+    )
+    for index, shot in enumerate(shots):
+        anchor_x = float(shot.get("focus_x", 0.5))
+        anchor_y = float(shot.get("focus_y", 0.5))
+        mode, curve = pattern[index % len(pattern)]
+        reverse = bool((index // len(pattern)) % 2)
+
+        if mode in {"slow_push", "slow_pull"}:
+            start_x = end_x = anchor_x
+            start_y = end_y = anchor_y
+        elif mode == "guided_pan":
+            start_x, end_x = _review_focus_span(anchor_x, reference_profile.REVIEW_MOTION_PAN_FOCUS_TRAVEL, reverse=reverse)
+            start_y = end_y = anchor_y
+        else:
+            start_x, end_x = _review_focus_span(anchor_x, reference_profile.REVIEW_MOTION_DIAGONAL_FOCUS_TRAVEL, reverse=reverse)
+            # Counter-phase vertical travel reads as a deliberate diagonal
+            # focus shift without the oscillation that previously caused jitter.
+            start_y, end_y = _review_focus_span(anchor_y, reference_profile.REVIEW_MOTION_DIAGONAL_FOCUS_TRAVEL, reverse=not reverse)
+
+        shot["focus_x"] = start_x
+        shot["focus_y"] = start_y
+        shot["focus_end_x"] = end_x
+        shot["focus_end_y"] = end_y
+        shot["motion_mode"] = mode
+        shot["motion_intensity"] = "medium" if mode in {"guided_pan", "focus_shift"} else "low"
+        shot["camera_curve"] = curve
         reason = str(shot.get("motion_reason", "") or "").strip()
-        suffix = "review:stabilized_fixed_focus_zoom_v2"
+        suffix = "review:perceptible_subpixel_living_frame_v4"
         shot["motion_reason"] = f"{reason}; {suffix}" if reason else suffix
 
 
