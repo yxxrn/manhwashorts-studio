@@ -953,6 +953,7 @@ def run_projects(
     max_concurrent: int = 1,
     run_options: RunOptions | None = None,
     review_only_preview: bool = False,
+    repair_for_production: bool = False,
     review_source_upscale_policy: str | None = None,
     review_source_root: str | Path | None = None,
     review_source_roots: Mapping[str, str | Path] | None = None,
@@ -979,6 +980,11 @@ def run_projects(
     ordered_ids = sorted({str(project_id).strip() for project_id in project_ids if str(project_id).strip()})
     if not ordered_ids:
         return []
+    if review_only_preview and repair_for_production:
+        raise OperatorCliError(
+            "operator.mode_invalid",
+            "silent review and production repair are mutually exclusive",
+        )
     with _db_context(db, db_factory or (lambda: None)) as run_db:
         runner = None
         if runner_factory is not None:
@@ -1020,6 +1026,18 @@ def run_projects(
                                 else review_source_root
                             ),
                             "review_output_dir": review_output_dir,
+                        }
+                    )
+                elif repair_for_production:
+                    run_kwargs.update(
+                        {
+                            "repair_for_production": True,
+                            "review_source_upscale_policy": review_source_upscale_policy,
+                            "review_source_root": (
+                                review_source_roots.get(project_id, review_source_root)
+                                if review_source_roots is not None
+                                else review_source_root
+                            ),
                         }
                     )
                 rows.append(_job_summary(service.run_project(run_db, project_id, **run_kwargs)))
@@ -1475,9 +1493,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             import argparse
 
             parser = argparse.ArgumentParser(prog="manhwashorts-operator")
-            parser.add_argument("--mode", choices=("review", "production"), required=True)
+            parser.add_argument("--mode", choices=("review", "repair-production", "production"), required=True)
             parser.add_argument("--env-file", default="")
             parser.add_argument("--project-id", default="")
+            parser.add_argument("--source-root", default="")
             parser.add_argument("--actor-id", default="")
             parser.add_argument("--approved-script-hash", default="")
             parser.add_argument("--approved-script-version", type=int)
@@ -1491,6 +1510,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         state_dir = os.environ.get("MS_STATE_DIR", "data/cloud-multimodal-jobs")
         review_dir = os.environ.get("MS_REVIEW_DIR", "data/segmentation-review")
         if parsed_args is not None:
+            if parsed_args.mode == "repair-production":
+                if not parsed_args.project_id or not parsed_args.actor_id:
+                    raise OperatorCliError(
+                        "operator.approval_required",
+                        "production repair requires project and actor identity",
+                    )
+                cloud_multimodal = _cloud()
+                rows = run_projects(
+                    None,
+                    [parsed_args.project_id],
+                    state_dir=state_dir,
+                    review_dir=review_dir,
+                    actor_id=parsed_args.actor_id,
+                    runner_factory=cloud_multimodal.resolve_cloud_runner,
+                    repair_for_production=True,
+                    review_source_upscale_policy="review_silent_source_upscale_v1",
+                    review_source_root=parsed_args.source_root or None,
+                )
+                row = rows[0]
+                print(f"Production repair: {row['job_id']} {row['state']} {row['error_code']}")
+                return 0 if row["state"] == "READY_TO_RENDER" else 1
             if parsed_args.mode == "production":
                 if not parsed_args.project_id or not parsed_args.actor_id or not parsed_args.approved_script_hash or parsed_args.approved_script_version is None:
                     raise OperatorCliError(

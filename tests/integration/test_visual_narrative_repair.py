@@ -1249,7 +1249,7 @@ def test_coherence_window_reselects_when_preferred_window_is_not_section_safe():
     assert all("__sub1__" in row["claim_id"] for row in selected)
 
 
-def test_coherence_window_rejects_cross_root_capacity_stitching():
+def test_coherence_window_accepts_adjacent_top_level_roots_when_needed_for_capacity():
     module = _module()
     claims = [
         *[
@@ -1258,6 +1258,30 @@ def test_coherence_window_rejects_cross_root_capacity_stitching():
         ],
         *[
             _coherence_claim(f"b1__sub0__unit{i}__claim1", f"b1-{i}", 100 + i)
+            for i in range(6)
+        ],
+    ]
+
+    selected, metadata = module._select_coherent_claim_window(
+        claims, minimum_unique_panels=13
+    )
+
+    assert metadata["feasible"] is True
+    assert metadata["selected_scope_prefix"] == "__root__"
+    assert metadata["selected_scope_depth"] == 0
+    assert metadata["selected_connected_scope_chain"] == ["b0", "b1"]
+    assert len({p for row in selected for p in row["evidence_panel_ids"]}) == 13
+
+
+def test_coherence_window_rejects_nonadjacent_top_level_roots():
+    module = _module()
+    claims = [
+        *[
+            _coherence_claim(f"b0__sub0__unit{i}__claim1", f"b0-{i}", i)
+            for i in range(7)
+        ],
+        *[
+            _coherence_claim(f"b2__sub0__unit{i}__claim1", f"b2-{i}", 100 + i)
             for i in range(6)
         ],
     ]

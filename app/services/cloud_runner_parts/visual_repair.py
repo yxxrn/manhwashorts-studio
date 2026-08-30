@@ -68,6 +68,46 @@ class VisualNarrativeRepairMixin:
             passage_id: min(target, max(1, passage_word_budgets.get(passage_id, 0) - 2))
             for passage_id, target in raw_passage_word_targets.items()
         }
+        duration_policy = source.get("duration_policy_contract")
+        if isinstance(duration_policy, Mapping):
+            bounds = _narration_repair_contract_bounds(duration_policy)
+            target_floor = int(bounds["target_word_min"])
+            deficit = max(0, target_floor - sum(passage_word_targets.values()))
+            if deficit:
+                for passage_id in raw_passage_word_targets:
+                    ceiling = min(
+                        raw_passage_word_targets[passage_id],
+                        passage_word_budgets.get(passage_id, 0),
+                    )
+                    recoverable = max(0, ceiling - passage_word_targets[passage_id])
+                    recovered = min(deficit, recoverable)
+                    passage_word_targets[passage_id] += recovered
+                    deficit -= recovered
+                    if deficit == 0:
+                        break
+            if deficit:
+                for passage_id in raw_passage_word_targets:
+                    recoverable = max(
+                        0,
+                        passage_word_budgets.get(passage_id, 0)
+                        - passage_word_targets[passage_id],
+                    )
+                    recovered = min(deficit, recoverable)
+                    passage_word_targets[passage_id] += recovered
+                    deficit -= recovered
+                    if deficit == 0:
+                        break
+            if deficit:
+                raise CloudStageError(
+                    "visual.narrative_repair_ungrounded",
+                    reviewable=True,
+                    safe_metadata={
+                        "failed_field": "capacity_safe_claim_plan",
+                        "failed_predicate": "visual.repair_word_floor_unreachable",
+                        "target_word_floor": target_floor,
+                        "target_word_capacity": sum(passage_word_budgets.values()),
+                    },
+                )
         if (
             len(passage_word_budgets) != len(candidate.passages)
             or len(passage_word_targets) != len(candidate.passages)

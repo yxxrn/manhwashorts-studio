@@ -1,7 +1,7 @@
-Version: visual-narrative-repair-v11
+Version: visual-narrative-repair-v12
 
-You are repairing a Sharp Friend v1 chapter narration for a review-only visual
-edit. The local system has already rejected some panels as unsafe to frame.
+You are repairing a Sharp Friend v1 chapter narration for a grounded short-form
+visual edit. The local system has already rejected some panels as unsafe to frame.
 The feasible visual ledger in the request is authoritative.
 
 First reconcile the full ordered story map, the existing evidence-grounded

@@ -635,6 +635,7 @@ class CloudBatchMixin:
         *,
         actor_id: str = "",
         review_only_preview: bool = False,
+        repair_for_production: bool = False,
         review_source_upscale_policy: str | None = None,
         review_source_root: Path | None = None,
         review_output_dir: Path | None = None,
@@ -643,6 +644,7 @@ class CloudBatchMixin:
         """Run one DB-backed project and persist only after stage reconciliation."""
 
         try:
+            repair_requested = review_only_preview or repair_for_production
             record = self.store.load(project_id) or ChapterJobRecord(project_id)
             cached_segmentation = record.stage_results.get("segmentation")
             prepared: tuple[tuple[CloudPanelInput, ...], dict[str, Any]] | None = None
@@ -821,7 +823,7 @@ class CloudBatchMixin:
                 )
             self.store.save(record)
             review_resume_result: ChapterResult | None = None
-            if review_only_preview and streamed_visual is None:
+            if repair_requested and streamed_visual is None:
                 try:
                     durable_visual = VisualStageResult.from_dict(
                         record.stage_results["visual"]
@@ -946,7 +948,7 @@ class CloudBatchMixin:
             repair_missing_sections: tuple[str, ...] = ()
             if record.state != ChapterState.READY_TO_RENDER:
                 can_repair_initial_narration = (
-                    review_only_preview
+                    repair_requested
                     and record.error_code
                     in {
                         "cloud.narrative_not_grounded",
@@ -1020,7 +1022,7 @@ class CloudBatchMixin:
             # current feasible visual ledger before persistence. Otherwise an old
             # READY_TO_RENDER narration can fail the newer analyzer contract before
             # the review repair path gets a chance to replace it.
-            if review_only_preview and repaired_result is None:
+            if repair_requested and repaired_result is None:
                 from app.services import pipeline, review_source_upscale
 
                 policy_id = (
@@ -1075,7 +1077,7 @@ class CloudBatchMixin:
                 "approval_required": True,
                 "voice_timing_required": True,
             }
-            if review_only_preview:
+            if repair_requested:
                 from app.services import review_source_upscale
 
                 try:
@@ -1147,9 +1149,15 @@ class CloudBatchMixin:
                     record.state = ChapterState.READY_TO_RENDER
                     record.error_code = ""
                     record.error_message = ""
+                    record.stage_results["publish_allowed"] = False
                     self.store.save(record)
                 except CloudStageError as exc:
                     return self._record_failure(record, exc)
+                if repair_for_production and not review_only_preview:
+                    record.stage_results["voice_state"] = "WAITING_FOR_PRODUCTION"
+                    record.state = ChapterState.READY_TO_RENDER
+                    self.store.save(record)
+                    return record
                 try:
                     from app.services import pipeline
 

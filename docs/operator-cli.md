@@ -29,6 +29,17 @@ non-interactive production invocation has the form:
 python scripts/run_operator_cli.py --mode production --env-file <private-ms-env.sh> --project-id <id> --actor-id <operator> --approved-script-hash <sha256> --approved-script-version <version>
 ```
 
+To refresh visual/narrative repair for production without generating a silent
+preview or starting TTS/render, use the explicit pre-production mode:
+
+```text
+python scripts/run_operator_cli.py --mode repair-production --env-file <private-ms-env.sh> --project-id <id> --actor-id <operator> --source-root <chapter-source-root>
+```
+
+A successful repair-production run stops at `READY_TO_RENDER` with
+`voice_state=WAITING_FOR_PRODUCTION`; the resulting latest script still requires
+normal explicit approval before `--mode production` can run.
+
 `--env-file` is optional and accepts only a regular file containing safe
 `MS_*` assignments (with optional `export`); it is parsed without executing a
 shell, and its values are never printed. Missing, symlinked, malformed, or

@@ -26,10 +26,10 @@ from app.services import (
     script as script_service,
 )
 
-REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v11"
+REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v12"
 REPAIR_EDITORIAL_SECTIONS = ("hook", "setup", "conflict", "twist", "cta")
 VISUAL_SECTION_REMAP_VERSION = "visual_section_remap_v1"
-REPAIR_PROMPT_VERSION = "visual-narrative-repair-v11"
+REPAIR_PROMPT_VERSION = "visual-narrative-repair-v12"
 REPAIR_TARGET_WORD_MIN = 115
 REPAIR_TARGET_WORD_GOAL = 120
 REPAIR_TARGET_WORD_MAX = 125
@@ -1653,8 +1653,9 @@ def _connected_story_scope_chain(
     within one scope remains connected.
     """
 
-    prefix_parts = tuple(str(prefix).split("__"))
-    if not prefix_parts or not rows:
+    root_scope = str(prefix) == "__root__"
+    prefix_parts = () if root_scope else tuple(str(prefix).split("__"))
+    if (not root_scope and not prefix_parts) or not rows:
         return ()
     blocks: list[str] = []
     for row in rows:
@@ -1663,18 +1664,26 @@ def _connected_story_scope_chain(
             if part.startswith("claim"):
                 break
             story_parts.append(part)
-        if tuple(story_parts[: len(prefix_parts)]) != prefix_parts:
+        if not story_parts:
             return ()
-        if len(story_parts) == len(prefix_parts):
-            child_scope = str(prefix)
+        if root_scope:
+            child_scope = story_parts[0]
         else:
-            child_scope = "__".join((*prefix_parts, story_parts[len(prefix_parts)]))
+            if tuple(story_parts[: len(prefix_parts)]) != prefix_parts:
+                return ()
+            if len(story_parts) == len(prefix_parts):
+                child_scope = str(prefix)
+            else:
+                child_scope = "__".join((*prefix_parts, story_parts[len(prefix_parts)]))
         if not blocks or child_scope != blocks[-1]:
             blocks.append(child_scope)
 
     if len(blocks) <= 1:
-        return tuple(blocks)
-    if str(prefix) in blocks or len(set(blocks)) != len(blocks):
+        # Synthetic root is only a fallback for a genuinely cross-root
+        # contiguous window.  A single top-level root must still satisfy its
+        # own deeper-scope continuity checks and may not bypass interleaving.
+        return () if root_scope else tuple(blocks)
+    if (not root_scope and str(prefix) in blocks) or len(set(blocks)) != len(blocks):
         return ()
 
     numbered: list[tuple[str, int]] = []
@@ -1704,6 +1713,8 @@ def _select_coherent_claim_window(
     We first prefer the deepest scope that can independently sustain the full
     narration cadence. Inside that scope we then choose the narrowest chronological
     claim window that still owns the required number of unique feasible panels.
+    Adjacent numbered top-level roots may be joined when no deeper scope can
+    sustain the requested capacity; non-adjacent or revisited roots remain invalid.
     This prevents unrelated roots from being mixed merely to gain visual headroom.
     """
 
@@ -1722,10 +1733,18 @@ def _select_coherent_claim_window(
     )
 
     scopes: dict[str, list[dict[str, Any]]] = {}
+    synthetic_root_rows: list[dict[str, Any]] = []
+    top_level_roots: set[str] = set()
     for row in rows:
         claim_id = str(row.get("claim_id", "")).strip()
-        for prefix in _claim_story_prefixes(claim_id):
+        prefixes = _claim_story_prefixes(claim_id)
+        for prefix in prefixes:
             scopes.setdefault(prefix, []).append(row)
+        if prefixes:
+            synthetic_root_rows.append(row)
+            top_level_roots.add(prefixes[0])
+    if len(top_level_roots) >= 2:
+        scopes["__root__"] = synthetic_root_rows
 
     def row_panels(row: Mapping[str, Any]) -> tuple[str, ...]:
         raw = row.get("evidence_panel_ids", ())
@@ -1740,7 +1759,7 @@ def _select_coherent_claim_window(
         }
         if len(unique_scope_panels) < minimum:
             continue
-        depth = prefix.count("__") + 1
+        depth = 0 if prefix == "__root__" else prefix.count("__") + 1
         for start in range(len(scoped_rows)):
             unique_panels: set[str] = set()
             for end in range(start, len(scoped_rows)):
@@ -2656,15 +2675,25 @@ def build_repair_payload(
         window_feasibility_cache[cache_key] = feasible
         return feasible
 
-    feasible_claim_rows, coherence_window = _select_coherent_claim_window(
+    standard_claim_rows, standard_coherence_window = _select_coherent_claim_window(
         feasible_claim_rows,
-        minimum_unique_panels=adaptive_minimum_panels,
-        preferred_unique_panels=min(
-            standard_minimum_panels,
-            adaptive_minimum_panels + 1,
-        ),
+        minimum_unique_panels=standard_minimum_panels,
+        preferred_unique_panels=standard_minimum_panels,
         window_is_feasible=coherent_window_is_section_safe,
     )
+    if bool(standard_coherence_window.get("feasible")):
+        feasible_claim_rows = standard_claim_rows
+        coherence_window = standard_coherence_window
+    else:
+        feasible_claim_rows, coherence_window = _select_coherent_claim_window(
+            feasible_claim_rows,
+            minimum_unique_panels=adaptive_minimum_panels,
+            preferred_unique_panels=min(
+                standard_minimum_panels,
+                adaptive_minimum_panels + 1,
+            ),
+            window_is_feasible=coherent_window_is_section_safe,
+        )
     selected_unique_panels = int(coherence_window.get("selected_unique_panel_count", 0))
     if selected_unique_panels >= standard_minimum_panels:
         duration_policy = REPAIR_DURATION_POLICY_STANDARD

@@ -2009,3 +2009,67 @@ def test_position_repair_lineage_merge_is_ordered_and_cache_identity_changes_wit
     )
     assert changed_lineage["lineage_hash"] != first["lineage_hash"]
 
+
+
+def test_visual_repair_text_only_preserves_standard_word_floor(monkeypatch):
+    module = _module()
+    from types import SimpleNamespace
+
+    runner = module.CloudStageRunner(
+        provider=SimpleNamespace(model_id=_identity(module).model),
+        model_identity=_identity(module),
+        max_attempts=1,
+    )
+    targets = [18, 18, 35, 26, 18]
+    ceilings = [18, 18, 36, 27, 18]
+    passages = []
+    claims = []
+    observations = []
+    rows = []
+    for index, (target, ceiling) in enumerate(zip(targets, ceilings, strict=True)):
+        passage_id = f"p{index}"
+        claim_id = f"claim-{index}"
+        panel_id = f"panel-{index}"
+        passages.append({
+            "passage_id": passage_id,
+            "editorial_role": ("hook", "setup", "conflict", "twist", "cta")[index],
+            "text": "Grounded story text stays within visible evidence.",
+            "claim_ids": [claim_id],
+            "evidence_panel_ids": [panel_id],
+        })
+        claims.append({
+            "claim_id": claim_id, "claim_type": "fact", "text": "Grounded fact.",
+            "qualification": "Visible evidence supports it.", "evidence_panel_ids": [panel_id],
+        })
+        observations.append({"panel_id": panel_id, "visible_facts": ["Grounded fact."], "uncertainties": []})
+        rows.append({"target_lexical_words": target, "max_lexical_words": ceiling, "evidence_panel_ids": [panel_id]})
+    candidate = module.NarrationResult(
+        spoken_text=" ".join(str(item["text"]) for item in passages),
+        display_words=("GROUNDED",), passages=tuple(passages), ending_kind="consequence",
+        word_count=115, estimated_duration_s=50.0, observations=(), continuity_ledger={},
+        evidence_graph={"claims": claims}, story_spine={}, qc_report={},
+        model_identity_hash=runner.model_identity.identity_hash,
+        prompt_version=runner.prompts["visual_narrative_repair"][0],
+        prompt_sha256=runner.prompts["visual_narrative_repair"][1], visual_evidence_hash="visual-hash",
+    )
+    captured = {}
+    def fake_targeted(*args, **kwargs):
+        captured["targets"] = kwargs["passage_word_targets"]
+        captured["ceilings"] = kwargs["passage_word_budgets"]
+        return candidate
+    monkeypatch.setattr(runner, "_run_targeted_narration_repair", fake_targeted)
+    monkeypatch.setattr(module.visual_narrative_repair, "validate_repaired_hook_quality", lambda *_a, **_k: None)
+    runner._run_visual_repair_text_only_duration_repair(
+        visual_repair_prompt=runner.prompts["visual_narrative_repair"],
+        source={"duration_policy_contract": {
+            "version": "standard_50_60_v1", "adaptive": False,
+            "target_word_min": 115, "target_word_goal": 115, "target_word_max": 117,
+            "target_duration_min_s": 50.0, "target_duration_max_s": 50.87,
+        }},
+        observations=tuple(observations), structural={}, story_map=SimpleNamespace(),
+        visual=SimpleNamespace(visual_evidence_hash="visual-hash"), candidate=candidate,
+        capacity_plan={"rows": rows},
+    )
+    assert sum(captured["targets"].values()) == 115
+    assert captured["targets"] == dict(zip((f"p{i}" for i in range(5)), targets, strict=True))
+    assert captured["ceilings"] == dict(zip((f"p{i}" for i in range(5)), ceilings, strict=True))

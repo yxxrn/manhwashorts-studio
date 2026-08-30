@@ -271,8 +271,8 @@ def test_visual_repair_contract_bump_scopes_stale_provider_cache():
         contract_version=repair.REPAIR_CONTRACT_VERSION,
     )
 
-    assert repair.REPAIR_CONTRACT_VERSION == "visual_narrative_repair_v11"
-    assert repair.REPAIR_PROMPT_VERSION == "visual-narrative-repair-v11"
+    assert repair.REPAIR_CONTRACT_VERSION == "visual_narrative_repair_v12"
+    assert repair.REPAIR_PROMPT_VERSION == "visual-narrative-repair-v12"
     assert old_key != current_key
 
 def test_review_project_falls_back_to_current_materialization_on_stale_metadata_cache(
