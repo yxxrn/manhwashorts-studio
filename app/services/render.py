@@ -1352,15 +1352,23 @@ def join_scene_clips(
         f"concat=n={len(segments)}:v=1:a=0[{joined}]"
     )
     total = sum(durations)
-    # Frame rounding can leave the concatenated stream a fraction of one frame
-    # shorter than the decimal scene plan. Allow at most one final clone frame
-    # so trim can land on the persisted duration; never compensate transition
-    # overlap here.
-    rounding_pad = 1.0 / max(1, fps)
-    graph.append(
-        f"[{joined}]tpad=stop_mode=clone:stop_duration={rounding_pad:.6f},"
-        f"trim=duration={total:.3f}[joined_exact]"
-    )
+    # Per-scene frame rounding can accumulate across the timeline, so the
+    # concatenated stream may be several frames shorter than the global
+    # decimal plan. Quantize the global target upward and pad exactly the
+    # missing number of frames before trimming to that target.
+    frame_rate = max(1, fps)
+    total_frames = max(1, int(math.ceil(total * frame_rate - 1e-9)))
+    joined_frames = sum(frame_counts)
+    missing_frames = max(0, total_frames - joined_frames)
+    if missing_frames:
+        graph.append(
+            f"[{joined}]tpad=stop_mode=clone:stop_duration={missing_frames / frame_rate:.6f},"
+            f"trim=start_frame=0:end_frame={total_frames}[joined_exact]"
+        )
+    else:
+        graph.append(
+            f"[{joined}]trim=start_frame=0:end_frame={total_frames}[joined_exact]"
+        )
     filter_graph = encoders.apply_filter_suffix(selection, ";".join(graph))
     cmd = [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error"]
     for clip in clips:

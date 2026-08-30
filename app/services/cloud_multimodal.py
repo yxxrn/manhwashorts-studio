@@ -4782,6 +4782,156 @@ def _visual_observation_failure_predicate(row: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _replace_visual_panel_reference(value: Any, old_panel_id: str, new_panel_id: str) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _replace_visual_panel_reference(item, old_panel_id, new_panel_id)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_visual_panel_reference(item, old_panel_id, new_panel_id) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_replace_visual_panel_reference(item, old_panel_id, new_panel_id) for item in value)
+    if value == old_panel_id:
+        return new_panel_id
+    return value
+
+
+def _rebind_visual_cached_row(
+    row: Mapping[str, Any],
+    panel: CloudPanelInput,
+    *,
+    expected_identity_hash: str,
+) -> dict[str, Any]:
+    old_panel_id = str(row.get("panel_id", ""))
+    rebound = _replace_visual_panel_reference(dict(row), old_panel_id, panel.panel_id)
+    rebound["panel_id"] = panel.panel_id
+    rebound["source_asset_id"] = panel.source_asset_id
+    rebound["source_order"] = int(panel.source_order)
+    rebound["source_checksum"] = panel.source_checksum
+    observation = rebound.get("observation")
+    if isinstance(observation, Mapping):
+        observation = dict(observation)
+        observation["panel_id"] = panel.panel_id
+        raw_evidence = observation.get("visual_evidence")
+        if isinstance(raw_evidence, Mapping):
+            raw_evidence = dict(raw_evidence)
+            raw_evidence["evidence_hash"] = ""
+            evidence = visual_scoring.parse_panel_visual_evidence(raw_evidence)
+            evidence = replace(
+                evidence,
+                panel_id=panel.panel_id,
+                source_asset_id=panel.source_asset_id,
+                source_order=int(panel.source_order),
+                evidence_hash="",
+            )
+            evidence_json = visual_scoring.panel_visual_evidence_json(evidence)
+            observation["visual_evidence"] = evidence_json
+            rebound["visual_evidence"] = evidence_json
+            rebound["evidence_hash"] = evidence_json["evidence_hash"]
+        rebound["observation"] = observation
+    rebound["cache_identity_hash"] = expected_identity_hash
+    rebound["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
+    rebound.pop("chunk_cache_key", None)
+    return rebound
+
+
+def _visual_checkpoint_seed_for_panel(
+    checkpoint_seed: Mapping[str, Mapping[str, Any]],
+    panel: CloudPanelInput,
+    ordered_index: int,
+    expected_identity_hash: str,
+    *,
+    require_semantic: bool = True,
+) -> dict[str, Any] | None:
+    exact = checkpoint_seed.get(panel.panel_id)
+    candidates: list[Mapping[str, Any]] = []
+    legacy_template = _visual_panel_identity(panel, ordered_index)
+    legacy_exact_hash = _legacy_v2_visual_panel_identity_hash(panel, ordered_index)
+
+    def legacy_candidate_hash(candidate: Mapping[str, Any]) -> str:
+        try:
+            old_panel_id = str(candidate.get("panel_id", "")).strip()
+            old_prepared_order = int(
+                candidate.get("prepared_order", candidate.get("source_order", -1))
+            )
+        except (TypeError, ValueError):
+            return ""
+        if not old_panel_id or old_prepared_order < 0:
+            return ""
+        identity = dict(legacy_template)
+        identity["ordered_panel_index"] = old_prepared_order
+        identity["panel_id"] = old_panel_id
+        return _hash(identity)
+
+    if isinstance(exact, Mapping):
+        candidates.append(exact)
+    for candidate in checkpoint_seed.values():
+        if not isinstance(candidate, Mapping) or candidate is exact:
+            continue
+        if (
+            str(candidate.get("source_asset_id", "")) != panel.source_asset_id
+            or str(candidate.get("source_checksum", "")) != panel.source_checksum
+        ):
+            continue
+        version = str(candidate.get("cache_identity_version", ""))
+        identity_hash = str(candidate.get("cache_identity_hash", ""))
+        if (
+            version == VISUAL_CACHE_IDENTITY_VERSION
+            and identity_hash == expected_identity_hash
+        ) or (
+            version == LEGACY_VISUAL_CACHE_IDENTITY_V2
+            and identity_hash == legacy_candidate_hash(candidate)
+        ):
+            candidates.append(candidate)
+    for candidate in candidates:
+        version = str(candidate.get("cache_identity_version", ""))
+        identity_hash = str(candidate.get("cache_identity_hash", ""))
+        current_match = (
+            version == VISUAL_CACHE_IDENTITY_VERSION
+            and identity_hash == expected_identity_hash
+        )
+        legacy_exact_match = (
+            version == LEGACY_VISUAL_CACHE_IDENTITY_V2
+            and candidate is exact
+            and str(candidate.get("panel_id", "")) == panel.panel_id
+            and identity_hash == legacy_exact_hash
+        )
+        legacy_content_match = (
+            version == LEGACY_VISUAL_CACHE_IDENTITY_V2
+            and identity_hash == legacy_candidate_hash(candidate)
+        )
+        if not (current_match or legacy_exact_match or legacy_content_match):
+            continue
+        if (
+            str(candidate.get("source_asset_id", "")) != panel.source_asset_id
+            or str(candidate.get("source_checksum", "")) != panel.source_checksum
+        ):
+            continue
+        exact_current_lineage = (
+            current_match
+            and str(candidate.get("panel_id", "")) == panel.panel_id
+            and int(candidate.get("source_order", -1)) == int(panel.source_order)
+        )
+        if exact_current_lineage and (
+            candidate.get("terminal_status") == "rejected" or not require_semantic
+        ):
+            return dict(candidate)
+        if exact_current_lineage and _visual_cached_row_is_reusable(candidate, panel):
+            return dict(candidate)
+        try:
+            rebound = _rebind_visual_cached_row(
+                candidate, panel, expected_identity_hash=expected_identity_hash
+            )
+        except (TypeError, ValueError, visual_scoring.VisualEvidenceError):
+            continue
+        if rebound.get("terminal_status") == "rejected" or not require_semantic:
+            return rebound
+        if _visual_cached_row_is_reusable(rebound, panel):
+            return rebound
+    return None
+
+
 def _visual_cached_row_is_reusable(row: Mapping[str, Any], panel: CloudPanelInput | None) -> bool:
     """Validate cached lineage plus the shared analyzer's fact prerequisite."""
 
@@ -5895,30 +6045,19 @@ def _find_cached_visual_subset(
     if checkpoint_rows:
         checkpoint_panels: list[dict[str, Any]] = []
         panel_identity_hashes: list[str] = []
-        for panel in ordered:
-            row = checkpoint_rows.get(panel.panel_id)
+        for checkpoint_index, panel in enumerate(ordered):
+            expected_identity_hash = _visual_panel_identity_hash(panel, checkpoint_index)
+            row = _visual_checkpoint_seed_for_panel(
+                checkpoint_rows,
+                panel,
+                checkpoint_index,
+                expected_identity_hash,
+                require_semantic=False,
+            )
             if not isinstance(row, Mapping):
                 continue
-            try:
-                lineage_valid = (
-                    str(row.get("panel_id", "")) == panel.panel_id
-                    and str(row.get("source_asset_id", "")) == panel.source_asset_id
-                    and int(row.get("source_order", -1)) == int(panel.source_order)
-                    and str(row.get("source_checksum", "")) == panel.source_checksum
-                )
-            except (TypeError, ValueError):
-                lineage_valid = False
-            if not lineage_valid:
-                continue
-            row_identity_hash = str(row.get("cache_identity_hash", ""))
-            if (
-                panel.identity_descriptor_hash
-                and row_identity_hash
-                and row_identity_hash != panel.identity_descriptor_hash
-            ):
-                continue
             checkpoint_panels.append(dict(row))
-            panel_identity_hashes.append(row_identity_hash)
+            panel_identity_hashes.append(expected_identity_hash)
         if checkpoint_panels:
             return VisualStageResult(
                 panels=tuple(checkpoint_panels),
@@ -6347,7 +6486,8 @@ __all__ = [
     "reconcile_narration_repair_identity",
 ]
 
-VISUAL_CACHE_IDENTITY_VERSION = "visual-cache-identity-v2"
+VISUAL_CACHE_IDENTITY_VERSION = "visual-cache-identity-v3"
+LEGACY_VISUAL_CACHE_IDENTITY_V2 = "visual-cache-identity-v2"
 LEGACY_VISUAL_CACHE_IDENTITY_VERSION = "legacy-descriptor-v1"
 # The visual payload/cache contract is independent of the targeted narrative
 # repair prompt.  This explicit migration pair preserves a valid visual cache
@@ -6422,13 +6562,32 @@ def _visual_panel_identities(
     )
 
 
+def _visual_panel_content_identity(panel: CloudPanelInput, ordered_index: int) -> dict[str, Any]:
+    """Return a content-addressed identity independent of panel labels/order."""
+
+    identity = dict(_visual_panel_identity(panel, ordered_index))
+    identity.pop("ordered_panel_index", None)
+    identity.pop("panel_id", None)
+    identity["source_asset_id"] = panel.source_asset_id
+    return identity
+
+
+def _legacy_v2_visual_panel_identity_hash(
+    panel: CloudPanelInput,
+    ordered_index: int,
+) -> str:
+    if panel.metadata_only and panel.identity_descriptor_hash:
+        return panel.identity_descriptor_hash
+    return _hash(_visual_panel_identity(panel, ordered_index))
+
+
 def _visual_panel_identity_hash(
     panel: CloudPanelInput,
     ordered_index: int,
 ) -> str:
-    if panel.identity_descriptor_hash:
+    if panel.metadata_only and panel.identity_descriptor_hash:
         return panel.identity_descriptor_hash
-    return _hash(_visual_panel_identity(panel, ordered_index))
+    return _hash(_visual_panel_content_identity(panel, ordered_index))
 
 
 def _visual_panel_identity_hashes(
@@ -6630,6 +6789,36 @@ def _migrate_visual_cache_identity(
     identity_hashes = _visual_panel_identity_hashes(ordered)
     expected_source_hash = _visual_source_hash(ordered)
     identity_version = str(cached.get("cache_identity_version", ""))
+    if identity_version == LEGACY_VISUAL_CACHE_IDENTITY_V2:
+        legacy_hashes = tuple(
+            _legacy_v2_visual_panel_identity_hash(panel, index)
+            for index, panel in enumerate(ordered)
+        )
+        persisted_hashes = tuple(str(item) for item in cached.get("panel_identity_hashes", ()))
+        if persisted_hashes and persisted_hashes != legacy_hashes:
+            return None
+        migrated_rows: list[dict[str, Any]] = []
+        current_hashes = _visual_panel_identity_hashes(ordered)
+        for index, (panel, row) in enumerate(zip(ordered, raw_rows, strict=True)):
+            row_hash = str(row.get("cache_identity_hash", ""))
+            if row_hash and row_hash != legacy_hashes[index]:
+                return None
+            try:
+                migrated_rows.append(
+                    _rebind_visual_cached_row(
+                        row, panel, expected_identity_hash=current_hashes[index]
+                    )
+                )
+            except (TypeError, ValueError, visual_scoring.VisualEvidenceError):
+                return None
+        migrated = dict(cached)
+        migrated["panels"] = migrated_rows
+        migrated["source_hash"] = expected_source_hash
+        migrated["cache_identity_version"] = VISUAL_CACHE_IDENTITY_VERSION
+        migrated["panel_identity_hashes"] = list(current_hashes)
+        migrated["cache_identity_migration_proof"] = "visual_cache_identity_v2_content_equivalence"
+        return migrated
+
     if identity_version == VISUAL_CACHE_IDENTITY_VERSION:
         persisted_hashes = tuple(str(item) for item in cached.get("panel_identity_hashes", ()))
         source_matches = str(cached.get("source_hash", "")) == expected_source_hash

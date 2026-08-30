@@ -49,7 +49,7 @@ _MIN_SEGMENT_FRACTION = 0.55
 
 # This detector is intentionally based on structure rather than brightness.
 # The version participates in downstream cache/review identities.
-COLOR_AGNOSTIC_DETECTOR_VERSION = "color-agnostic-gutter-v4"
+COLOR_AGNOSTIC_DETECTOR_VERSION = "color-agnostic-gutter-v5"
 _MICRO_GUTTER_GAP_MAX_ROWS = 8
 VERIFIED_BLANK_DETECTOR_VERSION = "extreme-full-width-blank-v2"
 _BLANK_VARIANCE_MAX = 25.0
@@ -254,20 +254,22 @@ def color_agnostic_row_classifications(
         while index < height and classifications[index][0] == "canonical_panel":
             index += 1
         end = index
-        if (
-            end - start <= _MICRO_GUTTER_GAP_MAX_ROWS
-            and start > 0
-            and end < height
-            and classifications[start - 1][0] == "verified_gutter"
-            and classifications[end][0] == "verified_gutter"
-        ):
-            confidence = min(
-                float(classifications[start - 1][1]),
-                float(classifications[end][1]),
-            )
+        is_micro = end - start <= _MICRO_GUTTER_GAP_MAX_ROWS
+        left_gutter = start > 0 and classifications[start - 1][0] == "verified_gutter"
+        right_gutter = end < height and classifications[end][0] == "verified_gutter"
+        bounded_gap = left_gutter and right_gutter
+        boundary_sliver = (start == 0 and right_gutter) or (end == height and left_gutter)
+        if is_micro and (bounded_gap or boundary_sliver):
+            neighbor_confidences = []
+            if left_gutter:
+                neighbor_confidences.append(float(classifications[start - 1][1]))
+            if right_gutter:
+                neighbor_confidences.append(float(classifications[end][1]))
+            confidence = min(neighbor_confidences)
+            bridge_kind = "micro_gap_bridge" if bounded_gap else "micro_boundary_bridge"
             evidence = (
                 f"coverage.gutter.{COLOR_AGNOSTIC_DETECTOR_VERSION};"
-                f"micro_gap_bridge;rows={start}-{end}"
+                f"{bridge_kind};rows={start}-{end}"
             )
             for row in range(start, end):
                 classifications[row] = ("verified_gutter", confidence, evidence)

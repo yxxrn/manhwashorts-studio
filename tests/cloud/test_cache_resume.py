@@ -1873,3 +1873,208 @@ def test_record_failure_preserves_newer_durable_preflight_checkpoint(tmp_path):
         "prior", "visual.narrative_repair_ungrounded"
     ]
 
+
+
+def test_stream_checkpoint_rebinds_content_equivalent_panels_after_id_order_shift(tmp_path):
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stable-rebind"))
+    )
+    checkpoint = tmp_path / "visual-checkpoints.jsonl"
+    first_provider = _FakeProvider()
+    first_runner = module.CloudStageRunner(
+        provider=first_provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        visual_checkpoint_path=checkpoint,
+    )
+    first_stream = first_runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        first_stream.submit(panel)
+    first = first_stream.finish(panels)
+    assert first.panel_ids == tuple(panel.panel_id for panel in panels)
+
+    shifted = tuple(
+        replace(
+            panel,
+            panel_id=f"{panel.panel_id}-shifted",
+            source_order=panel.source_order + 1000,
+            prepared_order=(panel.prepared_order or 0) + 1000,
+        )
+        for panel in panels
+    )
+    second_provider = _FakeProvider()
+    second_runner = module.CloudStageRunner(
+        provider=second_provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        visual_checkpoint_path=checkpoint,
+    )
+    second_stream = second_runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(shifted),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in shifted:
+        second_stream.submit(panel)
+    rebound = second_stream.finish(shifted)
+
+    assert not [call for call in second_provider.calls if call[0] == "visual"]
+    assert rebound.panel_ids == tuple(panel.panel_id for panel in shifted)
+    assert tuple(rebound.panel_identity_hashes) == module._visual_panel_identity_hashes(
+        second_runner._ordered_panels(shifted)
+    )
+    for row, panel in zip(rebound.panels, second_runner._ordered_panels(shifted), strict=True):
+        assert module._visual_cached_row_is_reusable(row, panel)
+        assert row["cache_identity_version"] == module.VISUAL_CACHE_IDENTITY_VERSION
+        module.visual_scoring.parse_panel_visual_evidence(row["visual_evidence"])
+
+
+def test_visual_cache_identity_v2_migrates_without_provider_input_change():
+    module = _module()
+    panels = module.CloudStageRunner._ordered_panels(_panels(module, "v2-migration"))
+    provider = _FakeProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+    )
+    current = runner.run_visual_evidence(panels)
+    legacy = current.as_dict()
+    legacy_hashes = tuple(
+        module._legacy_v2_visual_panel_identity_hash(panel, index)
+        for index, panel in enumerate(panels)
+    )
+    legacy["cache_identity_version"] = module.LEGACY_VISUAL_CACHE_IDENTITY_V2
+    legacy["panel_identity_hashes"] = list(legacy_hashes)
+    for row, identity_hash in zip(legacy["panels"], legacy_hashes, strict=True):
+        row["cache_identity_version"] = module.LEGACY_VISUAL_CACHE_IDENTITY_V2
+        row["cache_identity_hash"] = identity_hash
+
+    migrated = module._migrate_visual_cache_identity(
+        legacy,
+        panels,
+        model_identity=runner.model_identity,
+        prompt=runner.prompts["visual"],
+    )
+
+    assert migrated is not None
+    assert migrated["cache_identity_version"] == module.VISUAL_CACHE_IDENTITY_VERSION
+    assert tuple(migrated["panel_identity_hashes"]) == module._visual_panel_identity_hashes(panels)
+    assert migrated["cache_identity_migration_proof"] == "visual_cache_identity_v2_content_equivalence"
+
+
+def test_checkpoint_identity_v2_exact_row_is_restamped_without_provider_call(tmp_path):
+    module = _module()
+    panel = replace(_panels(module, "checkpoint-v2")[0], prepared_order=0)
+    provider = _FakeProvider()
+    checkpoint = tmp_path / "visual-checkpoints.jsonl"
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        visual_checkpoint_path=checkpoint,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=1,
+        max_estimated_bytes=10_000_000,
+    )
+    stream.submit(panel)
+    stream.finish((panel,))
+    seed = runner._checkpoint_load(stream._checkpoint_scope)
+    row = dict(seed[panel.panel_id])
+    row["cache_identity_version"] = module.LEGACY_VISUAL_CACHE_IDENTITY_V2
+    row["cache_identity_hash"] = module._legacy_v2_visual_panel_identity_hash(panel, 0)
+
+    migrated = module._visual_checkpoint_seed_for_panel(
+        {panel.panel_id: row},
+        panel,
+        0,
+        module._visual_panel_identity_hash(panel, 0),
+    )
+
+    assert migrated is not None
+    assert migrated["cache_identity_version"] == module.VISUAL_CACHE_IDENTITY_VERSION
+    assert migrated["cache_identity_hash"] == module._visual_panel_identity_hash(panel, 0)
+    assert module._visual_cached_row_is_reusable(migrated, panel)
+
+
+def test_stream_checkpoint_v2_rebinds_content_equivalent_panels_after_id_order_shift(tmp_path):
+    module = _module()
+    panels = tuple(
+        replace(panel, source_order=100 + index, prepared_order=100 + index)
+        for index, panel in enumerate(_panels(module, "stable-v2-rebind"))
+    )
+    checkpoint = tmp_path / "visual-checkpoints.jsonl"
+    first_provider = _FakeProvider()
+    first_runner = module.CloudStageRunner(
+        provider=first_provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        visual_checkpoint_path=checkpoint,
+    )
+    first_stream = first_runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        first_stream.submit(panel)
+    first_stream.finish(panels)
+
+    panel_by_id = {panel.panel_id: (index, panel) for index, panel in enumerate(panels)}
+    legacy_rows = []
+    for line in checkpoint.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        indexed = panel_by_id.get(str(row.get("panel_id", "")))
+        if indexed is not None:
+            index, panel = indexed
+            row["cache_identity_version"] = module.LEGACY_VISUAL_CACHE_IDENTITY_V2
+            row["cache_identity_hash"] = module._legacy_v2_visual_panel_identity_hash(
+                panel, index
+            )
+            row.pop("prepared_order", None)
+        legacy_rows.append(row)
+    checkpoint.write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in legacy_rows) + "\n",
+        encoding="utf-8",
+    )
+
+    shifted = tuple(
+        replace(
+            panel,
+            panel_id=f"{panel.panel_id}-shifted",
+            source_order=panel.source_order + 1000,
+            prepared_order=(panel.prepared_order or 0) + 1000,
+        )
+        for panel in panels
+    )
+    second_provider = _FakeProvider()
+    second_runner = module.CloudStageRunner(
+        provider=second_provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        visual_checkpoint_path=checkpoint,
+    )
+    second_stream = second_runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(shifted),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in shifted:
+        second_stream.submit(panel)
+    rebound = second_stream.finish(shifted)
+
+    assert not [call for call in second_provider.calls if call[0] == "visual"]
+    assert rebound.panel_ids == tuple(panel.panel_id for panel in shifted)
+    for row, panel in zip(
+        rebound.panels, second_runner._ordered_panels(shifted), strict=True
+    ):
+        assert module._visual_cached_row_is_reusable(row, panel)
+        assert row["cache_identity_version"] == module.VISUAL_CACHE_IDENTITY_VERSION

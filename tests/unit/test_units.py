@@ -561,6 +561,39 @@ def test_join_scene_clips_preserves_duration_with_editorial_fade(tmp_path):
     assert probe(output)["duration"] == pytest.approx(4.0, abs=0.05)
 
 
+def test_join_scene_clips_recovers_accumulated_frame_rounding(tmp_path):
+    """Per-scene rounding losses must not truncate the global timeline."""
+    from PIL import Image
+
+    from app.services import encoders
+    from app.services.render import SceneInput, join_scene_clips, probe, render_scene_clip
+
+    encoder = encoders.select("cpu")
+    fps = 60
+    scene_duration = 1.008
+    clips = []
+    scenes = []
+    for index in range(5):
+        image = tmp_path / f"panel{index}.jpg"
+        clip = tmp_path / f"clip{index}.mp4"
+        Image.new("RGB", (800, 1200), "red").save(image)
+        scene = SceneInput(
+            image, index * scene_duration, (index + 1) * scene_duration,
+            camera_curve="slow_push_in", transition="none",
+        )
+        render_scene_clip(scene, image, clip, 360, 640, fps, encoder=encoder)
+        clips.append(clip)
+        scenes.append(scene)
+
+    output = tmp_path / "joined_fractional.mp4"
+    join_scene_clips(clips, scenes, output, fps, encoder)
+    rendered = probe(output)["duration"]
+    total = scene_duration * len(scenes)
+
+    assert rendered >= total - 0.001
+    assert rendered < total + (1.0 / fps) + 0.001
+
+
 def test_editorial_fade_contains_real_intermediate_frames(tmp_path):
     """A fade boundary must mix outgoing and incoming panels, not flash black."""
     import subprocess

@@ -464,3 +464,48 @@ def test_color_agnostic_rows_keep_non_micro_story_band_between_gutters(monkeypat
     rows = strips.color_agnostic_row_classifications(image)
 
     assert all(rows[y][0] == "canonical_panel" for y in range(300, 309))
+
+
+
+def test_color_agnostic_rows_bridge_trailing_micro_content_at_source_boundary(monkeypatch):
+    from app.services import strips
+
+    image = Image.new("RGB", (900, 700), (120, 120, 120))
+    candidates = (
+        strips.SeparatorCandidate(650, 0.95, 0.95, 600, 693, "trailing"),
+    )
+    monkeypatch.setattr(strips, "color_agnostic_separator_candidates", lambda _image: candidates)
+
+    rows = strips.color_agnostic_row_classifications(image)
+
+    assert all(rows[y][0] == "verified_gutter" for y in range(600, 700))
+    assert all("micro_boundary_bridge" in rows[y][2] for y in range(693, 700))
+
+
+def test_color_agnostic_rows_bridge_leading_micro_content_at_source_boundary(monkeypatch):
+    from app.services import strips
+
+    image = Image.new("RGB", (900, 700), (120, 120, 120))
+    candidates = (
+        strips.SeparatorCandidate(55, 0.95, 0.95, 8, 100, "leading"),
+    )
+    monkeypatch.setattr(strips, "color_agnostic_separator_candidates", lambda _image: candidates)
+
+    rows = strips.color_agnostic_row_classifications(image)
+
+    assert all(rows[y][0] == "verified_gutter" for y in range(0, 100))
+    assert all("micro_boundary_bridge" in rows[y][2] for y in range(0, 8))
+
+
+def test_color_agnostic_rows_keep_nine_row_story_band_at_source_boundary(monkeypatch):
+    from app.services import strips
+
+    image = Image.new("RGB", (900, 700), (120, 120, 120))
+    candidates = (
+        strips.SeparatorCandidate(650, 0.95, 0.95, 600, 691, "trailing"),
+    )
+    monkeypatch.setattr(strips, "color_agnostic_separator_candidates", lambda _image: candidates)
+
+    rows = strips.color_agnostic_row_classifications(image)
+
+    assert all(rows[y][0] == "canonical_panel" for y in range(691, 700))

@@ -26,6 +26,7 @@ _RUNTIME_NAMES = (
     '_stream_validate_rejection',
     '_stream_validate_row',
     '_stream_visual_chunk_cache_key',
+    '_visual_checkpoint_seed_for_panel',
     '_visual_panel_identities',
     '_visual_panel_identity_hash',
     '_visual_request_estimated_bytes',
@@ -170,8 +171,13 @@ class _StreamingVisualEvidenceSession:
         seeded_ids: list[str] = []
         seeded_rejected_ids: list[str] = []
         attempts_by_id = {panel.panel_id: 0 for panel in batch}
-        for panel in batch:
-            seeded = self._checkpoint_seed.get(panel.panel_id)
+        for panel_index, panel in enumerate(batch):
+            seeded = _visual_checkpoint_seed_for_panel(
+                self._checkpoint_seed,
+                panel,
+                panel_index,
+                identity_by_id[panel.panel_id],
+            )
             if not isinstance(seeded, Mapping):
                 continue
             if seeded.get("stream_checkpoint_version") != VISUAL_STREAM_VERSION:

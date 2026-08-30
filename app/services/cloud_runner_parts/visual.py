@@ -18,8 +18,11 @@ _RUNTIME_NAMES = (
     '_cache_key',
     '_hash',
     '_reconcile_window_geometry',
+    '_stage_result_identity_is_compatible',
     '_visual_analysis_windows',
+    '_migrate_visual_cache_identity',
     '_visual_cached_row_is_reusable',
+    '_visual_checkpoint_seed_for_panel',
     '_visual_chunk_cache_key',
     '_visual_observation_failure_predicate',
     '_visual_panel_chunks',
@@ -46,10 +49,38 @@ class VisualEvidenceMixin:
         cached_reusable: dict[str, dict[str, Any]] = {}
         cached = self.cache.get(key) if self.cache is not None else None
         if isinstance(cached, Mapping):
+            migrated_cached = _migrate_visual_cache_identity(
+                cached,
+                ordered,
+                model_identity=self.model_identity,
+                prompt=prompt,
+            )
+            exact_key_legacy_compatible = (
+                migrated_cached is None
+                and _stage_result_identity_is_compatible(
+                    str(cached.get("model_identity_hash", "")),
+                    self.model_identity,
+                    stage="visual",
+                )
+                and str(cached.get("prompt_version", "")) == prompt[0]
+                and str(cached.get("prompt_sha256", "")) == prompt[1]
+                and bool(cached.get("reconciled", True))
+            )
+            cached_payload = (
+                migrated_cached
+                if migrated_cached is not None
+                else cached if exact_key_legacy_compatible else None
+            )
             try:
-                cached_result = VisualStageResult.from_dict(cached)
+                cached_result = (
+                    VisualStageResult.from_dict(cached_payload)
+                    if cached_payload is not None
+                    else None
+                )
             except (KeyError, TypeError, ValueError):
                 cached_result = None
+            if migrated_cached is not None and self.cache is not None and migrated_cached != cached:
+                self.cache.put(key, migrated_cached)
             if cached_result is not None:
                 panels_by_id = {panel.panel_id: panel for panel in ordered}
                 cached_reusable = {
@@ -97,6 +128,16 @@ class VisualEvidenceMixin:
                 strict=True,
             )
         }
+        checkpoint_reusable_by_id: dict[str, dict[str, Any]] = {}
+        for checkpoint_index, checkpoint_panel in enumerate(ordered):
+            checkpoint_row = _visual_checkpoint_seed_for_panel(
+                _checkpoint_seed,
+                checkpoint_panel,
+                checkpoint_index,
+                panel_identity_by_id[checkpoint_panel.panel_id],
+            )
+            if checkpoint_row is not None:
+                checkpoint_reusable_by_id[checkpoint_panel.panel_id] = checkpoint_row
         analysis_window_cache: dict[str, tuple[dict[str, Any], ...]] = {}
 
         def panel_analysis_windows(item: CloudPanelInput) -> tuple[dict[str, Any], ...]:
@@ -305,29 +346,21 @@ class VisualEvidenceMixin:
             # rows are retried.  Whole-request transport failures retain the
             # existing bounded binary reduction path.
             nonlocal reconciled_by_id, unknown_failure_metadata
-            chunk_cache_key = _visual_chunk_cache_key(
-                chunk,
-                chunk_index=chunk_index,
-                batch_count=len(chunks),
-                model_identity=self.model_identity,
-                prompt=prompt,
-            )
             checkpoint_seeded = {
                 item.panel_id
                 for item in chunk
                 if (
-                    item.panel_id in _checkpoint_seed
-                    and _checkpoint_seed[item.panel_id].get("cache_identity_hash")
-                    == panel_identity_by_id[item.panel_id]
-                    and _checkpoint_seed[item.panel_id].get("chunk_cache_key") == chunk_cache_key
-                    and _visual_cached_row_is_reusable(_checkpoint_seed[item.panel_id], item)
+                    item.panel_id in checkpoint_reusable_by_id
+                    and _visual_cached_row_is_reusable(
+                        checkpoint_reusable_by_id[item.panel_id], item
+                    )
                 )
             }
             with reconcile_lock:
                 seeded = {item.panel_id for item in chunk if item.panel_id in reconciled_by_id}
                 seeded.update(checkpoint_seeded)
                 for panel_id in checkpoint_seeded:
-                    reconciled_by_id[panel_id] = _checkpoint_seed[panel_id]
+                    reconciled_by_id[panel_id] = checkpoint_reusable_by_id[panel_id]
             live = [item for item in chunk if item.panel_id not in seeded]
             if not live:
                 print(
@@ -747,7 +780,11 @@ class VisualEvidenceMixin:
             prompt_version=prompt[0],
             prompt_sha256=prompt[1],
             cache_identity_version=VISUAL_CACHE_IDENTITY_VERSION,
-            panel_identity_hashes=tuple(_hash(item) for item in source),
+            panel_identity_hashes=tuple(
+                panel_identity_by_id[item.panel_id]
+                for item in ordered
+                if item.panel_id in reconciled_by_id
+            ),
         )
         if self.cache is not None:
             self.cache.put(key, result.as_dict())

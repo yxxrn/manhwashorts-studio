@@ -482,6 +482,7 @@ def _reference_group_counts(
     beats: list[director.StoryBeat],
     target_shots: int,
     max_counts_by_section: Mapping[str, int] | None = None,
+    total_duration: float | None = None,
 ) -> list[int]:
     groups: list[list[director.StoryBeat]] = []
     cursor = 0
@@ -497,6 +498,12 @@ def _reference_group_counts(
         max(0.001, group[-1].end_time - group[0].start_time)
         for group in groups
     ]
+    if total_duration is not None:
+        section_total = max(0.001, sum(durations))
+        durations = [
+            float(total_duration) * duration / section_total for duration in durations
+        ]
+        durations[-1] += float(total_duration) - sum(durations)
     total = sum(durations)
     counts = (
         [
@@ -559,6 +566,7 @@ def _coalesce_beats(
     beats: list[director.StoryBeat],
     target_shots: int | None = None,
     max_counts_by_section: Mapping[str, int] | None = None,
+    total_duration: float | None = None,
 ) -> list[director.StoryBeat]:
     """Compress event fragments to the fixed 18-24 shot editorial budget."""
     if not beats:
@@ -569,6 +577,7 @@ def _coalesce_beats(
             beats,
             target_shots,
             max_counts_by_section=max_counts_by_section,
+            total_duration=total_duration,
         )
         if target_shots
         else []
@@ -655,14 +664,19 @@ def _reference_section_durations(
 ) -> list[tuple[str, float]]:
     durations: list[tuple[str, float]] = []
     cursor = 0
-    source_total = max(0.001, beats[-1].end_time - beats[0].start_time)
+    raw_durations: list[tuple[str, float]] = []
     while cursor < len(beats):
         start = cursor
         section = beats[cursor].section
         while cursor < len(beats) and beats[cursor].section == section:
             cursor += 1
         duration = max(0.001, beats[cursor - 1].end_time - beats[start].start_time)
-        durations.append((section, total_duration * duration / source_total))
+        raw_durations.append((section, duration))
+    section_total = max(0.001, sum(duration for _, duration in raw_durations))
+    durations = [
+        (section, total_duration * duration / section_total)
+        for section, duration in raw_durations
+    ]
     correction = total_duration - sum(duration for _, duration in durations)
     if durations:
         section, duration = durations[-1]
@@ -2248,6 +2262,7 @@ def _plan_reference(
         director.analyze_story(spans),
         target_shots=target,
         max_counts_by_section=max_shots_by_section,
+        total_duration=total_duration,
     )
     shots = visual_planning.plan_content_aware_scenes(
         beats,
@@ -2263,6 +2278,7 @@ def _plan_reference(
             beats,
             target,
             max_counts_by_section=max_shots_by_section,
+            total_duration=total_duration,
         )
         collapsed: list[dict] = []
         for section, section_target in zip(section_order, target_counts, strict=True):

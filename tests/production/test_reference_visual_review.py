@@ -1779,6 +1779,30 @@ def test_review_group_counts_reserve_four_second_minimum_per_section():
     assert all(duration / count <= 4.0 for duration, count in zip(durations, counts, strict=True))
 
 
+def test_review_group_counts_use_final_duration_for_gap_correction():
+    from app.services import editorial_visual_planner
+
+    beats = [
+        SimpleNamespace(section="hook", start_time=0.0, end_time=4.0),
+        SimpleNamespace(section="setup", start_time=5.0, end_time=9.0),
+        SimpleNamespace(section="cta", start_time=10.0, end_time=13.0),
+    ]
+
+    counts = editorial_visual_planner._reference_group_counts(
+        beats,
+        6,
+        max_counts_by_section={"hook": 3, "setup": 3, "cta": 3},
+        total_duration=14.0,
+    )
+    durations = editorial_visual_planner._reference_section_durations(beats, 14.0)
+
+    assert sum(counts) == 6
+    assert all(
+        duration / count <= 4.0
+        for (_, duration), count in zip(durations, counts, strict=True)
+    )
+
+
 def test_silent_reference_planner_receives_explicit_review_duration_flag(monkeypatch):
     from app.services import editorial_visual_planner
 
