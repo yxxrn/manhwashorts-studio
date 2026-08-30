@@ -88,7 +88,7 @@ def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, d
 
 
 
-def build_timeline(api, db, project_id, actor_id, *, silent_reference_review, review_source_upscale_policy, provisional_duration_s, provisional_duration_bounds_s, reference_section_panel_ids, reference_section_citations, reference_beats_by_section, review_source_root, allow_conservative_full_panel, adaptive_reference_production, adaptive_reference_duration_bounds_s):
+def build_timeline(api, db, project_id, actor_id, *, silent_reference_review, review_source_upscale_policy, provisional_duration_s, provisional_duration_bounds_s, reference_section_panel_ids, reference_section_citations, reference_beats_by_section, review_source_root, allow_conservative_full_panel, adaptive_reference_production, adaptive_reference_duration_bounds_s, standard_reference_production):
     """Derive scenes/cues from voice timing or explicit silent-review pacing."""
     PipelineError = api.PipelineError
     SubtitleCue = api.SubtitleCue
@@ -118,6 +118,9 @@ def build_timeline(api, db, project_id, actor_id, *, silent_reference_review, re
     project = get_project(db, project_id)
     profile = reference_profile.resolve_reference_profile(project.template)
     script = _script_for_media(db, project_id, allow_unapproved_review=silent_reference_review)
+    cadence_adapted_reference = bool(
+        silent_reference_review or adaptive_reference_production or standard_reference_production
+    )
     review_policy = None
     if silent_reference_review:
         if profile is None:
@@ -164,7 +167,7 @@ def build_timeline(api, db, project_id, actor_id, *, silent_reference_review, re
             reference_candidates = _load_reference_panel_fallback_candidates(db, project_id, script, images, profile, **{'allow_conservative_full_panel': True} if allow_conservative_full_panel else {})
         candidate_registry = {str(candidate.panel_region_id): candidate for candidate in reference_candidates}
     try:
-        planned = editorial_visual_planner.plan(spans, scored, profile=profile, cited_asset_ids_by_section=None if profile is not None else None, citation_alignment_reasons_by_section=None if profile is not None else None, reference_panel_candidates=reference_candidates, allow_source_resolution_warning=bool(adaptive_reference_production or (review_policy is not None and review_policy.allow_low_source_resolution_warning)), allow_review_cadence_adaptation=silent_reference_review or adaptive_reference_production, allow_review_duration=silent_reference_review or adaptive_reference_production, review_duration_bounds_s=adaptive_duration_bounds, **{'allow_conservative_full_panel': True} if allow_conservative_full_panel else {})
+        planned = editorial_visual_planner.plan(spans, scored, profile=profile, cited_asset_ids_by_section=None if profile is not None else None, citation_alignment_reasons_by_section=None if profile is not None else None, reference_panel_candidates=reference_candidates, allow_source_resolution_warning=bool(adaptive_reference_production or (review_policy is not None and review_policy.allow_low_source_resolution_warning)), allow_review_cadence_adaptation=silent_reference_review or adaptive_reference_production, allow_standard_cadence_adaptation=standard_reference_production, allow_review_duration=silent_reference_review or adaptive_reference_production, review_duration_bounds_s=adaptive_duration_bounds, **{'allow_conservative_full_panel': True} if allow_conservative_full_panel else {})
     except editorial_visual_planner.ReferencePlanningError as exc:
         raise PipelineError(f'reference_planning_failed: {exc.code}: {exc}') from exc
     if profile is not None:
@@ -176,7 +179,7 @@ def build_timeline(api, db, project_id, actor_id, *, silent_reference_review, re
                     shot['rejected_candidates'] = reference_visual_review.attach_accepted_mask_snapshot(shot, candidate_registry)
                 except reference_visual_review.ReferenceReviewError as exc:
                     raise PipelineError(f'{exc.code}: {exc}') from exc
-    if profile is not None and (silent_reference_review or adaptive_reference_production) and (len(planned) > 1):
+    if profile is not None and cadence_adapted_reference and len(planned) > 1:
         _enforce_silent_review_transition_contract(planned)
     for old in db.scalars(select(TimelineScene).where(TimelineScene.project_id == project_id)):
         db.delete(old)

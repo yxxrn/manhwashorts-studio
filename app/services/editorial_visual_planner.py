@@ -1550,6 +1550,7 @@ def _plan_reference_panel_candidates(
     *,
     allow_source_resolution_warning: bool = False,
     allow_review_cadence_adaptation: bool = False,
+    allow_standard_cadence_adaptation: bool = False,
     allow_review_duration: bool = False,
     review_duration_bounds_s: tuple[float, float] | None = None,
     allow_conservative_full_panel: bool = False,
@@ -1608,6 +1609,9 @@ def _plan_reference_panel_candidates(
         )
         for candidate in ordered
     ]
+    cadence_adapted = bool(
+        allow_review_cadence_adaptation or allow_standard_cadence_adaptation
+    )
     section_names = tuple(
         dict.fromkeys(str(span.section) for span in spans if str(span.section))
     )
@@ -1620,7 +1624,7 @@ def _plan_reference_panel_candidates(
             if _candidate_is_eligible(candidate, section, "")
             and (not candidate.eligible_sections or section in candidate.eligible_sections)
         ]
-        if not allow_review_cadence_adaptation:
+        if not cadence_adapted:
             # The normal exact-panel path evaluates each ROI exactly once while
             # emitting the ordered fallback ledger below.  A speculative
             # feasibility pass here both duplicates expensive work and can
@@ -1636,7 +1640,7 @@ def _plan_reference_panel_candidates(
                 candidate,
                 profile,
                 allow_source_resolution_warning=allow_source_resolution_warning,
-                review_aggressive_crop=allow_review_cadence_adaptation,
+                review_aggressive_crop=cadence_adapted,
                 allow_conservative_full_panel=allow_conservative_full_panel,
                 section=section,
             )
@@ -1658,12 +1662,24 @@ def _plan_reference_panel_candidates(
         section_capacity[section] = _review_effective_section_capacity(
             section_duration, capacities
         )
-    if allow_review_cadence_adaptation and any(
+    if cadence_adapted and any(
         capacity < 1 for capacity in section_capacity.values()
     ):
         raise ReferencePlanningError(
             "no feasible exact panel candidate covers every story section",
             "visual.visual_unavailable",
+        )
+    cadence_capacity_override = None
+    if cadence_adapted:
+        total_duration = (
+            max(float(span.end_time) for span in spans)
+            - min(float(span.start_time) for span in spans)
+            if spans
+            else 0.0
+        )
+        cadence_capacity_override = _review_effective_section_capacity(
+            total_duration,
+            [review_capacity_by_panel.get(candidate.panel_id, 0) for candidate in ordered],
         )
     base_shots = _plan_reference(
         spans,
@@ -1671,8 +1687,9 @@ def _plan_reference_panel_candidates(
         profile,
         None,
         None,
-        max_shots_by_section=(section_capacity if allow_review_cadence_adaptation else None),
-        allow_review_cadence_adaptation=allow_review_cadence_adaptation,
+        max_shots_by_section=(section_capacity if cadence_adapted else None),
+        cadence_capacity_override=cadence_capacity_override,
+        allow_review_cadence_adaptation=cadence_adapted,
         allow_review_duration=allow_review_duration,
         review_duration_bounds_s=review_duration_bounds_s,
     )
@@ -1699,12 +1716,12 @@ def _plan_reference_panel_candidates(
             and uses.get(candidate.panel_id, 0)
             < (
                 review_capacity_by_panel.get(candidate.panel_id, panel_uses_cap)
-                if allow_review_cadence_adaptation
+                if cadence_adapted
                 else panel_uses_cap
             )
         ]
         recent_set: set[str] = set()
-        if allow_review_cadence_adaptation:
+        if cadence_adapted:
             recent_set = set(
                 recent_panel_ids[-reference_profile.REVIEW_PANEL_REUSE_WINDOW_SHOTS:]
             )
@@ -1723,7 +1740,7 @@ def _plan_reference_panel_candidates(
                 candidate for candidate in eligible if candidate.panel_id != last_panel_id
             ]
         eligible = list(_prioritize_resolution_candidates(eligible))
-        if allow_review_cadence_adaptation:
+        if cadence_adapted:
             eligible = [
                 candidate
                 for candidate in eligible
@@ -1731,7 +1748,7 @@ def _plan_reference_panel_candidates(
                     candidate,
                     profile,
                     allow_source_resolution_warning=allow_source_resolution_warning,
-                    review_aggressive_crop=True,
+                    review_aggressive_crop=cadence_adapted,
                     allow_conservative_full_panel=allow_conservative_full_panel,
                     section=section,
                     beat=beat,
@@ -1793,7 +1810,7 @@ def _plan_reference_panel_candidates(
             is_preferred = candidate.panel_id == preferred_candidate.panel_id
             roi_alternatives = _ordered_review_roi_alternatives(
                 candidate.roi_alternatives
-            ) if allow_review_cadence_adaptation else _ordered_roi_alternatives(
+            ) if cadence_adapted else _ordered_roi_alternatives(
                 candidate
             )
             if is_preferred:
@@ -1818,7 +1835,7 @@ def _plan_reference_panel_candidates(
                     previously_used=previous_uses > 0,
                     used_rois=used_rois.get(candidate.panel_id, set()),
                     allow_source_resolution_warning=allow_source_resolution_warning,
-                    review_aggressive_crop=allow_review_cadence_adaptation,
+                    review_aggressive_crop=cadence_adapted,
                     allow_conservative_full_panel=allow_conservative_full_panel,
                 )
                 attempts.append(entry)
@@ -1840,7 +1857,7 @@ def _plan_reference_panel_candidates(
                             getattr(telemetry, "protected_retained_fraction", 0.0)
                         )
                     editorial_metrics: Mapping[str, object] | None = None
-                    if allow_review_cadence_adaptation:
+                    if cadence_adapted:
                         editorial_metrics = _review_crop_editorial_metrics(
                             candidate,
                             roi,
@@ -1876,10 +1893,10 @@ def _plan_reference_panel_candidates(
                     accepted_attempts.append(
                         (quality_key, roi, telemetry, entry, phase_kind, editorial_metrics)
                     )
-                    if not allow_review_cadence_adaptation:
+                    if not cadence_adapted:
                         break
             if accepted_attempts:
-                if allow_review_cadence_adaptation:
+                if cadence_adapted:
                     accepted_attempts.sort(key=lambda item: item[0])
                     _quality, roi, telemetry, entry, phase_kind, editorial_metrics = accepted_attempts[0]
                     chosen = entry
@@ -1900,7 +1917,7 @@ def _plan_reference_panel_candidates(
             accepted_candidate is None
             or accepted_roi is None
             or accepted_telemetry is None
-            or (allow_review_cadence_adaptation and accepted_editorial_metrics is None)
+            or (cadence_adapted and accepted_editorial_metrics is None)
         ):
             raise ReferencePlanningError(
                 f"no feasible exact panel candidate for section {section}",
@@ -1921,7 +1938,7 @@ def _plan_reference_panel_candidates(
         if candidate.panel_id != candidate.source_asset_id:
             reasons.append("panel_keyed_candidate")
         if uses[candidate.panel_id] > 1:
-            if allow_review_cadence_adaptation and candidate.panel_id in recent_set:
+            if cadence_adapted and candidate.panel_id in recent_set:
                 reasons.append("reuse_purpose:grounded_capacity_exhausted")
             else:
                 reasons.append(f"reuse_purpose:distinct_roi:{roi.roi_label}")
@@ -1949,7 +1966,7 @@ def _plan_reference_panel_candidates(
                     "focus": list(roi.focus),
                     "pixel_edge_blank_fraction": (
                         telemetry_record.get("edge_connected_blank_fraction")
-                        if allow_review_cadence_adaptation
+                        if cadence_adapted
                         else roi.edge_blank_fraction
                     ),
                 },
@@ -1975,7 +1992,7 @@ def _plan_reference_panel_candidates(
             telemetry_record["planned_target_shots"] = shot.get(
                 "planned_target_shots"
             )
-        if allow_review_cadence_adaptation:
+        if cadence_adapted:
             telemetry_record["available_visual_capacity"] = sum(
                 section_capacity.values()
             )
@@ -2016,7 +2033,7 @@ def _plan_reference_panel_candidates(
                     "focus": list(roi.focus),
                     "pixel_edge_blank_fraction": (
                         telemetry_record.get("edge_connected_blank_fraction")
-                        if allow_review_cadence_adaptation
+                        if cadence_adapted
                         else roi.edge_blank_fraction
                     ),
                 },
@@ -2048,9 +2065,9 @@ def _plan_reference_panel_candidates(
                 shot["camera_curve"] = "slow_push_in"
                 shot["motion_mode"] = "slow_push"
                 shot["motion_reason"] = "static focus: pan/focus_shift downgraded to zoom"
-    if allow_review_cadence_adaptation:
+    if cadence_adapted:
         _enforce_review_zoom_motion(selected_shots)
-    if allow_review_cadence_adaptation and len(selected_shots) > 1:
+    if cadence_adapted and len(selected_shots) > 1:
         # The panel-candidate path reuses the base shot list but can replace
         # its panel/ROI identity during exact lineage binding. Reassert a
         # bounded visible transition after that selection so a base ``cut``
@@ -2074,6 +2091,7 @@ def _plan_reference(
     *,
     allow_review_cadence_adaptation: bool = False,
     max_shots_by_section: Mapping[str, int] | None = None,
+    cadence_capacity_override: int | None = None,
     allow_review_duration: bool = False,
     review_duration_bounds_s: tuple[float, float] | None = None,
 ) -> list[dict]:
@@ -2115,6 +2133,8 @@ def _plan_reference(
     capacity = len(candidates) * profile.max_canonical_panel_uses
     if max_shots_by_section is not None:
         capacity = min(capacity, sum(max_shots_by_section.values()))
+    if allow_review_cadence_adaptation and cadence_capacity_override is not None:
+        capacity = min(capacity, max(0, int(cadence_capacity_override)))
     if allow_review_cadence_adaptation:
         density = reference_profile.review_visual_density_contract(total_duration, capacity)
         minimum_required = int(density["minimum_required_visuals"])
@@ -2397,6 +2417,7 @@ def plan(
     *,
     allow_source_resolution_warning: bool = False,
     allow_review_cadence_adaptation: bool = False,
+    allow_standard_cadence_adaptation: bool = False,
     allow_review_duration: bool = False,
     review_duration_bounds_s: tuple[float, float] | None = None,
     allow_conservative_full_panel: bool = False,
@@ -2410,6 +2431,7 @@ def plan(
             tuple(reference_panel_candidates),
             allow_source_resolution_warning=allow_source_resolution_warning,
             allow_review_cadence_adaptation=allow_review_cadence_adaptation,
+            allow_standard_cadence_adaptation=allow_standard_cadence_adaptation,
             allow_review_duration=allow_review_duration,
             review_duration_bounds_s=review_duration_bounds_s,
             allow_conservative_full_panel=allow_conservative_full_panel,
@@ -2421,7 +2443,12 @@ def plan(
             profile,
             cited_asset_ids_by_section,
             citation_alignment_reasons_by_section,
-            allow_review_cadence_adaptation=allow_review_cadence_adaptation,
+            allow_review_cadence_adaptation=(
+                allow_review_cadence_adaptation or allow_standard_cadence_adaptation
+            ),
+            cadence_capacity_override=(
+                len(candidates) if allow_standard_cadence_adaptation else None
+            ),
             allow_review_duration=allow_review_duration,
             review_duration_bounds_s=review_duration_bounds_s,
         )

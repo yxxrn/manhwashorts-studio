@@ -100,11 +100,43 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
     production['audio_script_hash'] = script_hash
     production['audio_timing_identity'] = audio_timing_identity
     metadata = _persist_production_metadata(db, script, metadata, production)
-    timeline_reusable = production.get('timeline_script_hash') == script_hash and _timeline_stage_ready(db, project_id)
+    bounds = (
+        (float(adaptive_policy['target_duration_min_s']), float(adaptive_policy['target_duration_max_s']))
+        if adaptive_policy is not None
+        else None
+    )
+    standard_reference_production = bool(
+        resolved_profile is not None and adaptive_policy is None
+    )
+    timeline_planning_identity = {
+        'version': reference_profile.PRODUCTION_REFERENCE_CADENCE_POLICY_VERSION,
+        'profile_id': str(getattr(resolved_profile, 'profile_id', '') or ''),
+        'profile_version': str(getattr(resolved_profile, 'version', '') or ''),
+        'standard_reference_production': standard_reference_production,
+        'adaptive_reference_production': adaptive_policy is not None,
+        'duration_bounds_s': (
+            list(bounds)
+            if bounds is not None
+            else list(audio_duration_bounds or ())
+        ),
+    }
+    timeline_reusable = bool(
+        production.get('timeline_script_hash') == script_hash
+        and production.get('timeline_planning_identity') == timeline_planning_identity
+        and _timeline_stage_ready(db, project_id)
+    )
     if not timeline_reusable:
-        bounds = (float(adaptive_policy['target_duration_min_s']), float(adaptive_policy['target_duration_max_s'])) if adaptive_policy is not None else None
-        build_timeline(db, project_id, actor_id=actor_id, allow_conservative_full_panel=adaptive_policy is not None, adaptive_reference_production=adaptive_policy is not None, adaptive_reference_duration_bounds_s=bounds)
+        build_timeline(
+            db,
+            project_id,
+            actor_id=actor_id,
+            allow_conservative_full_panel=adaptive_policy is not None,
+            adaptive_reference_production=adaptive_policy is not None,
+            adaptive_reference_duration_bounds_s=bounds,
+            standard_reference_production=standard_reference_production,
+        )
     production['timeline_script_hash'] = script_hash
+    production['timeline_planning_identity'] = timeline_planning_identity
     metadata = _persist_production_metadata(db, script, metadata, production)
     preflight = run_quality_checks(db, project_id, actor_id=actor_id)
     if any(result.blocking for result in preflight):

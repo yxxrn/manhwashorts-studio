@@ -321,3 +321,82 @@ def test_nonpublishable_final_enqueue_still_blocks_technical_failure(db, monkeyp
         assert "Quality checks must pass" in str(exc)
     else:
         raise AssertionError("technical blocker was bypassed")
+
+
+def test_standard_reference_production_uses_cadence_identity(db, monkeypatch, tmp_path):
+    from app.constants import JobStatus
+    from app.models import RenderJob, ScriptVersion
+    from app.services import pipeline as pl
+    from tests.factories.evidence import _project
+
+    project = _project(db)
+    project.template = "reference_matched_shorts_v2"
+    script = ScriptVersion(
+        project_id=project.id,
+        version=1,
+        generator="vision_evidence_v3",
+        sections=[{"section": "hook", "text": "A grounded hook."}],
+        approved_by="reviewer",
+        approved_at=datetime.now(UTC),
+        editorial_metadata={"approved_script_version": 1},
+    )
+    db.add(script)
+    db.flush()
+    approved_hash = pl._script_content_hash(script)
+    script.editorial_metadata = {
+        **script.editorial_metadata,
+        "approved_script_hash": approved_hash,
+    }
+    db.flush()
+
+    captured = {}
+    monkeypatch.setattr(pl, "_audio_stage_ready", lambda *_a: True)
+    monkeypatch.setattr(pl, "_timeline_stage_ready", lambda *_a: False)
+    monkeypatch.setattr(pl, "generate_voiceover", lambda *_a, **_k: [])
+    monkeypatch.setattr(pl, "run_quality_checks", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        pl,
+        "build_timeline",
+        lambda *_a, **kwargs: captured.update(kwargs) or [],
+    )
+    output = tmp_path / "final.mp4"
+    output.write_bytes(b"fixture")
+
+    def fake_enqueue(db, project_id, **kwargs):
+        job = RenderJob(project_id=project_id, kind="final", status=JobStatus.QUEUED)
+        db.add(job)
+        db.flush()
+        return job
+
+    def fake_execute(db, job_id):
+        job = db.get(RenderJob, job_id)
+        job.status = JobStatus.SUCCEEDED
+        job.output_key = str(output)
+        return job
+
+    monkeypatch.setattr(pl, "enqueue_render", fake_enqueue)
+    monkeypatch.setattr(pl, "execute_render", fake_execute)
+    monkeypatch.setattr(
+        pl,
+        "_ensure_final_thumbnail",
+        lambda *_a, **_k: {
+            "thumbnail_path": str(tmp_path / "thumb.jpg"),
+            "headline": "H",
+            "variants": [],
+        },
+    )
+
+    pl.run_production(
+        db,
+        project.id,
+        actor_id="operator",
+        approved_script_hash=approved_hash,
+        approved_script_version=1,
+    )
+
+    assert captured["standard_reference_production"] is True
+    assert captured["adaptive_reference_production"] is False
+    identity = script.editorial_metadata["production"]["timeline_planning_identity"]
+    assert identity["version"] == pl.reference_profile.PRODUCTION_REFERENCE_CADENCE_POLICY_VERSION
+    assert identity["standard_reference_production"] is True
+    assert identity["adaptive_reference_production"] is False

@@ -130,6 +130,23 @@ def test_reference_planner_matches_empirical_32_shot_pacing_and_is_deterministic
     assert first == second
 
 
+def test_standard_production_cadence_prefers_unique_panels_over_legacy_shot_count():
+    profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    shots = editorial_visual_planner.plan(
+        _spans(50.65),
+        _candidates(15),
+        profile=profile,
+        allow_standard_cadence_adaptation=True,
+    )
+
+    assert len(shots) == 15
+    assert len({shot["asset_id"] for shot in shots}) == 15
+    durations = [shot["end_time"] - shot["start_time"] for shot in shots]
+    assert all(3.0 <= duration <= reference_profile.REVIEW_MAX_SHOT_SECONDS for duration in durations)
+    assert shots[0]["transition"] == "none"
+    assert {shot["transition"] for shot in shots[1:]} == {"fade"}
+
+
 def test_review_only_cadence_rejects_insufficient_panel_capacity():
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
 
