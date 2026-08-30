@@ -26,10 +26,10 @@ from app.services import (
     script as script_service,
 )
 
-REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v12"
+REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v13"
 REPAIR_EDITORIAL_SECTIONS = ("hook", "setup", "conflict", "twist", "cta")
 VISUAL_SECTION_REMAP_VERSION = "visual_section_remap_v1"
-REPAIR_PROMPT_VERSION = "visual-narrative-repair-v12"
+REPAIR_PROMPT_VERSION = "visual-narrative-repair-v13"
 REPAIR_TARGET_WORD_MIN = 115
 REPAIR_TARGET_WORD_GOAL = 120
 REPAIR_TARGET_WORD_MAX = 125

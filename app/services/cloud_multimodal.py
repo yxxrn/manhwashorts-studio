@@ -6352,12 +6352,12 @@ LEGACY_VISUAL_CACHE_IDENTITY_VERSION = "legacy-descriptor-v1"
 # The visual payload/cache contract is independent of the targeted narrative
 # repair prompt.  This explicit migration pair preserves a valid visual cache
 # when that downstream prompt version changes.
-LEGACY_VISUAL_REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v11"
-LEGACY_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v11"
-EARLIER_UPSTREAM_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v10"
-OLDER_UPSTREAM_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v9"
-OLDEST_UPSTREAM_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v8"
-CURRENT_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v12"
+LEGACY_VISUAL_REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v12"
+LEGACY_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v12"
+EARLIER_UPSTREAM_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v11"
+OLDER_UPSTREAM_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v10"
+OLDEST_UPSTREAM_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v9"
+CURRENT_VISUAL_REPAIR_PROMPT_VERSION = "visual-narrative-repair-v13"
 VISUAL_RENDER_PAYLOAD_VERSION = (
     "visual-provider-payload-v1:max-bytes=180000:max-size=384x576:"
     "jpeg-quality=68:subsampling=2:lanczos"
