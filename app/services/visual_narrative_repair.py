@@ -2422,6 +2422,44 @@ def lock_capacity_plan_references(
         locked.append(passage)
     return locked
 
+def narrow_claim_evidence_to_capacity_plan(
+    claims: Sequence[Mapping[str, Any]],
+    passages: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Restrict trusted claim evidence to refs selected by the local capacity plan.
+
+    A StoryMap claim may have more valid evidence panels than the capacity-safe
+    passage plan can use.  The plan is authoritative for rendering, so carrying
+    unused lineage refs into the repaired claim would make the later completeness
+    gate demand evidence that the same plan intentionally omitted.
+    """
+
+    planned_by_claim: dict[str, set[str]] = {}
+    for passage in passages:
+        claim_ids = passage.get("claim_ids")
+        refs = passage.get("evidence_panel_ids")
+        if not isinstance(claim_ids, (list, tuple)) or not isinstance(refs, (list, tuple)):
+            continue
+        passage_refs = {str(ref) for ref in refs if str(ref).strip()}
+        for claim_id in claim_ids:
+            key = str(claim_id).strip()
+            if key:
+                planned_by_claim.setdefault(key, set()).update(passage_refs)
+
+    narrowed: list[dict[str, Any]] = []
+    for raw_claim in claims:
+        claim = dict(raw_claim)
+        claim_id = str(claim.get("claim_id", "")).strip()
+        refs = claim.get("evidence_panel_ids")
+        planned = planned_by_claim.get(claim_id, set())
+        if isinstance(refs, (list, tuple)) and planned:
+            claim["evidence_panel_ids"] = [
+                str(ref) for ref in refs if str(ref) in planned
+            ]
+        narrowed.append(claim)
+    return narrowed
+
+
 def repaired_references_match_capacity_plan(
     passages: Sequence[Mapping[str, Any]],
     plan: Mapping[str, Any],
@@ -3047,6 +3085,7 @@ __all__ = [
     "validate_repaired_hook_quality",
     "recover_missing_capacity_plan_references",
     "lock_capacity_plan_references",
+    "narrow_claim_evidence_to_capacity_plan",
     "repaired_references_match_capacity_plan",
     "validate_repaired_capacity_safe_claim_plan",
     "validate_repaired_visual_capacity",

@@ -866,26 +866,38 @@ def check_repetition_and_motion(scenes: list, profile=None) -> list[CheckResult]
             CheckSeverity.ERROR,
             "Camera motion violates the stable monotonic motion contract.",
         ))
-    asset_counts = Counter(
-        getattr(scene, "asset_id", "")
+    # Exact-panel timelines can legitimately draw several distinct panel regions
+    # from one source page/image. Treat the canonical panel identity as the
+    # reusable visual unit whenever it exists; legacy/non-reference scenes still
+    # fall back to the source asset identity. The reference-specific checks
+    # below impose their stricter panel reuse/ROI contract on top of this.
+    visual_identity_counts = Counter(
+        (
+            str(getattr(scene, "panel_region_id", "") or getattr(scene, "panel_id", ""))
+            or str(getattr(scene, "asset_id", "") or "")
+        )
         for scene in scenes
-        if getattr(scene, "asset_id", "")
+        if (
+            getattr(scene, "panel_region_id", "")
+            or getattr(scene, "panel_id", "")
+            or getattr(scene, "asset_id", "")
+        )
     )
-    if asset_counts:
+    if visual_identity_counts:
         reuse_cap = visual_scoring.asset_use_cap(len(scenes))
         over_cap = {
-            asset_id: count
-            for asset_id, count in asset_counts.items()
+            identity: count
+            for identity, count in visual_identity_counts.items()
             if count > reuse_cap
         }
-        if len(asset_counts) > 1 and over_cap:
+        if len(visual_identity_counts) > 1 and over_cap:
             results.append(_fail(
                 "visual.asset_reuse_cap", CheckSeverity.ERROR,
-                f"Asset reuse exceeds the {reuse_cap}-shot cap for {len(over_cap)} asset(s).",
+                f"Visual reuse exceeds the {reuse_cap}-shot cap for {len(over_cap)} visual(s).",
                 {
                     "cap": reuse_cap,
                     "shot_count": len(scenes),
-                    "asset_counts": dict(sorted(over_cap.items())),
+                    "visual_identity_counts": dict(sorted(over_cap.items())),
                 },
             ))
     if total > 0:

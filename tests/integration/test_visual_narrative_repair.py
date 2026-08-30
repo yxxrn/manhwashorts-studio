@@ -1918,6 +1918,28 @@ def test_feasible_ledger_rejects_source_sliver_before_upscale_framing(monkeypatc
 
 
 
+def test_capacity_plan_narrows_unused_trusted_claim_evidence():
+    module = _module()
+    claims = [
+        {
+            "claim_id": "claim-a",
+            "evidence_panel_ids": ["panel-a", "panel-b", "panel-unused"],
+        }
+    ]
+    passages = [
+        {
+            "passage_id": "p1",
+            "claim_ids": ["claim-a"],
+            "evidence_panel_ids": ["panel-a", "panel-b"],
+        }
+    ]
+
+    narrowed = module.narrow_claim_evidence_to_capacity_plan(claims, passages)
+
+    assert narrowed[0]["evidence_panel_ids"] == ["panel-a", "panel-b"]
+    assert claims[0]["evidence_panel_ids"] == ["panel-a", "panel-b", "panel-unused"]
+
+
 def test_repaired_passage_rejects_feasible_panel_outside_its_claim_lineage():
     module = _module()
     ledger = module.FeasibleVisualLedger(

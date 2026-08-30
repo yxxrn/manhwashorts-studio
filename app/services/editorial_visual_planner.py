@@ -1727,22 +1727,19 @@ def _plan_reference_panel_candidates(
                 else panel_uses_cap
             )
         ]
-        recent_set: set[str] = set()
-        if cadence_adapted:
-            recent_set = set(
-                recent_panel_ids[-reference_profile.REVIEW_PANEL_REUSE_WINDOW_SHOTS:]
-            )
-            not_recent = [
-                candidate for candidate in eligible if candidate.panel_id not in recent_set
+        # Apply the hard source-order boundary before soft anti-repeat
+        # preferences. Otherwise a lower, non-recent panel can temporarily win
+        # the reuse filter and then be removed by the monotonic-order gate,
+        # stranding a later shot even though the current panel still has a safe
+        # unused ROI available.
+        if cadence_adapted and section != "hook" and last_non_hook_source_order is not None:
+            eligible = [
+                candidate
+                for candidate in eligible
+                if int(candidate.source_order) >= last_non_hook_source_order
             ]
-            if not_recent:
-                eligible = not_recent
-            else:
-                non_reused = [
-                    candidate for candidate in eligible if candidate.panel_id != last_panel_id
-                ]
-                eligible = non_reused or eligible
-        else:
+        recent_set: set[str] = set()
+        if not cadence_adapted:
             eligible = [
                 candidate for candidate in eligible if candidate.panel_id != last_panel_id
             ]
@@ -1762,45 +1759,76 @@ def _plan_reference_panel_candidates(
                 )
                 > len(used_rois.get(candidate.panel_id, set()))
             ]
-            if section != "hook" and last_non_hook_source_order is not None:
-                eligible = [
-                    candidate
-                    for candidate in eligible
-                    if int(candidate.source_order) >= last_non_hook_source_order
-                ]
             remaining_in_section = max(
                 1,
                 section_shot_totals.get(section, 1)
                 - section_shots_done.get(section, 0),
             )
             if remaining_in_section > 1 and eligible:
-                viable_with_future: list[ReferencePanelFallbackCandidate] = []
+                # If the section can still finish with distinct panels, preserve
+                # that path before considering extra ROI capacity. Otherwise a
+                # visually strong late panel can be selected too early, forcing
+                # an avoidable immediate repeat even though enough unique exact
+                # evidence exists for every remaining shot.
+                unique_viable: list[ReferencePanelFallbackCandidate] = []
                 for candidate in eligible:
+                    if uses.get(candidate.panel_id, 0) > 0:
+                        continue
                     floor = int(candidate.source_order)
-                    future_capacity = 0
-                    for future in eligible:
-                        if int(future.source_order) < floor:
-                            continue
-                        if allow_standard_cadence_adaptation:
-                            remaining_capacity = (
-                                review_capacity_by_panel.get(future.panel_id, 0)
-                                - uses.get(future.panel_id, 0)
-                            )
-                        else:
-                            remaining_capacity = _feasible_roi_capacity(
-                                future,
-                                profile,
-                                allow_source_resolution_warning=allow_source_resolution_warning,
-                                review_aggressive_crop=True,
-                                allow_conservative_full_panel=allow_conservative_full_panel,
-                                section=section,
-                                beat=beat,
-                            ) - len(used_rois.get(future.panel_id, set()))
-                        future_capacity += max(0, remaining_capacity)
-                    if future_capacity >= remaining_in_section:
-                        viable_with_future.append(candidate)
-                if viable_with_future:
-                    eligible = viable_with_future
+                    future_unique_ids = {
+                        future.panel_id
+                        for future in eligible
+                        if uses.get(future.panel_id, 0) == 0
+                        and int(future.source_order) >= floor
+                    }
+                    if len(future_unique_ids) >= remaining_in_section:
+                        unique_viable.append(candidate)
+                if unique_viable:
+                    eligible = unique_viable
+                else:
+                    viable_with_future: list[ReferencePanelFallbackCandidate] = []
+                    for candidate in eligible:
+                        floor = int(candidate.source_order)
+                        future_capacity = 0
+                        for future in eligible:
+                            if int(future.source_order) < floor:
+                                continue
+                            if allow_standard_cadence_adaptation:
+                                remaining_capacity = (
+                                    review_capacity_by_panel.get(future.panel_id, 0)
+                                    - uses.get(future.panel_id, 0)
+                                )
+                            else:
+                                remaining_capacity = _feasible_roi_capacity(
+                                    future,
+                                    profile,
+                                    allow_source_resolution_warning=allow_source_resolution_warning,
+                                    review_aggressive_crop=True,
+                                    allow_conservative_full_panel=allow_conservative_full_panel,
+                                    section=section,
+                                    beat=beat,
+                                ) - len(used_rois.get(future.panel_id, set()))
+                            future_capacity += max(0, remaining_capacity)
+                        if future_capacity >= remaining_in_section:
+                            viable_with_future.append(candidate)
+                    if viable_with_future:
+                        eligible = viable_with_future
+            # Reuse avoidance is editorial preference, not a hard feasibility
+            # rule. Apply it only after the future-capacity guard has preserved
+            # candidates that can still complete the remaining section shots.
+            recent_set = set(
+                recent_panel_ids[-reference_profile.REVIEW_PANEL_REUSE_WINDOW_SHOTS:]
+            )
+            not_recent = [
+                candidate for candidate in eligible if candidate.panel_id not in recent_set
+            ]
+            if not_recent:
+                eligible = not_recent
+            else:
+                non_reused = [
+                    candidate for candidate in eligible if candidate.panel_id != last_panel_id
+                ]
+                eligible = non_reused or eligible
             eligible.sort(
                 key=lambda candidate: _review_candidate_priority_key(
                     candidate, uses, section, beat

@@ -1306,6 +1306,209 @@ def test_reference_planner_counts_distinct_roi_capacity_for_single_panel(monkeyp
     assert len(result) == 2
 
 
+def test_review_planner_applies_monotonic_floor_before_anti_repeat(monkeypatch):
+    from app.services import editorial_visual_planner
+
+    orders = (10, 13, 19)
+    regions = tuple(
+        _region(
+            f"panel-{order}",
+            f"region-{order}",
+            f"asset-{order}",
+            order,
+            (0, 0, 100, 200),
+            f"asset-{order}-checksum",
+        )
+        for order in orders
+    )
+    candidate_tuple = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id={
+            f"region-{order}": _candidate(f"asset-{order}", order, str(order))
+            for order in orders
+        },
+        panel_crops_by_region_id={
+            f"region-{order}": _crop((40, 60, 100), True) for order in orders
+        },
+        section_evidence_panel_ids={
+            "setup": tuple(f"panel-{order}" for order in orders)
+        },
+        section_citations={},
+        beats_by_section={"setup": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    monkeypatch.setattr(
+        editorial_visual_planner, "_feasible_roi_capacity", lambda *_a, **_k: 2
+    )
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_review_candidate_priority_key",
+        lambda candidate, *_a, **_k: (-int(candidate.source_order),),
+    )
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_review_crop_editorial_metrics",
+        lambda *_a, **_k: {"subject_completeness_score": 1.0},
+    )
+
+    def fake_attempt(candidate, roi, **_kwargs):
+        return True, {
+            "edge_connected_blank_fraction": 0.0,
+            "base_zoom": 1.0,
+            "protected_retained_fraction": 1.0,
+            "rejection_code": None,
+        }, {
+            "accepted": True,
+            "panel_region_id": candidate.panel_region_id,
+            "panel_id": candidate.panel_id,
+            "source_asset_id": candidate.source_asset_id,
+            "source_order": candidate.source_order,
+            "source_asset_checksum": candidate.source_asset_checksum,
+            "panel_size": list(candidate.panel_size),
+            "evidence_hash": candidate.evidence_hash,
+            "roi_label": roi.roi_label,
+            "crop_box": list(roi.crop_box),
+            "roi_kind": roi.kind,
+            "telemetry": {},
+        }
+
+    monkeypatch.setattr(editorial_visual_planner, "_reference_panel_attempt", fake_attempt)
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_plan_reference",
+        lambda *_a, **_k: [
+            {
+                "order_index": index,
+                "section": "setup",
+                "start_time": float(index * 3),
+                "end_time": float((index + 1) * 3),
+                "camera_intent": "neutral",
+                "effect": "static",
+                "asset_id": "unused",
+                "transition": "none" if index == 0 else "fade",
+                "focus_x": 0.5,
+                "focus_y": 0.5,
+                "focus_end_x": 0.5,
+                "focus_end_y": 0.5,
+            }
+            for index in range(3)
+        ],
+    )
+
+    result = editorial_visual_planner._plan_reference_panel_candidates(
+        [SimpleNamespace(section="setup", start_time=0.0, end_time=9.0)],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        candidate_tuple,
+        allow_review_cadence_adaptation=True,
+        allow_review_duration=True,
+    )
+
+    assert [shot["source_order"] for shot in result] == [10, 13, 19]
+
+
+def test_review_planner_preserves_unique_path_before_roi_reuse(monkeypatch):
+    from app.services import editorial_visual_planner
+
+    orders = (30, 33, 34, 37, 51)
+    capacities = {30: 2, 33: 2, 34: 2, 37: 1, 51: 1}
+    regions = tuple(
+        _region(
+            f"panel-{order}",
+            f"region-{order}",
+            f"asset-{order}",
+            order,
+            (0, 0, 100, 200),
+            f"asset-{order}-checksum",
+        )
+        for order in orders
+    )
+    candidate_tuple = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id={
+            f"region-{order}": _candidate(f"asset-{order}", order, str(order))
+            for order in orders
+        },
+        panel_crops_by_region_id={
+            f"region-{order}": _crop((40, 60, 100), True) for order in orders
+        },
+        section_evidence_panel_ids={
+            "conflict": tuple(f"panel-{order}" for order in orders)
+        },
+        section_citations={},
+        beats_by_section={"conflict": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_feasible_roi_capacity",
+        lambda candidate, *_a, **_k: capacities[int(candidate.source_order)],
+    )
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_review_candidate_priority_key",
+        lambda candidate, *_a, **_k: (-int(candidate.source_order),),
+    )
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_review_crop_editorial_metrics",
+        lambda *_a, **_k: {"subject_completeness_score": 1.0},
+    )
+
+    def fake_attempt(candidate, roi, **_kwargs):
+        return True, {
+            "edge_connected_blank_fraction": 0.0,
+            "base_zoom": 1.0,
+            "protected_retained_fraction": 1.0,
+            "rejection_code": None,
+        }, {
+            "accepted": True,
+            "panel_region_id": candidate.panel_region_id,
+            "panel_id": candidate.panel_id,
+            "source_asset_id": candidate.source_asset_id,
+            "source_order": candidate.source_order,
+            "source_asset_checksum": candidate.source_asset_checksum,
+            "panel_size": list(candidate.panel_size),
+            "evidence_hash": candidate.evidence_hash,
+            "roi_label": roi.roi_label,
+            "crop_box": list(roi.crop_box),
+            "roi_kind": roi.kind,
+            "telemetry": {},
+        }
+
+    monkeypatch.setattr(editorial_visual_planner, "_reference_panel_attempt", fake_attempt)
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_plan_reference",
+        lambda *_a, **_k: [
+            {
+                "order_index": index,
+                "section": "conflict",
+                "start_time": float(index * 3),
+                "end_time": float((index + 1) * 3),
+                "camera_intent": "neutral",
+                "effect": "static",
+                "asset_id": "unused",
+                "transition": "none" if index == 0 else "fade",
+                "focus_x": 0.5,
+                "focus_y": 0.5,
+                "focus_end_x": 0.5,
+                "focus_end_y": 0.5,
+            }
+            for index in range(5)
+        ],
+    )
+
+    result = editorial_visual_planner._plan_reference_panel_candidates(
+        [SimpleNamespace(section="conflict", start_time=0.0, end_time=15.0)],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        candidate_tuple,
+        allow_review_cadence_adaptation=True,
+        allow_review_duration=True,
+    )
+
+    assert [shot["source_order"] for shot in result] == [30, 33, 34, 37, 51]
+
+
 def test_review_planner_uses_distinct_roi_capacity_before_long_holds(monkeypatch):
     from dataclasses import replace
     from types import SimpleNamespace

@@ -156,7 +156,15 @@ def build_timeline(api, db, project_id, actor_id, *, silent_reference_review, re
         raise PipelineError(f'{profile.profile_id} requires audio duration between {duration_min_s:.1f} and {duration_max_s:.1f} seconds')
     assets = project_assets(db, project_id)
     images = image_assets(assets)
-    scored = visual_scoring.analyze_assets(images, storage.read_bytes)
+    # Exact reference planning builds and scores its cited panel crops below;
+    # the full source-asset score list is never consumed by that planner path.
+    # Avoid rescanning every chapter image before immediately discarding the
+    # result. Non-reference projects still need the full asset analysis.
+    scored = (
+        []
+        if profile is not None
+        else visual_scoring.analyze_assets(images, storage.read_bytes)
+    )
     from app.services import editorial_visual_planner
     candidate_registry: dict[str, object] = {}
     reference_candidates: tuple[object, ...] | None = None

@@ -513,6 +513,18 @@ def test_reference_reuse_uses_exact_panel_identity_before_source_asset():
     assert not any(result.code == "reference.panel_reuse_consecutive" for result in results)
 
 
+def test_exact_panel_timeline_does_not_apply_source_asset_reuse_cap():
+    scenes = _qc_scenes(5, 15.0, cadence=False)
+    for index, scene in enumerate(scenes):
+        scene.asset_id = "shared-page"
+        scene.panel_region_id = f"region-{index}"
+        scene.panel_id = f"panel-{index}"
+    results = quality.check_repetition_and_motion(
+        scenes, profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    )
+    assert not any(result.code == "visual.asset_reuse_cap" for result in results)
+
+
 def test_quality_repetition_check_applies_reference_reuse_cap():
     scenes = _qc_scenes(41, 52.2)
     scenes[2].asset_id = scenes[0].asset_id
@@ -721,7 +733,7 @@ def test_reference_timeline_passes_profile_and_section_citations_to_planner(db, 
     captured: dict[str, object] = {}
 
     def fake_score(_images, _reader):
-        return []
+        raise AssertionError('reference timeline must not rescan full source assets')
 
     class StopPlanning(RuntimeError):
         pass

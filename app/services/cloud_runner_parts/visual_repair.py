@@ -395,10 +395,13 @@ class VisualNarrativeRepairMixin:
                     "repair claim is unsupported",
                     "visual.narrative_repair_ungrounded",
                 )
-            claims = [
-                dict(authoritative_claims[claim_id])
-                for claim_id in ordered_referenced_claim_ids
-            ]
+            claims = visual_narrative_repair.narrow_claim_evidence_to_capacity_plan(
+                [
+                    dict(authoritative_claims[claim_id])
+                    for claim_id in ordered_referenced_claim_ids
+                ],
+                raw_passages,
+            )
             canonical_payload = visual_narrative_repair.canonicalize_repair_claim_ids(
                 {"claims": claims, "passages": raw_passages},
                 allowed_claim_ids=allowed_claim_ids,
@@ -660,12 +663,26 @@ class VisualNarrativeRepairMixin:
                     )
                     visual_repair_micro_expansion = dict(expansion)
                     if not expansion.get("failed_predicate"):
-                        passage_rows = tuple(
+                        expanded_rows = tuple(
                             dict(row, text=text)
                             for row, text in zip(passage_rows, expanded, strict=True)
                         )
-                        passages = [dict(item) for item in passage_rows]
-                        output["script_passages"] = [dict(item) for item in passage_rows]
+                        try:
+                            visual_narrative_repair.validate_repaired_capacity_safe_claim_plan(
+                                expanded_rows,
+                                payload.get("capacity_safe_claim_plan", {}),
+                            )
+                        except visual_narrative_repair.VisualNarrativeRepairError:
+                            visual_repair_micro_expansion = {
+                                **visual_repair_micro_expansion,
+                                "applied": False,
+                                "after_word_count": canonical_before,
+                                "failed_predicate": "micro_expansion_capacity_budget",
+                            }
+                        else:
+                            passage_rows = expanded_rows
+                            passages = [dict(item) for item in passage_rows]
+                            output["script_passages"] = [dict(item) for item in passage_rows]
                 report = editorial_qc.screen_narrative_naturalness(
                     passage_rows,
                     claims_by_id,
