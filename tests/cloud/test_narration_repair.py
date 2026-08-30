@@ -172,7 +172,7 @@ def test_position_repair_preselection_is_deterministic_and_budgeted():
     second = runner._build_narration_repair_position_registry(candidate, story_map)
 
     positions = first["positions"]
-    assert first["version"] == "narration-repair-position-registry-v6"
+    assert first["version"] == "narration-repair-position-registry-v7"
     assert len(positions) == 8
     assert 8 <= len({claim_id for row in positions for claim_id in row["claim_ids"]}) <= 12
     assert 4 <= len({row["passage_id"] for row in positions}) <= 6
@@ -284,7 +284,7 @@ def test_capacity_locked_registry_accepts_thirteen_grounded_claims_for_standard_
         for row in registry["positions"]
         for claim_id in row["claim_ids"]
     }
-    assert registry["version"] == "narration-repair-position-registry-v6"
+    assert registry["version"] == "narration-repair-position-registry-v7"
     assert len(registry["positions"]) == 5
     assert len(selected_claim_ids) == 13
     assert registry["target_word_count"] == 115
@@ -1401,7 +1401,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert (
         repair_prompt_version
-        == "vision-first-story-analyzer-v3-targeted-position-repair-v21"
+        == "vision-first-story-analyzer-v3-targeted-position-repair-v22"
     )
     assert len(repair_prompt_sha256) == 64
     assert "TARGETED NARRATION POSITION REPAIR" in repair_prompt_text
@@ -1425,7 +1425,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert result.qc_report["narration_repair"]["candidate_hash"]
     assert result.qc_report["narration_repair"]["position_registry_version"] == (
-        "narration-repair-position-registry-v6"
+        "narration-repair-position-registry-v7"
     )
     assert result.qc_report["narration_repair"]["slot_order_hash"]
     assert result.qc_report["narration_repair"]["passage_lineage_version"] == (
@@ -2132,3 +2132,74 @@ def test_visual_repair_text_only_preserves_standard_word_floor(monkeypatch):
     assert sum(captured["targets"].values()) == 115
     assert captured["targets"] == dict(zip((f"p{i}" for i in range(5)), targets, strict=True))
     assert captured["ceilings"] == dict(zip((f"p{i}" for i in range(5)), ceilings, strict=True))
+
+
+def test_capacity_locked_position_ceiling_replaces_legacy_global_dominance_limit():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    passage_ids = [str(item["passage_id"]) for item in candidate.passages[:5]]
+    targets = dict(zip(passage_ids, (17, 32, 39, 16, 16), strict=True))
+    ceilings = dict(zip(passage_ids, (18, 36, 45, 18, 18), strict=True))
+    registry = runner._build_narration_repair_position_registry(
+        candidate,
+        story_map,
+        passage_word_budgets=ceilings,
+        passage_word_targets=targets,
+        duration_policy_contract={
+            "version": "standard_50_60_v1",
+            "adaptive": False,
+            "target_word_min": 115,
+            "target_word_goal": 120,
+            "target_word_max": 125,
+            "target_duration_min_s": 50.0,
+            "target_duration_max_s": 54.35,
+        },
+    )
+    counts = [int(row["word_budget"]) for row in registry["positions"]]
+    assert counts == [17, 32, 39, 16, 16]
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"capacitydominance{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+    output = runner._reconcile_narration_repair_vector(raw, registry, candidate)
+    assert sum(
+        module.script.narration_word_count(row["text"])
+        for row in output["script_passages"]
+    ) == 120
+
+
+def test_capacity_locked_passage_ceiling_remains_hard():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    passage_ids = [str(item["passage_id"]) for item in candidate.passages[:5]]
+    targets = dict(zip(passage_ids, (17, 32, 39, 16, 16), strict=True))
+    ceilings = dict(zip(passage_ids, (18, 36, 45, 18, 18), strict=True))
+    registry = runner._build_narration_repair_position_registry(
+        candidate,
+        story_map,
+        passage_word_budgets=ceilings,
+        passage_word_targets=targets,
+        duration_policy_contract={
+            "version": "standard_50_60_v1",
+            "adaptive": False,
+            "target_word_min": 115,
+            "target_word_goal": 120,
+            "target_word_max": 125,
+            "target_duration_min_s": 50.0,
+            "target_duration_max_s": 54.35,
+        },
+    )
+    counts = [19, 31, 38, 16, 16]
+    assert sum(counts) == 120
+    raw = {
+        "rewrites": [
+            _position_rewrite_text(count, f"capacityceiling{index}_")
+            for index, count in enumerate(counts)
+        ]
+    }
+    with pytest.raises(module.CloudStageError) as caught:
+        runner._reconcile_narration_repair_vector(raw, registry, candidate)
+    assert caught.value.code == "cloud.narrative_repair_position_budget_invalid"
+    assert caught.value.safe_metadata["failed_predicate"] == "passage_word_budget"

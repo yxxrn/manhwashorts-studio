@@ -26,10 +26,10 @@ from app.services import (
     script as script_service,
 )
 
-REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v13"
+REPAIR_CONTRACT_VERSION = "visual_narrative_repair_v14"
 REPAIR_EDITORIAL_SECTIONS = ("hook", "setup", "conflict", "twist", "cta")
 VISUAL_SECTION_REMAP_VERSION = "visual_section_remap_v1"
-REPAIR_PROMPT_VERSION = "visual-narrative-repair-v13"
+REPAIR_PROMPT_VERSION = "visual-narrative-repair-v14"
 REPAIR_TARGET_WORD_MIN = 115
 REPAIR_TARGET_WORD_GOAL = 120
 REPAIR_TARGET_WORD_MAX = 125
@@ -2613,6 +2613,9 @@ def build_repair_payload(
     standard_minimum_panels = math.ceil(
         REPAIR_TARGET_WORD_MIN / max_words_per_visual_slot
     )
+    preferred_standard_panels = math.ceil(
+        REPAIR_TARGET_WORD_MIN / max(1, max_words_per_visual_slot - 1)
+    )
     adaptive_minimum_panels = max(
         len(section_names),
         min(REPAIR_ADAPTIVE_MIN_UNIQUE_PANELS, standard_minimum_panels),
@@ -2678,7 +2681,7 @@ def build_repair_payload(
     standard_claim_rows, standard_coherence_window = _select_coherent_claim_window(
         feasible_claim_rows,
         minimum_unique_panels=standard_minimum_panels,
-        preferred_unique_panels=standard_minimum_panels,
+        preferred_unique_panels=preferred_standard_panels,
         window_is_feasible=coherent_window_is_section_safe,
     )
     if bool(standard_coherence_window.get("feasible")):

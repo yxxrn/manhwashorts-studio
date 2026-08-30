@@ -1744,23 +1744,25 @@ class NarrationRepairMixin:
                 " ".join(rewrites),
                 "dramatic",
             )
-            dominance_limit = max(
-                NARRATION_REPAIR_POSITION_DOMINANCE_FLOOR,
-                math.ceil(total_words * NARRATION_REPAIR_POSITION_MAX_SHARE),
-            )
-            for word_count in word_counts:
-                if word_count > dominance_limit:
-                    raise CloudStageError(
-                        "cloud.narrative_repair_position_budget_invalid",
-                        reviewable=True,
-                        safe_metadata=response_shape_metrics(
-                            "position_word_dominance",
-                            word_counts,
-                            total_words,
-                            duration,
-                            micro_compaction,
-                        ),
-                    )
+            capacity_locked = bool(registry.get("passage_word_budgets"))
+            if not capacity_locked:
+                dominance_limit = max(
+                    NARRATION_REPAIR_POSITION_DOMINANCE_FLOOR,
+                    math.ceil(total_words * NARRATION_REPAIR_POSITION_MAX_SHARE),
+                )
+                for word_count in word_counts:
+                    if word_count > dominance_limit:
+                        raise CloudStageError(
+                            "cloud.narrative_repair_position_budget_invalid",
+                            reviewable=True,
+                            safe_metadata=response_shape_metrics(
+                                "position_word_dominance",
+                                word_counts,
+                                total_words,
+                                duration,
+                                micro_compaction,
+                            ),
+                        )
         if not word_min <= total_words <= word_max or duration is None or not duration_min <= duration <= duration_max:
             failed_predicate = (
                 "aggregate_word_count" if not word_min <= total_words <= word_max else "aggregate_duration"
@@ -2909,7 +2911,7 @@ class NarrationRepairMixin:
             ),
             "prior_narration": provider_prior_narration,
         }
-        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v21"
+        repair_prompt_version = "vision-first-story-analyzer-v3-targeted-position-repair-v22"
         capacity_locked_instruction = (
             "\n\nCAPACITY-LOCKED WORD BUDGET MODE: passage_word_budget_max is a hard ceiling. "
             "Do not move words from one passage into another. The supplied positions for each passage "

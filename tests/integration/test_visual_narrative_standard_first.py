@@ -56,3 +56,38 @@ def test_repair_payload_prefers_standard_duration_before_deeper_adaptive_scope()
     assert window["selected_scope_prefix"] == "b1"
     assert window["selected_connected_scope_chain"] == ["b1__sub0", "b1__sub1", "b1__sub2"]
     assert len(payload["feasible_claims"]) == 13
+
+
+def test_repair_payload_prefers_fifteen_standard_visual_slots_when_available():
+    scopes = (["b1__sub0"] * 5) + (["b1__sub1"] * 5) + (["b1__sub2"] * 5)
+    entries = []
+    beats = []
+    claims = []
+    for index, scope in enumerate(scopes, start=1):
+        panel_id = f"headroom-panel-{index:02d}"
+        beat_id = f"headroom-beat-{index:02d}"
+        entries.append(_entry(panel_id, beat_id, index * 10))
+        beats.append({"beat_id": beat_id, "panel_ids": [panel_id]})
+        claims.append({
+            "claim_id": f"{scope}__claim{index}",
+            "text": f"Grounded headroom fact {index}.",
+            "panel_ids": [panel_id],
+        })
+    ledger = vnr.FeasibleVisualLedger(entries=tuple(entries), model_identity_hash="model-hash")
+    all_beats = tuple(row["beat_id"] for row in beats)
+    payload = vnr.build_repair_payload(
+        narration={"passages": []},
+        story_map={"beats": beats, "claims": claims},
+        ledger=ledger,
+        section_to_beats=dict.fromkeys(vnr.REPAIR_EDITORIAL_SECTIONS, all_beats),
+    )
+    contract = payload["duration_policy_contract"]
+    window = payload["coherence_window"]
+    rebalance = payload["capacity_rebalance"]
+    assert window["preferred_unique_panels"] == 15
+    assert window["selected_unique_panel_count"] == 15
+    assert window["selected_preferred_capacity_met"] is True
+    assert contract["selected_unique_panel_count"] == 15
+    assert contract["target_word_goal"] == vnr.REPAIR_TARGET_WORD_GOAL
+    assert contract["target_word_max"] == vnr.REPAIR_TARGET_WORD_MAX
+    assert rebalance["target_visual_slots"] == 15
