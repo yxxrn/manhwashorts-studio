@@ -866,15 +866,33 @@ class NarrationRepairMixin:
             if isinstance(claim, Mapping) and str(claim.get("claim_id", "")).strip()
         }
         available_claim_ids = story_claim_ids & candidate_claim_ids
-        minimum_selected_claims = min(
-            NARRATION_REPAIR_POSITION_MAX_COUNT,
-            len(available_claim_ids),
-        )
-        if not minimum_selected_claims <= len(selected_claim_ids) <= 12:
+        if not selected_claim_ids.issubset(available_claim_ids):
             raise CloudStageError(
                 "cloud.narrative_repair_position_selection_invalid",
                 reviewable=True,
             )
+        if allow_claim_evidence_subset:
+            # Capacity-locked repair positions preserve the full grounded claim
+            # set already selected for each passage. Standard 50-60 second
+            # narration can legitimately require 13+ claims to cover the
+            # minimum 13 unique visual slots, so the legacy 12-claim provider
+            # preselection cap does not apply here. Evidence closure below
+            # still constrains every claim to the trusted candidate/story map.
+            if not selected_claim_ids:
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_selection_invalid",
+                    reviewable=True,
+                )
+        else:
+            minimum_selected_claims = min(
+                NARRATION_REPAIR_POSITION_MAX_COUNT,
+                len(available_claim_ids),
+            )
+            if not minimum_selected_claims <= len(selected_claim_ids) <= 12:
+                raise CloudStageError(
+                    "cloud.narrative_repair_position_selection_invalid",
+                    reviewable=True,
+                )
         target_word_count = sum(item.word_budget for item in canonical_positions)
         if not bounds["target_word_min"] <= target_word_count <= bounds["target_word_max"]:
             raise CloudStageError(

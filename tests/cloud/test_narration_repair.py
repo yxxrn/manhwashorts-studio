@@ -172,7 +172,7 @@ def test_position_repair_preselection_is_deterministic_and_budgeted():
     second = runner._build_narration_repair_position_registry(candidate, story_map)
 
     positions = first["positions"]
-    assert first["version"] == "narration-repair-position-registry-v5"
+    assert first["version"] == "narration-repair-position-registry-v6"
     assert len(positions) == 8
     assert 8 <= len({claim_id for row in positions for claim_id in row["claim_ids"]}) <= 12
     assert 4 <= len({row["passage_id"] for row in positions}) <= 6
@@ -231,6 +231,65 @@ def test_position_registry_accepts_five_grounded_passages_with_three_claims():
     assert len({row["passage_id"] for row in registry["positions"]}) == 5
     assert len({claim_id for row in registry["positions"] for claim_id in row["claim_ids"]}) == 3
     assert sum(row["word_budget"] for row in registry["positions"]) == 120
+
+def test_capacity_locked_registry_accepts_thirteen_grounded_claims_for_standard_duration():
+    module = _module()
+    runner, candidate, _visual, story_map = _immutable_slot_fixture(module)
+    passages = [dict(item) for item in candidate.passages[:5]]
+    candidate_claims = [dict(item) for item in candidate.evidence_graph["claims"]]
+    story_claims = [dict(item) for item in story_map.claims]
+
+    for index in range(3):
+        source_claim = dict(candidate_claims[index * 2])
+        extra_id = f"capacity-extra-claim-{index}"
+        source_claim["claim_id"] = extra_id
+        source_claim["text"] = f"Additional grounded standard-capacity claim {index}."
+        candidate_claims.append(dict(source_claim))
+        story_claims.append(dict(source_claim))
+        passages[index]["claim_ids"] = [*passages[index]["claim_ids"], extra_id]
+
+    locked_candidate = replace(
+        candidate,
+        passages=tuple(passages),
+        evidence_graph={"claims": candidate_claims},
+        word_count=115,
+        estimated_duration_s=50.0,
+    )
+    locked_story_map = replace(story_map, claims=tuple(story_claims))
+    passage_targets = dict(
+        zip(
+            (str(item["passage_id"]) for item in passages),
+            (18, 26, 35, 18, 18),
+            strict=True,
+        )
+    )
+    registry = runner._build_narration_repair_position_registry(
+        locked_candidate,
+        locked_story_map,
+        passage_word_budgets=passage_targets,
+        passage_word_targets=passage_targets,
+        duration_policy_contract={
+            "version": "standard_50_60_v1",
+            "adaptive": False,
+            "target_word_min": 115,
+            "target_word_goal": 115,
+            "target_word_max": 117,
+            "target_duration_min_s": 50.0,
+            "target_duration_max_s": 50.87,
+        },
+    )
+
+    selected_claim_ids = {
+        claim_id
+        for row in registry["positions"]
+        for claim_id in row["claim_ids"]
+    }
+    assert registry["version"] == "narration-repair-position-registry-v6"
+    assert len(registry["positions"]) == 5
+    assert len(selected_claim_ids) == 13
+    assert registry["target_word_count"] == 115
+    assert registry["evidence_closure"]["evidence_scope_mode"] == "candidate_passage_locked"
+
 
 def test_position_registry_uses_candidate_claim_scope_not_all_story_claims():
     module = _module()
@@ -1366,7 +1425,7 @@ def test_narration_targeted_repair_reuses_grounding_and_repairs_duration(
     )
     assert result.qc_report["narration_repair"]["candidate_hash"]
     assert result.qc_report["narration_repair"]["position_registry_version"] == (
-        "narration-repair-position-registry-v5"
+        "narration-repair-position-registry-v6"
     )
     assert result.qc_report["narration_repair"]["slot_order_hash"]
     assert result.qc_report["narration_repair"]["passage_lineage_version"] == (
