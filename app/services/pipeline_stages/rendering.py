@@ -320,8 +320,19 @@ def execute_render(api, db, job_id):
                 panel_sizes_by_key[key] = tuple(input_scene.panel_size)
             telemetry_by_key[key] = input_scene.framing_telemetry
         qc_scenes = enriched
-    adaptive_reference_contract = _approved_adaptive_reference_policy(current_script(db, job.project_id))
-    qc = editorial_qc.build_report(scenes=qc_scenes, cues=cues, duration=result.duration, job_path=Path(result.output_path), rights_confidence=rights_confidence, source_cleanliness=source_cleanliness, voice_profile_count=len({segment.voice_profile_hash for segment in audio_segments(db, current_script(db, job.project_id).id) if segment.voice_profile_hash}), preview=job.kind == 'preview', profile=render_profile, caption_groups=request.sentence_groups, subtitle_contract=request.subtitle_contract, subtitle_timing_error=None, panel_evidence_by_key=panel_evidence_by_key if render_profile is not None else None, panel_border_masks_by_key=panel_border_masks_by_key if render_profile is not None else None, panel_sizes_by_key=panel_sizes_by_key if render_profile is not None else None, telemetry_by_key=telemetry_by_key if render_profile is not None else None, adaptive_reference_contract=adaptive_reference_contract)
+    render_script = current_script(db, job.project_id)
+    adaptive_reference_contract = _approved_adaptive_reference_policy(render_script)
+    standard_reference_cadence = False
+    if render_script is not None and render_profile is not None and adaptive_reference_contract is None:
+        metadata = render_script.editorial_metadata if isinstance(render_script.editorial_metadata, dict) else {}
+        production = metadata.get("production") if isinstance(metadata, dict) else None
+        identity = production.get("timeline_planning_identity") if isinstance(production, dict) else None
+        standard_reference_cadence = bool(
+            isinstance(identity, dict)
+            and identity.get("version") == reference_profile.PRODUCTION_REFERENCE_CADENCE_POLICY_VERSION
+            and identity.get("standard_reference_production") is True
+        )
+    qc = editorial_qc.build_report(scenes=qc_scenes, cues=cues, duration=result.duration, job_path=Path(result.output_path), rights_confidence=rights_confidence, source_cleanliness=source_cleanliness, voice_profile_count=len({segment.voice_profile_hash for segment in audio_segments(db, current_script(db, job.project_id).id) if segment.voice_profile_hash}), preview=job.kind == 'preview', profile=render_profile, caption_groups=request.sentence_groups, subtitle_contract=request.subtitle_contract, subtitle_timing_error=None, panel_evidence_by_key=panel_evidence_by_key if render_profile is not None else None, panel_border_masks_by_key=panel_border_masks_by_key if render_profile is not None else None, panel_sizes_by_key=panel_sizes_by_key if render_profile is not None else None, telemetry_by_key=telemetry_by_key if render_profile is not None else None, adaptive_reference_contract=adaptive_reference_contract, standard_reference_cadence=standard_reference_cadence)
     report_dir = Path(result.output_path).parent
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / 'final.qc.json').write_text(json.dumps(qc.as_dict(), indent=2), encoding='utf-8')

@@ -1646,6 +1646,13 @@ def _plan_reference_panel_candidates(
             )
             for candidate in eligible_for_section
         ]
+        if allow_standard_cadence_adaptation:
+            # Final production prefers one distinct evidence panel per shot.  A
+            # panel may expose multiple safe ROIs, but counting those as extra
+            # standard-production capacity can make the greedy source-order
+            # planner reuse a panel early and strand later shots in the same
+            # section.  Review/adaptive mode keeps multi-ROI fallback capacity.
+            capacities = [min(1, capacity) for capacity in capacities]
         for candidate, capacity in zip(eligible_for_section, capacities, strict=True):
             review_capacity_by_panel[candidate.panel_id] = capacity
         section_spans = [span for span in spans if str(span.section) == section]
@@ -1774,15 +1781,21 @@ def _plan_reference_panel_candidates(
                     for future in eligible:
                         if int(future.source_order) < floor:
                             continue
-                        remaining_capacity = _feasible_roi_capacity(
-                            future,
-                            profile,
-                            allow_source_resolution_warning=allow_source_resolution_warning,
-                            review_aggressive_crop=True,
-                            allow_conservative_full_panel=allow_conservative_full_panel,
-                            section=section,
-                            beat=beat,
-                        ) - len(used_rois.get(future.panel_id, set()))
+                        if allow_standard_cadence_adaptation:
+                            remaining_capacity = (
+                                review_capacity_by_panel.get(future.panel_id, 0)
+                                - uses.get(future.panel_id, 0)
+                            )
+                        else:
+                            remaining_capacity = _feasible_roi_capacity(
+                                future,
+                                profile,
+                                allow_source_resolution_warning=allow_source_resolution_warning,
+                                review_aggressive_crop=True,
+                                allow_conservative_full_panel=allow_conservative_full_panel,
+                                section=section,
+                                beat=beat,
+                            ) - len(used_rois.get(future.panel_id, set()))
                         future_capacity += max(0, remaining_capacity)
                     if future_capacity >= remaining_in_section:
                         viable_with_future.append(candidate)

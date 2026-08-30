@@ -342,7 +342,9 @@ def screen_narrative_naturalness(
     )
 
 
-def _shot_metrics(scenes: list[object]) -> tuple[float, float, int, float]:
+def _shot_metrics(
+    scenes: list[object], *, exact_panel_identity: bool = False
+) -> tuple[float, float, int, float]:
     if not scenes:
         return 0.0, 0.0, 0, 0.0
     durations = [max(0.0, s.end_time - s.start_time) for s in scenes]
@@ -351,7 +353,12 @@ def _shot_metrics(scenes: list[object]) -> tuple[float, float, int, float]:
     running = 0.0
     previous = None
     for scene, duration in zip(scenes, durations, strict=True):
-        key = (scene.asset_id, round(scene.focus_x, 3), round(scene.focus_y, 3), round(scene.focus_end_x, 3), round(scene.focus_end_y, 3))
+        visual_key = (
+            str(getattr(scene, "panel_region_id", "") or getattr(scene, "panel_id", "") or scene.asset_id)
+            if exact_panel_identity
+            else scene.asset_id
+        )
+        key = (visual_key, round(scene.focus_x, 3), round(scene.focus_y, 3), round(scene.focus_end_x, 3), round(scene.focus_end_y, 3))
         if key == previous:
             running += duration
             longest_same = max(longest_same, running)
@@ -446,6 +453,27 @@ def _reference_qc_failures(scenes: list[object], duration: float, profile) -> li
     return sorted(set(failures))
 
 
+def _standard_reference_qc_failures(scenes: list[object], duration: float, profile) -> list[str]:
+    failures: list[str] = []
+    if not profile.duration_min_s <= duration <= profile.duration_max_s:
+        failures.append("reference.standard_duration_outside_50_60s")
+    durations = [max(0.0, float(scene.end_time) - float(scene.start_time)) for scene in scenes]
+    minimum_required = max(1, __import__("math").ceil(max(0.0, duration) / reference_profile.REVIEW_MAX_SHOT_SECONDS))
+    if len(scenes) < minimum_required:
+        failures.append("reference.standard_shot_density_low")
+    if any(value <= 0.50 or value > reference_profile.REVIEW_MAX_SHOT_SECONDS + 1e-9 for value in durations):
+        failures.append("reference.standard_shot_duration_invalid")
+    keys = [
+        str(getattr(scene, "panel_region_id", "") or getattr(scene, "panel_id", "") or getattr(scene, "asset_id", ""))
+        for scene in scenes
+    ]
+    if len([key for key in keys if key]) != len({key for key in keys if key}):
+        failures.append("reference.standard_panel_repeat")
+    if len(scenes) > 1 and any(getattr(scene, "transition", "cut") != "fade" for scene in scenes[1:]):
+        failures.append("reference.standard_transition_policy")
+    return failures
+
+
 def _adaptive_reference_qc_failures(
     scenes: list[object], duration: float, contract: Mapping[str, object]
 ) -> list[str]:
@@ -485,8 +513,11 @@ def build_report(
     subtitle_contract: Mapping[str, object] | None = None,
     subtitle_timing_error: str | None = None,
     adaptive_reference_contract: Mapping[str, object] | None = None,
+    standard_reference_cadence: bool = False,
 ) -> EditorialQC:
-    average, longest_same, crops, total = _shot_metrics(scenes)
+    average, longest_same, crops, total = _shot_metrics(
+        scenes, exact_panel_identity=standard_reference_cadence
+    )
     frozen = _freeze_duration(job_path) if job_path and job_path.is_file() else 0.0
     single_words = sum(1 for cue in cues if len(str(cue.text).split()) == 1)
     caption_ratio = single_words / len(cues) if cues else 1.0
@@ -572,6 +603,8 @@ def build_report(
             report.failures.extend(
                 _adaptive_reference_qc_failures(scenes, duration, adaptive_reference_contract)
             )
+        elif standard_reference_cadence:
+            report.failures.extend(_standard_reference_qc_failures(scenes, duration, profile))
         else:
             report.failures.extend(_reference_qc_failures(scenes, duration, profile))
         if caption_groups is not None or subtitle_timing_error is not None:
@@ -589,7 +622,9 @@ def build_report(
                 panel_sizes_by_key or {},
                 telemetry_by_key or {},
                 profile=profile,
-                adaptive_reference=adaptive_reference_contract is not None,
+                adaptive_reference=(
+                    adaptive_reference_contract is not None or standard_reference_cadence
+                ),
             )
             report.failures.extend(
                 result.code for result in panel_results if not result.passed
@@ -608,7 +643,7 @@ def build_report(
     if longest_same > 4.0:
         report.failures.append("same_panel_same_crop_over_2.5s")
     if not preview:
-        if adaptive_reference_contract is None:
+        if adaptive_reference_contract is None and not standard_reference_cadence:
             if len(scenes) >= 4 and motion_diversity < 4:
                 report.failures.append("motion_mode_diversity_lt_4")
             dominant_mode = max(motion_counts, key=motion_counts.get, default="")

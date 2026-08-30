@@ -37,6 +37,17 @@ def run_quality_checks(api, db, project_id, job, actor_id):
         duration = job.duration
     profile = reference_profile.resolve_reference_profile(project.template)
     adaptive_reference_contract = _approved_adaptive_reference_policy(script)
+    standard_reference_cadence = False
+    if script is not None and profile is not None and adaptive_reference_contract is None:
+        metadata = script.editorial_metadata if isinstance(script.editorial_metadata, dict) else {}
+        production = metadata.get("production") if isinstance(metadata, dict) else None
+        identity = production.get("timeline_planning_identity") if isinstance(production, dict) else None
+        standard_reference_cadence = bool(
+            isinstance(identity, dict)
+            and identity.get("version")
+            == reference_profile.PRODUCTION_REFERENCE_CADENCE_POLICY_VERSION
+            and identity.get("standard_reference_production") is True
+        )
     caption_groups: tuple[object, ...] | None = None
     subtitle_contract: dict[str, object] | None = None
     subtitle_timing_error: str | None = None
@@ -48,7 +59,7 @@ def run_quality_checks(api, db, project_id, job, actor_id):
             caption_groups = render_svc.fit_sentence_karaoke_groups(caption_groups, profile.final_width, profile.final_height, max_chars=subtitle_karaoke.CAPTION_MAX_CHARS, max_lines=subtitle_karaoke.CAPTION_MAX_LINES, active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE, font_height_ratio=subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO, safe_margin_px=subtitle_karaoke.CAPTION_SAFE_MARGIN_PX)
         except (ValueError, render_svc.RenderError) as exc:
             subtitle_timing_error = str(exc)
-    results = quality_svc.run_all(project, assets, script, segments, scenes, cues, job=job, duration=duration, caption_groups=caption_groups, subtitle_contract=subtitle_contract, subtitle_timing_error=subtitle_timing_error, adaptive_reference_contract=adaptive_reference_contract)
+    results = quality_svc.run_all(project, assets, script, segments, scenes, cues, job=job, duration=duration, caption_groups=caption_groups, subtitle_contract=subtitle_contract, subtitle_timing_error=subtitle_timing_error, adaptive_reference_contract=adaptive_reference_contract, standard_reference_cadence=standard_reference_cadence)
     for old in db.scalars(select(QualityCheck).where(QualityCheck.project_id == project_id)):
         db.delete(old)
     db.flush()

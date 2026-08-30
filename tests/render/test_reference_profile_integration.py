@@ -147,6 +147,78 @@ def test_standard_production_cadence_prefers_unique_panels_over_legacy_shot_coun
     assert {shot["transition"] for shot in shots[1:]} == {"fade"}
 
 
+def test_standard_production_cadence_section_bound_evidence_stays_unique(monkeypatch):
+    from dataclasses import replace
+
+    from app.services import framing_analysis
+
+    planner = editorial_visual_planner
+    layout = (
+        ("setup", (98, 101, 118, 120)),
+        ("conflict", (134, 230, 253, 257, 350)),
+        ("hook", (341, 369)),
+        ("twist", (353, 361)),
+        ("cta", (371, 378)),
+    )
+    wrappers = []
+    for section, source_orders in layout:
+        for source_order in source_orders:
+            wrapper = _task6_wrapper(
+                f"{section}-{source_order}",
+                f"asset-{section}-{source_order}",
+                source_order,
+                framing=framing_analysis,
+            )
+            wrappers.append(replace(wrapper, eligible_sections=(section,)))
+
+    def fake_feasibility(crop_box, evidence, border_mask, panel_size, target_size, **_kwargs):
+        return True, _task6_telemetry(
+            framing_analysis, evidence, border_mask, crop_box
+        )
+
+    monkeypatch.setattr(framing_analysis, "candidate_is_feasible", fake_feasibility)
+    monkeypatch.setattr(
+        planner,
+        "_review_candidate_priority_key",
+        lambda candidate, *_args: (-int(candidate.source_order),),
+    )
+    boundaries = (
+        ("hook", 0.0, 7.453),
+        ("setup", 7.633, 21.349),
+        ("conflict", 21.529, 36.171),
+        ("twist", 36.351, 43.892),
+        ("cta", 44.072, 50.652),
+    )
+    spans = [
+        SimpleNamespace(
+            section=section,
+            text=section,
+            start_time=start,
+            end_time=end,
+            word_timings=[],
+            dramatic_events=[],
+            impact_lock=False,
+        )
+        for section, start, end in boundaries
+    ]
+    shots = planner.plan(
+        spans,
+        [wrapper.panel_candidate for wrapper in wrappers],
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        reference_panel_candidates=wrappers,
+        allow_standard_cadence_adaptation=True,
+    )
+
+    expected_counts = {"hook": 2, "setup": 4, "conflict": 5, "twist": 2, "cta": 2}
+    actual_counts = {
+        section: sum(1 for shot in shots if shot["section"] == section)
+        for section in expected_counts
+    }
+    assert actual_counts == expected_counts
+    assert len(shots) == 15
+    assert len({shot["panel_id"] for shot in shots}) == 15
+
+
 def test_review_only_cadence_rejects_insufficient_panel_capacity():
     profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
 
@@ -413,6 +485,32 @@ def test_reference_qc_uses_corrected_duration_bands_and_ratios():
     assert "reference.hold_ratio_over_80pct" in uniform_report.failures
     assert "reference.emphasis_ratio_below_20pct" in uniform_report.failures
     assert "motion_reason_missing" not in report.failures
+
+
+def test_standard_reference_qc_accepts_long_hold_unique_panel_cadence():
+    scenes = _qc_scenes(15, 50.652, cadence=False)
+    for index, scene in enumerate(scenes):
+        scene.panel_region_id = f"region-{index}"
+        scene.panel_id = f"panel-{index}"
+        scene.transition = "none" if index == 0 else "fade"
+    results = quality.check_standard_reference_profile(
+        scenes, 50.652, reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    )
+    assert not any(result.blocking for result in results)
+
+
+def test_reference_reuse_uses_exact_panel_identity_before_source_asset():
+    scenes = _qc_scenes(2, 2.6, cadence=False)
+    scenes[0].asset_id = "shared-page"
+    scenes[1].asset_id = "shared-page"
+    scenes[0].panel_region_id = "region-a"
+    scenes[1].panel_region_id = "region-b"
+    scenes[0].panel_id = "panel-a"
+    scenes[1].panel_id = "panel-b"
+    results = quality.check_repetition_and_motion(
+        scenes, profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    )
+    assert not any(result.code == "reference.panel_reuse_consecutive" for result in results)
 
 
 def test_quality_repetition_check_applies_reference_reuse_cap():
@@ -1519,3 +1617,27 @@ def test_task6_alternate_panel_runs_all_roi_phases(monkeypatch):
     assert first["panel_id"] == "panel-1"
     assert first["fallback_attempts"][-1]["kind"] == "alternate_panel"
     assert first["fallback_attempts"][-1]["roi_kind"] == "alternate_roi"
+
+
+def test_editorial_qc_accepts_standard_production_cadence_without_legacy_hold_gate():
+    profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    scenes = _qc_scenes(15, 50.652, cadence=False)
+    width = 50.652 / 15
+    for index, scene in enumerate(scenes):
+        scene.start_time = index * width
+        scene.end_time = (index + 1) * width
+        scene.panel_region_id = f"region-standard-{index}"
+        scene.panel_id = f"panel-standard-{index}"
+        scene.transition = "none" if index == 0 else "fade"
+        scene.transition_duration = 0.15 if index else 0.0
+    report = editorial_qc.build_report(
+        scenes=scenes,
+        cues=[],
+        duration=50.652,
+        profile=profile,
+        preview=True,
+        standard_reference_cadence=True,
+    )
+    assert not any(code.startswith("reference.standard_") for code in report.failures)
+    assert "reference.shot_count_outside_36_52" not in report.failures
+    assert "reference.hold_ratio_below_70pct" not in report.failures

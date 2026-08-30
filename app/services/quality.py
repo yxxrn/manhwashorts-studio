@@ -213,12 +213,21 @@ def check_panel_alignment(scenes: list) -> list[CheckResult]:
     return results or [_pass("panel.alignment_ok", f"{len(audited)} scene selections carry alignment evidence.")]
 
 
+def _reference_panel_key(scene: object) -> str:
+    return str(
+        getattr(scene, "panel_region_id", "")
+        or getattr(scene, "panel_id", "")
+        or getattr(scene, "asset_id", "")
+        or ""
+    )
+
+
 def _reference_reuse_checks(scenes: list, profile) -> list[CheckResult]:
     results: list[CheckResult] = []
     counts = Counter(
-        str(getattr(scene, "asset_id", ""))
+        _reference_panel_key(scene)
         for scene in scenes
-        if getattr(scene, "asset_id", "")
+        if _reference_panel_key(scene)
     )
     over = {
         asset_id: count
@@ -233,7 +242,7 @@ def _reference_reuse_checks(scenes: list, profile) -> list[CheckResult]:
             {"asset_counts": dict(sorted(over.items()))},
         ))
     for left, right in zip(scenes, scenes[1:], strict=False):
-        if getattr(left, "asset_id", None) != getattr(right, "asset_id", None):
+        if _reference_panel_key(left) != _reference_panel_key(right):
             continue
         results.append(_fail(
             "reference.panel_reuse_consecutive",
@@ -253,9 +262,9 @@ def _reference_reuse_checks(scenes: list, profile) -> list[CheckResult]:
         break
     positions: dict[str, list[object]] = {}
     for scene in scenes:
-        asset_id = str(getattr(scene, "asset_id", "") or "")
-        if asset_id:
-            positions.setdefault(asset_id, []).append(scene)
+        panel_key = _reference_panel_key(scene)
+        if panel_key:
+            positions.setdefault(panel_key, []).append(scene)
     for repeated in positions.values():
         if len(repeated) != 2:
             continue
@@ -703,6 +712,62 @@ def check_adaptive_reference_profile(
     if len(scenes) > 1 and any(getattr(scene, "transition", "cut") != "fade" for scene in scenes[1:]):
         results.append(_fail("reference.adaptive_transition_policy", CheckSeverity.ERROR, "Adaptive reference shot boundaries must use the approved fade transition policy."))
     return results or [_pass("reference.adaptive_profile", "Approved adaptive reference pacing contract is valid.")]
+
+
+def check_standard_reference_profile(
+    scenes: list, duration: float, profile
+) -> list[CheckResult]:
+    """Validate the long-hold, evidence-unique final-production cadence."""
+    results: list[CheckResult] = []
+    if not profile.duration_min_s <= duration <= profile.duration_max_s:
+        results.append(_fail(
+            "reference.standard_duration_outside_50_60s",
+            CheckSeverity.ERROR,
+            "Standard reference production must remain between 50 and 60 seconds.",
+        ))
+    durations = [
+        max(0.0, float(scene.end_time) - float(scene.start_time))
+        for scene in scenes
+    ]
+    minimum_required = max(
+        1, math.ceil(max(0.0, duration) / reference_profile.REVIEW_MAX_SHOT_SECONDS)
+    )
+    if len(scenes) < minimum_required:
+        results.append(_fail(
+            "reference.standard_shot_density_low",
+            CheckSeverity.ERROR,
+            "Standard reference production does not meet the four-second visual cadence ceiling.",
+        ))
+    if any(
+        value <= 0.50 or value > reference_profile.REVIEW_MAX_SHOT_SECONDS + 1e-9
+        for value in durations
+    ):
+        results.append(_fail(
+            "reference.standard_shot_duration_invalid",
+            CheckSeverity.ERROR,
+            "Standard reference shots must remain above 0.5 seconds and at or below four seconds.",
+        ))
+    keys = [_reference_panel_key(scene) for scene in scenes]
+    repeated = sorted(key for key, count in Counter(keys).items() if key and count > 1)
+    if repeated:
+        results.append(_fail(
+            "reference.standard_panel_repeat",
+            CheckSeverity.ERROR,
+            "Standard reference production must use a distinct evidence panel for every shot.",
+            {"panel_keys": repeated[:20]},
+        ))
+    if len(scenes) > 1 and any(
+        getattr(scene, "transition", "cut") != "fade" for scene in scenes[1:]
+    ):
+        results.append(_fail(
+            "reference.standard_transition_policy",
+            CheckSeverity.ERROR,
+            "Standard reference shot boundaries must use the approved fade transition policy.",
+        ))
+    return results or [_pass(
+        "reference.standard_profile",
+        "Standard evidence-unique reference pacing contract is valid.",
+    )]
 
 
 def check_reference_profile(scenes: list, duration: float, profile) -> list[CheckResult]:
@@ -1158,6 +1223,7 @@ def run_all(
     subtitle_contract: Mapping[str, object] | None = None,
     subtitle_timing_error: str | None = None,
     adaptive_reference_contract: Mapping[str, object] | None = None,
+    standard_reference_cadence: bool = False,
 ) -> list[CheckResult]:
     """Full pre-publication sweep, combining policy and technical checks."""
     results: list[CheckResult] = []
@@ -1197,6 +1263,10 @@ def run_all(
             if adaptive_reference_contract is not None:
                 results += check_adaptive_reference_profile(
                     scenes, effective_duration, adaptive_reference_contract
+                )
+            elif standard_reference_cadence:
+                results += check_standard_reference_profile(
+                    scenes, effective_duration, profile
                 )
             else:
                 results += check_reference_profile(scenes, effective_duration, profile)
