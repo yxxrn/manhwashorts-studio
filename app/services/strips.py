@@ -49,7 +49,8 @@ _MIN_SEGMENT_FRACTION = 0.55
 
 # This detector is intentionally based on structure rather than brightness.
 # The version participates in downstream cache/review identities.
-COLOR_AGNOSTIC_DETECTOR_VERSION = "color-agnostic-gutter-v3"
+COLOR_AGNOSTIC_DETECTOR_VERSION = "color-agnostic-gutter-v4"
+_MICRO_GUTTER_GAP_MAX_ROWS = 8
 VERIFIED_BLANK_DETECTOR_VERSION = "extreme-full-width-blank-v2"
 _BLANK_VARIANCE_MAX = 25.0
 _BLANK_BRIGHT_MIN = 245.0
@@ -237,6 +238,39 @@ def color_agnostic_row_classifications(
                 candidate.confidence,
                 f"coverage.gutter.{candidate.reason}",
             )
+
+    # Detector spans from different gutter signals can occasionally leave a
+    # microscopic full-width content island between two verified separators
+    # (observed in production at 1-7 source rows). Such a strip cannot carry a
+    # usable visual panel and some vision providers reject the resulting image
+    # outright. Bridge only tiny islands that are bounded by verified gutters
+    # on both sides; real story bands remain untouched.
+    index = 0
+    while index < height:
+        if classifications[index][0] != "canonical_panel":
+            index += 1
+            continue
+        start = index
+        while index < height and classifications[index][0] == "canonical_panel":
+            index += 1
+        end = index
+        if (
+            end - start <= _MICRO_GUTTER_GAP_MAX_ROWS
+            and start > 0
+            and end < height
+            and classifications[start - 1][0] == "verified_gutter"
+            and classifications[end][0] == "verified_gutter"
+        ):
+            confidence = min(
+                float(classifications[start - 1][1]),
+                float(classifications[end][1]),
+            )
+            evidence = (
+                f"coverage.gutter.{COLOR_AGNOSTIC_DETECTOR_VERSION};"
+                f"micro_gap_bridge;rows={start}-{end}"
+            )
+            for row in range(start, end):
+                classifications[row] = ("verified_gutter", confidence, evidence)
     return classifications
 
 

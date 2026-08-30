@@ -433,3 +433,34 @@ def test_verified_blank_detector_does_not_bridge_textured_story_gap():
     assert len(spans) >= 2
     rows = strips.color_agnostic_row_classifications(image)
     assert any(rows[y][0] == "canonical_panel" for y in range(500, 560))
+
+
+def test_color_agnostic_rows_bridge_micro_content_island_between_gutters(monkeypatch):
+    from app.services import strips
+
+    image = Image.new("RGB", (900, 700), (120, 120, 120))
+    candidates = (
+        strips.SeparatorCandidate(250, 0.95, 0.95, 200, 300, "left"),
+        strips.SeparatorCandidate(354, 0.94, 0.94, 307, 400, "right"),
+    )
+    monkeypatch.setattr(strips, "color_agnostic_separator_candidates", lambda _image: candidates)
+
+    rows = strips.color_agnostic_row_classifications(image)
+
+    assert all(rows[y][0] == "verified_gutter" for y in range(200, 400))
+    assert all("micro_gap_bridge" in rows[y][2] for y in range(300, 307))
+
+
+def test_color_agnostic_rows_keep_non_micro_story_band_between_gutters(monkeypatch):
+    from app.services import strips
+
+    image = Image.new("RGB", (900, 700), (120, 120, 120))
+    candidates = (
+        strips.SeparatorCandidate(250, 0.95, 0.95, 200, 300, "left"),
+        strips.SeparatorCandidate(355, 0.94, 0.94, 309, 400, "right"),
+    )
+    monkeypatch.setattr(strips, "color_agnostic_separator_candidates", lambda _image: candidates)
+
+    rows = strips.color_agnostic_row_classifications(image)
+
+    assert all(rows[y][0] == "canonical_panel" for y in range(300, 309))
