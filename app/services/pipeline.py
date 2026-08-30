@@ -1555,9 +1555,9 @@ def approve_script(db: Session, script_id: str, actor_id: str='', *, editorial_r
 # --- stage: voice-over -----------------------------------------------------
 
 
-def generate_voiceover(db: Session, project_id: str, *, speed: float=1.15, provider_name: str | None=None, actor_id: str='') -> list[AudioSegment]:
+def generate_voiceover(db: Session, project_id: str, *, speed: float=1.15, provider_name: str | None=None, actor_id: str='', duration_bounds_s: tuple[float, float] | None=None) -> list[AudioSegment]:
     """Synthesise one clip per script section, replacing any previous audio."""
-    return pipeline_stages.media.generate_voiceover(sys.modules[__name__], db, project_id, speed=speed, provider_name=provider_name, actor_id=actor_id)
+    return pipeline_stages.media.generate_voiceover(sys.modules[__name__], db, project_id, speed=speed, provider_name=provider_name, actor_id=actor_id, duration_bounds_s=duration_bounds_s)
 
 
 def audio_segments(db: Session, script_id: str) -> list[AudioSegment]:

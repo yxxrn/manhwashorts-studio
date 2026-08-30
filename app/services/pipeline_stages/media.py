@@ -6,7 +6,7 @@ Public callers should continue importing app.services.pipeline.
 from __future__ import annotations
 
 
-def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id):
+def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, duration_bounds_s=None):
     """Synthesise one clip per script section, replacing any previous audio."""
     AudioSegment = api.AudioSegment
     PipelineError = api.PipelineError
@@ -50,6 +50,19 @@ def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id):
             clips = [provider.synthesize(spoken, work / f"{index:02d}_{section['section']}.wav", requested_voice_id, speed) for index, section, spoken in prepared]
     except tts_svc.TTSError as exc:
         raise PipelineError(f'voice-over failed: {exc}') from exc
+    gap = 0.18
+    timing_policy = None
+    if duration_bounds_s is not None:
+        try:
+            duration_min_s, duration_max_s = (float(duration_bounds_s[0]), float(duration_bounds_s[1]))
+            clips, timing_policy = tts_svc.normalize_speech_clips_to_duration_window(
+                clips,
+                duration_min_s=duration_min_s,
+                duration_max_s=duration_max_s,
+                gap_s=gap,
+            )
+        except (IndexError, TypeError, ValueError, tts_svc.TTSError) as exc:
+            raise PipelineError(f'voice-over duration normalization failed: {exc}') from exc
     created: list[AudioSegment] = []
     profile_hashes = {clip.voice_profile_hash for clip in clips}
     if len(profile_hashes) != 1:
@@ -65,12 +78,11 @@ def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id):
     if not created:
         raise PipelineError('script has no spoken text')
     cursor = 0.0
-    gap = 0.18
     for i, segment in enumerate(created):
         segment.start_time = round(cursor, 3)
         segment.end_time = round(cursor + segment.duration, 3)
         cursor = segment.end_time + (gap if i < len(created) - 1 else 0.0)
-    audit(db, 'voice.generate', 'project', project_id, actor_id, segments=len(created), provider=provider.name, provider_source=tts_decision.source, model=tts_decision.model)
+    audit(db, 'voice.generate', 'project', project_id, actor_id, segments=len(created), provider=provider.name, provider_source=tts_decision.source, model=tts_decision.model, timing_policy=dict(timing_policy or {}))
     db.flush()
     return created
 

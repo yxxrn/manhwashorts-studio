@@ -34,7 +34,10 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
     enqueue_render = api.enqueue_render
     execute_render = api.execute_render
     generate_voiceover = api.generate_voiceover
+    get_project = api.get_project
+    reference_profile = api.reference_profile
     run_quality_checks = api.run_quality_checks
+    tts_svc = api.tts_svc
     if not actor_id.strip():
         raise PipelineError('production operator identity is required')
     script = _script_for_media(db, project_id)
@@ -67,9 +70,35 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
             production.update({'thumbnail_status': 'passed', 'thumbnail_path': thumbnail_manifest.get('thumbnail_path', ''), 'thumbnail_headline': thumbnail_manifest.get('headline', '')})
             metadata = _persist_production_metadata(db, script, metadata, production)
         return existing
-    if not _audio_stage_ready(db, script):
-        generate_voiceover(db, project_id, speed=speed, provider_name=provider_name, actor_id=actor_id)
+    project = get_project(db, project_id)
+    resolved_profile = reference_profile.resolve_reference_profile(project.template)
+    audio_duration_bounds = (
+        (float(resolved_profile.duration_min_s), float(resolved_profile.duration_max_s))
+        if resolved_profile is not None
+        else None
+    )
+    audio_timing_identity = {
+        'version': tts_svc.PRODUCTION_AUDIO_TIMING_POLICY_VERSION,
+        'requested_speed': round(float(speed), 4),
+        'provider_override': str(provider_name or ''),
+        'duration_bounds_s': list(audio_duration_bounds) if audio_duration_bounds is not None else [],
+    }
+    audio_reusable = bool(
+        production.get('audio_script_hash') == script_hash
+        and production.get('audio_timing_identity') == audio_timing_identity
+        and _audio_stage_ready(db, script)
+    )
+    if not audio_reusable:
+        generate_voiceover(
+            db,
+            project_id,
+            speed=speed,
+            provider_name=provider_name,
+            actor_id=actor_id,
+            duration_bounds_s=audio_duration_bounds,
+        )
     production['audio_script_hash'] = script_hash
+    production['audio_timing_identity'] = audio_timing_identity
     metadata = _persist_production_metadata(db, script, metadata, production)
     timeline_reusable = production.get('timeline_script_hash') == script_hash and _timeline_stage_ready(db, project_id)
     if not timeline_reusable:

@@ -20,7 +20,7 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -90,6 +90,126 @@ def probe_duration(path: Path) -> float:
         return round(float(out.stdout.strip() or 0.0), 3)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
         raise TTSError(f"could not probe duration of {path.name}: {exc}") from exc
+
+
+PRODUCTION_AUDIO_TIMING_POLICY_VERSION = "production-audio-timing-v1"
+PRODUCTION_AUDIO_TEMPO_MIN = 0.80
+PRODUCTION_AUDIO_TEMPO_MAX = 1.25
+PRODUCTION_AUDIO_TARGET_MARGIN_S = 0.75
+
+
+def _duration_window_tempo(
+    speech_duration_s: float,
+    clip_count: int,
+    *,
+    duration_min_s: float,
+    duration_max_s: float,
+    gap_s: float = 0.18,
+) -> tuple[float, float] | None:
+    """Return a safe FFmpeg atempo factor and target timeline duration."""
+    speech = float(speech_duration_s)
+    count = int(clip_count)
+    lower = float(duration_min_s)
+    upper = float(duration_max_s)
+    if speech <= 0.0 or count <= 0 or lower <= 0.0 or upper < lower:
+        raise TTSError("audio duration normalization inputs are invalid")
+    gaps = max(0, count - 1) * float(gap_s)
+    current = speech + gaps
+    if lower <= current <= upper:
+        return None
+    target = (
+        min(upper, lower + PRODUCTION_AUDIO_TARGET_MARGIN_S)
+        if current < lower
+        else max(lower, upper - PRODUCTION_AUDIO_TARGET_MARGIN_S)
+    )
+    target_speech = target - gaps
+    if target_speech <= 0.0:
+        raise TTSError("audio duration target leaves no spoken duration")
+    tempo = speech / target_speech
+    if not PRODUCTION_AUDIO_TEMPO_MIN <= tempo <= PRODUCTION_AUDIO_TEMPO_MAX:
+        raise TTSError(
+            "audio tempo correction exceeds safe production range "
+            f"({PRODUCTION_AUDIO_TEMPO_MIN:.2f}-{PRODUCTION_AUDIO_TEMPO_MAX:.2f})"
+        )
+    return tempo, target
+
+
+def _retime_speech_clip(clip: SpeechClip, tempo: float) -> SpeechClip:
+    """Apply one pitch-preserving tempo correction and rebuild word timings."""
+    source = Path(clip.path)
+    retimed = source.with_name(f".{source.stem}.retimed{source.suffix}")
+    try:
+        subprocess.run(
+            [
+                settings.ffmpeg_bin,
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(source), "-af", f"atempo={float(tempo):.8f}", str(retimed),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=True,
+        )
+        retimed.replace(source)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        retimed.unlink(missing_ok=True)
+        detail = getattr(exc, "stderr", "") or type(exc).__name__
+        raise TTSError(f"audio tempo correction failed: {str(detail)[:300]}") from exc
+    duration = probe_duration(source)
+    profile = {
+        **dict(clip.voice_profile or {}),
+        "timing_policy": PRODUCTION_AUDIO_TIMING_POLICY_VERSION,
+        "tempo_correction": round(float(tempo), 6),
+    }
+    return replace(
+        clip,
+        duration=duration,
+        word_timings=estimate_word_timings(clip.text, duration),
+        voice_profile=profile,
+    )
+
+
+def normalize_speech_clips_to_duration_window(
+    clips: list[SpeechClip],
+    *,
+    duration_min_s: float,
+    duration_max_s: float,
+    gap_s: float = 0.18,
+) -> tuple[list[SpeechClip], dict]:
+    """Normalize final-production narration into a measured duration window."""
+    if not clips:
+        raise TTSError("cannot normalize an empty speech clip set")
+    speech_before = sum(float(clip.duration) for clip in clips)
+    correction = _duration_window_tempo(
+        speech_before,
+        len(clips),
+        duration_min_s=duration_min_s,
+        duration_max_s=duration_max_s,
+        gap_s=gap_s,
+    )
+    timeline_before = speech_before + max(0, len(clips) - 1) * gap_s
+    if correction is None:
+        return clips, {
+            "version": PRODUCTION_AUDIO_TIMING_POLICY_VERSION,
+            "applied": False,
+            "tempo": 1.0,
+            "duration_before_s": round(timeline_before, 3),
+            "duration_after_s": round(timeline_before, 3),
+        }
+    tempo, target = correction
+    adjusted = [_retime_speech_clip(clip, tempo) for clip in clips]
+    speech_after = sum(float(clip.duration) for clip in adjusted)
+    timeline_after = speech_after + max(0, len(adjusted) - 1) * gap_s
+    if not float(duration_min_s) <= timeline_after <= float(duration_max_s):
+        raise TTSError("audio tempo correction did not reach the production duration window")
+    return adjusted, {
+        "version": PRODUCTION_AUDIO_TIMING_POLICY_VERSION,
+        "applied": True,
+        "tempo": round(float(tempo), 6),
+        "target_duration_s": round(float(target), 3),
+        "duration_before_s": round(timeline_before, 3),
+        "duration_after_s": round(timeline_after, 3),
+    }
 
 
 def estimate_word_timings(text: str, duration: float, offset: float = 0.0) -> list[dict]:
