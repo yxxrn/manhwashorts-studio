@@ -2606,6 +2606,16 @@ def _narration_retry_feedback(
             "use open_question only when the final passage is an evidence-grounded question; "
             "otherwise choose consequence or cliffhanger without a question mark"
         )
+    if (
+        "v3 narrative_outline keys" in value
+        or "ending_kind is not supported" in value
+        or "ending_kind" in value and "narrative_outline" in value
+    ):
+        return (
+            "return narrative_outline with the exact keys story_spine and ending_kind; set "
+            "ending_kind to cliffhanger, consequence, or open_question, and make the final "
+            "passage punctuation agree with that choice"
+        )
     if "cloud.narrative_qc_blocked" in value:
         return (
             "use natural evidence-grounded prose and avoid generic hype, CTA language, "

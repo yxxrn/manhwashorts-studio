@@ -274,6 +274,17 @@ def test_narration_retry_sends_sanitized_contract_feedback(tmp_path):
         "in the referencing passage"
     )
 
+
+def test_narration_retry_feedback_requires_supported_ending_contract():
+    module = _module()
+
+    feedback = module._narration_retry_feedback(
+        "v3 narrative_outline keys do not match the contract"
+    )
+
+    assert "exact keys story_spine and ending_kind" in feedback
+    assert "cliffhanger, consequence, or open_question" in feedback
+
 def test_narration_retry_feedback_retargets_uncompactable_position_vector():
     module = _module()
 

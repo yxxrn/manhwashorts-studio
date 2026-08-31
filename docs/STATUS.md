@@ -37,6 +37,11 @@ artifacts override historical benchmark notes.
   omitted passage evidence list from its claim evidence while retaining strict
   foreign/incomplete-reference rejection; its regression and related cloud tests
   are the next gate before resuming narration.
+- The post-fix resume reused the visual/story checkpoints with zero new visual
+  requests and two narration requests, then failed closed on `field=ending_kind`.
+  Retry guidance now explicitly requires the v3 outline keys, supported ending
+  kinds, and matching final punctuation; this focused regression is green but has
+  not yet produced a valid narration or preview artifact.
 
 ## Production behavior
 
