@@ -1,114 +1,243 @@
 # ManhwaShorts Studio
 
-<p align="center">
-  <img src="docs/assets/manhwashorts-cover.svg" alt="ManhwaShorts Studio — motion-comic render pipeline" width="900">
-</p>
-
-<p align="center">
-  <strong>Rights-aware motion-comic renders for vertical video.</strong><br>
-  Turn authorized panels + commentary into an editable, review-first 9:16 Short.
-</p>
-
-<p align="center">
-  <a href="#quick-start">Quick start</a> ·
-  <a href="docs/INDEX.md">Documentation</a> ·
-  <a href="docs/STATUS.md">Current status</a> ·
-  <a href="docs/COPYRIGHT.md">Rights model</a>
-</p>
-
-## What ships
+Production-oriented pipeline for turning a chapter folder into a reviewable and QC-gated vertical manhwa recap.
 
 ```text
-authorized material → analysis → English script → American English VO
-                    → motion timeline → subtitles → QC → MP4 review
+chapter images
+  → ingest + segmentation
+  → resumable multimodal visual/story analysis
+  → grounded five-beat narration
+  → explicit script approval
+  → TTS + measured word timing
+  → exact-panel / ROI visual planning
+  → motion + subtitles + render
+  → pre/post-render QC
+  → final MP4 + thumbnail package
 ```
 
-- Five-beat commentary: hook, setup, conflict, twist, CTA.
-- Deterministic camera motion, crop, transitions, effects, and panel cooldown.
-- Audio is the timeline clock; subtitles follow measured speech.
-- CPU-first FFmpeg render: `1080×1920`, `60 FPS` by default, H.264/AAC.
-- Human approval and strict QC gate production. Rights metadata is audited; enforcement is disabled by default.
-- Offline defaults. BYOK LLM/TTS providers are optional.
+The current design is built around **durable resume state, evidence lineage, deterministic visual planning, and fail-closed production gates**. Expensive cloud analysis is reused when its checkpoint identity is still valid; a later local failure should not force a full provider rerun.
 
-## Project rules
+## Current production contract
 
-- **Default text:** English.
-- **Default voice:** American English (`en-US`).
-- **Default voice ID:** `the-explainer-american`.
-- Indonesian is explicit opt-in: set `language: "id"` and an Indonesian `voice_id`.
-- Never treat a fixture or user-provided panel as publication-cleared.
-- No scraping, watermark removal, generative replacement, or automatic public upload.
-- A render is a review artifact until exact script approval and QC pass; rights metadata is audited separately unless enforcement is explicitly enabled.
+- Standard final duration: **50–60 seconds**; new projects target **55 seconds** by default.
+- Output profile: **1080×1920, 60 FPS, H.264/AAC**.
+- Narration structure: `hook → setup → conflict → twist → CTA`.
+- Every approved narration section remains traceable to persisted source evidence.
+- Final visual planning uses exact persisted panels/ROIs rather than arbitrary source-page crops.
+- Reference visuals are capped at **4 seconds per shot** in the production cadence contract.
+- Panel changes use editorial fades; in-panel motion uses deterministic push/pull/pan/focus movement.
+- Repetition, duplicate ROI reuse, unsafe framing, face cutoff, static holds, timing drift, black frames, subtitle timing, and media integrity are QC'd.
+- Audio timing is authoritative for voiced production; timeline and subtitles follow measured TTS timing.
+- Production requires the exact approved script hash + version.
+- A successful final package must pass both pre-render and post-render blocking QC.
 
-## Quick start
+## Reliability and resume behavior
 
-Requirements: Python `3.11+`, FFmpeg/FFprobe with `libass`, a subtitle font, and
-optional `espeak-ng` for offline narration.
+The pipeline is intentionally resumable. Durable state is stored under ignored runtime paths and is keyed to the relevant source/script/media identities.
+
+- Segmentation and cloud multimodal stages write checkpoints instead of relying on one long in-memory run.
+- Valid cached analysis can be reused after interruption or process restart.
+- Script changes invalidate downstream voice/timeline/render identities instead of silently reusing stale media.
+- Valid TTS, timeline, render, and thumbnail stages are reused when their production identity still matches.
+- A stricter/new QC contract can invalidate an old render and rebuild only the necessary downstream stages.
+- Provider credentials, chapter sources, generated media, and local runtime state are never supposed to enter Git history.
+
+Expected runtime-only paths:
+
+```text
+data/
+manhwa/
+ms_env.sh
+```
+
+Do not stage those paths.
+
+## Requirements
+
+- Python **3.11+**
+- FFmpeg + FFprobe with `libass`
+- A subtitle font
+- A configured cloud multimodal provider for the production review workflow
+- A configured TTS provider for voiced production
+
+GPU encoding is optional. `MS_VIDEO_ENCODER=auto` probes supported encoders and falls back to CPU when necessary.
+
+## Install
 
 ```bash
 git clone https://github.com/yxxrn/manhwashorts-studio.git
 cd manhwashorts-studio
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install -r requirements.txt
 cp .env.example .env
-.venv/bin/python -c "from app.services.render import check_environment; print(check_environment() or 'environment OK')"
+```
+
+For development and the full regression suite, install `requirements-dev.txt` instead.
+
+Optional API/UI server:
+
+```bash
 .venv/bin/python -m uvicorn app.main:app --reload
 ```
 
-Open `http://127.0.0.1:8000`.
+Then open `http://127.0.0.1:8000`.
 
-### Offline demo
+## Operator workflow
 
-```bash
-.venv/bin/python scripts/make_fixtures.py
-.venv/bin/python scripts/seed_demo.py --render
+The production-oriented operator console is the preferred boundary for chapter review/resume work.
+
+Windows launcher:
+
+```text
+run_operator.cmd
 ```
 
-Fixtures are synthetic and test-only. Do not publish their output.
+Cross-platform bootstrap:
+
+```bash
+python scripts/bootstrap_operator_cli.py
+```
+
+Direct entrypoint:
+
+```bash
+python scripts/run_operator_cli.py
+```
+
+The interactive console supports provider setup/test, model selection, one-chapter import, batch import, resume, and review-blocker inspection.
+
+### Production repair without re-running everything
+
+When review analysis is already durable but the latest script/visual repair must be refreshed for production:
+
+```bash
+python scripts/run_operator_cli.py \
+  --mode repair-production \
+  --env-file /path/to/private-ms-env.sh \
+  --project-id <project-id> \
+  --actor-id <operator-id> \
+  --source-root /path/to/chapter
+```
+
+A successful repair-production run stops at `READY_TO_RENDER` with voice still waiting for explicit production approval.
+
+### Final production
+
+Final production requires the exact latest approved script identity:
+
+```bash
+python scripts/run_operator_cli.py \
+  --mode production \
+  --env-file /path/to/private-ms-env.sh \
+  --project-id <project-id> \
+  --actor-id <operator-id> \
+  --approved-script-hash <sha256> \
+  --approved-script-version <version>
+```
+
+Production then reuses or executes, in order:
+
+```text
+approved script → TTS → measured timing → timeline → preflight QC
+                → final render → postflight QC → thumbnail package
+```
+
+If a matching successful render already exists and still passes the current QC contract, it is reused.
+
+## Visual planning
+
+The current visual path is evidence-first:
+
+```text
+persisted panel regions
+  → visual evidence / scoring
+  → section eligibility
+  → ROI feasibility
+  → shot allocation
+  → camera intent + motion curve
+  → render
+```
+
+Important behavior:
+
+- weak gutters, degenerate crops, and invalid source bounds are rejected;
+- face/subject protection is part of framing feasibility;
+- unique panels are preferred before safe alternate ROIs are reused;
+- repeated canonical panels must remain within the profile cap and use distinct safe ROIs;
+- source order/section evidence constrains selection instead of letting a visually strong but unrelated panel win;
+- small gaps between narration spans are bridged only inside the same section, not charged to the previous story section;
+- motion is kept active without introducing frame-to-frame jitter from crop rounding;
+- panel changes use fades while preserving the exact audio-locked duration.
+
+This keeps final selection deterministic and inspectable rather than treating the final MP4 as the only source of truth.
+
+## Output artifacts
+
+Successful production writes an upload-ready package under:
+
+```text
+data/output/<project-id>/
+```
+
+Core artifacts include:
+
+```text
+final.mp4
+final.qc.json
+final.srt
+shot_list.json
+subtitle_list.json
+panel_to_script_mapping.json
+panel_catalog.json
+source_rights_report.json
+thumbnail.jpg / thumbnail_clean.jpg / thumbnail variants
+thumbnail_meta.json
+thumbnail.qc.json
+```
+
+The exact package may include additional manifests, contact sheets, checksums, or diagnostic files.
 
 ## Configuration
 
-Default subtitle font: `assets/fonts/BarberChop.otf`. Override with `MS_SUBTITLE_FONT`.
-
-
-All settings are optional. Important defaults:
+See `.env.example` for the full set. The most important production settings are:
 
 | Variable | Default | Purpose |
-|---|---|---|
-| `MS_TTS_PROVIDER` | `espeak` | `espeak`, `http`, or `null` |
-| `MS_LLM_PROVIDER` | `rules` | Offline rules or BYOK-compatible LLM |
-| `MS_REQUIRE_RIGHTS_DECLARATION` | `false` | Optional rights-enforcement switch; metadata is still audited |
-| `MS_ALLOW_PUBLIC_PUBLISH` | `false` | Keep public upload disabled |
-| `MS_VIDEO_ENCODER` | `auto` | Resolve CPU/GPU encoder per job |
-| `MS_DEFAULT_TARGET_SECONDS` | `55` | Normal final target; production acceptance is 50-60s |
-| `MS_MAX_SHORT_SECONDS` | `90` | Absolute project/media ceiling, not the normal final target |
+|---|---:|---|
+| `MS_DEFAULT_TARGET_SECONDS` | `55` | New-project target duration |
+| `MS_MAX_SHORT_SECONDS` | `90` | Absolute project/media ceiling |
+| `MS_TTS_PROVIDER` | `espeak` | Local/offline default; production may use configured HTTP TTS |
+| `MS_LLM_PROVIDER` | `rules` | Offline rules default; cloud review uses configured provider/BYOK |
+| `MS_VIDEO_ENCODER` | `auto` | CPU/GPU encoder selection |
+| `MS_REQUIRE_RIGHTS_DECLARATION` | `false` | Optional blocking rights-enforcement switch |
+| `MS_ALLOW_PUBLIC_PUBLISH` | `false` | Public upload remains disabled unless explicitly enabled |
 
-For paid or higher-quality narration, configure a BYOK provider. Keep provider,
-model, voice ID, locale, speed, and voice controls fixed across all beats.
+The offline `rules`/`espeak` defaults keep a fresh clone operable for development. They do **not** bypass production approval, evidence, media, or QC gates.
 
 ## Architecture
 
 ```text
-FastAPI UI/API
-      │
-      ├── app.services.pipeline (stable facade)
-      │      └── pipeline_stages/{analysis,script,media,quality,production,rendering}
-      ├── cloud_multimodal (stable runner facade)
-      │      └── cloud_runner_parts/{provider,visual,story,narration,repair,...}
-      ├── render / quality / policy / thumbnail
-      └── dependency-light contracts + SQLAlchemy persistence
+FastAPI / operator CLI
+        │
+        ├── app.services.pipeline
+        │      └── pipeline_stages/
+        │             analysis · script · media · quality · production · rendering
+        │
+        ├── app.services.cloud_multimodal
+        │      └── cloud_runner_parts/
+        │             provider · visual · story · narration · repair · resume
+        │
+        ├── director / visual scoring / ROI / framing / camera planning
+        ├── TTS / subtitles / render / thumbnail / policy / quality
+        └── SQLAlchemy persistence + content-addressed/runtime storage
 
-SQLite + content-addressed filesystem + FFmpeg
+FFmpeg + Pillow handle deterministic media execution.
 ```
 
-The app is intentionally boring: small services, local storage, no required GPU,
-no mandatory cloud account. A standalone worker is available for render jobs:
-
-```bash
-.venv/bin/python scripts/worker.py
-```
+`app.services.pipeline` and `app.services.cloud_multimodal` are stable orchestration facades. Internal stage modules can evolve without making routers, workers, scripts, or tests depend on implementation details.
 
 ## Validation
+
+Before merging production changes:
 
 ```bash
 .venv/bin/ruff check app tests scripts alembic
@@ -118,52 +247,32 @@ no mandatory cloud account. A standalone worker is available for render jobs:
 git diff --check
 ```
 
-Slow tests execute FFmpeg and inspect codecs, dimensions, timing, captions, audio,
-black frames, and drift.
+The slow/render suites exercise real FFmpeg behavior and verify codec/container output, framing, subtitles, audio/video drift, black frames, motion, production orchestration, resume behavior, and release gates.
 
 ## Documentation
 
-Start here: **[Documentation index](docs/INDEX.md)**.
+- [Current status](docs/STATUS.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Operator CLI](docs/operator-cli.md)
+- [Operations](docs/OPERATIONS.md)
+- [Motion-comic pipeline](docs/MOTION_COMIC.md)
+- [Visual selection](docs/VISUAL_SELECTION.md)
+- [Maintainer guide](docs/MAINTAINER_GUIDE.md)
+- [Release runbook](docs/RELEASE_RUNBOOK.md)
+- [API reference](docs/API.md)
+- [BYOK](docs/BYOK.md)
+- [TTS options](docs/TTS_OPTIONS.md)
+- [GPU rendering](docs/GPU.md)
+- [Copyright / rights model](docs/COPYRIGHT.md)
 
-- [Current status](docs/STATUS.md) — implemented, pending, and explicit blockers.
-- [Architecture](docs/ARCHITECTURE.md) — current services, facades, data flow, and invariants.
-- [Maintainer guide](docs/MAINTAINER_GUIDE.md) — safe refactor/extension rules and test migration map.
-- [Motion-comic pipeline](docs/MOTION_COMIC.md) — director, renderer, QC.
-- [Operations](docs/OPERATIONS.md) — run, recover, back up, verify.
-- [Release runbook](docs/RELEASE_RUNBOOK.md) — production checklist.
-- [API reference](docs/API.md) — endpoints and payloads.
-- [BYOK](docs/BYOK.md) — encrypted provider keys.
-- [TTS options](docs/TTS_OPTIONS.md) — voice-provider selection rules.
-- [UI](docs/UI.md) — design system and accessibility constraints.
-- [Visual selection](docs/VISUAL_SELECTION.md) — panel scoring and focus.
-- [GPU rendering](docs/GPU.md) — optional encoder acceleration.
-- [Copyright](docs/COPYRIGHT.md) — rights metadata, optional enforcement, and limitations.
-- [YouTube setup](docs/YOUTUBE_SETUP.md) — OAuth and private-by-default upload.
-- [Agent operation](docs/AGENT.md) — API-driven execution.
-- [Changelog](CHANGELOG.md) — release history.
+## Scope and rights
 
-## Scope boundary
+ManhwaShorts Studio does not scrape source material, remove watermarks, generate replacement artwork, or automatically authorize publication rights. Source rights metadata is retained for audit; it becomes a blocking gate only when rights enforcement is explicitly enabled.
 
-OmniVoice Studio is an external voice experiment, not a ManhwaShorts dependency or
-production provider. The core project keeps a generic HTTP TTS adapter so a
-validated provider can be selected later without coupling the render pipeline to
-one model.
+The repository code and third-party assets/services have separate licences. Verify the rights for source art, fonts, models, voices, and provider services before commercial publication.
 
-## License and rights
-
-The repository code is provided for project use. Third-party fonts, models, panel
-art, and provider services retain their own licences. Verify every licence before
-commercial publication. This project does not provide legal advice.
-
-## Status
-
-The production pipeline and maintainability refactor are regression-tested. Script
-approval, evidence/media integrity, and strict QC remain blocking; rights metadata is
-non-blocking by default unless enforcement is explicitly enabled. See
-[docs/STATUS.md](docs/STATUS.md).
+## Repository
 
 Maintainer: [yxxrn](https://github.com/yxxrn)
 
 Repository: [github.com/yxxrn/manhwashorts-studio](https://github.com/yxxrn/manhwashorts-studio)
-
-License: see repository notices and third-party asset licences.
