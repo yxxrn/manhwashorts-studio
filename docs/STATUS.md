@@ -43,6 +43,50 @@ artifacts override historical benchmark notes.
   kinds, and matching final punctuation; this focused regression is green but has
   not yet produced a valid narration or preview artifact.
 
+## 2026-08-31 review preview artifact checkpoint
+
+- The same fresh aggregate job completed through the normal operator review
+  entrypoint at `9371a16268b5cf24428450f657248b3b8bc897ae`. The source was the
+  ordered five-chapter prefix `output/The Return of the Crazy Demon`, chapters
+  207 through 211: 77 image assets, 77 reconciled source assets, and 410
+  admitted visual panels. The visual/story/narration stages were resumed from
+  durable checkpoints; no visual request was repeated.
+- Final review state is `REVIEW_PREVIEW_READY` /
+  `VISUAL_ONLY_WAITING_FOR_VOICE`, with `PENDING_EDITORIAL_REVIEW` and
+  `publish_allowed=false`. The review artifact is:
+  `data/production-benchmark-crazy-demon-20260831-cold-v1/output/eeae59a27baf421590c034522e619903/review/silent_preview.mp4`
+  (24,419,747 bytes, SHA-256
+  `A0564A0F5A057E5C6E0A50CC681F96E9E2C7815C1276B684340049A529DA4747`).
+- FFprobe/QC: 53.483333 seconds, 1080x1920, 60/1 FPS, H.264 High,
+  yuv420p, one video stream, zero audio streams, and zero blackdetect events.
+  QC has zero blocking codes. The two explicit warnings are
+  `review.source_upscale_non_native` and `visual_review_pending`.
+- Visual audit: 15 shots and 15 unique panels (source orders
+  196, 252, 195, 212, 213, 231, 241, 244, 245, 256, 259, 307, 317, 321,
+  330), 3.333-3.913 seconds per shot (median 3.623, p95 3.913, max 3.913),
+  maximum unchanged hold 0.787 seconds, reuse streak 1, no immediate/near
+  repeats, four motion modes, zero jitter violations, and 14 planned/14
+  visible transitions. Corroborated maximum edge blank fraction is 0.08.
+- Subtitle audit: 123 word cues, punctuation-free display, maximum two lines,
+  827.52px maximum active width within an 828px safe width, spoken text
+  unchanged, and review-provisional display pacing. Narration is 123 words,
+  estimated at 53.48 seconds across five passages.
+- Provider accounting for this job is 327 visual requests with 16 retries at
+  concurrency 8/peak in-flight 8, plus two narration requests and no narration
+  repair requests. The observed wall clock from the accepted cold start
+  `2026-08-31T11:15:16.3334999Z` to final QC completion at approximately
+  `2026-08-31T12:26:09Z` was about 70m52.7s, including one safe durable resume
+  after a no-progress watchdog stop. This is an artifact-success checkpoint,
+  not a claim of an uninterrupted zero-intervention cold benchmark.
+- Required review files are adjacent to the MP4: `artifact_manifest.json`,
+  `qc_report.json`, `visual_diversity_metrics.json`,
+  `edit_shot_plan.json`, `causal_map.json`, `narration_spoken.txt`,
+  `display_cues.json`, `silent_preview.srt`, `ffprobe.json`,
+  `blackdetect.txt`, `contact-sheet-69-frame.jpg`, and frame-audit folders.
+  TTS, audio, voiced rendering, and publication remain intentionally deferred
+  until editorial review; this silent artifact must not be treated as final
+  upload-ready output.
+
 ## Production behavior
 
 The production pipeline remains functionally unchanged by the refactor. Script
