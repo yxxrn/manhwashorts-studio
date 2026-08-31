@@ -47,6 +47,51 @@ def test_narration_terminal_contract_failure_is_sanitized():
 
     assert error.value.code == "cloud.narrative_not_grounded"
 
+
+def test_narration_reconstructs_passage_evidence_from_claims(tmp_path):
+    module = _module()
+    panels = _panels(module, prefix="passage-evidence")
+
+    class MissingPassageEvidenceProvider(_FakeProvider):
+        def complete_json(self, *, stage, prompt_version, prompt_sha256, prompt_text="", payload):
+            if stage != "narration":
+                return super().complete_json(
+                    stage=stage,
+                    prompt_version=prompt_version,
+                    prompt_sha256=prompt_sha256,
+                    prompt_text=prompt_text,
+                    payload=payload,
+                )
+            output = _narrative_output("passage-evidence", list(payload["panel_ids"]))
+            for passage in output["script_passages"]:
+                passage.pop("evidence_panel_ids", None)
+            return output
+
+    provider = MissingPassageEvidenceProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.FileStageCache(tmp_path / "passage-evidence-cache"),
+        max_attempts=1,
+    )
+    visual = runner.run_visual_evidence(panels)
+    story_map = runner.run_story_map(visual)
+
+    result = runner.run_narration(visual, story_map, panels=panels)
+
+    assert all(passage["evidence_panel_ids"] for passage in result.passages)
+    assert all(
+        set(passage["evidence_panel_ids"]) >= set(
+            {
+                panel_id
+                for claim in result.evidence_graph["claims"]
+                if claim["claim_id"] in passage["claim_ids"]
+                for panel_id in claim["evidence_panel_ids"]
+            }
+        )
+        for passage in result.passages
+    )
+
 def test_narration_uses_the_same_bounded_ordered_chunk_contract(tmp_path):
     module = _module()
     panels = tuple(

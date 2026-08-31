@@ -19,6 +19,25 @@ artifacts override historical benchmark notes.
 - Documentation synchronization added five contract checks; duration-policy hardening adds four more. Current collection is 1,529 tests.
 - The current duration-policy release gate completed the full 1,529-test suite at 100% with exit code 0; Ruff, compileall, and `git diff --check` are green.
 
+## 2026-08-31 local aggregate benchmark checkpoint
+
+- Frozen code baseline for this run: `be01cda00c1bd90b3abc910273bf86598d5a38fd`
+  (`main` matched `origin/main` before the run).
+- Fresh aggregate namespace: `data/production-benchmark-crazy-demon-20260831-cold-v1`;
+  project `eeae59a27baf421590c034522e619903`; source chapters 207, 208, 209, 210,
+  and 211 were imported as one ordered project with 77 image assets.
+- Visual stage checkpoint: 410/410 admitted panels, 327 provider requests, 16
+  retries, concurrency 8, one writer, and no rejected panels. Preparation elapsed
+  1,856.937 seconds. No visual requests were repeated during resume.
+- Resume reached `STORY_MAPPED` using the durable visual checkpoint. Narration then
+  stopped closed with `cloud.narrative_not_grounded` (`field=passage_evidence;count=5`);
+  the provider response was not retained as a production narration artifact.
+- No MP4, TTS, audio, or QC delivery artifact exists from this run. The benchmark is
+  therefore not a production-success claim. A local adapter fix now derives an
+  omitted passage evidence list from its claim evidence while retaining strict
+  foreign/incomplete-reference rejection; its regression and related cloud tests
+  are the next gate before resuming narration.
+
 ## Production behavior
 
 The production pipeline remains functionally unchanged by the refactor. Script

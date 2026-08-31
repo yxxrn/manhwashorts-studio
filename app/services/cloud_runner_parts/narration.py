@@ -307,6 +307,43 @@ class NarrationMixin:
             self.cache.put(key, result.as_dict())
         return result
 
+    @staticmethod
+    @_bound
+    def _reconcile_narration_passage_evidence(
+        passage: Mapping[str, Any],
+        claims_by_id: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """Backfill omitted passage evidence from the trusted claim graph.
+
+        Compatible providers sometimes return claim IDs and claim-level
+        evidence while omitting the duplicate passage evidence field. The
+        passage field is derived locally from those claim records; provider
+        supplied non-empty values remain subject to the strict shared
+        validator, including foreign or incomplete references.
+        """
+
+        if passage.get("evidence_panel_ids"):
+            return
+        claim_ids = passage.get("claim_ids")
+        if not isinstance(claim_ids, list) or not claim_ids:
+            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+        evidence: list[str] = []
+        for claim_id in claim_ids:
+            claim = claims_by_id.get(str(claim_id))
+            if not isinstance(claim, Mapping):
+                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            refs = claim.get("evidence_panel_ids", claim.get("panel_ids"))
+            if not isinstance(refs, (list, tuple)):
+                raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+            for panel_id in refs:
+                if not isinstance(panel_id, str) or not panel_id.strip():
+                    raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+                if panel_id not in evidence:
+                    evidence.append(panel_id)
+        if not evidence:
+            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+        passage["evidence_panel_ids"] = evidence
+
     @_bound
     def _run_narration_chunk(
         self,
@@ -920,6 +957,10 @@ class NarrationMixin:
                                 resolved = matches[0]
                             normalized_refs.append(resolved)
                         passage["claim_ids"] = normalized_refs
+                        self._reconcile_narration_passage_evidence(
+                            passage,
+                            claims_by_id,
+                        )
                     output = {
                         "observations": chunk_obs,
                         "continuity_ledger": chunk_ledger,
