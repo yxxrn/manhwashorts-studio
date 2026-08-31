@@ -117,8 +117,19 @@ def analyze_story(spans: Iterable[object]) -> list[StoryBeat]:
     source = list(spans)
     output: list[StoryBeat] = []
     for index, span in enumerate(source):
-        next_start = source[index + 1].start_time if index + 1 < len(source) else span.end_time
-        output.extend(analyze_span(span, max(float(span.end_time), float(next_start))))
+        next_span = source[index + 1] if index + 1 < len(source) else None
+        same_section_next_start = (
+            float(next_span.start_time)
+            if next_span is not None
+            and str(getattr(next_span, "section", "")) == str(getattr(span, "section", ""))
+            else float(span.end_time)
+        )
+        output.extend(
+            analyze_span(
+                span,
+                max(float(span.end_time), same_section_next_start),
+            )
+        )
     return output
 
 

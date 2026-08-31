@@ -465,12 +465,34 @@ def _standard_reference_qc_failures(scenes: list[object], duration: float, profi
         failures.append("reference.standard_shot_density_low")
     if any(value <= 0.50 or value > reference_profile.REVIEW_MAX_SHOT_SECONDS + 1e-9 for value in durations):
         failures.append("reference.standard_shot_duration_invalid")
-    keys = [
-        str(getattr(scene, "panel_region_id", "") or getattr(scene, "panel_id", "") or getattr(scene, "asset_id", ""))
-        for scene in scenes
-    ]
-    if len([key for key in keys if key]) != len({key for key in keys if key}):
-        failures.append("reference.standard_panel_repeat")
+    positions: dict[str, list[object]] = {}
+    for scene in scenes:
+        key = str(
+            getattr(scene, "panel_region_id", "")
+            or getattr(scene, "panel_id", "")
+            or getattr(scene, "asset_id", "")
+        )
+        if key:
+            positions.setdefault(key, []).append(scene)
+    for repeated_scenes in positions.values():
+        if len(repeated_scenes) > int(profile.max_canonical_panel_uses):
+            failures.append("reference.standard_panel_repeat")
+            break
+        seen_rois: set[tuple[object, ...]] = set()
+        for scene in repeated_scenes:
+            roi_key = (
+                str(getattr(scene, "roi_label", "") or ""),
+                round(float(getattr(scene, "focus_x", 0.0)), 3),
+                round(float(getattr(scene, "focus_y", 0.0)), 3),
+                round(float(getattr(scene, "focus_end_x", 0.0)), 3),
+                round(float(getattr(scene, "focus_end_y", 0.0)), 3),
+            )
+            if roi_key in seen_rois:
+                failures.append("reference.standard_panel_repeat")
+                break
+            seen_rois.add(roi_key)
+        if "reference.standard_panel_repeat" in failures:
+            break
     if len(scenes) > 1 and any(getattr(scene, "transition", "cut") != "fade" for scene in scenes[1:]):
         failures.append("reference.standard_transition_policy")
     stable_modes = {"slow_push", "slow_pull", "guided_pan", "focus_shift"}

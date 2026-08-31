@@ -37,6 +37,35 @@ def test_director_preserves_sections_and_story_order():
     assert beats[0].camera_intent == "victory"
 
 
+def test_director_does_not_charge_inter_section_silence_to_previous_section():
+    class Span:
+        text = "A quiet beat."
+        word_timings = []
+
+        def __init__(self, section, start_time, end_time):
+            self.section = section
+            self.start_time = start_time
+            self.end_time = end_time
+
+    beats = analyze_story([Span("hook", 0.0, 7.882), Span("setup", 8.062, 10.0)])
+    hook = [beat for beat in beats if beat.section == "hook"]
+    assert hook[-1].end_time == 7.882
+
+
+def test_director_still_bridges_gaps_inside_the_same_section():
+    class Span:
+        text = "A quiet beat."
+        word_timings = []
+
+        def __init__(self, section, start_time, end_time):
+            self.section = section
+            self.start_time = start_time
+            self.end_time = end_time
+
+    beats = analyze_story([Span("setup", 0.0, 2.0), Span("setup", 2.18, 4.0)])
+    assert beats[0].end_time == 2.18
+
+
 def test_director_locks_impact_on_the_key_word():
     class Span:
         section = "conflict"

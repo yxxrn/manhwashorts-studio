@@ -756,14 +756,35 @@ def check_standard_reference_profile(
             CheckSeverity.ERROR,
             "Standard reference shots must remain above 0.5 seconds and at or below four seconds.",
         ))
-    keys = [_reference_panel_key(scene) for scene in scenes]
-    repeated = sorted(key for key, count in Counter(keys).items() if key and count > 1)
-    if repeated:
+    positions: dict[str, list[object]] = {}
+    for scene in scenes:
+        key = _reference_panel_key(scene)
+        if key:
+            positions.setdefault(key, []).append(scene)
+    invalid_repeats: list[str] = []
+    for key, repeated_scenes in positions.items():
+        if len(repeated_scenes) > int(profile.max_canonical_panel_uses):
+            invalid_repeats.append(key)
+            continue
+        seen_rois: set[tuple[object, ...]] = set()
+        for scene in repeated_scenes:
+            roi_key = (
+                str(getattr(scene, "roi_label", "") or ""),
+                round(float(getattr(scene, "focus_x", 0.0)), 3),
+                round(float(getattr(scene, "focus_y", 0.0)), 3),
+                round(float(getattr(scene, "focus_end_x", 0.0)), 3),
+                round(float(getattr(scene, "focus_end_y", 0.0)), 3),
+            )
+            if roi_key in seen_rois:
+                invalid_repeats.append(key)
+                break
+            seen_rois.add(roi_key)
+    if invalid_repeats:
         results.append(_fail(
             "reference.standard_panel_repeat",
             CheckSeverity.ERROR,
-            "Standard reference production must use a distinct evidence panel for every shot.",
-            {"panel_keys": repeated[:20]},
+            "Standard reference panel reuse must stay within the profile cap and use distinct safe ROIs.",
+            {"panel_keys": sorted(set(invalid_repeats))[:20]},
         ))
     if len(scenes) > 1 and any(
         getattr(scene, "transition", "cut") != "fade" for scene in scenes[1:]
@@ -1317,7 +1338,10 @@ def run_all(
     results += check_scenes(scenes, assets)
     results += check_panel_alignment(scenes)
     results += check_repetition_and_motion(
-        scenes, profile=None if adaptive_reference_contract is not None else profile
+        scenes,
+        profile=None
+        if adaptive_reference_contract is not None or standard_reference_cadence
+        else profile,
     )
     results += check_subtitles(cues)
 
