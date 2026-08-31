@@ -87,6 +87,58 @@ artifacts override historical benchmark notes.
   until editorial review; this silent artifact must not be treated as final
   upload-ready output.
 
+## 2026-08-31 approved final voiced artifact checkpoint
+
+- Editorial approval was recorded through the normal pipeline boundary after
+  review of the silent artifact: actor `local-editorial-review`, script
+  `0c5945d743294d2482adae4f6b34ef25`, version `1`, approved script hash
+  `0f3cb8e2615473f0c4a524c23af15123cb88062b5db790a872b0ca7c585a849a`.
+  Approval was recorded at `2026-08-31T23:45:07.8751637+07:00` and completed
+  at `2026-08-31T23:45:09.8873458+07:00`.
+- The subsequent normal production run completed with exit code 0 in
+  `434.9s` (`2026-08-31T23:47:42.8857619+07:00` to
+  `2026-08-31T23:54:57.7866174+07:00`). It reused the approved script and
+  existing visual/story checkpoints; it did not repeat vision/story work.
+  Render job `5eed31543e784026acf29eb9e0175ca7` is `succeeded`.
+- Final voiced MP4:
+  `data/production-benchmark-crazy-demon-20260831-cold-v1/output/eeae59a27baf421590c034522e619903/final.mp4`,
+  25,133,638 bytes, SHA-256
+  `98899E680E8100E60954326D52EC20F47D0AE97BE4600F63BE1D2D86BB18CB59`.
+  Independent FFprobe reports `50.667000s`, 1080x1920, 60/1 FPS, H.264
+  High/yuv420p video and AAC LC, 48 kHz, stereo audio. No external upload or
+  publication was performed.
+- The configured voice profile is provider `http`, model `grok-voice-latest`,
+  voice `the-explainer-american`, locale `en`, with one persisted profile hash
+  `74ebde6c9084e8e62e766e52197bcf39c993851828f155315a3fb7d07ec52d40`.
+  Five section outputs were persisted (word-timing counts 17, 24, 30, 24,
+  and 23; 118 total). The runtime audit records one `voice.generate` event
+  with five sections; the provider implementation makes one request per
+  section, and no retry was observed in the completed run.
+- Voice master:
+  `data/production-benchmark-crazy-demon-20260831-cold-v1/tmp/eeae59a27baf421590c034522e619903/audio/voice_master.wav`;
+  50.650208s, PCM s16le, 48 kHz, stereo. Independent audio checks measured
+  `-14.1 LUFS` integrated loudness and `-2.6 dBFS` true peak. Four intentional
+  inter-section pauses measured 0.44–0.53s; no long trailing silence or
+  clipping was detected.
+- Final QC is PASS with no failure codes: 14 unique crops, maximum same-panel
+  same-crop dwell 3.674s, motion-mode diversity 4, zero low-difference motion
+  ratio, zero black-frame duration, 0.0003s audio/video drift, 118 active-word
+  events, maximum two subtitle lines, 77px subtitle font, and
+  `sentence_chunked_word_karaoke_v2`. Actual start/middle/end frames and the
+  final video contact sheet were inspected. The generated frame contact sheet
+  is `data/production-benchmark-crazy-demon-20260831-cold-v1/tmp/eeae59a27baf421590c034522e619903/final-frame-audit/final-video-contact-sheet.jpg`
+  (SHA-256
+  `FCEDFB9DAAFF0F288F5C6C331B2F0DA35BF880917FD334BFAE904C8E8AE9B210`).
+- `final.qc.json` records `qc_pass=true` and `publish_allowed=true` under the
+  current local rights configuration. This is a local technical acceptance
+  artifact only; rights/publication side effects remain intentionally
+  unperformed and must be reviewed separately.
+- The earlier accepted cold review run was resumed after a watchdog stop and
+  is documented above; the voiced production interval above is the measured
+  final-stage timing, not an uninterrupted cold benchmark. Manual voice/TTS is
+  no longer deferred for this approved project, while external publication
+  remains outside the executed scope.
+
 ## Production behavior
 
 The production pipeline remains functionally unchanged by the refactor. Script
