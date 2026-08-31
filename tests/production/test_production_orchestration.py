@@ -478,6 +478,7 @@ def test_standard_reference_production_uses_cadence_identity(db, monkeypatch, tm
 
     assert captured["standard_reference_production"] is True
     assert captured["adaptive_reference_production"] is False
+    assert captured["allow_conservative_full_panel"] is True
     identity = script.editorial_metadata["production"]["timeline_planning_identity"]
     assert identity["version"] == pl.reference_profile.PRODUCTION_REFERENCE_CADENCE_POLICY_VERSION
     assert identity["standard_reference_production"] is True

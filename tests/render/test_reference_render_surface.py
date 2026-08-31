@@ -123,7 +123,11 @@ def test_build_render_request_carries_selected_reference_profile(monkeypatch, tm
         template=profile.profile_id,
         title="Do not overlay this title",
     )
-    script = SimpleNamespace(id="script-a")
+    script = SimpleNamespace(
+        id="script-a",
+        approved_at=object(),
+        editorial_metadata={"editorial_review_confirmed": True},
+    )
     segment = SimpleNamespace(
         storage_key="clip.wav",
         spoken_text="Review.",
@@ -228,6 +232,7 @@ def test_build_render_request_carries_selected_reference_profile(monkeypatch, tm
     assert request.profile.profile_id == "reference_matched_shorts_v1"
     assert request.title_text == ""
     assert request.stabilized_reference_motion is True
+    assert request.allow_conservative_full_panel is True
     assert all(not item.overlay_text for item in request.scenes)
 
 

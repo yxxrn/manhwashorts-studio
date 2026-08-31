@@ -2139,6 +2139,56 @@ def test_stream_retry_budget_honors_configured_attempts_for_missing_panel():
     assert len(provider.calls) == 3
     assert runner.last_visual_stream_metrics["retry_count"] == 2
 
+def test_stream_partial_success_omission_gets_singleton_recovery_without_predicate():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "stream-partial-omission"))
+    )
+    target_id = panels[-1].panel_id
+
+    class _PartialOmissionProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.target_singletons = 0
+
+        def observe(self, request):
+            rows = super().observe(request)
+            if len(request.panels) > 1:
+                return [row for row in rows if row.get("panel_id") != target_id]
+            if request.panels[0]["panel_id"] == target_id:
+                self.target_singletons += 1
+            return rows
+
+    provider = _PartialOmissionProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+    )
+    stream = runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=len(panels),
+        max_estimated_bytes=10_000_000,
+    )
+    for panel in panels:
+        stream.submit(panel)
+
+    result = stream.finish(panels)
+
+    assert result.panel_ids == tuple(panel.panel_id for panel in panels)
+    assert result.rejected_panels == ()
+    assert provider.target_singletons == 1
+    assert runner.last_visual_stream_metrics["missing_panel_count"] == 0
+    ledger = {
+        item["panel_id"]: item
+        for item in runner.last_visual_stream_metrics["panel_attempt_ledger"]
+    }
+    assert ledger[target_id]["terminal_status"] == "accepted"
+    assert ledger[target_id]["attempt_count"] == 2
+
+
 def test_stream_fresh_singleton_confirmation_recovers_after_budget_exhausted():
     module = _module()
     panels = tuple(

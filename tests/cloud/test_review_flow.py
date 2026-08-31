@@ -727,3 +727,201 @@ def test_review_only_gate_never_invents_voice_word_timings():
         module.require_final_render_ready(result)
     assert caught.value.code == "cloud.voice_timing_required"
 
+
+
+def test_metadata_only_first_persistence_materializes_only_claim_panels(monkeypatch):
+    module = _module()
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    pipeline = importlib.import_module('app.services.pipeline')
+    reference_profile = importlib.import_module('app.services.reference_profile')
+    repair = importlib.import_module('app.services.visual_narrative_repair')
+    panel_ids = ('panel-1', 'panel-2', 'panel-3')
+    panels = tuple(
+        SimpleNamespace(panel_id=panel_id, metadata_only=True, payload=b'marker')
+        for panel_id in panel_ids
+    )
+    materialized = tuple(
+        SimpleNamespace(
+            panel_id=panel.panel_id,
+            metadata_only=panel.panel_id == 'panel-3',
+            payload=b'pixels' if panel.panel_id != 'panel-3' else b'marker',
+        )
+        for panel in panels
+    )
+    observed = {}
+
+    class Database:
+        def get(self, *_args):
+            return SimpleNamespace(template='reference_matched_shorts_v2')
+
+    monkeypatch.setattr(reference_profile, 'resolve_reference_profile', lambda _template: SimpleNamespace())
+    monkeypatch.setattr(pipeline, 'project_assets', lambda *_args: ())
+    monkeypatch.setattr(pipeline, 'image_assets', lambda *_args: ())
+
+    def fake_materialize(_db, _project_id, received, *, required_panel_ids):
+        observed['required'] = tuple(required_panel_ids)
+        observed['received'] = received
+        return materialized
+
+    monkeypatch.setattr(module, '_materialize_metadata_only_panels', fake_materialize)
+    monkeypatch.setattr(
+        module,
+        '_build_ephemeral_review_candidates',
+        lambda received, *_args, **_kwargs: (
+            observed.update({'ephemeral_panels': received}) or ('candidate',),
+            {'hook': ('beat-1',)},
+        ),
+    )
+    monkeypatch.setattr(
+        repair,
+        'build_feasible_visual_ledger',
+        lambda *_args, **_kwargs: SimpleNamespace(entries=('entry',)),
+    )
+    monkeypatch.setattr(repair, 'repair_scope_sections', lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        module,
+        '_durable_visual_repair_covers_missing_sections',
+        lambda *_args, **_kwargs: True,
+    )
+
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.runner = SimpleNamespace(model_identity=SimpleNamespace(identity_hash='m' * 64))
+    result = SimpleNamespace(
+        visual=SimpleNamespace(),
+        story_map=SimpleNamespace(
+            beats=({'beat_id': 'beat-1', 'panel_ids': list(panel_ids)},),
+            claims=({'claim_id': 'claim-1', 'panel_ids': ['panel-1', 'panel-2']},),
+        ),
+        narration=SimpleNamespace(),
+    )
+
+    outcome = service._repair_review_narrative(
+        Database(),
+        'project-a',
+        None,
+        panels,
+        result,
+        review_source_upscale_policy='review_silent_source_upscale_v1',
+        review_source_root=Path('/review'),
+    )
+
+    assert observed['required'] == ('panel-1', 'panel-2')
+    assert observed['received'] is panels
+    assert observed['ephemeral_panels'] == materialized
+    assert outcome[0] is result
+def test_durable_preflight_reuses_repaired_narration_without_pixel_recompute(monkeypatch):
+    module = _module()
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    pipeline = importlib.import_module("app.services.pipeline")
+    reference_profile = importlib.import_module("app.services.reference_profile")
+    repair = importlib.import_module("app.services.visual_narrative_repair")
+    review_source_upscale = importlib.import_module("app.services.review_source_upscale")
+
+    model_hash = "m" * 64
+    visual_hash = "v" * 64
+    source_hash = "x" * 64
+    story_hash = "s" * 64
+    prompt_hash = "r" * 64
+    ledger = repair.FeasibleVisualLedger(entries=(), model_identity_hash=model_hash)
+    profile = SimpleNamespace()
+    identity = {
+        "version": "review-feasible-ledger-preflight-v1",
+        "repair_contract_version": repair.REPAIR_CONTRACT_VERSION,
+        "model_identity_hash": model_hash,
+        "visual_evidence_hash": visual_hash,
+        "visual_source_hash": source_hash,
+        "story_map_hash": story_hash,
+        "story_map_visual_evidence_hash": visual_hash,        "profile_hash": "profile-hash",
+        "upscale_policy_id": "review_silent_source_upscale_v1",
+        "section_to_beats": {"hook": ["beat-1"]},
+    }
+    preflight = {
+        "identity": identity,
+        "identity_hash": module._hash(identity),
+        "ledger": ledger.as_dict(),
+    }
+
+    class Database:
+        def get(self, *_args):
+            return SimpleNamespace(template="reference_matched_shorts_v2")
+
+    class Store:
+        def load(self, _project_id):
+            return SimpleNamespace(
+                stage_results={"feasible_visual_ledger_preflight": preflight}
+            )
+
+    monkeypatch.setattr(reference_profile, "resolve_reference_profile", lambda _template: profile)
+    monkeypatch.setattr(reference_profile, "profile_hash", lambda _profile: "profile-hash")
+    monkeypatch.setattr(
+        review_source_upscale,
+        "validate_review_upscale_request",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            policy_id="review_silent_source_upscale_v1",
+            allow_low_source_resolution_warning=True,
+        ),
+    )
+    monkeypatch.setattr(repair, "repair_scope_sections", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        repair,
+        "build_repair_payload",
+        lambda **_kwargs: {"capacity_safe_claim_plan": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "_durable_visual_repair_covers_missing_sections",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "project_assets",
+        lambda *_args: pytest.fail("durable preflight must skip pixel materialization"),
+    )
+
+    story_map = SimpleNamespace(
+        beats=({"beat_id": "beat-1"},),
+        claims=(),
+        story_map_hash=story_hash,
+        visual_evidence_hash=visual_hash,
+        as_dict=lambda: {"beats": [{"beat_id": "beat-1"}]},
+    )
+    narration = SimpleNamespace(
+        prompt_version="visual-narrative-repair-v14",
+        prompt_sha256=prompt_hash,
+        as_dict=lambda: {},
+    )
+    result = SimpleNamespace(
+        visual=SimpleNamespace(visual_evidence_hash=visual_hash, source_hash=source_hash),
+        story_map=story_map,
+        narration=narration,
+    )
+    service = module.CloudBatchService.__new__(module.CloudBatchService)
+    service.store = Store()
+    service.runner = SimpleNamespace(
+        model_identity=SimpleNamespace(identity_hash=model_hash),
+        prompts={
+            "visual_narrative_repair": (
+                "visual-narrative-repair-v14",
+                prompt_hash,
+                "",
+            )
+        },
+    )
+
+    outcome = service._repair_review_narrative(
+        Database(),
+        "project-a",
+        SimpleNamespace(sections=({"section": "hook"},)),
+        (),
+        result,
+        review_source_upscale_policy="review_silent_source_upscale_v1",
+        review_source_root=Path("/review"),
+    )
+
+    assert outcome[0] is result
+    assert outcome[1] == ledger
+    assert outcome[2] == ()

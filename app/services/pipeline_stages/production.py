@@ -134,7 +134,7 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
             db,
             project_id,
             actor_id=actor_id,
-            allow_conservative_full_panel=adaptive_policy is not None,
+            allow_conservative_full_panel=resolved_profile is not None,
             adaptive_reference_production=adaptive_policy is not None,
             adaptive_reference_duration_bounds_s=bounds,
             standard_reference_production=standard_reference_production,

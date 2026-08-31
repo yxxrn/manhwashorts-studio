@@ -584,9 +584,18 @@ def check_reference_framing(
         )
         if not expected_attempt_identity:
             return [_reference_lineage_failure("reference fallback ledger does not match accepted scene snapshot")]
+        conservative_full_panel_ready = bool(
+            adaptive_reference
+            and visual_scoring.is_conservative_full_panel_visual_evidence(evidence)
+            and isinstance(selected_roi, Mapping)
+            and scene_crop == (0, 0, int(panel_size[0]), int(panel_size[1]))
+        )
         readiness_code: str | None = None
         try:
-            visual_scoring.require_reference_ready_visual_evidence(evidence)
+            visual_scoring.require_reference_ready_visual_evidence(
+                evidence,
+                allow_conservative_full_panel=conservative_full_panel_ready,
+            )
         except visual_scoring.VisualEvidenceError as exc:
             if exc.code == "visual.balloon_mask_unknown":
                 readiness_code = exc.code

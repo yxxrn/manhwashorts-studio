@@ -2078,3 +2078,97 @@ def test_stream_checkpoint_v2_rebinds_content_equivalent_panels_after_id_order_s
     ):
         assert module._visual_cached_row_is_reusable(row, panel)
         assert row["cache_identity_version"] == module.VISUAL_CACHE_IDENTITY_VERSION
+
+
+def test_stream_checkpoint_mixed_seeded_and_new_row_same_batch(tmp_path):
+    module = _module()
+    base = _panels(module, "stream-mixed-seeded-new")
+    first = replace(base[0], prepared_order=0)
+    second = replace(base[1], prepared_order=1)
+    checkpoint = tmp_path / "visual_checkpoints.jsonl"
+    provider = _FakeProvider()
+
+    first_runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+        visual_checkpoint_path=checkpoint,
+    )
+    first_stream = first_runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=1,
+        max_estimated_bytes=10_000_000,
+    )
+    first_stream.submit(first)
+    first_stream.finish((first,))
+    calls_after_first = len(provider.calls)
+
+    resumed_runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=_identity(module),
+        cache=module.MemoryStageCache(),
+        max_attempts=1,
+        visual_checkpoint_path=checkpoint,
+    )
+    resumed_stream = resumed_runner.start_visual_evidence_stream(
+        queue_size=1,
+        max_panels=2,
+        max_estimated_bytes=10_000_000,
+    )
+    resumed_stream.submit(first)
+    resumed_stream.submit(second)
+    result = resumed_stream.finish((first, second))
+
+    assert result.panel_ids == (first.panel_id, second.panel_id)
+    assert len(provider.calls) - calls_after_first == 1
+    assert resumed_runner.last_visual_stream_metrics["missing_panel_count"] == 0
+
+
+def test_durable_visual_subset_seeds_metadata_resume_without_materialization():
+    module = _module()
+    panels = tuple(
+        replace(panel, prepared_order=index)
+        for index, panel in enumerate(_panels(module, "durable-subset-seed"))
+    )
+    identity = _identity(module)
+    provider = _FakeProvider()
+    runner = module.CloudStageRunner(
+        provider=provider,
+        model_identity=identity,
+        cache=module.MemoryStageCache(),
+    )
+    visual = runner.run_visual_evidence(panels)
+    calls_after_visual = len(provider.calls)
+    identity_hashes = module._visual_panel_identity_hashes(panels)
+    metadata_panels = tuple(
+        replace(
+            panel,
+            mime_type="image/png",
+            payload=(
+                module.prepared_panel_manifest.COMPACT_PAYLOAD_MARKER_PREFIX
+                + identity_hash.encode("ascii")
+            ),
+            payload_checksum="",
+            identity_payload_checksum=identity_hash,
+            identity_descriptor_hash=identity_hash,
+            source_identity_hash="f" * 64,
+            metadata_only=True,
+        )
+        for panel, identity_hash in zip(panels, identity_hashes, strict=True)
+    )
+
+    assert module._visual_source_hash(metadata_panels) != visual.source_hash
+    durable = module._durable_visual_for_exact_panel_rows(
+        runner,
+        visual.as_dict(),
+        metadata_panels,
+    )
+    assert durable == visual
+
+    module._seed_visual_subset_cache(runner, metadata_panels, durable)
+    assert module._visual_panel_ids_requiring_materialization(runner, metadata_panels) == ()
+    resumed = runner.run_visual_evidence(metadata_panels)
+
+    assert resumed == visual
+    assert len(provider.calls) == calls_after_visual

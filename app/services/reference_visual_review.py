@@ -660,11 +660,15 @@ def validate_accepted_fallback_ledger(
     border_mask: framing_analysis.BorderMaskResult,
     selected_roi: Mapping[str, Any],
     framing_telemetry: Mapping[str, Any],
+    allow_conservative_full_panel: bool = False,
 ) -> Mapping[str, Any]:
     """Revalidate one persisted accepted attempt against current pixels and evidence."""
     try:
         visual_scoring.validate_panel_visual_evidence(evidence)
-        visual_scoring.require_reference_ready_visual_evidence(evidence)
+        visual_scoring.require_reference_ready_visual_evidence(
+            evidence,
+            allow_conservative_full_panel=allow_conservative_full_panel,
+        )
         local_hash = visual_scoring.visual_evidence_hash(evidence)
     except visual_scoring.VisualEvidenceError as exc:
         raise ReferenceReviewError(str(exc), exc.code) from exc

@@ -5910,6 +5910,53 @@ def _visual_panel_ids_requiring_materialization(
     )
 
 
+def _durable_visual_for_exact_panel_rows(
+    runner: CloudStageRunner,
+    cached: Mapping[str, Any] | None,
+    panels: Sequence[CloudPanelInput],
+) -> VisualStageResult | None:
+    """Validate durable visual rows by exact current panel content identity."""
+
+    if not isinstance(cached, Mapping):
+        return None
+    prompts = getattr(runner, "prompts", {})
+    prompt = prompts.get("visual") if isinstance(prompts, Mapping) else None
+    if not isinstance(prompt, tuple) or len(prompt) < 2:
+        return None
+    try:
+        visual = VisualStageResult.from_dict(cached)
+        ordered = CloudStageRunner._ordered_panels(tuple(panels))
+    except (CloudStageError, KeyError, TypeError, ValueError):
+        return None
+    if (
+        not _stage_result_identity_is_compatible(
+            visual.model_identity_hash, runner.model_identity, stage="visual"
+        )
+        or visual.prompt_version != prompt[0]
+        or visual.prompt_sha256 != prompt[1]
+        or visual.cache_identity_version != VISUAL_CACHE_IDENTITY_VERSION
+        or visual.panel_ids != tuple(panel.panel_id for panel in ordered)
+    ):
+        return None
+    identity_hashes = _visual_panel_identity_hashes(ordered)
+    if tuple(visual.panel_identity_hashes) != identity_hashes:
+        return None
+    for row, panel, identity_hash in zip(
+        visual.panels, ordered, identity_hashes, strict=True
+    ):
+        if (
+            not isinstance(row, Mapping)
+            or str(row.get("cache_identity_hash", "")) != identity_hash
+        ):
+            return None
+        try:
+            if not _visual_cached_row_is_reusable(row, panel):
+                return None
+        except (TypeError, ValueError):
+            return None
+    return visual
+
+
 def _seed_visual_subset_cache(
     runner: CloudStageRunner,
     panels: Sequence[CloudPanelInput],

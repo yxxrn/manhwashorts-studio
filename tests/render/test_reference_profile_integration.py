@@ -1744,3 +1744,46 @@ def test_standard_final_qc_blocks_rendered_motion_that_only_moves_on_paper(
     )
     assert "reference.standard_rendered_motion_weak" not in strong.failures
     assert "reference.standard_rendered_motion_sparse" not in strong.failures
+
+
+def test_task6_qc_allows_verified_conservative_full_panel_only_in_adaptive_mode():
+    from dataclasses import replace
+
+    framing = __import__("app.services.framing_analysis", fromlist=["x"])
+    original = _task6_wrapper(
+        "panel-conservative-qc", "asset-conservative-qc", 1,
+        framing=framing, status="unknown",
+    )
+    evidence = visual_scoring.conservative_full_panel_visual_evidence(
+        panel_id=original.panel_id,
+        source_asset_id=original.source_asset_id,
+        source_order=original.source_order,
+        reason="review-approved whole-panel fallback",
+    )
+    candidate = replace(
+        original, visual_evidence=evidence, evidence_hash=evidence.evidence_hash
+    )
+    telemetry = _task6_telemetry(framing, evidence, candidate.border_mask)
+    scene = _task6_qc_scene(candidate, telemetry)
+    scene["framing_telemetry"]["editorial_crop_quality"] = {
+        "face_cutoff_count": 0,
+        "face_margin_violation_count": 0,
+        "face_omission": False,
+        "unjustified_detail_crop": False,
+    }
+    accepted = scene["fallback_attempts"][0]
+    accepted["telemetry"] = dict(scene["framing_telemetry"])
+    key = (candidate.source_asset_id, candidate.panel_region_id)
+    args = (
+        [scene], {key: evidence}, {key: candidate.border_mask},
+        {key: candidate.panel_size}, {key: telemetry},
+    )
+    closed = quality.check_reference_framing(
+        *args, profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    )
+    assert "visual.balloon_mask_unknown" in {item.code for item in closed}
+    approved = quality.check_reference_framing(
+        *args, profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        adaptive_reference=True,
+    )
+    assert [item.code for item in approved] == ["visual.reference_framing"]

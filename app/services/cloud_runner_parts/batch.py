@@ -19,6 +19,7 @@ _RUNTIME_NAMES = (
     '_build_cached_prepared_manifest',
     '_build_ephemeral_review_candidates',
     '_build_project_prepared_manifest',
+    '_durable_visual_for_exact_panel_rows',
     '_durable_visual_repair_covers_missing_sections',
     '_find_cached_visual_subset',
     '_hash',
@@ -368,6 +369,88 @@ class CloudBatchMixin:
         if current_visual is None or current_story_map is None:
             raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
 
+        if current_narration is not None and script_row is not None and getattr(self, "store", None) is not None:
+            durable_section_names = tuple(
+                str(section.get("section", ""))
+                for section in (getattr(script_row, "sections", ()) or ())
+                if isinstance(section, Mapping) and str(section.get("section", "")).strip()
+            )
+            if not durable_section_names:
+                durable_section_names = ("hook", "setup", "conflict", "twist", "cta")
+            durable_section_to_beats = visual_narrative_repair.default_section_to_beats(
+                durable_section_names,
+                current_story_map.beats,
+            )
+            durable_identity = {
+                "version": "review-feasible-ledger-preflight-v1",
+                "repair_contract_version": visual_narrative_repair.REPAIR_CONTRACT_VERSION,
+                "model_identity_hash": self.runner.model_identity.identity_hash,
+                "visual_evidence_hash": current_visual.visual_evidence_hash,
+                "visual_source_hash": current_visual.source_hash,
+                "story_map_hash": current_story_map.story_map_hash,
+                "story_map_visual_evidence_hash": current_story_map.visual_evidence_hash,
+                "profile_hash": reference_profile.profile_hash(profile),
+                "upscale_policy_id": str(getattr(policy, "policy_id", "")),
+                "section_to_beats": {
+                    str(section): [str(beat) for beat in beats]
+                    for section, beats in sorted(durable_section_to_beats.items())
+                },
+            }
+            checkpoint_store = getattr(self, "store", None)
+            checkpoint_record = (
+                checkpoint_store.load(project_id)
+                if checkpoint_store is not None
+                and callable(getattr(checkpoint_store, "load", None))
+                else None
+            )
+            preflight = (
+                checkpoint_record.stage_results.get("feasible_visual_ledger_preflight")
+                if checkpoint_record is not None
+                else None
+            )
+            durable_ledger = None
+            if (
+                isinstance(preflight, Mapping)
+                and str(preflight.get("identity_hash", "")) == _hash(durable_identity)
+                and isinstance(preflight.get("ledger"), Mapping)
+            ):
+                try:
+                    durable_ledger = visual_narrative_repair.FeasibleVisualLedger.from_dict(
+                        preflight["ledger"]
+                    )
+                except visual_narrative_repair.VisualNarrativeRepairError:
+                    durable_ledger = None
+            if durable_ledger is not None:
+                durable_missing = visual_narrative_repair.repair_scope_sections(
+                    current_narration,
+                    durable_ledger,
+                    durable_section_to_beats,
+                )
+                repair_prompt = self.runner.prompts.get("visual_narrative_repair")
+                if (
+                    isinstance(repair_prompt, tuple)
+                    and len(repair_prompt) >= 2
+                    and current_narration.prompt_version == repair_prompt[0]
+                    and current_narration.prompt_sha256 == repair_prompt[1]
+                ):
+                    durable_payload = visual_narrative_repair.build_repair_payload(
+                        narration=current_narration.as_dict(),
+                        story_map=current_story_map.as_dict(),
+                        ledger=durable_ledger,
+                        section_to_beats=durable_section_to_beats,
+                    )
+                    capacity_plan = durable_payload.get("capacity_safe_claim_plan")
+                    if isinstance(capacity_plan, Mapping) and _durable_visual_repair_covers_missing_sections(
+                        current_narration,
+                        ledger=durable_ledger,
+                        section_to_beats=durable_section_to_beats,
+                        missing_sections=durable_missing,
+                        capacity_safe_claim_plan=capacity_plan,
+                        expected_prompt_version=repair_prompt[0],
+                        expected_prompt_sha256=repair_prompt[1],
+                    ):
+                        return result, durable_ledger, durable_missing
+
         images = pipeline.image_assets(pipeline.project_assets(db, project_id))
         # The durable prepared manifest is metadata-only (no panel image
         # bytes are retained), so after persistence the DB crop loader is the
@@ -379,6 +462,38 @@ class CloudBatchMixin:
             and not bool(getattr(panel, "metadata_only", False))
             for panel in panels
         )
+        if not _carries_payloads and script_row is None:
+            # A warm resume can have a complete metadata-only visual/story/narration
+            # checkpoint before the first DB script has ever been persisted. The
+            # post-persistence fallback below cannot run in that state. Materialize
+            # only StoryMap claim evidence locally, because the ephemeral builder
+            # rejects non-claim panels before any pixel/ROI work.
+            claim_panel_ids = {
+                str(panel_id)
+                for claim in current_story_map.claims
+                if isinstance(claim, Mapping)
+                for panel_id in (claim.get("panel_ids") or ())
+                if str(panel_id).strip()
+            }
+            required_panel_ids = tuple(
+                panel.panel_id
+                for panel in panels
+                if bool(getattr(panel, "metadata_only", False))
+                and panel.panel_id in claim_panel_ids
+            )
+            if not required_panel_ids:
+                raise CloudStageError("visual.panel_lineage_unavailable", reviewable=True)
+            panels = _materialize_metadata_only_panels(
+                db,
+                project_id,
+                panels,
+                required_panel_ids=required_panel_ids,
+            )
+            _carries_payloads = any(
+                bool(getattr(panel, "payload", b"") or b"")
+                and not bool(getattr(panel, "metadata_only", False))
+                for panel in panels
+            )
         if _carries_payloads:
             candidates, section_to_beats = _build_ephemeral_review_candidates(
                 panels,
@@ -765,13 +880,19 @@ class CloudBatchMixin:
             )
             if max_cloud_panels is not None and len(panels) > max_cloud_panels:
                 panels = _subsample_panels(panels, max_cloud_panels)
-            if restored_visual_subset is not None and restored_visual_subset.panel_ids == tuple(
+            durable_visual_subset = _durable_visual_for_exact_panel_rows(
+                self.runner,
+                record.stage_results.get("visual"),
+                panels,
+            )
+            cache_seed_visual = restored_visual_subset or durable_visual_subset
+            if cache_seed_visual is not None and cache_seed_visual.panel_ids == tuple(
                 panel.panel_id for panel in panels
             ):
                 _seed_visual_subset_cache(
                     self.runner,
                     panels,
-                    restored_visual_subset,
+                    cache_seed_visual,
                 )
             targeted_materialization_ids: tuple[str, ...] = ()
             if manifest_loaded:
@@ -789,13 +910,13 @@ class CloudBatchMixin:
                         )
                     except CloudStageError as exc:
                         return self._record_failure(record, exc)
-                if restored_visual_subset is not None and restored_visual_subset.panel_ids == tuple(
+                if cache_seed_visual is not None and cache_seed_visual.panel_ids == tuple(
                     panel.panel_id for panel in panels
                 ):
                     _seed_visual_subset_cache(
                         self.runner,
                         panels,
-                        restored_visual_subset,
+                        cache_seed_visual,
                     )
             record.stage_results["segmentation"] = segmentation_state
             record.stage_results["preparation_metrics"] = {

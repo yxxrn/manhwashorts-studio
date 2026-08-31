@@ -179,7 +179,16 @@ def build_timeline(api, db, project_id, actor_id, *, silent_reference_review, re
     except editorial_visual_planner.ReferencePlanningError as exc:
         raise PipelineError(f'reference_planning_failed: {exc.code}: {exc}') from exc
     if profile is not None:
-        planned = _bind_reference_panel_regions(db, project_id, script, images, planned, candidate_registry=candidate_registry, review_source_upscale_policy=review_policy)
+        planned = _bind_reference_panel_regions(
+            db,
+            project_id,
+            script,
+            images,
+            planned,
+            candidate_registry=candidate_registry,
+            review_source_upscale_policy=review_policy,
+            allow_conservative_full_panel=allow_conservative_full_panel,
+        )
         for shot in planned:
             ledger = shot.get('fallback_attempts')
             if isinstance(ledger, list):

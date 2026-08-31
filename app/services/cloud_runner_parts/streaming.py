@@ -207,6 +207,7 @@ class _StreamingVisualEvidenceSession:
         error_code = ""
         categories: dict[str, int] = {}
         retries = 0
+        partial_success_omission = False
         # Retry only the IDs omitted by a successful response.  A worker
         # runner is single-attempt; transport retry ownership stays in the
         # parent runner and is never multiplied by this loop.
@@ -241,8 +242,10 @@ class _StreamingVisualEvidenceSession:
                 if not pending or len(accepted) == before:
                     break
                 # A successful partial batch is an attention miss, not a
-                # reason to re-batch the omitted rows. Repair each missing
-                # canonical panel exactly once as a singleton below.
+                # reason to re-batch the omitted rows. Repair each omitted
+                # canonical panel in isolation below, even when the provider
+                # supplied no explicit failure predicate for the omission.
+                partial_success_omission = True
                 break
             except CloudStageError as exc:
                 error_code = exc.code
@@ -255,7 +258,8 @@ class _StreamingVisualEvidenceSession:
         singleton_recovery_rows = bool(
             pending
             and (
-                error_code == "cloud.provider_response_invalid"
+                partial_success_omission
+                or error_code == "cloud.provider_response_invalid"
                 or (
                     not error_code
                     and len(batch_predicates) == 1
@@ -273,11 +277,15 @@ class _StreamingVisualEvidenceSession:
                     "provider_response_invalid"
                     if error_code == "cloud.provider_response_invalid"
                     else batch_predicates[0]
+                    if len(batch_predicates) == 1
+                    else ""
                 )
                 singleton_error = (
                     "cloud.provider_response_invalid"
                     if predicate == "provider_response_invalid"
                     else "cloud.visual_evidence_invalid"
+                    if predicate
+                    else "cloud.panel_coverage_incomplete"
                 )
                 recovered = False
                 # A multi-panel attention/schema miss must not consume the

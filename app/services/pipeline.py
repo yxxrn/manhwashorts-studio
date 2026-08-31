@@ -1864,6 +1864,7 @@ def _bind_reference_panel_regions(
     *,
     candidate_registry: Mapping[str, object] | None = None,
     review_source_upscale_policy: review_source_upscale.ReviewSourceUpscalePolicy | None = None,
+    allow_conservative_full_panel: bool = False,
 ) -> list[dict[str, Any]]:
     """Bind every reference shot to its cited, persisted panel region."""
     if candidate_registry is not None:
@@ -1897,7 +1898,9 @@ def _bind_reference_panel_regions(
                 candidate_registry=candidate_registry,
                 regions=regions,
                 assets=images,
-                allow_conservative_full_panel=review_source_upscale_policy is not None,
+                allow_conservative_full_panel=(
+                    review_source_upscale_policy is not None or allow_conservative_full_panel
+                ),
             )
         except reference_visual_review.ReferenceReviewError as exc:
             raise PipelineError(f"{exc.code}: {exc}") from exc
@@ -2154,6 +2157,7 @@ def _materialize_reference_panel_crop(
     destination: Path,
     review_source_upscale_policy: review_source_upscale.ReviewSourceUpscalePolicy | None = None,
     review_source_root: Path | None = None,
+    allow_conservative_full_panel: bool = False,
 ) -> Path:
     """Materialize a persisted panel snapshot in its original source space."""
     region_id = getattr(scene, "panel_region_id", None)
@@ -2252,7 +2256,12 @@ def _materialize_reference_panel_crop(
         raise PipelineError(
             "visual.panel_lineage_unavailable: panel bounds snapshot is stale"
         )
-    current_snapshot = reference_visual_review.validated_visual_snapshot(region)
+    current_snapshot = reference_visual_review.validated_visual_snapshot(
+        region,
+        allow_conservative_full_panel=(
+            review_source_upscale_policy is not None or allow_conservative_full_panel
+        ),
+    )
     if not isinstance(scene_evidence, Mapping):
         raise PipelineError(
             "visual.panel_lineage_unavailable: visual evidence snapshot is missing"
@@ -2754,6 +2763,7 @@ def _reference_scene_inputs(
                         panel_image,
                         parsed_evidence,
                         grid_long_edge=int(profile.framing_mask_grid_long_edge),
+                        allow_conservative_full_panel=review_source_upscale_policy is not None,
                     )
                 if _canonical_json(asdict(actual_mask)) != _canonical_json(border_mask):
                     raise ValueError("materialized mask snapshot does not match accepted ledger")
@@ -2769,6 +2779,7 @@ def _reference_scene_inputs(
                     border_mask=actual_mask,
                     selected_roi=selected_roi,
                     framing_telemetry=telemetry,
+                    allow_conservative_full_panel=review_source_upscale_policy is not None,
                 )
             except reference_visual_review.ReferenceReviewError as exc:
                 raise PipelineError(f"{exc.code}: {exc}") from exc
