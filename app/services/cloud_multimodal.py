@@ -40,6 +40,7 @@ from app.services import (
     prepared_panel_manifest,
     quality,
     script,
+    story_understanding,
     strip_segmentation,
     visual_narrative_repair,
     visual_scoring,
@@ -2424,6 +2425,13 @@ def select_editorial_beats(
     }
     if not panel_order:
         raise CloudStageError("cloud.editorial_selection_invalid")
+    story_signal_by_panel = {
+        str(panel.get("panel_id")): story_understanding.panel_story_signal(
+            panel.get("observation") if isinstance(panel.get("observation"), Mapping) else None
+        )
+        for panel in visual.panels
+        if isinstance(panel, Mapping) and str(panel.get("panel_id", "")).strip()
+    }
     claims = tuple(
         claim
         for claim in (getattr(story_map, "claims", ()) or ())
@@ -2455,6 +2463,7 @@ def select_editorial_beats(
             len(beat_claims) * 100
             + (len(state_changes) if isinstance(state_changes, (list, tuple)) else 0) * 5
             + (len(causal_turns) if isinstance(causal_turns, (list, tuple)) else 0) * 3
+            + sum(story_signal_by_panel.get(panel_id, 0) for panel_id in panel_ids) * 20
             + min(len(panel_ids), 16)
         )
         beat_rows.append(
@@ -2504,6 +2513,18 @@ def select_editorial_beats(
                     panel_id = str(panel_id)
                     if panel_id in row["panel_ids"] and panel_id not in local_panel_ids:
                         local_panel_ids.append(panel_id)
+        story_ranked_panel_ids = sorted(
+            row["panel_ids"],
+            key=lambda panel_id: (
+                -story_signal_by_panel.get(panel_id, 0),
+                panel_order[panel_id],
+            ),
+        )
+        for panel_id in story_ranked_panel_ids:
+            if story_signal_by_panel.get(panel_id, 0) <= 0:
+                break
+            if panel_id not in local_panel_ids:
+                local_panel_ids.append(panel_id)
         for panel_id in (row["panel_ids"][0], row["panel_ids"][-1]):
             if panel_id not in local_panel_ids:
                 local_panel_ids.append(panel_id)
@@ -2516,6 +2537,10 @@ def select_editorial_beats(
                 "score": int(row["score"]),
                 "selected_panel_ids": local_panel_ids[:EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT],
                 "claim_count": len(row["claims"]),
+                "story_signal_score": sum(
+                    story_signal_by_panel.get(panel_id, 0)
+                    for panel_id in row["panel_ids"]
+                ),
             }
         )
     panel_ids = tuple(panel_id for panel_id in panel_order if panel_id in selected_panel_set)
@@ -2553,6 +2578,13 @@ def _load_causal_prompt() -> tuple[str, str, str]:
     )
 
 
+def _load_story_understanding_prompt() -> tuple[str, str, str]:
+    try:
+        return story_understanding.load_instruction()
+    except story_understanding.StoryUnderstandingError:
+        raise CloudStageError("cloud.prompt_invalid") from None
+
+
 def _load_strip_boundary_prompt() -> tuple[str, str, str]:
     try:
         text = STRIP_BOUNDARY_PROMPT_PATH.read_text(encoding="utf-8")
@@ -2572,6 +2604,7 @@ def _prompt_specs() -> dict[str, tuple[str, str, str]]:
     return {
         "visual": visual_scoring.load_visual_evidence_instruction(),
         "story_map": _load_causal_prompt(),
+        "story_understanding": _load_story_understanding_prompt(),
         "narration": narrative_identity.load_narrative_instruction("sharp_friend_v1"),
         "segmentation": _load_strip_boundary_prompt(),
         "visual_narrative_repair": visual_narrative_repair.load_repair_prompt(),
@@ -6489,7 +6522,11 @@ def resolve_cloud_runner(
         model=selected_model,
         model_version="verified_byok",
         endpoint=endpoint,
-        prompt_versions={stage: prompt[0] for stage, prompt in _prompt_specs().items()},
+        prompt_versions={
+            stage: prompt[0]
+            for stage, prompt in _prompt_specs().items()
+            if stage != "story_understanding"
+        },
     )
     return CloudStageRunner(
         provider=provider,

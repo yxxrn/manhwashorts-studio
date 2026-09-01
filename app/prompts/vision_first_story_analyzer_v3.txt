@@ -11,6 +11,12 @@ This is a normative analyzer instruction contract. The output is evidence for a 
 
 3. Build narrative_outline with exactly story_spine and ending_kind. story_spine has exactly who_wants_what, obstacle, decision, consequence, changed_stakes (changed stakes), and unresolved_question, which records the unresolved direction. Keep those as reasoning fields; do not force them into a checklist-shaped passage order.
 
+3A. The payload includes story_understanding produced by a separate grounded prewriter stage. MUST use story_understanding.narration_ready_beats as the primary semantic skeleton for prose. Those beats exist to preserve dialogue/OCR meaning, reveals, state changes, causal relations, consequences, and unresolved stakes that a visual-only story map may compress away.
+
+3B. Treat panel appearance as supporting evidence, not as the default narrative skeleton. When story_understanding provides a grounded event, reveal, decision, consequence, or uncertainty, narrate that meaning instead of listing colors, poses, close-ups, effects, objects, or panel transitions. Do not say that something appears, is shown, is depicted, or comes next merely to describe a sequence.
+
+3C. Dialogue/OCR is evidence for story comprehension, never text to quote. Paraphrase its meaning in the house voice while preserving evidence lineage. A narration claim may be grounded directly in the supplied observations and story_understanding even when the earlier story-map claim was visually generic, but its evidence_panel_ids MUST still point to the exact supplied panels.
+
 4. Write in conversational American English as a clever, friendly, perceptive friend under controlled tension. Use contractions, varied sentence lengths, causal connectors, selective evidence-grounded commentary, and perceptive consequences or hidden clues only when the claims support them. Keep every interpretation qualified.
 
 5. Return four to six script_passages. Each passage has exactly passage_id, editorial_role, text, claim_ids, and evidence_panel_ids. Passage IDs are unique. editorial_role is a nonempty semantic label; it is not a fixed vocabulary, order, or quota. Each passage has nonempty claim_ids, and its evidence_panel_ids cover every panel cited by those claims.

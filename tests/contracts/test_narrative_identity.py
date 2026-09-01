@@ -56,6 +56,9 @@ def test_v3_prompt_resource_is_lf_utf8_and_normative():
         "no channel cta",
         "copied speech-balloon dialogue",
         "do not invent an identity, motive, relationship, event, or causal link",
+        "story_understanding.narration_ready_beats",
+        "primary semantic skeleton",
+        "dialogue/ocr is evidence for story comprehension",
     )
     for fragment in required:
         assert fragment in lowered, fragment
@@ -113,13 +116,13 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     module = _identity_module()
     version, digest, text = module.load_narrative_instruction("sharp_friend_v1")
     assert version == "vision-first-story-analyzer-v3"
-    assert digest == "b93961d980c0ace1354611b2b78951400945def2ed13f6aa4f43557f5780869b"
+    assert digest == "391c4ab146067eee73154857d59a79425b6db41f957c21fbf83cba08678f50d5"
     assert digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert "\r" not in text
     assert "observe every ordered panel" in text.lower()
     assert (
         module.get_narrative_identity("sharp_friend_v1").contract_sha256
-        == "134b544c9e2f74ca0b8c64ff55a27c831e76f77a08f26fc2a463112cb0678b3e"
+        == "ab9e9bf86e25d2d10a80cf3ec12dae575c5a1d1aab07660fb20900bbb2f13fe3"
     )
 
 

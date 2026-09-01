@@ -184,7 +184,7 @@ def test_narration_uses_the_same_bounded_ordered_chunk_contract(tmp_path):
     assert result.observations[0]["panel_id"] == panels[0].panel_id
     assert result.observations[-1]["panel_id"] == panels[-1].panel_id
     assert len([call for call in provider.calls if call[0] == "narration"]) == 1
-    assert result.qc_report["narration_topology"] == "chapter_evidence_reduce_v1"
+    assert result.qc_report["narration_topology"] == "chapter_story_understanding_v1"
     assert result.qc_report["editorial_selection"]["selection_hash"]
     assert len(result.observations) == len(panels)
 

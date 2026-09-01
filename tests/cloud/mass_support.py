@@ -197,6 +197,39 @@ class _FakeProvider:
                 ],
             }
         panel_ids = list(payload["panel_ids"])
+        if stage == "story_understanding":
+            story_map = payload.get("story_map", {})
+            raw_claims = story_map.get("claims", []) if isinstance(story_map, dict) else []
+            claim_ids = [
+                str(claim.get("claim_id"))
+                for claim in raw_claims
+                if isinstance(claim, dict) and str(claim.get("claim_id", "")).strip()
+            ]
+            first = panel_ids[:1] or panel_ids
+            last = panel_ids[-1:] or panel_ids
+            return {
+                "narration_ready_beats": [
+                    {
+                        "beat_id": "understanding-1",
+                        "story_role": "setup",
+                        "fact": "The grounded situation changes around the current choice.",
+                        "evidence_panel_ids": first,
+                        "source_claim_ids": claim_ids[:1],
+                        "confidence": "qualified",
+                        "qualification": "The supplied evidence supports this cautious reading.",
+                    },
+                    {
+                        "beat_id": "understanding-2",
+                        "story_role": "consequence",
+                        "fact": "The next grounded consequence remains unresolved.",
+                        "evidence_panel_ids": last,
+                        "source_claim_ids": [],
+                        "confidence": "qualified",
+                        "qualification": "The supplied evidence does not establish a final outcome.",
+                    },
+                ],
+                "unresolved_threads": [],
+            }
         if stage == "story_map":
             if self.transient_story_map_invalid_count:
                 self.transient_story_map_invalid_count -= 1

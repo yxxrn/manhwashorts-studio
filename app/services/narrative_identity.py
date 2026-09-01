@@ -31,7 +31,7 @@ class NarrativeIdentityProfile:
     )
     prompt_version: str = "vision-first-story-analyzer-v3"
     prompt_filename: str = "vision_first_story_analyzer_v3.txt"
-    contract_sha256: str = "134b544c9e2f74ca0b8c64ff55a27c831e76f77a08f26fc2a463112cb0678b3e"
+    contract_sha256: str = "ab9e9bf86e25d2d10a80cf3ec12dae575c5a1d1aab07660fb20900bbb2f13fe3"
 
 
 SHARP_FRIEND_V1 = NarrativeIdentityProfile(

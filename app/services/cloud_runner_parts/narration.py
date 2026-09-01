@@ -7,6 +7,7 @@ from app.constants import (
     STANDARD_FINAL_DURATION_MAX_SECONDS,
     STANDARD_FINAL_DURATION_MIN_SECONDS,
 )
+from app.services import story_understanding
 
 from .runtime import runtime_bound
 
@@ -44,6 +45,67 @@ _bound = runtime_bound(_RUNTIME_NAMES)
 
 
 class NarrationMixin:
+    @_bound
+    def _run_story_understanding(
+        self,
+        observations: Sequence[Mapping[str, Any]],
+        structural: Mapping[str, Any],
+        story_map: StoryMapResult,
+        visual: VisualStageResult,
+    ) -> dict[str, Any]:
+        prompt = self.prompts["story_understanding"]
+        source = story_understanding.build_source_packet(
+            observations,
+            story_map.as_dict(),
+            structural["continuity_ledger"],
+        )
+        key = _cache_key("story_understanding", source, self.model_identity, prompt)
+        if (
+            self.cache is not None
+            and (cached := self.cache.get(key)) is not None
+            and isinstance(cached, Mapping)
+        ):
+            cached_hash = str(cached.get("understanding_hash", ""))
+            candidate = {
+                key: value for key, value in cached.items() if key != "understanding_hash"
+            }
+            try:
+                normalized = story_understanding.validate_result(
+                    candidate,
+                    expected_panel_ids=visual.panel_ids,
+                    story_map=story_map.as_dict(),
+                )
+            except story_understanding.StoryUnderstandingError:
+                normalized = None
+            if normalized is not None and normalized["understanding_hash"] == cached_hash:
+                return normalized
+
+        for attempt in range(self.max_attempts):
+            try:
+                raw = self._call(
+                    lambda: self.provider.complete_json(
+                        stage="story_understanding",
+                        prompt_version=prompt[0],
+                        prompt_sha256=prompt[1],
+                        prompt_text=prompt[2],
+                        payload=source,
+                    ),
+                    request_stage="other",
+                )
+                normalized = story_understanding.validate_result(
+                    raw,
+                    expected_panel_ids=visual.panel_ids,
+                    story_map=story_map.as_dict(),
+                )
+            except story_understanding.StoryUnderstandingError:
+                if attempt + 1 < self.max_attempts:
+                    continue
+                raise CloudStageError("cloud.story_understanding_invalid", reviewable=True) from None
+            if self.cache is not None:
+                self.cache.put(key, normalized)
+            return normalized
+        raise CloudStageError("cloud.story_understanding_invalid", reviewable=True)
+
     @_bound
     def run_narration(
         self,
@@ -127,6 +189,22 @@ class NarrationMixin:
             selected_visual,
             selected_panels,
         )
+        story_context = self._run_story_understanding(
+            selected_observations,
+            selected_structural,
+            selected_story,
+            selected_visual,
+        )
+        understanding_claims = story_understanding.materialize_grounded_claims(story_context)
+        writer_story = replace(
+            selected_story,
+            claims=tuple([*selected_story.claims, *understanding_claims]),
+            story_map_hash=_hash({
+                "base_story_map_hash": selected_story.story_map_hash,
+                "story_understanding_hash": story_context["understanding_hash"],
+                "understanding_claims": list(understanding_claims),
+            }),
+        )
         source = {
             "editorial_selection_version": EDITORIAL_SELECTION_VERSION,
             "editorial_selection": selection.as_dict(),
@@ -134,7 +212,8 @@ class NarrationMixin:
             "visual_source_hash": visual.source_hash,
             "visual_evidence_hash": visual.visual_evidence_hash,
             "visual_observations": selected_observations,
-            "story_map": selected_story.as_dict(),
+            "story_map": writer_story.as_dict(),
+            "story_understanding": story_context,
             "duration_contract": {
                 **script.narration_duration_contract("dramatic"),
                 "minimum_s": STANDARD_FINAL_DURATION_MIN_SECONDS,
@@ -163,9 +242,13 @@ class NarrationMixin:
                 and cached_result.qc_report.get("editorial_selection", {}).get("selection_hash")
                 == selection.selection_hash
                 and cached_result.qc_report.get("narration_topology")
-                == "chapter_evidence_reduce_v1"
-                and cached_result.qc_report.get("narration_cache_contract") == "narration-final-v1"
-                and cached_result.qc_report.get("story_map_hash") == selected_story.story_map_hash
+                == "chapter_story_understanding_v1"
+                and cached_result.qc_report.get("narration_cache_contract") == "narration-final-v2"
+                and cached_result.qc_report.get("story_map_hash") == writer_story.story_map_hash
+                and cached_result.qc_report.get("story_understanding_version")
+                == story_understanding.STORY_UNDERSTANDING_VERSION
+                and cached_result.qc_report.get("story_understanding_hash")
+                == story_context["understanding_hash"]
                 and cached_result.qc_report.get("visual_evidence_hash")
                 == visual.visual_evidence_hash
                 and cached_result.qc_report.get("model_identity_hash")
@@ -198,7 +281,7 @@ class NarrationMixin:
                         result=cached_result,
                         failure_codes=failure_codes,
                         visual=selected_visual,
-                        story_map=selected_story,
+                        story_map=writer_story,
                     )
                     deleter = getattr(self.cache, "delete", None)
                     if callable(deleter):
@@ -217,7 +300,7 @@ class NarrationMixin:
                     result = self.run_narration_repair_candidate(
                         result,
                         selected_visual,
-                        selected_story,
+                        writer_story,
                         panels=selected_panels,
                     )
                     failure_codes = ()
@@ -228,7 +311,7 @@ class NarrationMixin:
                 source,
                 selected_observations,
                 selected_structural,
-                selected_story,
+                writer_story,
                 selected_visual,
             )
         if not failure_codes:
@@ -240,7 +323,7 @@ class NarrationMixin:
                 result=result,
                 failure_codes=failure_codes,
                 visual=selected_visual,
-                story_map=selected_story,
+                story_map=writer_story,
             )
             try:
                 result = self._run_targeted_narration_repair(
@@ -248,7 +331,7 @@ class NarrationMixin:
                     source,
                     selected_observations,
                     selected_structural,
-                    selected_story,
+                    writer_story,
                     selected_visual,
                     result,
                     failure_codes,
@@ -267,9 +350,11 @@ class NarrationMixin:
                 )
         qc_report = dict(result.qc_report)
         qc_report["editorial_selection"] = selection.as_dict()
-        qc_report["narration_topology"] = "chapter_evidence_reduce_v1"
-        qc_report["narration_cache_contract"] = "narration-final-v1"
-        qc_report["story_map_hash"] = selected_story.story_map_hash
+        qc_report["narration_topology"] = "chapter_story_understanding_v1"
+        qc_report["narration_cache_contract"] = "narration-final-v2"
+        qc_report["story_map_hash"] = writer_story.story_map_hash
+        qc_report["story_understanding_version"] = story_understanding.STORY_UNDERSTANDING_VERSION
+        qc_report["story_understanding_hash"] = story_context["understanding_hash"]
         qc_report["visual_evidence_hash"] = visual.visual_evidence_hash
         qc_report["model_identity_hash"] = self.model_identity.identity_hash
         qc_report["prompt_version"] = prompt[0]
