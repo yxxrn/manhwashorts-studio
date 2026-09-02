@@ -596,8 +596,8 @@ class Publication(Base, TimestampMixin):
     def thumbnail_note(self) -> str:
         if self.thumbnail_status == 'failed':
             return (
-                'Video uploaded, but YouTube Studio could not set the custom thumbnail. '
-                'Check custom-thumbnail access for this channel in Studio.'
+                'Video sudah terpublikasi, tetapi custom thumbnail gagal diupload. '
+                'Upload thumbnail secara manual di YouTube Studio.'
             )
         if self.thumbnail_status == 'not_available':
             return 'Video uploaded without a custom thumbnail; YouTube Studio will use a generated frame.'

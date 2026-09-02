@@ -853,10 +853,14 @@ $('publish-form').addEventListener('submit', async (event) => {
   };
   try {
     const publication = await api(`/api/projects/${state.projectId}/publish`, { method: 'POST', body });
+    const thumbnailPending = publication.thumbnail_status === 'failed';
     $('publish-status').textContent =
       `Status: ${publication.upload_status} · privasi ${publication.privacy_status} · ` +
-      `id ${publication.youtube_video_id || '(dry-run)'}`;
-    toast('Unggahan diproses.', 'ok');
+      `id ${publication.youtube_video_id || '(dry-run)'}` +
+      (thumbnailPending ? ' · thumbnail gagal; upload manual di Studio' : '');
+    toast(thumbnailPending
+      ? 'Video sudah terpublikasi. Thumbnail perlu diupload manual di YouTube Studio.'
+      : 'Unggahan diproses.', thumbnailPending ? 'error' : 'ok');
   } catch (err) {
     $('publish-status').textContent = 'Gagal: ' + err.message;
     toast(err.message, 'error');
@@ -1385,7 +1389,8 @@ async function loadPublications() {
         `${row.privacy_status} · ${row.upload_status}`
         + ` · akun ${row.youtube_account_id || 'default'}`
         + (row.youtube_video_id ? ` · id ${row.youtube_video_id}` : '')
-        + (row.error_message ? ` · ${row.error_message}` : '')));
+        + (row.error_message ? ` · ${row.error_message}` : '')
+        + (row.thumbnail_note ? ` · ${row.thumbnail_note}` : '')));
       item.appendChild(main);
 
       const actions = el('div', 'row-actions');

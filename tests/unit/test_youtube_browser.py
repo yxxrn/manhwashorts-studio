@@ -14,6 +14,12 @@ class _Editable:
         if self.page is not None:
             self.page.active = self
 
+    def evaluate(self, script: str):
+        del script
+        if self.page is not None:
+            self.page.active = self
+            self.value = ""
+
     def inner_text(self) -> str:
         return self.value
 
@@ -100,6 +106,10 @@ class _Radio:
         if self.toggles:
             self.checked = "true"
 
+    def evaluate(self, script: str):
+        del script
+        self.click()
+
     def get_attribute(self, name: str):
         return self.checked if name == "aria-checked" else None
 
@@ -152,3 +162,175 @@ def test_verified_private_row_is_publish_success():
 def test_wrong_visibility_is_rejected():
     text = "ManhwaShorts Browser Test — Publik 2 Sep 2026 Dipublikasikan"
     assert not YouTubeStudioBrowserPublisher._row_matches_visibility(text, "private")
+
+
+class _TagControl:
+    def __init__(self, page, kind: str) -> None:
+        self.page = page
+        self.kind = kind
+        self.pending = ""
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return 1
+
+    def is_visible(self, timeout=None):
+        del timeout
+        return True
+
+    def get_attribute(self, name):
+        return "false" if name == "aria-disabled" else None
+
+    def click(self):
+        if self.kind == "clear":
+            self.page.tags.clear()
+
+    def evaluate(self, script):
+        del script
+        self.click()
+
+    def wait_for(self, **kwargs):
+        del kwargs
+
+    def fill(self, value):
+        self.pending = value
+
+    def press(self, key):
+        if key == "Comma" and self.pending:
+            self.page.tags.append(self.pending)
+            self.pending = ""
+
+
+class _TagChips:
+    def __init__(self, page) -> None:
+        self.page = page
+
+    def all_inner_texts(self):
+        return list(self.page.tags)
+
+
+class _TagPage:
+    def __init__(self) -> None:
+        self.tags = ["old"]
+        self.clear = _TagControl(self, "clear")
+        self.input = _TagControl(self, "input")
+
+    def locator(self, selector: str):
+        if selector == "#tags-container #clear-button":
+            return self.clear
+        if selector == "#tags-container #text-input":
+            return self.input
+        if selector == "#tags-container ytcp-chip #chip-text":
+            return _TagChips(self)
+        raise AssertionError(selector)
+
+    def wait_for_timeout(self, ms: int) -> None:
+        del ms
+
+
+def test_tags_replace_channel_defaults_and_are_verified():
+    page = _TagPage()
+    YouTubeStudioBrowserPublisher()._set_tags(page, ["manhwa", "shorts", "manhwa", "infinite,mage"])
+    assert page.tags == ["manhwa", "shorts", "infinite mage"]
+
+
+class _ThumbNode:
+    def __init__(self, *, count=1, visible=True, src="") -> None:
+        self._count = count
+        self.visible = visible
+        self.src = src
+        self.sent = None
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return self._count
+
+    def is_visible(self, timeout=None):
+        del timeout
+        return self.visible
+
+    def get_attribute(self, name):
+        return self.src if name == "src" else None
+
+    def set_input_files(self, path):
+        self.sent = path
+
+
+class _ThumbUploader(_ThumbNode):
+    def __init__(self) -> None:
+        super().__init__()
+        self.file = _ThumbNode()
+        self.preview = _ThumbNode(visible=True)
+        self.uploading = _ThumbNode(visible=False)
+        self.image = _ThumbNode(src="blob:thumbnail")
+        self.retry = _ThumbNode(count=0, visible=False)
+        self.select = _ThumbNode(count=0, visible=False)
+
+    def locator(self, selector):
+        mapping = {
+            "input[type='file'][accept*='image']": self.file,
+            ".preview": self.preview,
+            ".uploading": self.uploading,
+            "#img-with-fallback": self.image,
+            "#select-button": self.select,
+        }
+        return mapping[selector]
+
+    def get_by_role(self, role, name=None):
+        del role, name
+        return self.retry
+
+
+class _ThumbPage:
+    def __init__(self) -> None:
+        self.uploader = _ThumbUploader()
+
+    def locator(self, selector):
+        assert selector == "ytcp-thumbnail-uploader"
+        return self.uploader
+
+    def wait_for_timeout(self, ms):
+        del ms
+
+
+def test_thumbnail_publish_waits_for_completed_preview(tmp_path):
+    thumbnail = tmp_path / "thumbnail.jpg"
+    thumbnail.write_bytes(b"jpg")
+    page = _ThumbPage()
+    result = YouTubeStudioBrowserPublisher()._set_thumbnail(page, thumbnail)
+    assert result == "uploaded"
+    assert page.uploader.file.sent == str(thumbnail)
+
+
+def test_missing_thumbnail_blocks_publish(tmp_path):
+    with pytest.raises(BrowserPublishError) as exc:
+        YouTubeStudioBrowserPublisher()._set_thumbnail(_ThumbPage(), tmp_path / "missing.jpg")
+    assert exc.value.code == "thumbnail_missing"
+
+
+def test_thumbnail_failure_is_best_effort(tmp_path):
+    publisher = YouTubeStudioBrowserPublisher()
+    status, detail = publisher._try_set_thumbnail(_ThumbPage(), tmp_path / "missing.jpg")
+    assert status == "failed"
+    assert detail.startswith("thumbnail_missing:")
+
+
+def test_extract_video_identity_supports_studio_edit_link():
+    class _StudioAnchors:
+        def evaluate_all(self, script: str):
+            del script
+            return ["https://studio.youtube.com/video/qKk2wSK8PG4/edit"]
+
+    class _StudioPage:
+        def locator(self, selector: str):
+            return _StudioAnchors() if selector == "a" else _Body()
+
+    video_id, url = YouTubeStudioBrowserPublisher._extract_video_identity(_StudioPage())
+    assert video_id == "qKk2wSK8PG4"
+    assert url == "https://www.youtube.com/shorts/qKk2wSK8PG4"

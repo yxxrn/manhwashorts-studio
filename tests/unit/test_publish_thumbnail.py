@@ -33,4 +33,5 @@ def test_browser_thumbnail_failure_has_no_api_retry_url():
 
     publication = Publication(thumbnail_status="failed", thumbnail_error="browser_ui")
     assert "studio" in publication.thumbnail_note.lower()
+    assert "manual" in publication.thumbnail_note.lower()
     assert publication.thumbnail_retry_url is None

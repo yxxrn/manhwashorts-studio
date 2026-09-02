@@ -279,7 +279,8 @@ def publish(
     publication.privacy_status = result.privacy_status
     publication.thumbnail_attempt = 1 if _thumbnail_path(job) else 0
     publication.thumbnail_status = result.thumbnail_status
-    publication.thumbnail_error = "" if result.thumbnail_status == "uploaded" else "browser_ui"
+    publication.thumbnail_error = result.thumbnail_error
+    publication.error_message = result.metadata_warning
     publication.published_at = _now()
     project.status = ProjectStatus.PUBLISHED
     project.error_message = ""
