@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$ROOT/.venv/bin/python"
+[[ -x "$PY" ]] || { echo "Missing .venv. Run ./install.sh first." >&2; exit 2; }
+cd "$ROOT"
+case "${1:-help}" in
+  doctor) shift; exec "$PY" scripts/doctor.py "$@" ;;
+  migrate) shift; exec "$ROOT/.venv/bin/alembic" upgrade head "$@" ;;
+  serve) shift; exec "$PY" scripts/serve.py "$@" ;;
+  youtube-account) shift; exec "$PY" scripts/youtube_browser_account.py "$@" ;;
+  suwayomi-setup) shift; exec "$PY" scripts/setup_suwayomi.py "$@" ;;
+  *) echo "Usage: scripts/manhwashorts {doctor|migrate|serve|youtube-account|suwayomi-setup}" >&2; exit 2 ;;
+esac

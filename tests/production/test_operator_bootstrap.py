@@ -71,7 +71,7 @@ def test_bootstrap_module_and_launcher_contract_are_present():
 
 def test_interpreter_candidates_are_ordered_and_reject_unsupported_python():
     bootstrap = _bootstrap_module()
-    assert bootstrap.python_candidates() == (("py", "-3.11"), ("py", "-3"), ("python",))
+    assert bootstrap.python_candidates() == (("py", "-3.11"), ("py", "-3"), ("python3",), ("python",))
 
     calls = []
 

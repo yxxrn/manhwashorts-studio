@@ -18,8 +18,10 @@ Do **not** put Google passwords, cookies, storage-state JSON, or session tokens 
 
 ```bash
 MS_YOUTUBE_BROWSER_ENABLED=true
-MS_YOUTUBE_BROWSER_PROFILE_DIR=/home/ubuntu/.config/manhwashorts/youtube-browser-runtime
-MS_YOUTUBE_BROWSER_EXECUTABLE=/usr/bin/google-chrome
+# Defaults are resolved from the current OS user home. Override only if needed.
+# MS_YOUTUBE_BROWSER_PROFILE_DIR=~/.config/manhwashorts/youtube-browser-runtime
+# MS_YOUTUBE_BROWSER_ACCOUNTS_DIR=~/.config/manhwashorts/youtube-accounts
+MS_YOUTUBE_BROWSER_EXECUTABLE=google-chrome
 MS_YOUTUBE_BROWSER_HEADLESS=true
 MS_YOUTUBE_BROWSER_TIMEOUT_SECONDS=120
 ```

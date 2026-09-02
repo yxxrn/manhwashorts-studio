@@ -76,7 +76,7 @@ def _launch_operator(argv: Sequence[str | os.PathLike[str]], *, cwd: Path) -> in
 def python_candidates() -> tuple[tuple[str, ...], ...]:
     """Return the required Windows-first interpreter discovery order."""
 
-    return (("py", "-3.11"), ("py", "-3"), ("python",))
+    return (("py", "-3.11"), ("py", "-3"), ("python3",), ("python",))
 
 
 def _parse_python_version(output: str) -> tuple[int, int, int] | None:

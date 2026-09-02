@@ -456,10 +456,26 @@ def test_render_failure_is_retryable(db, recap_text):
 
 
 @requires_ffmpeg
-def test_publish_dry_run_writes_receipt_and_no_fabricated_stats(db, recap_text):
+def test_publish_dry_run_writes_receipt_and_no_fabricated_stats(db, recap_text, monkeypatch):
     from app.constants import UploadStatus
     from app.services import pipeline as pl
     from app.services import publish as publish_svc
+    from app.services.youtube_browser import BrowserPublishResult
+
+    class DryRunBrowserPublisher:
+        def __init__(self, account_id=None):
+            self.account_id = account_id or "default"
+
+        def publish(self, **kwargs):
+            return BrowserPublishResult(
+                video_id="dryrun_browser_test",
+                privacy_status=str(kwargs.get("privacy_status") or "private"),
+                upload_status="uploaded",
+                stages=["published"],
+                thumbnail_status="uploaded",
+            )
+
+    monkeypatch.setattr(publish_svc, "YouTubeStudioBrowserPublisher", DryRunBrowserPublisher)
 
     # Use a larger visual fixture so the new same-panel hard gate is exercised
     # by a production-shaped timeline rather than a four-panel compatibility set.

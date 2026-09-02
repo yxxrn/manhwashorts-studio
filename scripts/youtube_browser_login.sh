@@ -3,7 +3,16 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ACCOUNT_ID="${1:-}"
-CHROME="${MS_YOUTUBE_BROWSER_EXECUTABLE:-/usr/bin/google-chrome}"
+CHROME_CONFIG="${MS_YOUTUBE_BROWSER_EXECUTABLE:-google-chrome}"
+if [[ "$CHROME_CONFIG" == */* ]]; then
+  CHROME="$CHROME_CONFIG"
+else
+  CHROME="$(command -v "$CHROME_CONFIG" || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+fi
+if [[ -z "$CHROME" || ! -x "$CHROME" ]]; then
+  echo "Google Chrome/Chromium not found. Run ./install.sh or set MS_YOUTUBE_BROWSER_EXECUTABLE." >&2
+  exit 2
+fi
 PYTHON="${ROOT}/.venv/bin/python"
 
 if [[ ! -x "$PYTHON" ]]; then

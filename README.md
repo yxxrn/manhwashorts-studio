@@ -67,31 +67,34 @@ GPU encoding is optional. `MS_VIDEO_ENCODER=auto` probes supported encoders and 
 
 ## Install
 
+Fresh Ubuntu/Debian machine (recommended):
+
 ```bash
 git clone https://github.com/yxxrn/manhwashorts-studio.git
 cd manhwashorts-studio
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env
+./install.sh
 ```
 
-For development and the full regression suite, install `requirements-dev.txt` instead.
-
-Optional Suwayomi source sidecar (one-time setup):
+The installer is idempotent. It installs native media dependencies, Python runtime packages, Google Chrome on amd64, Java 21 + the pinned Suwayomi JAR, copies portable `.env` defaults, migrates the database to the Alembic head, and runs the machine readiness check. To also install/start a boot-persistent service:
 
 ```bash
-python3 scripts/setup_suwayomi.py
+./install.sh --systemd
 ```
 
-The setup downloads the pinned official Suwayomi JAR, verifies its SHA-256, and leaves the binary outside Git. ManhwaShorts then starts/stops that sidecar automatically on `127.0.0.1:4567`. Suwayomi ships no default online extensions; configure an extension store/source once before title search. The REST API reports this explicitly as `needs_extension_setup`.
+If this machine does not use Suwayomi, use `./install.sh --without-suwayomi`. Existing `.env`, database, browser profiles, and credentials are never replaced by a rerun.
 
-Optional API/UI server:
+Useful lifecycle commands:
 
 ```bash
-.venv/bin/python -m uvicorn app.main:app --reload
+scripts/manhwashorts doctor
+scripts/manhwashorts migrate
+scripts/manhwashorts serve
+scripts/manhwashorts youtube-account list
 ```
 
-Then open `http://127.0.0.1:8000`.
+Manual/development install remains supported with `python3 -m venv .venv` and `pip install -r requirements.txt`; install `requirements-dev.txt` for the full regression suite. See `docs/FRESH_MACHINE.md` for fresh-host details and recovery behavior.
+
+Then open `http://127.0.0.1:8000` unless `MS_HOST`/`MS_PORT` were changed.
 
 ## Operator workflow
 
@@ -106,7 +109,7 @@ run_operator.cmd
 Cross-platform bootstrap:
 
 ```bash
-python scripts/bootstrap_operator_cli.py
+python3 scripts/bootstrap_operator_cli.py
 ```
 
 Direct entrypoint:

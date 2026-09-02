@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 from fastapi import Request
 from sqlalchemy import create_engine, event
@@ -81,87 +82,32 @@ def session_scope() -> Iterator[Session]:
         db.close()
 
 
+def _upgrade_runtime_schema() -> None:
+    """Bring a normal runtime database to the checked-in Alembic head.
+
+    Fresh installations and upgrades use the same path, so a database can
+    never be created without an ``alembic_version`` lineage row. Tests keep
+    using ``create_all`` for speed and isolation.
+    """
+    from alembic.config import Config
+
+    from alembic import command
+
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    command.upgrade(config, "head")
+
+
 def init_db() -> None:
-    """Create all tables. Alembic owns migrations; this is for local bootstrap."""
+    """Initialize the database safely for tests or a real runtime."""
     from app import models  # noqa: F401  (register mappers)
 
     settings.ensure_dirs()
-    Base.metadata.create_all(bind=engine)
-    if engine.url.get_backend_name() == "sqlite":
-        with engine.begin() as connection:
-            columns = {
-                row[1] for row in connection.exec_driver_sql("PRAGMA table_info(timeline_scenes)")
-            }
-            if "motion_mode" not in columns:
-                connection.exec_driver_sql(
-                    "ALTER TABLE timeline_scenes ADD COLUMN motion_mode VARCHAR(40) NOT NULL DEFAULT 'hold'"
-                )
-            if "motion_reason" not in columns:
-                connection.exec_driver_sql(
-                    "ALTER TABLE timeline_scenes ADD COLUMN motion_reason TEXT NOT NULL DEFAULT ''"
-                )
-            if "source_family" not in columns:
-                connection.exec_driver_sql(
-                    "ALTER TABLE timeline_scenes ADD COLUMN source_family VARCHAR(255) NOT NULL DEFAULT ''"
-                )
-            asset_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(source_assets)")}
-            for name, definition in {
-                "source_family": "VARCHAR(255) NOT NULL DEFAULT ''",
-                "source_family_manual": "BOOLEAN NOT NULL DEFAULT 0",
-            }.items():
-                if name not in asset_columns:
-                    connection.exec_driver_sql(f"ALTER TABLE source_assets ADD COLUMN {name} {definition}")
-            scene_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(timeline_scenes)")}
-            for name, definition in {
-                "alignment_score": "FLOAT NOT NULL DEFAULT 0",
-                "alignment_reasons": "JSON NOT NULL DEFAULT '[]'",
-                "rejected_candidates": "JSON NOT NULL DEFAULT '[]'",
-                "visual_signature": "VARCHAR(128) NOT NULL DEFAULT ''",
-                "panel_region_id": "VARCHAR(32)",
-                "panel_id": "VARCHAR(80) NOT NULL DEFAULT ''",
-                "panel_bounds_json": "JSON NOT NULL DEFAULT '{}'",
-                "visual_evidence_json": "JSON NOT NULL DEFAULT '{}'",
-                "source_asset_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
-            }.items():
-                if name not in scene_columns:
-                    connection.exec_driver_sql(f"ALTER TABLE timeline_scenes ADD COLUMN {name} {definition}")
-
-            asset_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(source_assets)")}
-            for name, definition in {
-                "panel_bbox": "JSON NOT NULL DEFAULT '{}'",
-                "panel_quality": "JSON NOT NULL DEFAULT '{}'",
-                "panel_decision": "VARCHAR(20) NOT NULL DEFAULT 'accept'",
-            }.items():
-                if name not in asset_columns:
-                    connection.exec_driver_sql(f"ALTER TABLE source_assets ADD COLUMN {name} {definition}")
-
-            script_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(script_versions)")}
-            if "editorial_metadata" not in script_columns:
-                connection.exec_driver_sql("ALTER TABLE script_versions ADD COLUMN editorial_metadata JSON NOT NULL DEFAULT '{}'")
-
-            audio_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(audio_segments)")}
-            for name, definition in {
-                "spoken_text": "TEXT NOT NULL DEFAULT ''",
-                "display_text": "TEXT NOT NULL DEFAULT ''",
-                "voice_profile_hash": "VARCHAR(64) NOT NULL DEFAULT ''",
-                "voice_profile": "JSON NOT NULL DEFAULT '{}'",
-            }.items():
-                if name not in audio_columns:
-                    connection.exec_driver_sql(f"ALTER TABLE audio_segments ADD COLUMN {name} {definition}")
-
-            job_columns = {
-                row[1] for row in connection.exec_driver_sql("PRAGMA table_info(render_jobs)")
-            }
-            for name, definition in {
-                "lease_token": "VARCHAR(64) NOT NULL DEFAULT ''",
-                "lease_until": "DATETIME",
-                "heartbeat_at": "DATETIME",
-                "render_profile": "VARCHAR(20) NOT NULL DEFAULT 'auto'",
-            }.items():
-                if name not in job_columns:
-                    connection.exec_driver_sql(
-                        f"ALTER TABLE render_jobs ADD COLUMN {name} {definition}"
-                    )
+    if os.environ.get("MS_TEST_MODE") == "1":
+        Base.metadata.create_all(bind=engine)
+        return
+    _upgrade_runtime_schema()
 
 
 def safe_drop_all(metadata, bind: Engine) -> None:

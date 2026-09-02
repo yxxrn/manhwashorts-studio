@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fcntl
 import re
+import shutil
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -76,8 +77,24 @@ class YouTubeStudioBrowserPublisher:
         self.account_id = self.account.account_id
         self.account_label = self.account.label
         self.profile_dir = self.account.profile_dir
-        self.executable = settings.youtube_browser_executable
+        self.executable = self._resolve_browser_executable(settings.youtube_browser_executable)
         self.timeout_ms = int(settings.youtube_browser_timeout_seconds * 1000)
+
+    @staticmethod
+    def _resolve_browser_executable(configured: str) -> str:
+        requested = str(configured or "").strip()
+        if requested:
+            expanded = Path(requested).expanduser()
+            if expanded.is_absolute() or "/" in requested:
+                return str(expanded) if expanded.is_file() else ""
+            found = shutil.which(requested)
+            if found:
+                return found
+        for candidate in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            found = shutil.which(candidate)
+            if found:
+                return found
+        return ""
 
     @contextmanager
     def _single_browser(self) -> Iterator[None]:
@@ -146,6 +163,17 @@ class YouTubeStudioBrowserPublisher:
                 profile_dir=str(self.profile_dir),
                 browser=self.executable,
                 detail="browser publisher is disabled",
+            )
+        if not self.executable:
+            return BrowserSessionStatus(
+                available=False,
+                authenticated=False,
+                account_id=self.account_id,
+                account_label=self.account_label,
+                profile_dir=str(self.profile_dir),
+                browser=str(settings.youtube_browser_executable),
+                action_required="install_chrome",
+                detail="Google Chrome/Chromium executable was not found",
             )
         try:
             from playwright.sync_api import sync_playwright
