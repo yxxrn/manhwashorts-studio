@@ -47,7 +47,7 @@ Suwayomi itself intentionally ships no default online extensions. A fresh sideca
 | 409 | Conflict (duplicate email, no output file) |
 | 410 | Rendered file no longer on disk |
 | 422 | Validation failure, or a pipeline/policy refusal |
-| 503 | Feature not configured (e.g. YouTube OAuth) |
+| 503 | A required optional sidecar/external dependency is unavailable |
 
 ## System
 
@@ -502,11 +502,20 @@ not succeed; 410 if the file has since been removed.
 
 ## Local-agent publish orchestration
 
-`POST /api/projects/{id}/run` also accepts `until: "publish"`. For an explicit user instruction to create and upload a recap, a local agent may send `approval_mode: "trusted_agent"` plus `confirm_publish_intent: true`. That approval is persisted with `approval_actor_type: trusted_agent` and `human_review_performed: false`; normal UI/manual approval remains unchanged.
+`POST /api/projects/{id}/run` accepts `until: "publish"` and resumes already-valid stages instead of rebuilding them. For an explicit user request to create and upload a recap, an agent may send `approval_mode: "trusted_agent"` with `confirm_publish_intent: true`; that approval is persisted as trusted-agent approval with `human_review_performed: false`. Without that exact publish intent, an unapproved script remains a stop boundary.
 
-Render stays asynchronous: the first call may return a queued/running render. The agent polls `/status` and calls `/run` again after render success; the next pass publishes using generated metadata. A successful video with a failed thumbnail still returns `current_stage: published` plus a non-blocking thumbnail note and retry URL.
+Rendering remains asynchronous. A first `/run` call may queue a render and return; poll `GET /api/projects/{id}/status` and call `/run` again after the render succeeds. The publish pass uses the selected `youtube_account_id`, generated metadata when fields are empty, and request visibility (default `private`).
 
 ## Publishing
+
+### Browser accounts
+
+- `GET /api/youtube/browser/status?account_id=<id>` — Chrome/browser availability plus authentication state and the effective trust-defaults mode.
+- `GET /api/youtube/browser/accounts` — default account plus all isolated persistent Chrome profiles.
+- `POST /api/youtube/browser/accounts` — create account metadata/profile. Body: `account_id`, optional `label`, optional `trust_channel_defaults`.
+- `PATCH /api/youtube/browser/accounts/{account_id}` — update `label`, `make_default`, and/or `trust_channel_defaults`. Send `null` for `trust_channel_defaults` to inherit the global fallback.
+
+Google login itself is interactive in the selected persistent Chrome profile; credentials/cookies are not returned by these APIs. See [YOUTUBE_SETUP.md](YOUTUBE_SETUP.md).
 
 ### `GET /api/projects/{id}/metadata`
 
@@ -514,107 +523,62 @@ Drafts a hook-first title, description, and tags from the approved script. The t
 
 ### `GET /api/projects/{id}/publish/readiness`
 
-```json
-{"ready": true, "reason": "", "checks": {"errors": 0, "warnings": 1}}
-```
+Returns quality summary plus browser/account readiness. A publish is ready only when the final render is current, blocking QC is clear, the selected browser is available, and that account is authenticated.
 
 ### `POST /api/projects/{id}/publish`
 
 ```json
 {
+  "youtube_account_id": "main",
   "video_title": "Dia Menemukan Kekuatan yang Seharusnya Tersegel | Peringkat Terakhir #shorts",
   "description": "…",
   "tags": ["manhwa", "shorts"],
   "privacy_status": "private",
   "scheduled_at": null,
-  "confirm_public": false
+  "trust_channel_defaults": null
 }
 ```
 
-Empty fields fall back to the generated metadata.
+Empty metadata fields fall back to generated metadata. `privacy_status` defaults to `private`; explicit `unlisted` and `public` are selected and verified in YouTube Studio. The legacy `confirm_public` request field is still accepted for compatibility but is ignored. Scheduled publishing currently fails closed with `manual_schedule` until that Studio flow has a dedicated acceptance test.
 
-Before uploading, the server re-verifies: public gating, a successful final
-render, the file's SHA-256 against its render-time checksum, and the quality
-gates. A file modified after rendering is refused.
+Before upload the server re-verifies the successful final render, artifact checksum/integrity, and blocking quality gates. Browser success is not inferred from clicking Publish: the publisher verifies the matching Content/Shorts row, rejects Draft, requires the requested visibility, and records the verified video ID.
 
-Visibility defaults to `private`. Sending `privacy_status: public` explicitly publishes publicly; no second confirmation field is required.
-
-With YouTube unconfigured, the dry-run provider writes a receipt to
-`data/output/dry_run_uploads/` and returns a `dryrun_…` video id.
+Thumbnail upload is best-effort. The publisher attempts it during the upload flow and can verify/retry persistence after the video exists. A final thumbnail failure does not turn an otherwise verified video publish into a failed upload; the publication records `thumbnail_status`/`thumbnail_error` and instructs manual Studio correction.
 
 ### `POST /api/publications/{id}/retry`
 
-Retries a failed video upload. Reuses the same `Publication` row, preserves the generated metadata, and never re-renders.
-
-Custom thumbnail upload is best-effort after the video id is durably stored. A thumbnail API failure does **not** fail or repeat the video upload; the publication returns `thumbnail_status: failed`, `thumbnail_note`, and `thumbnail_retry_url`.
+Retries only a failed video publication, reusing the same Publication row, account ID, metadata, visibility, and final render. An already-uploaded publication is refused rather than uploaded twice.
 
 ### `POST /api/publications/{id}/thumbnail/retry`
 
-Retries only `thumbnail.jpg` against the already-uploaded YouTube video. The video itself is never uploaded again.
-
-### YouTube channels
-
-`GET /api/youtube/channels` — connected channels (never includes tokens).
-`GET /api/youtube/connect` — returns `authorization_url`; 503 if unconfigured.
-`GET /api/youtube/callback` — OAuth redirect target; rejects unknown `state`.
-`DELETE /api/youtube/channels/{id}` — revokes and erases stored credentials.
+The route is retained for API compatibility but currently returns a pipeline refusal: standalone thumbnail retry belonged to the archived Data API publisher. Browser publishing handles thumbnail attempts inside the Studio workflow, and `thumbnail_retry_url` is `null`.
 
 ### Analytics
 
-`POST /api/publications/{id}/stats/sync`
+`POST /api/publications/{id}/stats/sync` records that analytics are unavailable and returns `available: false`; browser publishing intentionally does not fetch YouTube analytics. `GET /api/publications/{id}/stats` returns any persisted snapshot history without fabricating new zeros.
 
-```json
-{"available": false, "detail": "No analytics available yet…"}
-```
+## Agent publish/resume example
 
-Returns `available: false` rather than fabricating zeros when the API has no data
-(always the case in dry-run mode).
-
-`GET /api/publications/{id}/stats` — snapshot history, newest first.
-
-## Complete worked example
+The compact agent-oriented path uses resumable `/run` orchestration:
 
 ```bash
 BASE=http://127.0.0.1:8000
 
-# 1. account
-curl -sS -c ck.txt -X POST $BASE/api/auth/register \
+# Login/register, create $PJ, then ingest manual assets or Suwayomi pages.
+PUBLISH='{"until":"publish","approval_mode":"trusted_agent","confirm_publish_intent":true,"youtube_account_id":"main","privacy_status":"private"}'
+
+# First call advances valid stages and may queue the asynchronous render.
+curl -sS -b ck.txt -X POST "$BASE/api/projects/$PJ/run" \
   -H 'Content-Type: application/json' \
-  -d '{"email":"you@example.com","password":"studio12345"}'
+  -d "$PUBLISH"
 
-# 2. project
-PJ=$(curl -sS -b ck.txt -X POST $BASE/api/projects \
+# Poll until render_status is succeeded/failed.
+curl -sS -b ck.txt "$BASE/api/projects/$PJ/status"
+
+# After a successful render, send the same request again; it resumes and publishes.
+curl -sS -b ck.txt -X POST "$BASE/api/projects/$PJ/run" \
   -H 'Content-Type: application/json' \
-  -d '{"title":"Ch12","manhwa_title":"Peringkat Terakhir","chapter":"12"}' \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
-
-# 3. material, with rights declared
-curl -sS -b ck.txt -X POST $BASE/api/projects/$PJ/assets/text \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"<your recap, 40+ chars>","rights":{"rights_owner":"You","license_type":"owned","declared":true}}'
-
-curl -sS -b ck.txt -X POST $BASE/api/projects/$PJ/assets/upload \
-  -F "files=@panel01.jpg" -F "files=@panel02.jpg" \
-  -F "rights_owner=You" -F "license_type=owned" -F "declared=true"
-
-# 4. draft everything
-curl -sS -b ck.txt -X POST "$BASE/api/projects/$PJ/draft?seed=42"
-
-# 5. review, then approve
-curl -sS -b ck.txt $BASE/api/projects/$PJ/script
-curl -sS -b ck.txt -X POST $BASE/api/projects/$PJ/script/approve
-
-# 6. quality gate
-curl -sS -b ck.txt -X POST $BASE/api/projects/$PJ/quality
-
-# 7. render, then poll
-JOB=$(curl -sS -b ck.txt -X POST $BASE/api/projects/$PJ/render \
-  -H 'Content-Type: application/json' -d '{"kind":"final"}' \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
-curl -sS -b ck.txt $BASE/api/projects/$PJ/render/$JOB
-
-# 8. download and upload (private)
-curl -sS -b ck.txt -o short.mp4 $BASE/api/projects/$PJ/download/$JOB
-curl -sS -b ck.txt -X POST $BASE/api/projects/$PJ/publish \
-  -H 'Content-Type: application/json' -d '{"privacy_status":"private"}'
+  -d "$PUBLISH"
 ```
+
+For manual editorial control, call analysis/script/approval/voice/timeline/quality/render endpoints separately, then `POST /publish`. The same resume identities and publish verification rules apply.

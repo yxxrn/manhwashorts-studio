@@ -32,7 +32,7 @@ hook → setup → conflict → twist → CTA
 ```
 
 Each generated claim remains traceable to source material. LLM/BYOK providers can
-improve rewriting; they do not bypass rights or approval gates.
+improve rewriting; they do not bypass evidence/lineage/QC validation. Rights enforcement follows deployment policy, and approval remains an explicit persisted identity (manual or the explicit trusted-agent publish path).
 
 ## Motion director
 
@@ -93,7 +93,7 @@ Blocking checks include:
 - playback/decode failure;
 - audio/video drift over one frame;
 - prolonged black frame;
-- rights/source failure.
+- source/evidence failure, plus rights failure only when rights enforcement is explicitly enabled.
 
 QC fields include `audio_video_drift`, `black_frame_duration`,
 `full_playback_verified`, `publish_allowed`, and `rights_confidence`.

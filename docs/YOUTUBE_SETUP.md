@@ -1,26 +1,17 @@
-# YouTube Studio Browser Publishing
+# YouTube Studio browser publishing
 
-ManhwaShorts publishes through the YouTube Studio web UI using Playwright and a dedicated persistent Google Chrome profile. The YouTube Data API/OAuth publisher is archived under `archive/youtube_api/` and is not imported by the runtime.
+ManhwaShorts publishes through the YouTube Studio web UI with Playwright and persistent Chrome profiles. The legacy YouTube Data API publisher is archived under `archive/youtube_api/` and is not imported by runtime publishing.
 
-## Authentication model
+## Authentication and account model
 
-The browser profile lives outside the repository:
+Each YouTube account/channel uses its own Chrome user-data directory. Runtime account metadata lives under `~/.config/manhwashorts/youtube-accounts/`; the pre-migration/default profile remains `~/.config/manhwashorts/youtube-browser-runtime`.
 
-```text
-~/.config/manhwashorts/youtube-browser/
-```
-
-Log in to Google once with normal Chrome using this profile. Chrome stores the Google/YouTube cookies, local storage, and other session state there. Later Playwright opens the same profile headlessly, so the uploader normally starts already signed in.
-
-Do **not** put Google passwords, cookies, storage-state JSON, or session tokens in Git, `.env`, chat, logs, or source code. If Google asks for 2FA, CAPTCHA, or account re-verification, automation stops and a human completes it in the browser.
+Google authentication stays inside Chrome. Do not export/commit cookies, storage state, passwords, or session tokens. If Google requests 2FA, CAPTCHA, or re-verification, stop automation and complete it interactively in that account profile.
 
 ## Runtime settings
 
 ```bash
 MS_YOUTUBE_BROWSER_ENABLED=true
-# Defaults are resolved from the current OS user home. Override only if needed.
-# MS_YOUTUBE_BROWSER_PROFILE_DIR=~/.config/manhwashorts/youtube-browser-runtime
-# MS_YOUTUBE_BROWSER_ACCOUNTS_DIR=~/.config/manhwashorts/youtube-accounts
 MS_YOUTUBE_BROWSER_EXECUTABLE=google-chrome
 MS_YOUTUBE_BROWSER_HEADLESS=true
 MS_YOUTUBE_BROWSER_TIMEOUT_SECONDS=120
@@ -30,96 +21,72 @@ MS_YOUTUBE_CATEGORY=Film & Animation
 MS_YOUTUBE_TRUST_CHANNEL_DEFAULTS=false
 ```
 
-Public visibility remains double-gated:
+Profile/account directories are resolved from the current OS user's home unless explicitly overridden by `MS_YOUTUBE_BROWSER_PROFILE_DIR` / `MS_YOUTUBE_BROWSER_ACCOUNTS_DIR`.
 
-Visibility is request-driven. If `privacy_status` is omitted it defaults to `private`; sending `privacy_status=public` publishes publicly without a second confirmation flag.
+## Visibility contract
 
-## First login
+Visibility is request-driven and uploader-controlled:
 
-The first login should use normal Google Chrome, not Playwright:
+- omitted `privacy_status` → `private`
+- explicit `private` → Private
+- explicit `unlisted` → Unlisted
+- explicit `public` → Public
 
-```bash
-DISPLAY=:99 ./scripts/youtube_browser_login.sh
-```
+There is no second Public confirmation gate. `confirm_public` remains accepted only as a legacy request field and has no effect. The uploader explicitly selects/verifies requested visibility, so a channel whose YouTube Upload defaults are Public still becomes Private when the request omits privacy.
 
-Use a temporary VNC/noVNC display to interact with that browser. Log in, complete 2FA if requested, confirm YouTube Studio loads, then close Chrome. Afterward check:
+## Account operations
 
-```text
-GET /api/youtube/browser/status
-```
+REST:
 
-Expected result:
+- `GET /api/youtube/browser/accounts`
+- `POST /api/youtube/browser/accounts`
+- `PATCH /api/youtube/browser/accounts/{account_id}`
+- `GET /api/youtube/browser/status?account_id=<id>`
 
-```json
-{
-  "publisher": "youtube_studio_browser",
-  "available": true,
-  "authenticated": true,
-  "action_required": null
-}
-```
-
-## Publish flow
-
-```text
-final.mp4 + thumbnail + metadata
-        ↓
-quality gate
-        ↓
-Playwright persistent Chrome profile
-        ↓
-YouTube Studio upload wizard
-        ↓
-title / description / thumbnail / audience
-        ↓
-visibility
-        ↓
-Publish
-```
-
-The browser publisher supports `private`, `unlisted`, and `public`. Scheduled publishing intentionally fails closed until the current Studio schedule UI has its own acceptance test.
-
-### Trust channel Upload defaults
-
-For channels already configured under **YouTube Studio → Settings → Upload defaults**, enable trust mode per account from the UI or account API. In this mode ManhwaShorts still sets title, description, tags, thumbnail, audience, and visibility, but skips per-upload automation for video language, title/description language, and category.
-
-The global fallback is `MS_YOUTUBE_TRUST_CHANNEL_DEFAULTS=false`; per-account settings override it. A publish request can also send `trust_channel_defaults` as a one-off override.
-
-## Failure behavior
-
-Browser diagnostics are written under ignored runtime storage:
-
-```text
-data/tmp/youtube_browser/<timestamp>/failure.png
-```
-
-Common action states:
-
-- `youtube_reauthentication`: log in or complete a Google security prompt.
-- `browser_busy`: another browser publisher is using the persistent profile.
-- `studio_automation_failed`: Studio UI changed or a selector/timing assumption failed.
-- `manual_schedule`: schedule UI has not yet been acceptance-tested.
-
-Never bypass CAPTCHA or Google security challenges programmatically.
-
-
-## Multi-account Chrome profiles
-
-ManhwaShorts isolates each YouTube account in its own persistent Chrome user-data directory.
-The existing pre-migration browser session remains available as account `default`; it is not moved or reauthenticated.
+CLI helpers inside this repository:
 
 ```bash
-# list profiles
 PYTHONPATH=. .venv/bin/python scripts/youtube_browser_account.py list
-
-# add a profile and give it a human-readable label
 PYTHONPATH=. .venv/bin/python scripts/youtube_browser_account.py add account-b "Channel B"
-
-# during a temporary noVNC/X11 session, log in only this profile
 ./scripts/youtube_browser_login.sh account-b
-
-# optionally make it the default publishing account
 PYTHONPATH=. .venv/bin/python scripts/youtube_browser_account.py default account-b
 ```
 
-Publishing requests may set `youtube_account_id`. The resolved account ID is persisted on the Publication row, so retrying a failed upload always reuses the same Chrome profile even if the global default changes later.
+The account registry stores labels/profile paths/settings, not raw authentication secrets. Publishing persists the resolved `youtube_account_id` on the Publication row so retries keep using the same channel even if the global default later changes.
+
+## Trust channel Upload defaults
+
+`trust_channel_defaults` is optional per account and can also be overridden per direct publish request. Resolution order is one-off publisher override → per-account value → `MS_YOUTUBE_TRUST_CHANNEL_DEFAULTS` → false.
+
+When effective trust is true, ManhwaShorts trusts the channel's YouTube Studio Upload defaults for video language, title/description language, and category. It still controls title, description, tags, thumbnail, audience, and visibility for every upload.
+
+Use trust mode only after those static defaults are configured correctly on that channel. Existing accounts default to inherited/global false, so enabling the feature does not silently change established behavior.
+
+## Publish/verification contract
+
+```text
+final.mp4 + generated metadata + thumbnail
+  → re-check final artifact + blocking QC
+  → open selected persistent Chrome profile
+  → YouTube Studio upload wizard
+  → exact title/description/tags + audience
+  → optional static metadata automation (unless trust defaults)
+  → requested visibility
+  → click final action
+  → verify matching Content/Shorts row is not Draft and has requested visibility
+  → persist verified video ID/result
+```
+
+A final click alone is never success. The publisher must verify the resulting Studio row. Scheduled publishing currently fails closed until its Studio flow is separately acceptance-tested.
+
+Thumbnail handling is non-blocking for an otherwise verified video. The publisher attempts the custom thumbnail during upload and can verify/retry persistence after creation. If that still fails, the Publication records the failure and asks for manual Studio correction; the video is not re-uploaded. The old standalone thumbnail-retry endpoint remains only as compatibility surface and refuses the archived behavior.
+
+## Failure behavior
+
+Diagnostics are written under ignored runtime storage (`data/tmp/youtube_browser/...`). Common action states include `youtube_reauthentication`, `browser_busy`, `studio_automation_failed`, and `manual_schedule`.
+
+Never bypass Google security challenges programmatically. Browser profiles are authenticated sessions and must be protected like credentials.
+
+## Initial login
+
+Login must be completed interactively for each new profile. Use `scripts/youtube_browser_login.sh <account-id>` from a temporary X11/VNC/noVNC session, complete Google security steps, verify Studio loads, close Chrome, then check `/api/youtube/browser/status?account_id=<id>`.

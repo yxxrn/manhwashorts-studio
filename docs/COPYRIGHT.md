@@ -1,4 +1,4 @@
-> **CURRENT POLICY — 2026-08-29:** Rights metadata is retained for audit, but
+> **CURRENT POLICY — 2026-09-03:** Rights metadata is retained for audit, but
 > enforcement is disabled by default (`MS_REQUIRE_RIGHTS_DECLARATION=false`).
 > Missing/rejected declarations are not production blockers unless enforcement is
 > explicitly enabled. This policy does not grant or imply legal permission.
@@ -26,32 +26,13 @@ publishing something you should not.
 
 ## What the software enforces
 
-### Rights declaration is mandatory
+### Rights metadata is auditable; enforcement is optional
 
-Every asset needs an owner and a licence basis before it can reach publication.
-The check is stricter than a checkbox:
+Assets can carry owner, licence basis, permission reference, attribution, and declaration state. The ingest layer normalizes that metadata into a rights status; incomplete/unknown declarations remain visible rather than being silently treated as permission.
 
-```python
-# services/ingest.py
-@property
-def status(self) -> str:
-    if not self.declared:
-        return RightsStatus.UNDECLARED
-    if self.license_type == LicenseType.UNKNOWN or not self.rights_owner.strip():
-        return RightsStatus.UNDECLARED
-    return RightsStatus.DECLARED
-```
+The current production default is `MS_REQUIRE_RIGHTS_DECLARATION=false`. Under that default, missing/rejected declarations are audit/policy findings but do not block render or publish. A deployment may intentionally set the flag to true, in which case the rights policy becomes blocking. Changing that policy requires configuration/tests/docs to move together.
 
-Ticking "I have the right" with no owner named leaves the asset `UNDECLARED`, and
-`rights.undeclared_assets` is blocking only when rights enforcement is explicitly enabled. Under the default disabled policy it is audit/warning information. A checkbox
-alone is not a record of anything.
-
-Licence bases recognised: `owned`, `licensed`, `permission_granted`,
-`public_domain`, `creative_commons`, `unknown`.
-
-Note that "fair use" is **not** a licence type. The app will not let you tick a
-box asserting fair use, because that is a legal conclusion a tool cannot make for
-you.
+Recognized licence bases include `owned`, `licensed`, `permission_granted`, `public_domain`, `creative_commons`, and `unknown`. "Fair use" is deliberately not represented as a licence assertion because whether a use qualifies is a legal conclusion outside the software's competence.
 
 ### Verbatim copying is blocked
 
@@ -81,13 +62,11 @@ commentary.
 This is a warning, not a block, because the right number depends on your format.
 Overriding it records your reason.
 
-### Public publishing is double-gated
+### Public visibility is explicit
 
-Visibility is explicit per publish request. If omitted, it defaults to `private`; `privacy_status: public` publishes publicly.
+Publishing defaults to `private`. An explicit `privacy_status: public` request publishes Public directly; `unlisted` publishes Unlisted. There is no second Public-confirmation gate, and a channel-level Public Upload default cannot override an omitted/private request because browser publishing explicitly selects and verifies requested visibility.
 
-Both are required. The default is private. This exists so an automation bug
-cannot publish to your channel — the failure mode of an over-eager script is an
-unlisted video, not a strike.
+This is an operational visibility rule, not a copyright determination. A Public request does not weaken source/evidence/QC gates or grant permission to use source material.
 
 ### Everything is audited
 
@@ -97,14 +76,10 @@ If you ever need to show your process, the record exists.
 
 ## What the software refuses to do
 
-- **No scraping.** There is no code path that fetches material from a manhwa
-  site. Material enters only through your upload. This is a structural choice,
-  not a setting.
-- **No watermark removal.** Not implemented, and not a feature request that will
-  be accepted.
-- **No auto-publish.** Every video requires an explicit approval action.
-- **No training on your material.** Your uploads are never used to train models.
-  With `MS_LLM_PROVIDER=rules` (the default) nothing leaves your machine at all.
+- **No watermark removal.** It is not part of the production pipeline.
+- **No implicit publication.** Upload happens only through an explicit publish boundary. Normal UI/manual approval remains explicit; a trusted local agent may approve-and-publish only when the user explicitly requests `until: "publish"` with `approval_mode: "trusted_agent"` and `confirm_publish_intent: true`.
+- **No claim that source acquisition equals permission.** Manual uploads and optional Suwayomi imports both retain rights/source metadata and enter the same policy/audit model. The Suwayomi connector is a source transport, not a rights bypass.
+- **No training on your material by this application.** Provider calls, when configured, are ordinary inference requests governed by the selected provider; local/offline modes avoid those external requests.
 
 ## What remains your responsibility
 
@@ -149,10 +124,7 @@ verification.
 
 ## Deleting material
 
-`DELETE /api/projects/{id}` removes the project and every blob no other project
-references. Disconnecting a channel erases its stored OAuth tokens immediately.
-If a rights holder asks you to stop using their material, you can comply
-completely and quickly.
+`DELETE /api/projects/{id}` removes the project and every blob no other project references. YouTube browser authentication lives in persistent Chrome profiles outside the project database; remove/revoke that browser session separately when retiring an account. If a rights holder asks you to stop using their material, you can remove the project/source artifacts through the normal storage boundary.
 
 ## Configuration reference
 

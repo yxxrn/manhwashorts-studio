@@ -11,6 +11,7 @@ ManhwaShorts Studio documentation is split into **current operational truth** an
 | Current verified state | [Current status](STATUS.md) |
 | Current module boundaries | [Architecture](ARCHITECTURE.md) |
 | Extend/refactor safely | [Maintainer guide](MAINTAINER_GUIDE.md) |
+| Fresh-machine install/upgrade | [Fresh-machine setup](FRESH_MACHINE.md) |
 | Operate the service | [Operations](OPERATIONS.md) |
 | Release/verification gate | [Release runbook](RELEASE_RUNBOOK.md) |
 | Drive the HTTP API | [Agent API guide](AGENT.md) |

@@ -101,9 +101,7 @@ Full route reference in [API.md](API.md#byok-credentials).
 
 ## How keys are protected
 
-- **Encrypted at rest** with Fernet, using `data/.fernet_key` (0600) — the same
-  key material that already protects YouTube OAuth tokens. The database column
-  holds a `gAAAAA...` token, never the key.
+- **Encrypted at rest** with Fernet, using `data/.fernet_key` (0600). Provider credential database columns hold `gAAAAA...` ciphertext, never the plaintext key. YouTube browser authentication is separate and stays inside persistent Chrome profiles rather than this Fernet/database path.
 - **Never returned.** Responses carry `key_hint` (last four characters) so you
   can tell two keys apart. There is no endpoint that reveals a stored key.
 - **Never logged.** Audit entries record provider, model, and key hint. Provider

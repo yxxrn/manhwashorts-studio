@@ -1,23 +1,22 @@
 # Current Status
 
-Last synchronized with the maintainability refactor baseline published on
-2026-08-29. For live truth, current `main`, tests, and persisted production
-artifacts override historical benchmark notes.
+Last synchronized with current production behavior on 2026-09-03. Current code, tests, runtime health, and accepted artifacts override older benchmark/handoff notes below.
 
 ## Current verified state
 
-- Maintainability refactor is merged to `main`; baseline commit: `4749633`.
-- `app/services/pipeline.py` is now a stable facade over
-  `app/services/pipeline_stages/`.
-- `app/services/cloud_multimodal.py` is a stable facade/orchestration surface over
-  `app/services/cloud_runner_parts/`.
-- Application import graph has zero circular dependency groups and is protected by
-  `tests/contracts/test_service_dependency_graph.py`.
-- Tests are organized by unit/contracts/integration/render/production/cloud/API/
-  migrations, with shared builders in `tests/factories/`.
-- Refactor release gate collected 1,520 tests and completed 100% with exit code 0.
-- Documentation synchronization added five contract checks; duration-policy hardening adds four more. Current collection is 1,529 tests.
-- The current duration-policy release gate completed the full 1,529-test suite at 100% with exit code 0; Ruff, compileall, and `git diff --check` are green.
+- The stable orchestration boundaries remain `app.services.pipeline` → `pipeline_stages/` and `app.services.cloud_multimodal` → `cloud_runner_parts/`; the application import graph is contract-tested for cycles.
+- Production final duration remains 50–60s with a 55s default target; 1080×1920, 60 FPS H.264/AAC is the accepted final media profile.
+- Visual/story analysis is durable and resumable. Valid segmentation, visual/story, narration/repair, TTS, timeline, render, and thumbnail identities are reused instead of repeating expensive work after interruption.
+- Visual planning is evidence-first and lineage-preserving: exact persisted panels/ROIs are selected under chronology/framing/face/protected-region constraints, capped at 4s per shot, animated with deterministic in-shot motion, and joined with editorial fades. Repetition, static holds, jitter, black frames, subtitle timing, A/V drift, and artifact integrity are QC'd.
+- Source acquisition supports ordinary uploads plus an optional localhost Suwayomi sidecar. Suwayomi imports preserve chapter/page order and enter the same source/evidence pipeline; a corpus cannot be mutated through that connector after analysis exists.
+- Fresh-machine lifecycle is Alembic-first and reproducible through `install.sh`/`scripts/manhwashorts doctor`; Chrome and Java/Suwayomi readiness are included when enabled.
+- YouTube publishing is browser-first through YouTube Studio. The runtime Data API publisher is archived; each account/channel uses an isolated persistent Chrome profile.
+- Visibility defaults to `private`. Explicit `unlisted` and `public` requests are honored directly; `confirm_public` remains accepted only as a legacy compatibility field and has no effect.
+- Per-account `trust_channel_defaults` may trust channel Upload defaults for video language, title/description language, and category. Title, description, tags, thumbnail, audience, and visibility remain uploader-controlled. The global fallback defaults to false.
+- Video publish success requires post-click verification of the matching Studio Content/Shorts row and requested visibility. Thumbnail failure is non-blocking; standalone thumbnail retry through the archived Data API path is not supported.
+- Local agents can advance `/api/projects/{id}/run` through `until: "publish"`. Trusted-agent approval is allowed only for an explicit publish request with `approval_mode: "trusted_agent"` and `confirm_publish_intent: true`; ordinary UI/manual approval is unchanged.
+- Rights/source metadata remains auditable. `MS_REQUIRE_RIGHTS_DECLARATION=false` is the production default, so missing declarations do not block render/publish unless a deployment intentionally enables enforcement.
+- The production service was verified healthy after the browser-account/trust-defaults update (`GET /api/health` HTTP 200, version 1.7.0, YouTube enabled, no reported problems).
 
 ## 2026-08-31 local aggregate benchmark checkpoint
 

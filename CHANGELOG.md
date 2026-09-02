@@ -1,3 +1,19 @@
+# 2026-09-03 — current pipeline/documentation synchronization
+
+- Synchronized active docs with the production pipeline after Suwayomi source integration, fresh-machine bootstrap hardening, browser-first YouTube publishing, multi-account persistent Chrome profiles, explicit visibility semantics, and per-account `trust_channel_defaults`.
+- Removed active instructions for the archived YouTube Data API/OAuth channel flow, dry-run publisher receipts, standalone thumbnail retry, and the old Public double-confirmation gate.
+- Clarified that rights metadata remains auditable while enforcement is disabled by default, and that trusted-agent `/run` orchestration may publish only after an explicit `until=publish` + `confirm_publish_intent=true` request.
+- Updated agent guidance to reflect multimodal/evidence-first visual selection rather than upload-order-only mapping.
+- Added documentation contract regressions so these retired behaviors cannot silently return to active docs.
+
+# 2026-09-02 — source/bootstrap/browser publishing production updates
+
+- Added the optional Suwayomi localhost sidecar for title/chapter-range import into the ordinary ordered source-asset pipeline.
+- Added reproducible fresh-machine install/doctor/Alembic lifecycle and portable Chrome/Suwayomi setup.
+- Replaced runtime YouTube Data API publishing with verified YouTube Studio browser automation using isolated persistent Chrome profiles.
+- Added multi-account account registry, session status, account selection, explicit `private`/`unlisted`/`public` visibility, best-effort non-blocking thumbnail handling, and per-account `trust_channel_defaults`.
+- Added local-agent `until: "publish"` orchestration with explicit trusted-agent publish intent while retaining normal manual approval behavior.
+
 # 2026-08-30 — production duration contract hardening
 
 - Single-sourced duration policy: project input range 10-90s, default target 55s, normal final production 50-60s.

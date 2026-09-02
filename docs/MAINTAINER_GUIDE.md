@@ -47,6 +47,14 @@ app/services/cloud_runner_parts/
 The runtime binding is intentional. Do not replace it with imports from a part
 module back into `cloud_multimodal.py`; that recreates circular dependencies.
 
+### Source and browser-publish boundaries
+
+`app.services.suwayomi` is an optional source adapter only: it resolves/fetches through the localhost sidecar, then the router ingests ordinary ordered source assets. Do not let connector-specific data bypass source lineage or mutate an analyzed corpus.
+
+YouTube responsibilities are intentionally split: `youtube_accounts.py` owns isolated persistent-profile metadata, `youtube_browser.py` owns Studio interaction/verification, and `publish.py` owns project/database/idempotency/retry semantics. Keep browser profiles/cookies outside Git and never downgrade success to "Publish button was clicked"; verified Content/Shorts row + requested visibility is the boundary.
+
+`trust_channel_defaults` is a metadata optimization, not a visibility shortcut. When enabled it skips static language/category automation only; title, description, tags, thumbnail, audience, and visibility stay controlled by the uploader. Omitted privacy remains Private.
+
 ### Shared contracts
 
 Dependency-light contracts live outside high-level orchestration:
@@ -70,6 +78,7 @@ The following remain fail-closed boundaries unless explicitly redesigned:
 - narration/evidence grounding contracts
 - subtitle/timeline/media validity
 - post-render QC and artifact integrity
+- verified browser publication identity/visibility when publish is requested
 
 Do not "solve" a production failure by editing persisted DB rows, rewriting a QC
 artifact, bypassing a facade, or weakening a validator without a product decision.

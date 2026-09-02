@@ -121,44 +121,40 @@ labelling, focus visibility, and live regions.
 
 ## Feature coverage
 
-v1.3 closed twelve gaps where the API had a capability the UI could not reach:
+The current UI exposes the production pipeline plus the browser-account controls that are safe to operate interactively:
 
-| Added | Why it matters |
+| Surface | Current behavior |
 |---|---|
-| Analysis view and editor (FR-03) | The script is generated from this data, so fixing a misdetected twist here is the cheapest way to improve the video |
-| Script version history | See what changed between takes |
-| Render history | Which encoder ran, which attempt failed, and why |
-| Publish readiness check | Know before uploading, not after |
-| Publication history + retry | A failed upload was previously invisible |
-| Analytics sync | Reports honestly when no data exists |
-| YouTube channel list + disconnect | Connecting was possible; reviewing was not |
-| Encoder capability table | Shows why a GPU is unavailable |
-| Project duplicate | Reuse settings for the next chapter |
-| Project delete | Was API-only |
-| Project metadata display | Confirm the right chapter at a glance |
-| Character counter on source text | The 40-character minimum used to be invisible |
+| Source/project controls | manual text/image ingest, project duplicate/delete, metadata |
+| Analysis/script | extracted-fact review/edit, script versions, explicit approval |
+| Timeline/subtitles | persisted scene/visual plan and subtitle cues |
+| Quality/render | blocking QC, warning handling, encoder selection, render history/preview |
+| Publication | readiness, generated/editable metadata, explicit Private/Unlisted/Public publish, publication history/retry |
+| YouTube accounts | isolated Chrome profiles, session check, default-account selection, per-account Trust Upload defaults toggle |
+| Provider/BYOK | provider test/save/model/default controls without exposing stored keys |
+| System | encoder capability and health/readiness surfaces |
 
-A test asserts every pipeline stage is reachable from the UI, so a future
-endpoint cannot quietly ship without a way to use it.
+Browser-account rows display whether Upload defaults are currently `trusted` or `full automation`. Toggling trust updates only that account's static metadata behavior; title, description, tags, thumbnail, audience, and visibility remain uploader-controlled.
+
+A UI contract test asserts that core pipeline/API surfaces remain reachable and that every referenced DOM control exists.
 
 ## Layout
 
-```
+```text
 top bar        health · encoder · account
-step nav       8 chips, jump to any stage
-settings       BYOK keys · YouTube channels · encoder table  (collapsed)
+step nav       pipeline-stage jump controls
+settings       BYOK keys · YouTube Chrome accounts/trust defaults · encoder table
 projects       select · duplicate · delete · metadata
-1 materi       text + upload, rights declaration
-2 draft        one button runs analysis → script → voice → timeline
-3 analisa      view and edit extracted facts
-4 naskah       per-beat editing, lock, approve
-5 timeline     scenes + subtitle cues, SRT download
-6 kualitas     blocking errors, overridable warnings
-7 render       encoder choice, progress, video preview
-8 publikasi    readiness, metadata, upload, history
+materi         manual source ingest / source metadata
+draft/analisa  analysis + grounded script workflow
+naskah         editing/versioning/approval
+timeline       visual plan + subtitle cues
+kualitas       blocking errors + warning handling
+render         encoder choice · progress · final preview
+publikasi      readiness · account · metadata · visibility · upload/history
 ```
 
-Steps are colour-coded so the flow is scannable while scrolling.
+The optional Suwayomi connector is primarily an API/operator source boundary; imported pages become normal project assets and the rest of the UI/pipeline treats them identically to manually ingested source images.
 
 ## Extending it
 

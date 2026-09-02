@@ -36,7 +36,7 @@ scripts/manhwashorts doctor --json
 
 ## YouTube state
 
-Chrome profiles remain outside Git under the current OS user's home directory. Moving to a new machine does not copy Google credentials automatically; create or select the account profile and perform one normal interactive Google login. Never transfer passwords or raw cookies through Git.
+Chrome profiles remain outside Git under the current OS user's home directory. Moving to a new machine does not copy Google credentials automatically; create/select each account profile and perform one normal interactive Google login. Account-level `trust_channel_defaults` is registry metadata, while the authenticated Google session remains inside that profile. Never transfer passwords or raw cookies through Git.
 
 ## Upgrade an existing machine
 

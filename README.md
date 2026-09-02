@@ -31,7 +31,9 @@ The current design is built around **durable resume state, evidence lineage, det
 - Audio timing is authoritative for voiced production; timeline and subtitles follow measured TTS timing.
 - Production requires the exact approved script hash + version.
 - A successful final package must pass both pre-render and post-render blocking QC.
-- Local-agent orchestration can continue through YouTube Studio browser publishing. Browser session state is kept in a dedicated persistent Chrome profile outside Git; the legacy Data API publisher is archived.
+- Source acquisition may be manual or use the optional localhost Suwayomi sidecar; imported pages enter the same ordered source/evidence pipeline.
+- Local-agent orchestration can continue through YouTube Studio browser publishing. Each channel uses an isolated persistent Chrome profile outside Git.
+- Publish visibility is request-driven: omitted privacy is `private`; explicit `unlisted`/`public` is honored. Per-account `trust_channel_defaults` can skip static language/category UI work while title, description, tags, thumbnail, audience, and visibility remain uploader-controlled.
 
 ## Reliability and resume behavior
 
@@ -264,7 +266,11 @@ The slow/render suites exercise real FFmpeg behavior and verify codec/container 
 
 ## Documentation
 
+- [Documentation index](docs/INDEX.md)
 - [Current status](docs/STATUS.md)
+- [Fresh-machine setup](docs/FRESH_MACHINE.md)
+- [Agent API guide](docs/AGENT.md)
+- [YouTube Studio publishing](docs/YOUTUBE_SETUP.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Operator CLI](docs/operator-cli.md)
 - [Operations](docs/OPERATIONS.md)
@@ -280,7 +286,7 @@ The slow/render suites exercise real FFmpeg behavior and verify codec/container 
 
 ## Scope and rights
 
-ManhwaShorts Studio does not implement website scrapers itself. Its optional Suwayomi connector can import pages from user-configured Suwayomi/Mihon sources, while preserving them as ordinary ordered source assets. It does not remove watermarks, generate replacement artwork, or automatically authorize publication rights. Imported material remains subject to the same rights metadata and policy gates as manual uploads.
+ManhwaShorts Studio does not implement website scrapers itself. Its optional Suwayomi connector can import pages from user-configured Suwayomi/Mihon sources, while preserving them as ordinary ordered source assets. It does not remove watermarks, generate replacement artwork, or automatically authorize publication rights. Imported material retains the same rights metadata/audit model as manual uploads; rights enforcement is optional and disabled by default.
 
 The repository code and third-party assets/services have separate licences. Verify the rights for source art, fonts, models, voices, and provider services before commercial publication.
 

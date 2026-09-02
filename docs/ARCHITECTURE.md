@@ -18,17 +18,19 @@ override this document.
 ## Data flow
 
 ```text
-source assets
-  → ingest / source metadata
-  → visual + story analysis
-  → grounded script / approval
+manual source assets OR optional Suwayomi import
+  → ordered ingest / strip segmentation / source metadata
+  → durable multimodal visual evidence + story map
+  → grounded narration + bounded narration/visual repair
+  → exact script approval identity
   → TTS + measured word timing
-  → timeline / visual planning / subtitles
-  → render
-  → post-render QC
+  → exact-panel/ROI timeline + subtitles + deterministic motion/fades
+  → final render → post-render QC
   → automatic thumbnail package
-  → upload-ready artifacts
+  → optional verified YouTube Studio browser publish
 ```
+
+Every downstream stage carries enough identity/lineage to reuse valid work and reject stale artifacts after source/script/contract changes.
 
 ## Service boundaries
 
@@ -37,20 +39,19 @@ app/routers/                       HTTP auth/validation/delegation
 app/services/pipeline.py           stable pipeline facade
 app/services/pipeline_stages/      stage implementations
 app/services/cloud_multimodal.py   stable cloud runner facade/orchestration
-app/services/cloud_runner_parts/   cloud stage implementations
+app/services/cloud_runner_parts/   visual/story/narration/repair/checkpoint parts
+app/services/suwayomi.py           optional localhost source-sidecar adapter
+app/services/youtube_accounts.py   persistent Chrome account registry/settings
+app/services/youtube_browser.py    verified YouTube Studio browser automation
+app/services/publish.py            project publication orchestration/persistence
 app/services/*_contracts.py        dependency-light shared contracts
-app/db_base.py                     SQLAlchemy declarative Base
-app/models.py                      persistence models
 app/services/render.py             FFmpeg/Pillow media engine
 app/services/quality.py            QC evaluation
-app/services/policy.py             policy findings, including rights audit
+app/services/policy.py             policy findings, including optional rights enforcement
 app/services/thumbnail.py          upload-ready automatic thumbnails
 ```
 
-Routers should not implement business rules. New pipeline behavior goes behind the
-facade in the relevant stage module. New cloud behavior goes into the relevant
-cloud runner part. Shared types move toward a contract module rather than creating
-service-to-service cycles.
+Routers do not own business rules. Source connectors ingest into ordinary source assets; they do not bypass pipeline/evidence policy. Browser automation owns Studio interaction while `publish.py` owns project/database/idempotency semantics.
 
 ## Pipeline facade
 
@@ -73,10 +74,7 @@ Visual scoring, ROI selection, shot planning, and rendering share dependency-lig
 visual contracts. Avoid importing `render.py` into planning/scoring layers. Subtitle
 word/sentence group types live in `subtitle_contracts.py` for the same reason.
 
-The renderer maintains the production media contract (currently vertical H.264/AAC,
-1080x1920 and 60 fps for the approved production profile). Motion/transition logic,
-subtitle timing, and panel lineage are persisted and QC'd rather than inferred from
-the final MP4 alone.
+The renderer maintains the production media contract (vertical H.264/AAC, 1080x1920 and 60 fps for the approved profile). Evidence-first planning persists exact panel/ROI lineage, caps production reference shots at 4 seconds, applies deterministic push/pull/pan/focus motion plus editorial fades, and QC-checks repetition, unsafe framing/face cutoff, static holds, jitter, subtitles, A/V timing, black frames, and media integrity.
 
 ## Thumbnail contract
 
@@ -99,7 +97,8 @@ policy changes. Do not conflate "metadata retained" with "publication blocked".
 - Resume paths reuse valid script/audio/timeline/render/thumbnail identities.
 - `tests/contracts/test_service_dependency_graph.py` asserts there are no circular
   application imports.
-- Runtime/private files are outside source control.
+- Runtime/private files are outside source control, including source media, provider state, and authenticated Chrome profiles.
+- Browser publication uses one isolated persistent profile per account and verifies the final Studio row/visibility before recording success; thumbnail failure remains a separate non-blocking outcome.
 
 See `MAINTAINER_GUIDE.md` for safe extension rules and `RELEASE_RUNBOOK.md` for the
 verification gate.

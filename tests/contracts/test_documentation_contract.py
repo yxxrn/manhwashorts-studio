@@ -12,6 +12,7 @@ ACTIVE_DOCS = (
     'docs/ARCHITECTURE.md',
     'docs/MAINTAINER_GUIDE.md',
     'docs/OPERATIONS.md',
+    'docs/FRESH_MACHINE.md',
     'docs/RELEASE_RUNBOOK.md',
     'docs/AGENT.md',
     'docs/COPYRIGHT.md',
@@ -37,6 +38,17 @@ STALE_PHRASES = (
     'Target duration: `60–90s`; ideal `70–85s`',
     'Project target default: `41s`',
     'currently accepted production artifact is ~25s',
+    'Public publishing is double-gated',
+    'Public visibility remains double-gated',
+    'With YouTube unconfigured, the dry-run provider',
+    '`GET /api/youtube/callback`',
+    '**No scraping.** There is no code path',
+    '**No auto-publish.**',
+    'there is no content matching',
+    'Upload order is the only control that matters',
+    'YouTube channel list + disconnect',
+    'Rights declaration is mandatory',
+    'the same key material that already protects YouTube OAuth tokens',
 )
 
 
@@ -101,3 +113,18 @@ def test_duration_documentation_matches_product_contract():
     assert '50-60s' in status
     assert 'final measured duration is within 50-60s' in runbook
     assert 'adaptive review duration below 50s' in runbook
+
+def test_current_source_and_browser_publish_contract_is_documented():
+    readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+    api = (ROOT / 'docs/API.md').read_text(encoding='utf-8')
+    agent = (ROOT / 'docs/AGENT.md').read_text(encoding='utf-8')
+    youtube = (ROOT / 'docs/YOUTUBE_SETUP.md').read_text(encoding='utf-8')
+    assert 'optional localhost Suwayomi sidecar' in readme
+    assert 'trust_channel_defaults' in readme
+    assert 'GET /api/youtube/browser/accounts' in api
+    assert 'legacy `confirm_public` request field' in api
+    assert 'standalone thumbnail retry' in api
+    assert '"until": "publish"' in agent
+    assert 'confirm_publish_intent' in agent
+    assert 'omitted `privacy_status` → `private`' in youtube
+    assert 'verified YouTube Studio browser publish' in (ROOT / 'docs/ARCHITECTURE.md').read_text(encoding='utf-8')

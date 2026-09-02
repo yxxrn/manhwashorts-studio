@@ -17,7 +17,7 @@ raw development server publicly. A standalone render worker is available with
 
 ## Production workflow
 
-1. Ingest source material and preserve source/rights metadata.
+1. Ingest ordered source material manually or through the optional Suwayomi sidecar; preserve source provenance and rights metadata.
 2. Run the visual/story analysis flow and inspect any review boundary.
 3. Generate/edit the grounded script and approve the exact script identity. Normal final target is 55s and the accepted final window is 50-60s.
 4. Generate voice/timing and timeline through the normal pipeline facade.
@@ -25,7 +25,7 @@ raw development server publicly. A standalone render worker is available with
 6. Queue or resume final render rather than duplicating a valid successful job.
 7. Verify final media integrity and post-render QC.
 8. Verify the automatic thumbnail package and thumbnail QC.
-9. Upload/publish only through the supported explicit operator/API boundary.
+9. Upload/publish only through the supported explicit operator/API boundary using an authenticated persistent Chrome account. Omitted visibility is Private; explicit Unlisted/Public is honored and Studio result/visibility must be verified.
 
 A sub-50-second `coherent_capacity_adaptive_v1` result is a review/diagnostic artifact, not a final-production exception. Increase grounded visual/story capacity rather than stretching a few panels or silently accepting a short final.
 
@@ -61,6 +61,7 @@ historical monolithic test files.
 - Expired render leases are recovered through the normal worker boundary.
 - Retry preserves previous job/audit records.
 - Never repair state by hand-editing the DB, QC JSON, or final artifact.
+- If YouTube publishing fails, keep/reuse the same `youtube_account_id`; fix browser authentication/Studio issues and retry the failed Publication rather than re-rendering. Thumbnail-only failure is non-blocking and is corrected manually in Studio if browser persistence retry also failed.
 
 ## Repository hygiene
 
