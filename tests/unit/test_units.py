@@ -205,11 +205,10 @@ def test_banned_words_block():
     assert findings and findings[0].blocking
 
 
-def test_public_publish_requires_config(app_settings, monkeypatch):
+def test_publish_visibility_has_no_extra_public_gate():
     from app.services import policy
 
-    monkeypatch.setattr(app_settings, "allow_public_publish", False)
-    assert policy.check_public_publish("public")[0].blocking
+    assert policy.check_public_publish("public") == []
     assert policy.check_public_publish("private") == []
 
 

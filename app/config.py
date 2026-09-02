@@ -217,7 +217,6 @@ class Settings(BaseSettings):
     # --- Policy guardrails ---
     require_rights_declaration: bool = False
     max_consecutive_panels_per_chapter: int = 8
-    allow_public_publish: bool = False
 
     @field_validator("environment")
     @classmethod

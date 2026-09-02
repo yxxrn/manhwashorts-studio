@@ -18,7 +18,6 @@ from app.config import settings
 from app.constants import PrivacyStatus, ProjectStatus, UploadStatus
 from app.models import Publication, RenderJob, VideoStat
 from app.security import new_idempotency_key
-from app.services import policy
 from app.services import quality as quality_svc
 from app.services.file_integrity import sha256_file
 from app.services.pipeline import (
@@ -161,16 +160,8 @@ def publish(
     actor_id: str = "",
 ) -> Publication:
     """Publish the latest successful render through YouTube Studio browser UI."""
-    del channel_id  # legacy API argument kept temporarily for agent compatibility
+    del channel_id, confirm_public  # legacy API arguments kept temporarily for compatibility
     project = get_project(db, project_id)
-
-    findings = policy.check_public_publish(privacy_status)
-    if findings:
-        raise PipelineError(findings[0].message)
-    if privacy_status == PrivacyStatus.PUBLIC and not confirm_public:
-        raise PipelineError(
-            "Publishing publicly needs explicit confirmation. Set confirm_public=true after review."
-        )
 
     job = successful_render(db, project_id)
     if job is None:

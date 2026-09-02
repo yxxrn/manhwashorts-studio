@@ -494,16 +494,25 @@ def test_publish_dry_run_writes_receipt_and_no_fabricated_stats(db, recap_text, 
 
 
 @requires_ffmpeg
-def test_public_publish_double_gated(db, recap_text):
+def test_explicit_public_publish_needs_no_second_confirmation(db, recap_text, monkeypatch):
     from app.services import pipeline as pl
     from app.services import publish as publish_svc
+    from app.services.youtube_browser import BrowserPublishResult
 
-    project_id = _seed_project(db, recap_text)
-    _draft, script, _segments, _scenes, _cues = _prepare_media(db, project_id)
+    class BrowserPublisher:
+        account_id = "default"
+        def __init__(self, account_id=None):
+            self.account_id = account_id or "default"
+        def publish(self, **kwargs):
+            return BrowserPublishResult(video_id="public_test", privacy_status=kwargs["privacy_status"], thumbnail_status="uploaded")
+
+    monkeypatch.setattr(publish_svc, "YouTubeStudioBrowserPublisher", BrowserPublisher)
+    project_id = _seed_project(db, recap_text, panel_count=12)
+    _prepare_media(db, project_id)
     pl.execute_render(db, pl.enqueue_render(db, project_id, "final", actor_id="test").id)
-
-    with pytest.raises(pl.PipelineError, match="[Pp]ublic"):
-        publish_svc.publish(db, project_id, privacy_status="public", confirm_public=True)
+    publication = publish_svc.publish(db, project_id, privacy_status="public")
+    assert publication.privacy_status == "public"
+    assert publication.youtube_video_id == "public_test"
 
 
 @requires_ffmpeg

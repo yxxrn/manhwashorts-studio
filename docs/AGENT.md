@@ -171,8 +171,7 @@ enforcement implicitly; that is a separate product/configuration decision.
 **Script approval.** `POST /script/approve` is mandatory before a final render.
 An agent can call it, but the call is explicit — nothing approves itself.
 
-**Public upload.** Needs `MS_ALLOW_PUBLIC_PUBLISH=true` *and*
-`confirm_public: true` in the request. Two independent gates.
+**Public upload.** Visibility is explicit: omitted visibility defaults to `private`; `privacy_status: public` publishes publicly.
 
 These are deliberate. An agent that can publish copyrighted panels to a public
 channel with no checkpoint is a liability, not a feature.

@@ -83,11 +83,7 @@ Overriding it records your reason.
 
 ### Public publishing is double-gated
 
-```
-MS_ALLOW_PUBLIC_PUBLISH=true     (config, requires a restart)
-        AND
-"confirm_public": true            (per request)
-```
+Visibility is explicit per publish request. If omitted, it defaults to `private`; `privacy_status: public` publishes publicly.
 
 Both are required. The default is private. This exists so an automation bug
 cannot publish to your channel — the failure mode of an over-eager script is an
@@ -164,4 +160,3 @@ completely and quickly.
 |---|---|---|
 | `MS_REQUIRE_RIGHTS_DECLARATION` | `false` | Rights metadata remains auditable. Set `true` only for an intentional deployment that wants rights findings to block. |
 | `MS_MAX_CONSECUTIVE_PANELS_PER_CHAPTER` | `8` | Panel volume warning threshold. |
-| `MS_ALLOW_PUBLIC_PUBLISH` | `false` | Must be `true` before any public upload is possible. |

@@ -849,7 +849,6 @@ $('publish-form').addEventListener('submit', async (event) => {
     description: $('pub-desc').value.trim(),
     tags: $('pub-tags').value.split(',').map((t) => t.trim()).filter(Boolean),
     privacy_status: $('pub-privacy').value,
-    confirm_public: $('pub-confirm').checked,
   };
   try {
     const publication = await api(`/api/projects/${state.projectId}/publish`, { method: 'POST', body });

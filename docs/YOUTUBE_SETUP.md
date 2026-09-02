@@ -28,11 +28,7 @@ MS_YOUTUBE_BROWSER_TIMEOUT_SECONDS=120
 
 Public visibility remains double-gated:
 
-```bash
-MS_ALLOW_PUBLIC_PUBLISH=true
-```
-
-and the publish request must still send `confirm_public=true`.
+Visibility is request-driven. If `privacy_status` is omitted it defaults to `private`; sending `privacy_status=public` publishes publicly without a second confirmation flag.
 
 ## First login
 

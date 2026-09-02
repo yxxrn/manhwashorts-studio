@@ -223,7 +223,6 @@ See `.env.example` for the full set. The most important production settings are:
 | `MS_LLM_PROVIDER` | `rules` | Offline rules default; cloud review uses configured provider/BYOK |
 | `MS_VIDEO_ENCODER` | `auto` | CPU/GPU encoder selection |
 | `MS_REQUIRE_RIGHTS_DECLARATION` | `false` | Optional blocking rights-enforcement switch |
-| `MS_ALLOW_PUBLIC_PUBLISH` | `false` | Public upload remains disabled unless explicitly enabled |
 
 The offline `rules`/`espeak` defaults keep a fresh clone operable for development. They do **not** bypass production approval, evidence, media, or QC gates.
 

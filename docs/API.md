@@ -537,8 +537,7 @@ Before uploading, the server re-verifies: public gating, a successful final
 render, the file's SHA-256 against its render-time checksum, and the quality
 gates. A file modified after rendering is refused.
 
-Public uploads require `MS_ALLOW_PUBLIC_PUBLISH=true` **and**
-`confirm_public: true`.
+Visibility defaults to `private`. Sending `privacy_status: public` explicitly publishes publicly; no second confirmation field is required.
 
 With YouTube unconfigured, the dry-run provider writes a receipt to
 `data/output/dry_run_uploads/` and returns a `dryrun_…` video id.

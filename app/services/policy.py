@@ -202,16 +202,8 @@ def check_citations(sections: list[dict]) -> list[PolicyFinding]:
 
 
 def check_public_publish(privacy_status: str) -> list[PolicyFinding]:
-    """Public publishing is opt-in via config, per PRD guardrail metrics."""
-    if privacy_status == "public" and not settings.allow_public_publish:
-        return [
-            PolicyFinding(
-                "publish.public_disabled",
-                CheckSeverity.ERROR,
-                "Public publishing is disabled. Upload as private or unlisted, "
-                "review the video, then enable MS_ALLOW_PUBLIC_PUBLISH.",
-            )
-        ]
+    """Visibility is controlled explicitly by the publish request; no extra public gate."""
+    del privacy_status
     return []
 
 
