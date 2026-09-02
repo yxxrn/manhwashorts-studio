@@ -35,6 +35,8 @@ from app.schemas import (
     CueUpdate,
     DraftOut,
     OverrideRequest,
+    ProjectPipelineStatusOut,
+    ProjectRunRequest,
     QCHistorySnapshotOut,
     QCOverrideEventOut,
     QualityCheckOut,
@@ -373,6 +375,192 @@ def download_srt(project: OwnedProject, db: DbSession):
     )
 
 
+# --- local orchestration ---------------------------------------------------
+
+
+_STAGE_ORDER = {name: index for index, name in enumerate(
+    ("analysis", "draft", "voice", "timeline", "quality", "render")
+)}
+
+
+def _latest_row_time(rows):
+    values = []
+    for row in rows:
+        value = getattr(row, "updated_at", None) or getattr(row, "created_at", None)
+        if value is not None:
+            values.append(float(value.timestamp()))
+    return max(values, default=None)
+
+
+def _project_pipeline_status(project, db) -> dict:
+    analysis = pl.latest_analysis(db, project.id)
+    script = pl.latest_script_row(db, project.id)
+    script_approved = bool(script is not None and pl.script_is_media_ready(db, project.id))
+
+    segments = pl.audio_segments(db, script.id) if script is not None else []
+    scenes = pl.project_scenes(db, project.id)
+    checks = pl.project_quality_checks(db, project.id)
+    render = pl.latest_render(db, project.id, "final")
+
+    voice_ready = bool(segments)
+    voice_time = _latest_row_time(segments)
+    scene_time = _latest_row_time(scenes)
+    timeline_ready = bool(
+        scenes
+        and voice_ready
+        and scene_time is not None
+        and (voice_time is None or scene_time >= voice_time)
+    )
+    check_time = _latest_row_time(checks)
+    quality_current = bool(
+        checks
+        and timeline_ready
+        and check_time is not None
+        and (scene_time is None or check_time >= scene_time)
+    )
+    blocking_codes = [
+        str(check.code)
+        for check in checks
+        if quality_current and str(check.severity) == "error" and not bool(check.passed)
+    ]
+    quality_ready = quality_current and not blocking_codes
+    render_time = _latest_row_time([render]) if render is not None else None
+    render_current = bool(
+        render is not None
+        and quality_ready
+        and render_time is not None
+        and (check_time is None or render_time >= check_time)
+    )
+
+    if render_current and str(render.status) == JobStatus.SUCCEEDED:
+        current_stage = "complete"
+    elif render_current:
+        current_stage = "render"
+    elif quality_current:
+        current_stage = "quality"
+    elif timeline_ready:
+        current_stage = "timeline"
+    elif voice_ready:
+        current_stage = "voice"
+    elif script is not None:
+        current_stage = "script_review" if not script_approved else "draft"
+    else:
+        current_stage = "analysis"
+
+    action_required = None
+    if script is not None and not script_approved:
+        action_required = "script_approval"
+    elif blocking_codes:
+        action_required = "quality_blocked"
+    elif render_current and str(render.status) in {JobStatus.FAILED, JobStatus.CANCELLED}:
+        action_required = "render_retry"
+
+    downloadable = bool(
+        render_current and str(render.status) == JobStatus.SUCCEEDED and render.output_key
+    )
+    return {
+        "project_id": project.id,
+        "project_status": str(project.status),
+        "current_stage": current_stage,
+        "action_required": action_required,
+        "analysis_state": str(analysis.state) if analysis is not None and analysis.state else None,
+        "script_id": script.id if script is not None else None,
+        "script_version": int(script.version) if script is not None else None,
+        "script_approved": script_approved,
+        "voice_ready": voice_ready,
+        "timeline_ready": timeline_ready,
+        "quality_ready": quality_ready,
+        "quality_blocking_codes": blocking_codes,
+        "render_job_id": render.id if render is not None else None,
+        "render_status": str(render.status) if render is not None else None,
+        "render_progress": int(render.progress) if render is not None else 0,
+        "render_stage": str(render.stage or "") if render is not None else "",
+        "download_url": (
+            f"/api/projects/{project.id}/download/{render.id}" if downloadable else None
+        ),
+        "_quality_current": quality_current,
+        "_render_current": render_current,
+    }
+
+
+@router.get("/status", response_model=ProjectPipelineStatusOut)
+def get_pipeline_status(project: OwnedProject, db: DbSession) -> dict:
+    """Return one compact, polling-friendly view of the project's pipeline state."""
+    return _project_pipeline_status(project, db)
+
+
+@router.post("/run", response_model=ProjectPipelineStatusOut)
+def run_pipeline(
+    payload: ProjectRunRequest,
+    project: OwnedProject,
+    db: DbSession,
+    user: CurrentUser,
+    background: BackgroundTasks,
+) -> dict:
+    """Advance the existing pipeline to ``until`` and safely resume completed stages."""
+    target = _STAGE_ORDER[payload.until]
+    analysis = pl.latest_analysis(db, project.id)
+    if analysis is None or str(analysis.state) not in {"RECONCILED", "SCRIPT_DRAFT", "SCRIPT_APPROVED"}:
+        _guard(
+            pl.run_analysis,
+            db,
+            project.id,
+            user.id,
+            narrative_profile_id=payload.narrative_profile_id,
+        )
+        db.flush()
+    if target == _STAGE_ORDER["analysis"]:
+        return _project_pipeline_status(project, db)
+
+    script = pl.latest_script_row(db, project.id)
+    if script is None:
+        _guard(
+            pl.generate_script,
+            db,
+            project.id,
+            seed=payload.seed,
+            actor_id=user.id,
+            narrative_profile_id=payload.narrative_profile_id,
+        )
+        db.flush()
+        script = pl.latest_script_row(db, project.id)
+    if target == _STAGE_ORDER["draft"]:
+        return _project_pipeline_status(project, db)
+
+    status_view = _project_pipeline_status(project, db)
+    if not status_view["script_approved"]:
+        return status_view
+
+    if script is not None and not pl.audio_segments(db, script.id):
+        _guard(pl.generate_voiceover, db, project.id, actor_id=user.id)
+        db.flush()
+    if target == _STAGE_ORDER["voice"]:
+        return _project_pipeline_status(project, db)
+
+    status_view = _project_pipeline_status(project, db)
+    if not status_view["timeline_ready"]:
+        _guard(pl.build_timeline, db, project.id, user.id)
+        db.flush()
+    if target == _STAGE_ORDER["timeline"]:
+        return _project_pipeline_status(project, db)
+
+    status_view = _project_pipeline_status(project, db)
+    if not status_view["quality_ready"] and status_view["action_required"] != "quality_blocked":
+        _guard(pl.run_quality_checks, db, project.id, None, user.id)
+        db.flush()
+    status_view = _project_pipeline_status(project, db)
+    if target == _STAGE_ORDER["quality"] or status_view["quality_blocking_codes"]:
+        return status_view
+
+    if status_view["_render_current"]:
+        return status_view
+    render = _guard(pl.enqueue_render, db, project.id, "final", user.id, "auto", "Auto")
+    job_id = render.id
+    db.commit()
+    background.add_task(_run_render_task, job_id)
+    return _project_pipeline_status(project, db)
+
+
 # --- draft shortcut -------------------------------------------------------
 
 
@@ -383,7 +571,7 @@ def generate_draft(
     user: CurrentUser,
     seed: int | None = None,
 ) -> dict:
-    """Run analyse -> script -> voice -> timeline in one call (PRD section 3)."""
+    """Generate a script draft from an already reconciled vision analysis."""
     return _guard(pl.generate_draft, db, project.id, user.id, seed)
 
 

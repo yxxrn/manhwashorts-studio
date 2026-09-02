@@ -137,7 +137,7 @@ def test_health_reports_disk_usage(client):
 
 
 def test_agent_can_drive_the_whole_pipeline_over_rest(
-    client, recap_text, panel_bytes, declared_rights
+    client, recap_text, panel_bytes, declared_rights, monkeypatch
 ):
     """One pass with no UI and no internal imports: create -> render-ready.
 
@@ -199,15 +199,27 @@ def test_agent_can_drive_the_whole_pipeline_over_rest(
         json={"editorial_review_confirmed": True},
     )
     assert approved.status_code == 200, approved.text
-    voice = client.post(f"/api/projects/{pid}/voice", json={"speed": 1.0})
-    assert voice.status_code == 200, voice.text
-    timeline = client.post(f"/api/projects/{pid}/timeline")
-    assert timeline.status_code == 200, timeline.text
+    progressed = client.post(f"/api/projects/{pid}/run", json={"until": "timeline"})
+    assert progressed.status_code == 200, progressed.text
+    assert progressed.json()["voice_ready"] is True
+    assert progressed.json()["timeline_ready"] is True
 
     # Quality gate must be readable and must not block a clean project.
     quality = client.post(f"/api/projects/{pid}/quality").json()
     assert quality["errors"] == 0, quality["error_codes"]
     assert quality["can_publish"] is True
+
+    from app.routers import pipeline as pipeline_router
+
+    monkeypatch.setattr(pipeline_router, "_run_render_task", lambda _job_id: None)
+    queued = client.post(f"/api/projects/{pid}/run", json={"until": "render"})
+    assert queued.status_code == 200, queued.text
+    queued_body = queued.json()
+    assert queued_body["render_job_id"]
+    assert queued_body["render_status"] == "queued"
+    repeated = client.post(f"/api/projects/{pid}/run", json={"until": "render"})
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["render_job_id"] == queued_body["render_job_id"]
 
     # Everything an agent polls afterwards is reachable.
     for path in ["/analysis", "/timeline", "/subtitles", "/voice", "/render",
@@ -225,5 +237,72 @@ def test_openapi_is_available_for_agent_introspection(client):
         "/api/projects/{project_id}/draft",
         "/api/projects/{project_id}/render",
         "/api/projects/{project_id}/assets/upload",
+        "/api/projects/{project_id}/status",
+        "/api/projects/{project_id}/run",
+        "/api/capabilities",
     ]:
         assert required in paths, f"{required} missing from OpenAPI"
+
+
+# --- compact local orchestration surface ----------------------------------
+
+
+def test_local_capabilities_are_small_and_machine_readable(client):
+    response = client.get("/api/capabilities")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["orchestration"] is True
+    assert body["approval_required"] is True
+    assert body["render_async"] is True
+    assert body["stages"] == ["analysis", "draft", "voice", "timeline", "quality", "render"]
+    assert body["openapi_url"] == "/openapi.json"
+
+
+def test_run_resumes_idempotently_and_stops_for_script_approval(
+    client, recap_text, panel_bytes, declared_rights
+):
+    assert client.post(
+        "/api/auth/register",
+        json={"email": "agent-run@example.com", "password": "agentpass1234"},
+    ).status_code == 201
+    project = client.post(
+        "/api/projects",
+        json={
+            "title": "Agent Run",
+            "manhwa_title": "Menara",
+            "chapter": "10",
+            "template": "classic",
+            "target_duration": 40,
+            "language": "id",
+        },
+    ).json()
+    pid = project["id"]
+    assert client.post(
+        f"/api/projects/{pid}/assets/text",
+        json={"text": recap_text, "title": "recap.txt", "rights": declared_rights},
+    ).status_code == 201
+    assert client.post(
+        f"/api/projects/{pid}/assets/upload",
+        files=[("files", ("panel01.jpg", panel_bytes, "image/jpeg"))],
+        data={k: str(v) for k, v in declared_rights.items()},
+    ).status_code == 201
+
+    from tests.factories.vision_api import seed_reconciled_analysis_for_project_images
+
+    seed_reconciled_analysis_for_project_images(pid)
+    first = client.post(f"/api/projects/{pid}/run", json={"until": "draft", "seed": 42})
+    assert first.status_code == 200, first.text
+    first_body = first.json()
+    assert first_body["script_id"]
+    assert first_body["action_required"] == "script_approval"
+    assert first_body["script_approved"] is False
+
+    second = client.post(f"/api/projects/{pid}/run", json={"until": "draft", "seed": 99})
+    assert second.status_code == 200, second.text
+    assert second.json()["script_id"] == first_body["script_id"]
+    assert second.json()["script_version"] == first_body["script_version"]
+    approved = client.post(
+        f"/api/projects/{pid}/script/approve",
+        json={"editorial_review_confirmed": True},
+    )
+    assert approved.status_code == 200, approved.text

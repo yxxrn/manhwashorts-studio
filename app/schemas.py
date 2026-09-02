@@ -757,5 +757,42 @@ class HealthOut(BaseModel):
     disk_usage: DiskUsageOut | None = None
 
 
+class LocalCapabilitiesOut(BaseModel):
+    api_version: str
+    local_only_default: bool
+    auth: str
+    openapi_url: str
+    orchestration: bool
+    approval_required: bool
+    render_async: bool
+    stages: list[str]
+
+
+class ProjectPipelineStatusOut(BaseModel):
+    project_id: str
+    project_status: str
+    current_stage: str
+    action_required: str | None = None
+    analysis_state: str | None = None
+    script_id: str | None = None
+    script_version: int | None = None
+    script_approved: bool = False
+    voice_ready: bool = False
+    timeline_ready: bool = False
+    quality_ready: bool = False
+    quality_blocking_codes: list[str] = Field(default_factory=list)
+    render_job_id: str | None = None
+    render_status: str | None = None
+    render_progress: int = 0
+    render_stage: str = ""
+    download_url: str | None = None
+
+
+class ProjectRunRequest(BaseModel):
+    until: Literal["analysis", "draft", "voice", "timeline", "quality", "render"] = "draft"
+    seed: int | None = None
+    narrative_profile_id: str | None = None
+
+
 class MessageOut(BaseModel):
     detail: str

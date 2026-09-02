@@ -1224,6 +1224,15 @@ def _script_for_media(
     return latest
 
 
+def script_is_media_ready(db: Session, project_id: str) -> bool:
+    """Whether the newest script satisfies the exact media approval contract."""
+    try:
+        _script_for_media(db, project_id)
+    except PipelineError:
+        return False
+    return True
+
+
 def all_scripts(db: Session, project_id: str) -> list[ScriptVersion]:
     """Every script version, newest first (FR-04 version history)."""
     return list(

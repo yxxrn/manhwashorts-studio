@@ -22,7 +22,7 @@ from fastapi.templating import Jinja2Templates
 from app.config import BASE_DIR, settings
 from app.db import init_db
 from app.routers import auth, credentials, pipeline, projects, publish
-from app.schemas import EncoderCapabilityOut, HealthOut
+from app.schemas import EncoderCapabilityOut, HealthOut, LocalCapabilitiesOut
 from app.services import encoders
 from app.services import render as render_svc
 from app.services import tts as tts_svc
@@ -126,6 +126,21 @@ def health() -> dict:
         "video_encoder": encoder.key,
         "gpu_encoding": encoder.hardware,
         "disk_usage": disk_usage,
+    }
+
+
+@app.get("/api/capabilities", response_model=LocalCapabilitiesOut, tags=["system"])
+def capabilities() -> dict:
+    """Small stable surface for local agents to discover orchestration support."""
+    return {
+        "api_version": settings.version,
+        "local_only_default": settings.host in {"127.0.0.1", "localhost", "::1"},
+        "auth": "session_cookie",
+        "openapi_url": "/openapi.json",
+        "orchestration": True,
+        "approval_required": True,
+        "render_async": True,
+        "stages": ["analysis", "draft", "voice", "timeline", "quality", "render"],
     }
 
 
