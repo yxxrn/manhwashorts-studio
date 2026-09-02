@@ -50,6 +50,7 @@ def create_youtube_browser_account(
         publish_svc.create_browser_account,
         account_id=payload.account_id,
         label=payload.label,
+        trust_channel_defaults=payload.trust_channel_defaults,
     )
 
 
@@ -63,6 +64,8 @@ def update_youtube_browser_account(
         account_id,
         label=payload.label,
         make_default=payload.make_default,
+        trust_channel_defaults=payload.trust_channel_defaults,
+        change_trust_channel_defaults="trust_channel_defaults" in payload.model_fields_set,
     )
 
 
@@ -97,6 +100,7 @@ def publish_project(
         privacy_status=payload.privacy_status,
         scheduled_at=payload.scheduled_at,
         confirm_public=payload.confirm_public,
+        trust_channel_defaults=payload.trust_channel_defaults,
         actor_id=user.id,
     )
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from app.config import settings
 
 _ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class YouTubeBrowserAccount:
     account_id: str
     label: str
     profile_dir: Path
+    trust_channel_defaults: bool | None = None
 
 
 class YouTubeBrowserAccountRegistry:
@@ -79,6 +81,11 @@ class YouTubeBrowserAccountRegistry:
             account_id=str(record["account_id"]),
             label=str(record.get("label") or record["account_id"]),
             profile_dir=Path(str(record["profile_dir"])).expanduser(),
+            trust_channel_defaults=(
+                record.get("trust_channel_defaults")
+                if isinstance(record.get("trust_channel_defaults"), bool)
+                else None
+            ),
         )
 
     def list_accounts(self) -> list[YouTubeBrowserAccount]:
@@ -102,7 +109,13 @@ class YouTubeBrowserAccountRegistry:
                 return account
         raise ValueError(f"unknown YouTube browser account: {wanted}")
 
-    def create(self, *, account_id: str, label: str) -> YouTubeBrowserAccount:
+    def create(
+        self,
+        *,
+        account_id: str,
+        label: str,
+        trust_channel_defaults: bool | None = None,
+    ) -> YouTubeBrowserAccount:
         account_id = self.normalize_account_id(account_id)
         clean_label = label.strip()[:120] or account_id
         payload = self._load()
@@ -113,7 +126,15 @@ class YouTubeBrowserAccountRegistry:
         profile_dir.chmod(0o700)
         marker = profile_dir / ".manhwashorts-account.json"
         marker.write_text(
-            json.dumps({"account_id": account_id, "label": clean_label}, indent=2) + "\n",
+            json.dumps(
+                {
+                    "account_id": account_id,
+                    "label": clean_label,
+                    "trust_channel_defaults": trust_channel_defaults,
+                },
+                indent=2,
+            )
+            + "\n",
             encoding="utf-8",
         )
         marker.chmod(0o600)
@@ -122,6 +143,7 @@ class YouTubeBrowserAccountRegistry:
                 "account_id": account_id,
                 "label": clean_label,
                 "profile_dir": str(profile_dir),
+                "trust_channel_defaults": trust_channel_defaults,
                 "created_at": datetime.now(UTC).isoformat(),
             }
         )
@@ -134,6 +156,7 @@ class YouTubeBrowserAccountRegistry:
         *,
         label: str | None = None,
         make_default: bool = False,
+        trust_channel_defaults: bool | None | object = _UNSET,
     ) -> YouTubeBrowserAccount:
         wanted = self.normalize_account_id(account_id)
         payload = self._load()
@@ -148,11 +171,21 @@ class YouTubeBrowserAccountRegistry:
             target["label"] = label.strip()[:120] or wanted
         if make_default:
             payload["default_account_id"] = wanted
+        if trust_channel_defaults is not _UNSET:
+            target["trust_channel_defaults"] = trust_channel_defaults
         self._save(payload)
         account = self.get(wanted)
         marker = account.profile_dir / ".manhwashorts-account.json"
         marker.write_text(
-            json.dumps({"account_id": account.account_id, "label": account.label}, indent=2) + "\n",
+            json.dumps(
+                {
+                    "account_id": account.account_id,
+                    "label": account.label,
+                    "trust_channel_defaults": account.trust_channel_defaults,
+                },
+                indent=2,
+            )
+            + "\n",
             encoding="utf-8",
         )
         marker.chmod(0o600)
@@ -169,6 +202,12 @@ class YouTubeBrowserAccountRegistry:
                     "profile_dir": str(account.profile_dir),
                     "is_default": account.account_id == default_id,
                     "profile_exists": account.profile_dir.is_dir(),
+                    "trust_channel_defaults": account.trust_channel_defaults,
+                    "effective_trust_channel_defaults": (
+                        account.trust_channel_defaults
+                        if account.trust_channel_defaults is not None
+                        else settings.youtube_trust_channel_defaults
+                    ),
                 }
             )
         return rows

@@ -132,9 +132,11 @@
         <div class="row-actions">
           <input type="text" id="yt-account-id" aria-label="YouTube account ID" maxlength="32" placeholder="account-id">
           <input type="text" id="yt-account-label" aria-label="YouTube account label" maxlength="120" placeholder="Nama akun / channel">
+          <label class="check"><input type="checkbox" id="yt-account-trust-defaults"> Trust Upload defaults</label>
           <button type="button" id="add-yt-account-btn" class="btn secondary">Tambah profile</button>
           <button type="button" id="refresh-yt-accounts-btn" class="btn secondary">Muat ulang</button>
         </div>
+        <p class="hint">Trust Upload defaults melewati language/category automation dan memakai setting statis channel di YouTube Studio. Title, description, tags, thumbnail, audience, dan visibility tetap dikontrol uploader.</p>
         <p class="hint">Login profile dengan <code>scripts/youtube_browser_login.sh &lt;account-id&gt;</code> dari sesi noVNC/X11 sementara.</p>
         <div id="youtube-accounts-list" class="list" role="region" aria-live="polite"></div>
 

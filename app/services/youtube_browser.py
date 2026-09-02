@@ -45,6 +45,7 @@ class BrowserSessionStatus:
     account_label: str
     profile_dir: str
     browser: str
+    trust_channel_defaults: bool = False
     action_required: str | None = None
     detail: str = ""
 
@@ -78,7 +79,9 @@ class YouTubeStudioBrowserPublisher:
         "Film & Animation": ("Film & Animation", "Film & Animasi"),
     }
 
-    def __init__(self, account_id: str | None = None) -> None:
+    def __init__(
+        self, account_id: str | None = None, *, trust_channel_defaults: bool | None = None
+    ) -> None:
         self.account_registry = YouTubeBrowserAccountRegistry()
         try:
             self.account = self.account_registry.get(account_id)
@@ -91,6 +94,15 @@ class YouTubeStudioBrowserPublisher:
         self.account_id = self.account.account_id
         self.account_label = self.account.label
         self.profile_dir = self.account.profile_dir
+        self.trust_channel_defaults = (
+            trust_channel_defaults
+            if trust_channel_defaults is not None
+            else (
+                self.account.trust_channel_defaults
+                if self.account.trust_channel_defaults is not None
+                else settings.youtube_trust_channel_defaults
+            )
+        )
         self.executable = self._resolve_browser_executable(settings.youtube_browser_executable)
         self.timeout_ms = int(settings.youtube_browser_timeout_seconds * 1000)
 
@@ -176,6 +188,7 @@ class YouTubeStudioBrowserPublisher:
                 account_label=self.account_label,
                 profile_dir=str(self.profile_dir),
                 browser=self.executable,
+                trust_channel_defaults=self.trust_channel_defaults,
                 detail="browser publisher is disabled",
             )
         if not self.executable:
@@ -186,6 +199,7 @@ class YouTubeStudioBrowserPublisher:
                 account_label=self.account_label,
                 profile_dir=str(self.profile_dir),
                 browser=str(settings.youtube_browser_executable),
+                trust_channel_defaults=self.trust_channel_defaults,
                 action_required="install_chrome",
                 detail="Google Chrome/Chromium executable was not found",
             )
@@ -199,6 +213,7 @@ class YouTubeStudioBrowserPublisher:
                 account_label=self.account_label,
                 profile_dir=str(self.profile_dir),
                 browser=self.executable,
+                trust_channel_defaults=self.trust_channel_defaults,
                 action_required="install_playwright",
                 detail="Playwright is not installed",
             )
@@ -219,6 +234,7 @@ class YouTubeStudioBrowserPublisher:
                         account_label=self.account_label,
                         profile_dir=str(self.profile_dir),
                         browser=self.executable,
+                        trust_channel_defaults=self.trust_channel_defaults,
                         action_required=None if authenticated else "youtube_reauthentication",
                         detail="YouTube Studio session is ready" if authenticated else "Google login is required",
                     )
@@ -232,6 +248,7 @@ class YouTubeStudioBrowserPublisher:
                 account_label=self.account_label,
                 profile_dir=str(self.profile_dir),
                 browser=self.executable,
+                trust_channel_defaults=self.trust_channel_defaults,
                 action_required=exc.action_required,
                 detail=str(exc),
             )
@@ -243,6 +260,7 @@ class YouTubeStudioBrowserPublisher:
                 account_label=self.account_label,
                 profile_dir=str(self.profile_dir),
                 browser=self.executable,
+                trust_channel_defaults=self.trust_channel_defaults,
                 action_required="browser_unavailable",
                 detail=f"{type(exc).__name__}: {exc}",
             )
@@ -531,9 +549,11 @@ class YouTubeStudioBrowserPublisher:
         if not any(alias in self._normalized_text(trigger.inner_text()) for alias in aliases):
             raise BrowserPublishError("YouTube Studio did not retain requested category", code="category_not_saved", retryable=True)
 
-    def _fill_advanced_metadata(self, page, *, tags: list[str]) -> bool:
+    def _fill_advanced_metadata(self, page, *, tags: list[str]) -> bool | None:
         self._open_advanced_details(page)
         self._set_tags(page, tags)
+        if self.trust_channel_defaults:
+            return None
         self._select_labeled_dropdown(page, self._ADVANCED_LABELS["video_language"], settings.youtube_video_language, field_name="video_language")
         metadata_pattern = re.compile(
             "|".join(re.escape(label) for label in self._ADVANCED_LABELS["metadata_language"]),
@@ -935,7 +955,9 @@ class YouTubeStudioBrowserPublisher:
                 stages.append("audience_set")
                 metadata_language_set = self._fill_advanced_metadata(page, tags=tags)
                 stages.append("advanced_metadata_filled")
-                if metadata_language_set:
+                if self.trust_channel_defaults:
+                    stages.append("channel_defaults_trusted")
+                elif metadata_language_set:
                     stages.append("metadata_language_set_during_upload")
 
                 self._advance_wizard(page)
@@ -967,7 +989,7 @@ class YouTubeStudioBrowserPublisher:
                     stages.append("thumbnail_manual_action_required")
 
                 metadata_warning = ""
-                if not metadata_language_set:
+                if not self.trust_channel_defaults and not metadata_language_set:
                     if not video_id:
                         metadata_warning = "metadata_language_post_publish: video id unavailable"
                         stages.append("metadata_language_manual_action_required")

@@ -1450,6 +1450,7 @@ async function loadYouTubeAccounts() {
     const main = el('div', 'item-main');
     main.appendChild(el('div', 'item-title', `${row.label} · ${row.account_id}`));
     main.appendChild(el('div', 'item-meta', `Chrome profile: ${row.profile_dir}`));
+    main.appendChild(el('div', 'item-meta', `Upload defaults: ${row.effective_trust_channel_defaults ? 'trusted' : 'full automation'}${row.trust_channel_defaults === null ? ' · inherit' : ''}`));
     main.appendChild(el('div', 'item-meta', `Login: scripts/youtube_browser_login.sh ${row.account_id}`));
     item.appendChild(main);
 
@@ -1465,6 +1466,20 @@ async function loadYouTubeAccounts() {
       } catch (err) { toast(err.message, 'error'); }
     }));
     actions.appendChild(status);
+
+    const trustDefaults = el('button', 'btn secondary small',
+      row.effective_trust_channel_defaults ? 'Pakai automation penuh' : 'Trust Upload defaults');
+    trustDefaults.type = 'button';
+    trustDefaults.addEventListener('click', () => withBusy(trustDefaults, 'Menyimpan…', async () => {
+      try {
+        await api(`/api/youtube/browser/accounts/${encodeURIComponent(row.account_id)}`, {
+          method: 'PATCH', body: { trust_channel_defaults: !row.effective_trust_channel_defaults },
+        });
+        await loadYouTubeAccounts();
+        toast(`${row.label}: Upload defaults ${row.effective_trust_channel_defaults ? 'tidak lagi dipercaya' : 'sekarang dipercaya'}.`, 'ok');
+      } catch (err) { toast(err.message, 'error'); }
+    }));
+    actions.appendChild(trustDefaults);
 
     if (!row.is_default) {
       const makeDefault = el('button', 'btn secondary small', 'Jadikan default');
@@ -1500,11 +1515,13 @@ $('add-yt-account-btn').addEventListener('click', () => withBusy(
       return;
     }
     try {
+      const trustChannelDefaults = $('yt-account-trust-defaults').checked;
       const created = await api('/api/youtube/browser/accounts', {
-        method: 'POST', body: { account_id: accountId, label },
+        method: 'POST', body: { account_id: accountId, label, trust_channel_defaults: trustChannelDefaults ? true : null },
       });
       $('yt-account-id').value = '';
       $('yt-account-label').value = '';
+      $('yt-account-trust-defaults').checked = false;
       await loadYouTubeAccounts();
       $('pub-account').value = created.account_id;
       toast(`Profile ${created.label} dibuat. Login dengan: ${created.login_command}`, 'ok');

@@ -334,3 +334,22 @@ def test_extract_video_identity_supports_studio_edit_link():
     video_id, url = YouTubeStudioBrowserPublisher._extract_video_identity(_StudioPage())
     assert video_id == "qKk2wSK8PG4"
     assert url == "https://www.youtube.com/shorts/qKk2wSK8PG4"
+
+
+def test_trust_channel_defaults_skips_static_metadata(monkeypatch):
+    publisher = object.__new__(YouTubeStudioBrowserPublisher)
+    publisher.timeout_ms = 120000
+    publisher.trust_channel_defaults = True
+    calls = []
+    monkeypatch.setattr(publisher, "_open_advanced_details", lambda page: calls.append("open"))
+    monkeypatch.setattr(publisher, "_set_tags", lambda page, tags: calls.append(("tags", tags)))
+    monkeypatch.setattr(
+        publisher, "_select_labeled_dropdown", lambda *args, **kwargs: calls.append("language")
+    )
+    monkeypatch.setattr(
+        publisher, "_select_category", lambda *args, **kwargs: calls.append("category")
+    )
+
+    result = publisher._fill_advanced_metadata(object(), tags=["shorts"])
+    assert result is None
+    assert calls == ["open", ("tags", ["shorts"])]

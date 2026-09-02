@@ -90,6 +90,7 @@ def browser_status(account_id: str | None = None) -> dict:
             "account_label": "",
             "profile_dir": "",
             "browser": settings.youtube_browser_executable,
+            "trust_channel_defaults": settings.youtube_trust_channel_defaults,
             "action_required": exc.action_required,
             "detail": str(exc),
         }
@@ -101,6 +102,7 @@ def browser_status(account_id: str | None = None) -> dict:
         "account_label": status.account_label,
         "profile_dir": status.profile_dir,
         "browser": status.browser,
+        "trust_channel_defaults": status.trust_channel_defaults,
         "action_required": status.action_required,
         "detail": status.detail,
     }
@@ -114,10 +116,14 @@ def browser_accounts() -> dict:
     }
 
 
-def create_browser_account(*, account_id: str, label: str = "") -> dict:
+def create_browser_account(
+    *, account_id: str, label: str = "", trust_channel_defaults: bool | None = None
+) -> dict:
     registry = YouTubeBrowserAccountRegistry()
     try:
-        account = registry.create(account_id=account_id, label=label)
+        account = registry.create(
+            account_id=account_id, label=label, trust_channel_defaults=trust_channel_defaults
+        )
     except ValueError as exc:
         raise PipelineError(str(exc)) from exc
     return {
@@ -125,16 +131,30 @@ def create_browser_account(*, account_id: str, label: str = "") -> dict:
         "label": account.label,
         "profile_dir": str(account.profile_dir),
         "is_default": account.account_id == registry.default_account_id(),
+        "trust_channel_defaults": account.trust_channel_defaults,
+        "effective_trust_channel_defaults": (
+            account.trust_channel_defaults
+            if account.trust_channel_defaults is not None
+            else settings.youtube_trust_channel_defaults
+        ),
         "login_command": f"scripts/youtube_browser_login.sh {account.account_id}",
     }
 
 
 def update_browser_account(
-    account_id: str, *, label: str | None = None, make_default: bool = False
+    account_id: str,
+    *,
+    label: str | None = None,
+    make_default: bool = False,
+    trust_channel_defaults: bool | None = None,
+    change_trust_channel_defaults: bool = False,
 ) -> dict:
     registry = YouTubeBrowserAccountRegistry()
+    kwargs = {"label": label, "make_default": make_default}
+    if change_trust_channel_defaults:
+        kwargs["trust_channel_defaults"] = trust_channel_defaults
     try:
-        account = registry.update(account_id, label=label, make_default=make_default)
+        account = registry.update(account_id, **kwargs)
     except ValueError as exc:
         raise PipelineError(str(exc)) from exc
     return {
@@ -142,6 +162,12 @@ def update_browser_account(
         "label": account.label,
         "profile_dir": str(account.profile_dir),
         "is_default": account.account_id == registry.default_account_id(),
+        "trust_channel_defaults": account.trust_channel_defaults,
+        "effective_trust_channel_defaults": (
+            account.trust_channel_defaults
+            if account.trust_channel_defaults is not None
+            else settings.youtube_trust_channel_defaults
+        ),
     }
 
 
@@ -157,6 +183,7 @@ def publish(
     privacy_status: str = PrivacyStatus.PRIVATE,
     scheduled_at: datetime | None = None,
     confirm_public: bool = False,
+    trust_channel_defaults: bool | None = None,
     actor_id: str = "",
 ) -> Publication:
     """Publish the latest successful render through YouTube Studio browser UI."""
@@ -177,7 +204,10 @@ def publish(
         )
 
     try:
-        publisher = YouTubeStudioBrowserPublisher(account_id=youtube_account_id)
+        publisher_kwargs = {"account_id": youtube_account_id}
+        if trust_channel_defaults is not None:
+            publisher_kwargs["trust_channel_defaults"] = trust_channel_defaults
+        publisher = YouTubeStudioBrowserPublisher(**publisher_kwargs)
     except BrowserPublishError as exc:
         raise PipelineError(str(exc)) from exc
 

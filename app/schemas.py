@@ -530,11 +530,13 @@ class DraftOut(BaseModel):
 class YouTubeBrowserAccountCreate(BaseModel):
     account_id: str = Field(min_length=1, max_length=32)
     label: str = Field(default="", max_length=120)
+    trust_channel_defaults: bool | None = None
 
 
 class YouTubeBrowserAccountUpdate(BaseModel):
     label: str | None = Field(default=None, max_length=120)
     make_default: bool = False
+    trust_channel_defaults: bool | None = None
 
 
 class PublishRequest(BaseModel):
@@ -546,6 +548,7 @@ class PublishRequest(BaseModel):
     privacy_status: PrivacyStatus = PrivacyStatus.PRIVATE
     scheduled_at: datetime | None = None
     confirm_public: bool = False
+    trust_channel_defaults: bool | None = None
 
     @field_validator("tags")
     @classmethod

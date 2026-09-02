@@ -24,6 +24,10 @@ MS_YOUTUBE_BROWSER_ENABLED=true
 MS_YOUTUBE_BROWSER_EXECUTABLE=google-chrome
 MS_YOUTUBE_BROWSER_HEADLESS=true
 MS_YOUTUBE_BROWSER_TIMEOUT_SECONDS=120
+MS_YOUTUBE_VIDEO_LANGUAGE=English
+MS_YOUTUBE_METADATA_LANGUAGE=English
+MS_YOUTUBE_CATEGORY=Film & Animation
+MS_YOUTUBE_TRUST_CHANNEL_DEFAULTS=false
 ```
 
 Public visibility remains double-gated:
@@ -74,6 +78,12 @@ Publish
 ```
 
 The browser publisher supports `private`, `unlisted`, and `public`. Scheduled publishing intentionally fails closed until the current Studio schedule UI has its own acceptance test.
+
+### Trust channel Upload defaults
+
+For channels already configured under **YouTube Studio → Settings → Upload defaults**, enable trust mode per account from the UI or account API. In this mode ManhwaShorts still sets title, description, tags, thumbnail, audience, and visibility, but skips per-upload automation for video language, title/description language, and category.
+
+The global fallback is `MS_YOUTUBE_TRUST_CHANNEL_DEFAULTS=false`; per-account settings override it. A publish request can also send `trust_channel_defaults` as a one-off override.
 
 ## Failure behavior
 

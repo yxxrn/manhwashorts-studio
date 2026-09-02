@@ -44,3 +44,25 @@ def test_publisher_uses_requested_account_profile(monkeypatch, tmp_path):
     assert publisher.account_id == "channel-b"
     assert publisher.account_label == "Channel B"
     assert publisher.profile_dir == accounts / "channel-b"
+
+
+def test_trust_channel_defaults_account_override_and_inheritance(monkeypatch, tmp_path):
+    registry, _, _ = _isolated_registry(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "youtube_trust_channel_defaults", True)
+
+    inherited = registry.get()
+    assert inherited.trust_channel_defaults is None
+    assert registry.describe()[0]["effective_trust_channel_defaults"] is True
+
+    account = registry.create(
+        account_id="channel-b", label="Channel B", trust_channel_defaults=False
+    )
+    assert account.trust_channel_defaults is False
+    assert YouTubeStudioBrowserPublisher(account_id="channel-b").trust_channel_defaults is False
+
+    assert YouTubeStudioBrowserPublisher(
+        account_id="channel-b", trust_channel_defaults=True
+    ).trust_channel_defaults is True
+
+    registry.update("channel-b", trust_channel_defaults=None)
+    assert YouTubeStudioBrowserPublisher(account_id="channel-b").trust_channel_defaults is True

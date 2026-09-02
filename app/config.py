@@ -213,6 +213,7 @@ class Settings(BaseSettings):
     youtube_video_language: str = "English"
     youtube_metadata_language: str = "English"
     youtube_category: str = "Film & Animation"
+    youtube_trust_channel_defaults: bool = False
 
     # --- Policy guardrails ---
     require_rights_declaration: bool = False
