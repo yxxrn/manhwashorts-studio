@@ -32,6 +32,10 @@ logging.basicConfig(
     level=logging.INFO if not settings.debug else logging.DEBUG,
     format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
 )
+# OAuth libraries can expose authorization codes or client credentials at DEBUG.
+for _sensitive_logger in ("requests_oauthlib", "oauthlib"):
+    logging.getLogger(_sensitive_logger).setLevel(logging.WARNING)
+
 logger = logging.getLogger("manhwashorts")
 
 

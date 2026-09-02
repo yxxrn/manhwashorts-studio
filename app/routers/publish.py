@@ -27,10 +27,10 @@ from app.services.pipeline import PipelineError, audit
 
 router = APIRouter(prefix="/api", tags=["publish"], route_class=CommitRoute)
 
-# Short-lived OAuth state values, keyed by state -> workspace id. In a
-# multi-process deployment this belongs in Redis; for the local single-process
+# Short-lived OAuth state values, keyed by state -> (workspace id, PKCE verifier).
+# In a multi-process deployment this belongs in Redis; for the local single-process
 # app an in-memory dict is adequate and avoids persisting CSRF tokens.
-_oauth_state: dict[str, str] = {}
+_oauth_state: dict[str, tuple[str, str | None]] = {}
 
 
 def _guard(fn, *args, **kwargs):
@@ -61,13 +61,13 @@ def connect_channel(workspace: CurrentWorkspace, user: CurrentUser):
             ),
         )
     state = secrets.token_urlsafe(24)
-    _oauth_state[state] = workspace.id
     flow = yt.build_flow(state=state)
     url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
+    _oauth_state[state] = (workspace.id, flow.code_verifier)
     return {"authorization_url": url, "state": state}
 
 
@@ -80,16 +80,18 @@ def oauth_callback(
     error: str | None = Query(default=None),
 ):
     """OAuth redirect target. Exchanges the code and stores tokens encrypted."""
-    workspace_id = _oauth_state.pop(state, None)
-    if workspace_id is None:
+    pending = _oauth_state.pop(state, None)
+    if pending is None:
         # Unknown state means CSRF or an expired attempt.
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state.")
+    workspace_id, code_verifier = pending
     if error:
         raise HTTPException(status_code=400, detail=f"Authorisation was denied: {error}")
     if not code:
         raise HTTPException(status_code=400, detail="No authorisation code returned.")
 
     flow = yt.build_flow(state=state)
+    flow.code_verifier = code_verifier
     try:
         flow.fetch_token(code=code)
         credentials = yt.credentials_to_dict(flow.credentials)

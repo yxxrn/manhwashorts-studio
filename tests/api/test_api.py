@@ -706,3 +706,46 @@ def test_voices_endpoint_lists_options(client):
     body = client.get("/api/voices").json()
     assert body["voices"]
     assert all("id" in v and "label" in v for v in body["voices"])
+
+
+def test_oauth_callback_reuses_pkce_verifier(auth_client, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.routers import publish as publish_router
+
+    seen = {"fetch_verifier": None}
+
+    class FakeFlow:
+        def __init__(self, state):
+            self.state = state
+            self.code_verifier = None
+            self.credentials = object()
+
+        def authorization_url(self, **kwargs):
+            self.code_verifier = "pkce-verifier"
+            return "https://example.test/oauth", self.state
+
+        def fetch_token(self, *, code):
+            seen["fetch_verifier"] = self.code_verifier
+
+    monkeypatch.setattr(publish_router.yt, "oauth_configured", lambda: True)
+    monkeypatch.setattr(
+        publish_router.yt, "build_flow", lambda state=None: FakeFlow(state)
+    )
+    monkeypatch.setattr(
+        publish_router.yt, "credentials_to_dict", lambda credentials: {"token": "test"}
+    )
+    monkeypatch.setattr(
+        publish_router.yt,
+        "fetch_channel_info",
+        lambda credentials: SimpleNamespace(
+            channel_id="UC_TEST", title="Test Channel", scopes=["scope"]
+        ),
+    )
+
+    started = auth_client.get("/api/youtube/connect")
+    assert started.status_code == 200
+    state = started.json()["state"]
+    callback = auth_client.get(f"/api/youtube/callback?state={state}&code=abc")
+    assert callback.status_code == 200
+    assert seen["fetch_verifier"] == "pkce-verifier"
