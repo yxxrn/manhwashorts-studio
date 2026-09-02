@@ -6,14 +6,10 @@ Public callers should continue importing app.services.pipeline.
 from __future__ import annotations
 
 
-def run_quality_checks(api, db, project_id, job, actor_id):
-    """Run every gate and persist the results for the review UI."""
-    QCHistorySnapshot = api.QCHistorySnapshot
-    QualityCheck = api.QualityCheck
+def evaluate_quality_checks(api, db, project_id, job):
+    """Evaluate every quality gate without mutating persisted QC state."""
     _approved_adaptive_reference_policy = api._approved_adaptive_reference_policy
-    asdict = api.asdict
     audio_segments = api.audio_segments
-    audit = api.audit
     cue_specs = api.cue_specs
     current_script = api.current_script
     get_project = api.get_project
@@ -22,8 +18,8 @@ def run_quality_checks(api, db, project_id, job, actor_id):
     project_scenes = api.project_scenes
     quality_svc = api.quality_svc
     reference_profile = api.reference_profile
-    select = api.select
     subtitle_karaoke = api.subtitle_karaoke
+
     project = get_project(db, project_id)
     assets = project_assets(db, project_id)
     script = current_script(db, project_id)
@@ -41,7 +37,9 @@ def run_quality_checks(api, db, project_id, job, actor_id):
     if script is not None and profile is not None and adaptive_reference_contract is None:
         metadata = script.editorial_metadata if isinstance(script.editorial_metadata, dict) else {}
         production = metadata.get("production") if isinstance(metadata, dict) else None
-        identity = production.get("timeline_planning_identity") if isinstance(production, dict) else None
+        identity = (
+            production.get("timeline_planning_identity") if isinstance(production, dict) else None
+        )
         standard_reference_cadence = bool(
             isinstance(identity, dict)
             and identity.get("version")
@@ -54,23 +52,72 @@ def run_quality_checks(api, db, project_id, job, actor_id):
     if profile is not None:
         subtitle_contract = subtitle_karaoke.contract_manifest(profile)
         from app.services import render as render_svc
+
         try:
             caption_groups = subtitle_karaoke.build_sentence_groups_from_segments(segments)
-            caption_groups = render_svc.fit_sentence_karaoke_groups(caption_groups, profile.final_width, profile.final_height, max_chars=subtitle_karaoke.CAPTION_MAX_CHARS, max_lines=subtitle_karaoke.CAPTION_MAX_LINES, active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE, font_height_ratio=subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO, safe_margin_px=subtitle_karaoke.CAPTION_SAFE_MARGIN_PX)
+            caption_groups = render_svc.fit_sentence_karaoke_groups(
+                caption_groups,
+                profile.final_width,
+                profile.final_height,
+                max_chars=subtitle_karaoke.CAPTION_MAX_CHARS,
+                max_lines=subtitle_karaoke.CAPTION_MAX_LINES,
+                active_scale=subtitle_karaoke.CAPTION_ACTIVE_SCALE,
+                font_height_ratio=subtitle_karaoke.CAPTION_FONT_HEIGHT_RATIO,
+                safe_margin_px=subtitle_karaoke.CAPTION_SAFE_MARGIN_PX,
+            )
         except (ValueError, render_svc.RenderError) as exc:
             subtitle_timing_error = str(exc)
-    results = quality_svc.run_all(project, assets, script, segments, scenes, cues, job=job, duration=duration, caption_groups=caption_groups, subtitle_contract=subtitle_contract, subtitle_timing_error=subtitle_timing_error, adaptive_reference_contract=adaptive_reference_contract, standard_reference_cadence=standard_reference_cadence)
+    return quality_svc.run_all(
+        project,
+        assets,
+        script,
+        segments,
+        scenes,
+        cues,
+        job=job,
+        duration=duration,
+        caption_groups=caption_groups,
+        subtitle_contract=subtitle_contract,
+        subtitle_timing_error=subtitle_timing_error,
+        adaptive_reference_contract=adaptive_reference_contract,
+        standard_reference_cadence=standard_reference_cadence,
+    )
+
+
+def run_quality_checks(api, db, project_id, job, actor_id):
+    """Run every gate and persist the results for the review UI."""
+    results = evaluate_quality_checks(api, db, project_id, job)
+    QualityCheck = api.QualityCheck
+    QCHistorySnapshot = api.QCHistorySnapshot
+    asdict = api.asdict
+    audit = api.audit
+    quality_svc = api.quality_svc
+    select = api.select
     for old in db.scalars(select(QualityCheck).where(QualityCheck.project_id == project_id)):
         db.delete(old)
     db.flush()
     for result in results:
-        db.add(QualityCheck(project_id=project_id, code=result.code, severity=result.severity, message=result.message, passed=result.passed))
+        db.add(
+            QualityCheck(
+                project_id=project_id,
+                code=result.code,
+                severity=result.severity,
+                message=result.message,
+                passed=result.passed,
+            )
+        )
     summary = quality_svc.summarise(results)
-    db.add(QCHistorySnapshot(project_id=project_id, render_job_id=job.id if job else None, passed=not any(result.blocking for result in results), report={'checks': [asdict(result) for result in results], 'summary': summary}))
-    audit(db, 'quality.run', 'project', project_id, actor_id, **summary)
+    db.add(
+        QCHistorySnapshot(
+            project_id=project_id,
+            render_job_id=job.id if job else None,
+            passed=not any(result.blocking for result in results),
+            report={"checks": [asdict(result) for result in results], "summary": summary},
+        )
+    )
+    audit(db, "quality.run", "project", project_id, actor_id, **summary)
     db.flush()
     return results
-
 
 
 def override_warning(api, db, project_id, code, reason, actor_id):
@@ -81,16 +128,27 @@ def override_warning(api, db, project_id, code, reason, actor_id):
     audit = api.audit
     select = api.select
     if not reason.strip():
-        raise PipelineError('an override reason is required')
-    check = db.scalars(select(QualityCheck).where(QualityCheck.project_id == project_id, QualityCheck.code == code)).first()
+        raise PipelineError("an override reason is required")
+    check = db.scalars(
+        select(QualityCheck).where(QualityCheck.project_id == project_id, QualityCheck.code == code)
+    ).first()
     if check is None:
-        raise PipelineError(f'no quality check named {code!r} for this project')
-    if check.severity == 'error':
-        raise PipelineError(f'{code} is a blocking error and cannot be overridden')
+        raise PipelineError(f"no quality check named {code!r} for this project")
+    if check.severity == "error":
+        raise PipelineError(f"{code} is a blocking error and cannot be overridden")
     check.override_reason = reason.strip()
     check.overridden_by = actor_id
     check.passed = True
-    db.add(QCOverrideEvent(project_id=project_id, quality_code=code, actor_id=actor_id, reason=reason.strip(), before_passed=False, after_passed=True))
-    audit(db, 'quality.override', 'project', project_id, actor_id, code=code, reason=reason.strip())
+    db.add(
+        QCOverrideEvent(
+            project_id=project_id,
+            quality_code=code,
+            actor_id=actor_id,
+            reason=reason.strip(),
+            before_passed=False,
+            after_passed=True,
+        )
+    )
+    audit(db, "quality.override", "project", project_id, actor_id, code=code, reason=reason.strip())
     db.flush()
     return check

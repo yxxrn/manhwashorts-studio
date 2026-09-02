@@ -40,6 +40,7 @@ from app.services.file_integrity import sha256_file
 from app.services.pipeline import (
     PipelineError,
     audit,
+    evaluate_quality_checks,
     get_project,
     project_assets,
     run_quality_checks,
@@ -426,20 +427,7 @@ def latest_stats(db: Session, publication_id: str) -> VideoStat | None:
 
 
 def can_publish(db: Session, project_id: str) -> dict:
-    """Report publish readiness for the review UI.
-
-    Loads the real audio/scene/cue state rather than passing empty lists, which
-    would report spurious "audio.missing" and "timeline.no_scenes" errors on a
-    project that has already rendered successfully.
-    """
-    from app.services.pipeline import (
-        audio_segments,
-        cue_specs,
-        current_script,
-        project_cues,
-        project_scenes,
-    )
-
+    """Report publish readiness using the exact same evaluator as publish."""
     job = successful_render(db, project_id)
     if job is None:
         return {
@@ -448,19 +436,7 @@ def can_publish(db: Session, project_id: str) -> dict:
             "checks": None,
         }
 
-    project = get_project(db, project_id)
-    script = current_script(db, project_id)
-    segments = audio_segments(db, script.id) if script else []
-    results = quality_svc.run_all(
-        project,
-        project_assets(db, project_id),
-        script,
-        segments,
-        project_scenes(db, project_id),
-        cue_specs(project_cues(db, project_id)),
-        job=job,
-        duration=job.duration,
-    )
+    results = evaluate_quality_checks(db, project_id, job=job)
     summary = quality_svc.summarise(results)
     return {
         "ready": summary["can_publish"],

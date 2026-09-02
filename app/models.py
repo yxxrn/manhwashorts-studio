@@ -593,6 +593,11 @@ class Publication(Base, TimestampMixin):
 
     @property
     def thumbnail_note(self) -> str:
+        if self.thumbnail_status == "failed" and self.thumbnail_error.startswith("thumbnail_http_403"):
+            return (
+                "Video uploaded, but this YouTube channel cannot currently set custom thumbnails. "
+                "Enable custom-thumbnail access for the channel, then retry the thumbnail upload."
+            )
         if self.thumbnail_status == "failed":
             return "Video uploaded, but the custom thumbnail failed. Check it manually or retry the thumbnail upload."
         if self.thumbnail_status == "not_available":

@@ -396,8 +396,12 @@ class GoogleYouTubeProvider:
         except HttpError as exc:
             status = getattr(exc.resp, "status", 0)
             retryable = status in (429, 500, 502, 503, 504)
+            message = f"YouTube thumbnail upload failed (HTTP {status})."
+            if status == 403:
+                message = ("YouTube rejected the custom thumbnail because this channel "
+                           "does not currently have custom-thumbnail permission.")
             raise YouTubeError(
-                f"YouTube thumbnail upload failed (HTTP {status}).",
+                message,
                 code=f"thumbnail_http_{status}",
                 retryable=retryable,
             ) from exc

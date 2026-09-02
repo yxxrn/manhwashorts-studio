@@ -2410,6 +2410,15 @@ def cue_specs(cues: list[SubtitleCue]) -> list[timeline_svc.CueSpec]:
 # --- stage: quality -------------------------------------------------------
 
 
+def evaluate_quality_checks(
+    db: Session, project_id: str, job: RenderJob | None = None
+) -> list[quality_svc.CheckResult]:
+    """Evaluate every quality gate without mutating stored QC state."""
+    return pipeline_stages.quality.evaluate_quality_checks(
+        sys.modules[__name__], db, project_id, job
+    )
+
+
 def run_quality_checks(db: Session, project_id: str, job: RenderJob | None=None, actor_id: str='') -> list[quality_svc.CheckResult]:
     """Run every gate and persist the results for the review UI."""
     return pipeline_stages.quality.run_quality_checks(sys.modules[__name__], db, project_id, job, actor_id)
