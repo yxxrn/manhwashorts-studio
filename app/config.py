@@ -206,6 +206,7 @@ class Settings(BaseSettings):
     # --- YouTube Studio browser publisher ---
     youtube_browser_enabled: bool = True
     youtube_browser_profile_dir: Path = Path.home() / ".config" / "manhwashorts" / "youtube-browser-runtime"
+    youtube_browser_accounts_dir: Path = Path.home() / ".config" / "manhwashorts" / "youtube-accounts"
     youtube_browser_executable: str = "/usr/bin/google-chrome"
     youtube_browser_headless: bool = True
     youtube_browser_timeout_seconds: int = 120

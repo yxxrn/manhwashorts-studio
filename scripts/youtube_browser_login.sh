@@ -1,9 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROFILE_DIR="${MS_YOUTUBE_BROWSER_PROFILE_DIR:-$HOME/.config/manhwashorts/youtube-browser-runtime}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ACCOUNT_ID="${1:-}"
 CHROME="${MS_YOUTUBE_BROWSER_EXECUTABLE:-/usr/bin/google-chrome}"
+PYTHON="${ROOT}/.venv/bin/python"
 
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON=python3
+fi
+
+readarray -t ACCOUNT_INFO < <(
+  cd "$ROOT"
+  PYTHONPATH="$ROOT" "$PYTHON" - "$ACCOUNT_ID" <<'PY'
+import sys
+from app.services.youtube_accounts import YouTubeBrowserAccountRegistry
+
+registry = YouTubeBrowserAccountRegistry()
+account = registry.get(sys.argv[1] or None)
+print(account.account_id)
+print(account.label)
+print(account.profile_dir)
+PY
+)
+
+RESOLVED_ID="${ACCOUNT_INFO[0]}"
+LABEL="${ACCOUNT_INFO[1]}"
+PROFILE_DIR="${ACCOUNT_INFO[2]}"
 mkdir -p "$PROFILE_DIR"
 chmod 700 "$PROFILE_DIR"
 
@@ -12,10 +35,12 @@ if [[ -z "${DISPLAY:-}" ]]; then
   exit 2
 fi
 
-echo "Opening YouTube Studio in the persistent ManhwaShorts Chrome profile."
+echo "Opening YouTube account: ${LABEL} (${RESOLVED_ID})"
+echo "Chrome profile: ${PROFILE_DIR}"
 echo "Log in manually, finish any 2FA/security prompt, verify Studio opens, then close Chrome."
 exec "$CHROME" \
   --user-data-dir="$PROFILE_DIR" \
+  --class="manhwashorts-youtube-${RESOLVED_ID}" \
   --no-sandbox \
   --disable-dev-shm-usage \
   --no-first-run \

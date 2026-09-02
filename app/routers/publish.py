@@ -8,7 +8,14 @@ from sqlalchemy import select
 from app.deps import CurrentUser, CurrentWorkspace, DbSession, OwnedProject
 from app.models import Publication, VideoStat
 from app.routing import CommitRoute
-from app.schemas import MetadataOut, PublicationOut, PublishRequest, StatOut
+from app.schemas import (
+    MetadataOut,
+    PublicationOut,
+    PublishRequest,
+    StatOut,
+    YouTubeBrowserAccountCreate,
+    YouTubeBrowserAccountUpdate,
+)
 from app.services import publish as publish_svc
 from app.services.pipeline import PipelineError
 
@@ -23,9 +30,40 @@ def _guard(fn, *args, **kwargs):
 
 
 @router.get("/youtube/browser/status")
-def youtube_browser_status(workspace: CurrentWorkspace) -> dict:
+def youtube_browser_status(workspace: CurrentWorkspace, account_id: str | None = None) -> dict:
     del workspace
-    return publish_svc.browser_status()
+    return publish_svc.browser_status(account_id)
+
+
+@router.get("/youtube/browser/accounts")
+def youtube_browser_accounts(workspace: CurrentWorkspace) -> dict:
+    del workspace
+    return publish_svc.browser_accounts()
+
+
+@router.post("/youtube/browser/accounts")
+def create_youtube_browser_account(
+    payload: YouTubeBrowserAccountCreate, workspace: CurrentWorkspace
+) -> dict:
+    del workspace
+    return _guard(
+        publish_svc.create_browser_account,
+        account_id=payload.account_id,
+        label=payload.label,
+    )
+
+
+@router.patch("/youtube/browser/accounts/{account_id}")
+def update_youtube_browser_account(
+    account_id: str, payload: YouTubeBrowserAccountUpdate, workspace: CurrentWorkspace
+) -> dict:
+    del workspace
+    return _guard(
+        publish_svc.update_browser_account,
+        account_id,
+        label=payload.label,
+        make_default=payload.make_default,
+    )
 
 
 @router.get("/projects/{project_id}/metadata", response_model=MetadataOut)
@@ -34,8 +72,10 @@ def suggest_metadata(project: OwnedProject, db: DbSession) -> dict:
 
 
 @router.get("/projects/{project_id}/publish/readiness")
-def publish_readiness(project: OwnedProject, db: DbSession) -> dict:
-    return publish_svc.can_publish(db, project.id)
+def publish_readiness(
+    project: OwnedProject, db: DbSession, youtube_account_id: str | None = None
+) -> dict:
+    return publish_svc.can_publish(db, project.id, youtube_account_id=youtube_account_id)
 
 
 @router.post("/projects/{project_id}/publish", response_model=PublicationOut)
@@ -50,6 +90,7 @@ def publish_project(
         db,
         project.id,
         channel_id=payload.channel_id,
+        youtube_account_id=payload.youtube_account_id,
         video_title=payload.video_title,
         description=payload.description,
         tags=payload.tags,

@@ -607,6 +607,7 @@ def run_pipeline(
         db,
         project.id,
         channel_id=payload.channel_id,
+        youtube_account_id=payload.youtube_account_id,
         video_title="",
         description="",
         tags=[],

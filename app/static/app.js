@@ -334,6 +334,7 @@ async function loadProjectDetail() {
     loadRenderHistory(),
     loadScriptVersions(),
     loadPublications(),
+    loadYouTubeAccounts(),
   ]);
 }
 
@@ -840,16 +841,10 @@ $('metadata-btn').addEventListener('click', async () => {
   } catch (err) { toast(err.message, 'error'); }
 });
 
-$('connect-yt-btn').addEventListener('click', async () => {
-  try {
-    const data = await api('/api/youtube/connect');
-    window.location.href = data.authorization_url;
-  } catch (err) { toast(err.message, 'error'); }
-});
-
 $('publish-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const body = {
+    youtube_account_id: $('pub-account').value || null,
     video_title: $('pub-title').value.trim(),
     description: $('pub-desc').value.trim(),
     tags: $('pub-tags').value.split(',').map((t) => t.trim()).filter(Boolean),
@@ -1092,7 +1087,7 @@ $('settings-toggle').addEventListener('click', () => {
   if (!body.hidden && !state.settingsLoaded) {
     state.settingsLoaded = true;
     loadEncoderTable().catch(() => {});
-    loadChannels().catch(() => {});
+    loadYouTubeAccounts().catch(() => {});
   }
 });
 
@@ -1352,7 +1347,9 @@ async function loadReadiness() {
   clear(box);
   try {
     // Shape from publish.can_publish(): { ready, reason, checks }.
-    const data = await api(`/api/projects/${state.projectId}/publish/readiness`);
+    const accountId = $('pub-account').value;
+    const suffix = accountId ? `?youtube_account_id=${encodeURIComponent(accountId)}` : '';
+    const data = await api(`/api/projects/${state.projectId}/publish/readiness${suffix}`);
     box.appendChild(el('span', 'badge ' + (data.ready ? 'ok' : 'bad'),
       data.ready ? 'siap diunggah' : 'belum siap'));
 
@@ -1386,7 +1383,8 @@ async function loadPublications() {
       main.appendChild(el('div', 'item-title', row.video_title || '(tanpa judul)'));
       main.appendChild(el('div', 'item-meta',
         `${row.privacy_status} · ${row.upload_status}`
-        + (row.youtube_video_id ? ` · id ${row.youtube_video_id}` : ' · dry-run')
+        + ` · akun ${row.youtube_account_id || 'default'}`
+        + (row.youtube_video_id ? ` · id ${row.youtube_video_id}` : '')
         + (row.error_message ? ` · ${row.error_message}` : '')));
       item.appendChild(main);
 
@@ -1423,45 +1421,98 @@ async function loadPublications() {
   } catch (_) { /* none yet */ }
 }
 
-/* ---------- YouTube channels (v1.3) ---------- */
+/* ---------- YouTube browser accounts ---------- */
 
-async function loadChannels() {
-  const box = $('channels-list');
+async function loadYouTubeAccounts() {
+  const box = $('youtube-accounts-list');
+  const select = $('pub-account');
+  const previous = select.value;
+  const data = await api('/api/youtube/browser/accounts');
   clear(box);
-  try {
-    const rows = await api('/api/youtube/channels');
-    if (!rows.length) {
-      box.appendChild(el('div', 'empty', 'Belum ada channel terhubung.'));
-      return;
-    }
-    rows.forEach((row) => {
-      const item = el('div', 'item');
-      const main = el('div', 'item-main');
-      main.appendChild(el('div', 'item-title', row.channel_title || row.channel_id || 'Channel'));
-      main.appendChild(el('div', 'item-meta',
-        row.revoked ? 'akses dicabut' : 'terhubung'));
-      item.appendChild(main);
+  clear(select);
 
-      const remove = el('button', 'btn secondary small', 'Putuskan');
-      remove.type = 'button';
-      remove.addEventListener('click', async () => {
-        if (!window.confirm(`Putuskan channel ${row.channel_title || row.channel_id}?`)) return;
-        try {
-          await api(`/api/youtube/channels/${row.id}`, { method: 'DELETE' });
-          toast('Channel diputuskan.', 'ok');
-          await loadChannels();
-        } catch (err) { toast(err.message, 'error'); }
-      });
-      item.appendChild(remove);
-      box.appendChild(item);
-    });
-  } catch (err) {
-    box.appendChild(el('p', 'hint', 'Tidak bisa memuat channel: ' + err.message));
+  if (!data.accounts.length) {
+    box.appendChild(el('div', 'empty', 'Belum ada Chrome profile YouTube.'));
+    return;
   }
+
+  data.accounts.forEach((row) => {
+    const option = document.createElement('option');
+    option.value = row.account_id;
+    option.textContent = `${row.label} (${row.account_id})${row.is_default ? ' · default' : ''}`;
+    select.appendChild(option);
+
+    const item = el('div', 'item');
+    const main = el('div', 'item-main');
+    main.appendChild(el('div', 'item-title', `${row.label} · ${row.account_id}`));
+    main.appendChild(el('div', 'item-meta', `Chrome profile: ${row.profile_dir}`));
+    main.appendChild(el('div', 'item-meta', `Login: scripts/youtube_browser_login.sh ${row.account_id}`));
+    item.appendChild(main);
+
+    const actions = el('div', 'row-actions');
+    const status = el('button', 'btn secondary small', 'Cek sesi');
+    status.type = 'button';
+    status.addEventListener('click', () => withBusy(status, 'Memeriksa…', async () => {
+      try {
+        const info = await api(`/api/youtube/browser/status?account_id=${encodeURIComponent(row.account_id)}`);
+        toast(info.authenticated
+          ? `${row.label}: login siap.`
+          : `${row.label}: perlu login ulang.`, info.authenticated ? 'ok' : 'error');
+      } catch (err) { toast(err.message, 'error'); }
+    }));
+    actions.appendChild(status);
+
+    if (!row.is_default) {
+      const makeDefault = el('button', 'btn secondary small', 'Jadikan default');
+      makeDefault.type = 'button';
+      makeDefault.addEventListener('click', () => withBusy(makeDefault, 'Menyimpan…', async () => {
+        try {
+          await api(`/api/youtube/browser/accounts/${encodeURIComponent(row.account_id)}`, {
+            method: 'PATCH', body: { make_default: true },
+          });
+          await loadYouTubeAccounts();
+          toast(`${row.label} sekarang akun default.`, 'ok');
+        } catch (err) { toast(err.message, 'error'); }
+      }));
+      actions.appendChild(makeDefault);
+    } else {
+      actions.appendChild(el('span', 'badge ok', 'default'));
+    }
+    item.appendChild(actions);
+    box.appendChild(item);
+  });
+
+  const wanted = data.accounts.some((row) => row.account_id === previous)
+    ? previous : data.default_account_id;
+  select.value = wanted;
 }
 
-$('refresh-channels-btn').addEventListener('click', () => withBusy(
-  $('refresh-channels-btn'), 'Memuat…', loadChannels));
+$('add-yt-account-btn').addEventListener('click', () => withBusy(
+  $('add-yt-account-btn'), 'Menambah…', async () => {
+    const accountId = $('yt-account-id').value.trim().toLowerCase();
+    const label = $('yt-account-label').value.trim();
+    if (!accountId) {
+      toast('Isi account ID terlebih dahulu.', 'error');
+      return;
+    }
+    try {
+      const created = await api('/api/youtube/browser/accounts', {
+        method: 'POST', body: { account_id: accountId, label },
+      });
+      $('yt-account-id').value = '';
+      $('yt-account-label').value = '';
+      await loadYouTubeAccounts();
+      $('pub-account').value = created.account_id;
+      toast(`Profile ${created.label} dibuat. Login dengan: ${created.login_command}`, 'ok');
+    } catch (err) { toast(err.message, 'error'); }
+  }));
+
+$('refresh-yt-accounts-btn').addEventListener('click', () => withBusy(
+  $('refresh-yt-accounts-btn'), 'Memuat…', loadYouTubeAccounts));
+
+$('pub-account').addEventListener('change', () => {
+  $('readiness-status').textContent = '';
+});
 
 /* ---------- encoder capability table (v1.3) ---------- */
 
@@ -1551,6 +1602,3 @@ $('src-text').addEventListener('input', () => {
 
 loadHealth();
 checkSession();
-if (new URLSearchParams(window.location.search).get('connected')) {
-  toast('Channel YouTube terhubung.', 'ok');
-}

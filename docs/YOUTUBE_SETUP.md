@@ -93,3 +93,25 @@ Common action states:
 - `manual_schedule`: schedule UI has not yet been acceptance-tested.
 
 Never bypass CAPTCHA or Google security challenges programmatically.
+
+
+## Multi-account Chrome profiles
+
+ManhwaShorts isolates each YouTube account in its own persistent Chrome user-data directory.
+The existing pre-migration browser session remains available as account `default`; it is not moved or reauthenticated.
+
+```bash
+# list profiles
+PYTHONPATH=. .venv/bin/python scripts/youtube_browser_account.py list
+
+# add a profile and give it a human-readable label
+PYTHONPATH=. .venv/bin/python scripts/youtube_browser_account.py add account-b "Channel B"
+
+# during a temporary noVNC/X11 session, log in only this profile
+./scripts/youtube_browser_login.sh account-b
+
+# optionally make it the default publishing account
+PYTHONPATH=. .venv/bin/python scripts/youtube_browser_account.py default account-b
+```
+
+Publishing requests may set `youtube_account_id`. The resolved account ID is persisted on the Publication row, so retrying a failed upload always reuses the same Chrome profile even if the global default changes later.

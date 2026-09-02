@@ -57,6 +57,9 @@ def test_browser_publish_keeps_video_success_when_thumbnail_step_fails(
     class BrowserPublisher:
         uploads = 0
 
+        def __init__(self, account_id: str = "default") -> None:
+            self.account_id = account_id
+
         def publish(self, **kwargs):
             self.uploads += 1
             return BrowserPublishResult(
@@ -68,12 +71,18 @@ def test_browser_publish_keeps_video_success_when_thumbnail_step_fails(
             )
 
     provider = BrowserPublisher()
-    monkeypatch.setattr(publish_svc, "YouTubeStudioBrowserPublisher", lambda: provider)
 
-    response = client.post(f"/api/projects/{pid}/publish", json={"privacy_status": "private"})
+    def fake_publisher(account_id=None):
+        provider.account_id = account_id or "default"
+        return provider
+
+    monkeypatch.setattr(publish_svc, "YouTubeStudioBrowserPublisher", fake_publisher)
+
+    response = client.post(f"/api/projects/{pid}/publish", json={"privacy_status": "private", "youtube_account_id": "channel-b"})
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["upload_status"] == "uploaded"
+    assert body["youtube_account_id"] == "channel-b"
     assert body["thumbnail_status"] == "failed"
     assert body["thumbnail_note"]
     assert body["thumbnail_retry_url"] is None

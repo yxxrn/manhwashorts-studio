@@ -124,19 +124,19 @@
 
         <hr>
 
-        <h3>Channel YouTube</h3>
+        <h3>Akun YouTube (Chrome)</h3>
         <p class="hint">
-          {% if youtube_enabled %}
-          Channel yang terhubung dipakai untuk mengunggah.
-          {% else %}
-          OAuth belum dikonfigurasi, jadi aplikasi berjalan dalam mode dry-run.
-          {% endif %}
+          Setiap akun memakai persistent Chrome profile terpisah agar sesi tidak tertukar.
+          Buat ID singkat seperti <code>bearshorty</code> atau <code>akun-b</code>.
         </p>
         <div class="row-actions">
-          <button type="button" id="connect-yt-btn" class="btn secondary">Hubungkan channel</button>
-          <button type="button" id="refresh-channels-btn" class="btn secondary">Muat ulang</button>
+          <input type="text" id="yt-account-id" aria-label="YouTube account ID" maxlength="32" placeholder="account-id">
+          <input type="text" id="yt-account-label" aria-label="YouTube account label" maxlength="120" placeholder="Nama akun / channel">
+          <button type="button" id="add-yt-account-btn" class="btn secondary">Tambah profile</button>
+          <button type="button" id="refresh-yt-accounts-btn" class="btn secondary">Muat ulang</button>
         </div>
-        <div id="channels-list" class="list" role="region" aria-live="polite"></div>
+        <p class="hint">Login profile dengan <code>scripts/youtube_browser_login.sh &lt;account-id&gt;</code> dari sesi noVNC/X11 sementara.</p>
+        <div id="youtube-accounts-list" class="list" role="region" aria-live="polite"></div>
 
         <hr>
 
@@ -401,10 +401,7 @@
       <section class="card step-7" aria-labelledby="pub-heading">
         <h2 id="pub-heading">8. Publikasi</h2>
         {% if not youtube_enabled %}
-        <p class="warn">
-          Mode dry-run: YouTube OAuth belum dikonfigurasi, jadi tidak ada video
-          yang benar-benar diunggah. Sistem hanya mencatat rencana unggahan.
-        </p>
+        <p class="warn">YouTube Studio browser publisher sedang dinonaktifkan.</p>
         {% endif %}
         <div class="row-actions">
           <button type="button" id="readiness-btn" class="btn secondary">Cek kesiapan</button>
@@ -414,6 +411,9 @@
         <form id="publish-form" class="grid2">
           <label for="pub-title">Judul video
             <input type="text" id="pub-title" maxlength="100">
+          </label>
+          <label for="pub-account">Akun YouTube
+            <select id="pub-account"></select>
           </label>
           <label for="pub-privacy">Privasi
             <select id="pub-privacy">

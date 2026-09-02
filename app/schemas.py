@@ -527,8 +527,19 @@ class DraftOut(BaseModel):
 # --- publish ---------------------------------------------------------------
 
 
+class YouTubeBrowserAccountCreate(BaseModel):
+    account_id: str = Field(min_length=1, max_length=32)
+    label: str = Field(default="", max_length=120)
+
+
+class YouTubeBrowserAccountUpdate(BaseModel):
+    label: str | None = Field(default=None, max_length=120)
+    make_default: bool = False
+
+
 class PublishRequest(BaseModel):
     channel_id: str | None = None
+    youtube_account_id: str | None = Field(default=None, max_length=32)
     video_title: str = Field(default="", max_length=100)
     description: str = Field(default="", max_length=5000)
     tags: list[str] = Field(default_factory=list)
@@ -548,6 +559,7 @@ class PublicationOut(BaseModel):
     id: str
     project_id: str
     channel_id: str | None
+    youtube_account_id: str = "default"
     youtube_video_id: str
     video_title: str
     description: str
@@ -809,6 +821,7 @@ class ProjectRunRequest(BaseModel):
     approval_mode: Literal["manual", "trusted_agent"] = "manual"
     confirm_publish_intent: bool = False
     channel_id: str | None = None
+    youtube_account_id: str | None = Field(default=None, max_length=32)
     privacy_status: PrivacyStatus = PrivacyStatus.PRIVATE
     scheduled_at: datetime | None = None
     confirm_public: bool = False

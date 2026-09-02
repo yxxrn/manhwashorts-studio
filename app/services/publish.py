@@ -14,6 +14,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.constants import PrivacyStatus, ProjectStatus, UploadStatus
 from app.models import Publication, RenderJob, VideoStat
 from app.security import new_idempotency_key
@@ -29,6 +30,7 @@ from app.services.pipeline import (
     run_quality_checks,
     successful_render,
 )
+from app.services.youtube_accounts import YouTubeBrowserAccountRegistry
 from app.services.youtube_browser import BrowserPublishError, YouTubeStudioBrowserPublisher
 from app.services.youtube_metadata import build_metadata
 
@@ -77,16 +79,70 @@ def build_metadata_for(db: Session, project_id: str) -> dict:
     )
 
 
-def browser_status() -> dict:
-    status = YouTubeStudioBrowserPublisher().session_status()
+def browser_status(account_id: str | None = None) -> dict:
+    try:
+        status = YouTubeStudioBrowserPublisher(account_id=account_id).session_status()
+    except BrowserPublishError as exc:
+        return {
+            "publisher": "youtube_studio_browser",
+            "available": False,
+            "authenticated": False,
+            "account_id": account_id or "",
+            "account_label": "",
+            "profile_dir": "",
+            "browser": settings.youtube_browser_executable,
+            "action_required": exc.action_required,
+            "detail": str(exc),
+        }
     return {
         "publisher": "youtube_studio_browser",
         "available": status.available,
         "authenticated": status.authenticated,
+        "account_id": status.account_id,
+        "account_label": status.account_label,
         "profile_dir": status.profile_dir,
         "browser": status.browser,
         "action_required": status.action_required,
         "detail": status.detail,
+    }
+
+
+def browser_accounts() -> dict:
+    registry = YouTubeBrowserAccountRegistry()
+    return {
+        "default_account_id": registry.default_account_id(),
+        "accounts": registry.describe(),
+    }
+
+
+def create_browser_account(*, account_id: str, label: str = "") -> dict:
+    registry = YouTubeBrowserAccountRegistry()
+    try:
+        account = registry.create(account_id=account_id, label=label)
+    except ValueError as exc:
+        raise PipelineError(str(exc)) from exc
+    return {
+        "account_id": account.account_id,
+        "label": account.label,
+        "profile_dir": str(account.profile_dir),
+        "is_default": account.account_id == registry.default_account_id(),
+        "login_command": f"scripts/youtube_browser_login.sh {account.account_id}",
+    }
+
+
+def update_browser_account(
+    account_id: str, *, label: str | None = None, make_default: bool = False
+) -> dict:
+    registry = YouTubeBrowserAccountRegistry()
+    try:
+        account = registry.update(account_id, label=label, make_default=make_default)
+    except ValueError as exc:
+        raise PipelineError(str(exc)) from exc
+    return {
+        "account_id": account.account_id,
+        "label": account.label,
+        "profile_dir": str(account.profile_dir),
+        "is_default": account.account_id == registry.default_account_id(),
     }
 
 
@@ -95,6 +151,7 @@ def publish(
     project_id: str,
     *,
     channel_id: str | None = None,
+    youtube_account_id: str | None = None,
     video_title: str = "",
     description: str = "",
     tags: list[str] | None = None,
@@ -128,10 +185,16 @@ def publish(
             + "; ".join(result.message for result in blocking[:3])
         )
 
+    try:
+        publisher = YouTubeStudioBrowserPublisher(account_id=youtube_account_id)
+    except BrowserPublishError as exc:
+        raise PipelineError(str(exc)) from exc
+
     publication = db.scalars(
         select(Publication)
         .where(
             Publication.project_id == project_id,
+            Publication.youtube_account_id == publisher.account_id,
             Publication.upload_status.in_(
                 [UploadStatus.PENDING, UploadStatus.FAILED, UploadStatus.UPLOADING]
             ),
@@ -159,12 +222,14 @@ def publish(
             project_id=project_id,
             render_job_id=job.id,
             channel_id=None,
+            youtube_account_id=publisher.account_id,
             idempotency_key=new_idempotency_key(),
         )
         db.add(publication)
 
     publication.render_job_id = job.id
     publication.channel_id = None
+    publication.youtube_account_id = publisher.account_id
     publication.video_title = final_title
     publication.description = final_description
     publication.tags = final_tags
@@ -176,7 +241,6 @@ def publish(
     db.flush()
     db.commit()
 
-    publisher = YouTubeStudioBrowserPublisher()
     try:
         result = publisher.publish(
             video_path=video_path,
@@ -204,6 +268,7 @@ def publish(
             code=exc.code,
             retryable=exc.retryable,
             action_required=exc.action_required,
+            youtube_account_id=publisher.account_id,
         )
         db.flush()
         db.commit()
@@ -225,6 +290,7 @@ def publish(
         publication.id,
         actor_id,
         provider=result.provider,
+        youtube_account_id=publisher.account_id,
         video_id=result.video_id,
         privacy=result.privacy_status,
         stages=result.stages,
@@ -244,6 +310,7 @@ def retry_publish(db: Session, publication_id: str, actor_id: str = "") -> Publi
     return publish(
         db,
         publication.project_id,
+        youtube_account_id=publication.youtube_account_id,
         video_title=publication.video_title,
         description=publication.description,
         tags=list(publication.tags or []),
@@ -299,13 +366,15 @@ def latest_stats(db: Session, publication_id: str) -> VideoStat | None:
     ).first()
 
 
-def can_publish(db: Session, project_id: str) -> dict:
+def can_publish(
+    db: Session, project_id: str, *, youtube_account_id: str | None = None
+) -> dict:
     job = successful_render(db, project_id)
     if job is None:
         return {"ready": False, "reason": "no successful final render yet", "checks": None}
     results = evaluate_quality_checks(db, project_id, job=job)
     summary = quality_svc.summarise(results)
-    browser = browser_status()
+    browser = browser_status(youtube_account_id) if youtube_account_id else browser_status()
     ready = bool(summary["can_publish"] and browser["available"] and browser["authenticated"])
     reasons: list[str] = []
     if not summary["can_publish"]:

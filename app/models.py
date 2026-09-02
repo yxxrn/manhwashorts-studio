@@ -574,6 +574,7 @@ class Publication(Base, TimestampMixin):
     channel_id: Mapped[str | None] = mapped_column(
         ForeignKey("youtube_channels.id", ondelete="SET NULL"), nullable=True
     )
+    youtube_account_id: Mapped[str] = mapped_column(String(32), default="default")
     youtube_video_id: Mapped[str] = mapped_column(String(40), default="")
     video_title: Mapped[str] = mapped_column(String(200), default="")
     description: Mapped[str] = mapped_column(Text, default="")

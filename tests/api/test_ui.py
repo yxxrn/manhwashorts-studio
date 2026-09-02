@@ -167,7 +167,7 @@ def test_ui_covers_every_pipeline_stage():
         "/duplicate",
         "/credentials",    # BYOK
         "/encoders",       # CPU/GPU
-        "/youtube/channels",
+        "/youtube/browser/accounts",
     ]:
         assert endpoint in JS, f"no UI reaches {endpoint}"
 

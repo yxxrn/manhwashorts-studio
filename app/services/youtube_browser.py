@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
+from app.services.youtube_accounts import YouTubeBrowserAccountRegistry
 
 
 class BrowserPublishError(RuntimeError):
@@ -39,6 +40,8 @@ class BrowserPublishError(RuntimeError):
 class BrowserSessionStatus:
     available: bool
     authenticated: bool
+    account_id: str
+    account_label: str
     profile_dir: str
     browser: str
     action_required: str | None = None
@@ -60,12 +63,21 @@ class YouTubeStudioBrowserPublisher:
     name = "youtube_studio_browser"
     studio_url = "https://studio.youtube.com"
 
-    def __init__(self) -> None:
-        self.profile_dir = Path(settings.youtube_browser_profile_dir).expanduser()
+    def __init__(self, account_id: str | None = None) -> None:
+        self.account_registry = YouTubeBrowserAccountRegistry()
+        try:
+            self.account = self.account_registry.get(account_id)
+        except ValueError as exc:
+            raise BrowserPublishError(
+                str(exc),
+                code="browser_account_not_found",
+                action_required="select_youtube_account",
+            ) from exc
+        self.account_id = self.account.account_id
+        self.account_label = self.account.label
+        self.profile_dir = self.account.profile_dir
         self.executable = settings.youtube_browser_executable
         self.timeout_ms = int(settings.youtube_browser_timeout_seconds * 1000)
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
-        self.profile_dir.chmod(0o700)
 
     @contextmanager
     def _single_browser(self) -> Iterator[None]:
@@ -129,6 +141,8 @@ class YouTubeStudioBrowserPublisher:
             return BrowserSessionStatus(
                 available=False,
                 authenticated=False,
+                account_id=self.account_id,
+                account_label=self.account_label,
                 profile_dir=str(self.profile_dir),
                 browser=self.executable,
                 detail="browser publisher is disabled",
@@ -139,6 +153,8 @@ class YouTubeStudioBrowserPublisher:
             return BrowserSessionStatus(
                 available=False,
                 authenticated=False,
+                account_id=self.account_id,
+                account_label=self.account_label,
                 profile_dir=str(self.profile_dir),
                 browser=self.executable,
                 action_required="install_playwright",
@@ -157,6 +173,8 @@ class YouTubeStudioBrowserPublisher:
                     return BrowserSessionStatus(
                         available=True,
                         authenticated=authenticated,
+                        account_id=self.account_id,
+                        account_label=self.account_label,
                         profile_dir=str(self.profile_dir),
                         browser=self.executable,
                         action_required=None if authenticated else "youtube_reauthentication",
@@ -168,6 +186,8 @@ class YouTubeStudioBrowserPublisher:
             return BrowserSessionStatus(
                 available=True,
                 authenticated=False,
+                account_id=self.account_id,
+                account_label=self.account_label,
                 profile_dir=str(self.profile_dir),
                 browser=self.executable,
                 action_required=exc.action_required,
@@ -177,6 +197,8 @@ class YouTubeStudioBrowserPublisher:
             return BrowserSessionStatus(
                 available=False,
                 authenticated=False,
+                account_id=self.account_id,
+                account_label=self.account_label,
                 profile_dir=str(self.profile_dir),
                 browser=self.executable,
                 action_required="browser_unavailable",
@@ -185,7 +207,7 @@ class YouTubeStudioBrowserPublisher:
 
     def _diagnostic_dir(self) -> Path:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = settings.tmp_dir / "youtube_browser" / stamp
+        path = settings.tmp_dir / "youtube_browser" / self.account_id / stamp
         path.mkdir(parents=True, exist_ok=True)
         return path
 
