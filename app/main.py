@@ -32,10 +32,6 @@ logging.basicConfig(
     level=logging.INFO if not settings.debug else logging.DEBUG,
     format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
 )
-# OAuth libraries can expose authorization codes or client credentials at DEBUG.
-for _sensitive_logger in ("requests_oauthlib", "oauthlib"):
-    logging.getLogger(_sensitive_logger).setLevel(logging.WARNING)
-
 logger = logging.getLogger("manhwashorts")
 
 
@@ -61,7 +57,7 @@ async def lifespan(app: FastAPI):
         "tts=%s llm=%s youtube=%s",
         settings.tts_provider,
         settings.llm_provider,
-        "configured" if settings.youtube_enabled else "dry-run",
+        "browser" if settings.youtube_browser_enabled else "disabled",
     )
     if settings.suwayomi_enabled and settings.suwayomi_auto_start:
         try:
@@ -139,7 +135,7 @@ def health() -> dict:
         "ffmpeg": render_svc.ffmpeg_available(),
         "tts_provider": provider.name,
         "llm_provider": settings.llm_provider,
-        "youtube_enabled": settings.youtube_enabled,
+        "youtube_enabled": settings.youtube_browser_enabled,
         "problems": problems,
         "video_encoder": encoder.key,
         "gpu_encoding": encoder.hardware,
@@ -160,6 +156,7 @@ def capabilities() -> dict:
         "render_async": True,
         "stages": ["analysis", "draft", "voice", "timeline", "quality", "render", "publish"],
         "source_connectors": ["suwayomi"] if settings.suwayomi_enabled else [],
+        "publishers": ["youtube_studio_browser"] if settings.youtube_browser_enabled else [],
     }
 
 
@@ -197,7 +194,7 @@ def dashboard(request: Request) -> HTMLResponse:
             "version": settings.version,
             "max_duration": settings.max_short_seconds,
             "default_target_seconds": settings.default_target_seconds,
-            "youtube_enabled": settings.youtube_enabled,
+            "youtube_enabled": settings.youtube_browser_enabled,
         },
     )
 

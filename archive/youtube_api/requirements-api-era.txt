@@ -24,5 +24,7 @@ python-slugify==8.0.4
 httpx==0.28.1
 cryptography==50.0.0
 
-# YouTube Studio browser publishing
-playwright==1.62.0
+# YouTube integration (optional at runtime, required for FR-10)
+google-auth==2.56.2
+google-auth-oauthlib==1.4.0
+google-api-python-client==2.198.0

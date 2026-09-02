@@ -696,7 +696,7 @@ def test_duration_within_limit_passes(app_settings):
 
 
 def test_youtube_metadata_within_limits():
-    from app.services.youtube import build_metadata
+    from app.services.youtube_metadata import build_metadata
 
     meta = build_metadata("Proyek", "Judul Manhwa Panjang", "12", "Narasi contoh.", "Kreator")
     assert len(meta["title"]) <= 100
@@ -707,7 +707,7 @@ def test_youtube_metadata_within_limits():
 
 
 def test_youtube_metadata_is_hook_first_not_series_first():
-    from app.services.youtube import build_metadata
+    from app.services.youtube_metadata import build_metadata
 
     story = (
         "Arin discovers the sealed sword is whispering his name. "

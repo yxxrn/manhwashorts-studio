@@ -3,46 +3,34 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 
-def _objects(tmp_path):
-    video = tmp_path / "final.mp4"
-    video.write_bytes(b"video")
-    publication = SimpleNamespace(
-        id="pub1", youtube_video_id="yt123", thumbnail_attempt=0,
-        thumbnail_status="pending", thumbnail_error="",
-    )
-    return publication, SimpleNamespace(output_key=str(video)), video
-
-
-def test_thumbnail_failure_is_non_blocking_and_retryable(tmp_path, monkeypatch):
-    from app.services import publish, youtube
-
-    publication, job, video = _objects(tmp_path)
-    (video.parent / "thumbnail.jpg").write_bytes(b"jpeg")
-    monkeypatch.setattr(publish, "audit", lambda *args, **kwargs: None)
-
-    class Provider:
-        def set_thumbnail(self, video_id, thumbnail_path, credentials):
-            raise youtube.YouTubeError("rate limited", code="thumbnail_http_429", retryable=True)
-
-    assert publish._attempt_thumbnail_upload(None, publication, job, Provider(), {}, "agent") is False
-    assert publication.thumbnail_status == "failed"
-    assert publication.thumbnail_attempt == 1
-    assert "thumbnail_http_429" in publication.thumbnail_error
-
-
-def test_thumbnail_success_clears_previous_error(tmp_path, monkeypatch):
+def test_thumbnail_path_prefers_generated_thumbnail(tmp_path):
     from app.services import publish
 
-    publication, job, video = _objects(tmp_path)
-    publication.thumbnail_error = "old failure"
-    (video.parent / "thumbnail.jpg").write_bytes(b"jpeg")
-    monkeypatch.setattr(publish, "audit", lambda *args, **kwargs: None)
+    video = tmp_path / "final.mp4"
+    video.write_bytes(b"video")
+    (tmp_path / "final.jpg").write_bytes(b"frame")
+    preferred = tmp_path / "thumbnail.jpg"
+    preferred.write_bytes(b"thumb")
 
-    class Provider:
-        def set_thumbnail(self, video_id, thumbnail_path, credentials):
-            return None
+    job = SimpleNamespace(output_key=str(video))
+    assert publish._thumbnail_path(job) == preferred
 
-    assert publish._attempt_thumbnail_upload(None, publication, job, Provider(), {}, "agent") is True
-    assert publication.thumbnail_status == "uploaded"
-    assert publication.thumbnail_error == ""
-    assert publication.thumbnail_attempt == 1
+
+def test_thumbnail_path_falls_back_to_final_frame(tmp_path):
+    from app.services import publish
+
+    video = tmp_path / "final.mp4"
+    video.write_bytes(b"video")
+    fallback = tmp_path / "final.jpg"
+    fallback.write_bytes(b"frame")
+
+    job = SimpleNamespace(output_key=str(video))
+    assert publish._thumbnail_path(job) == fallback
+
+
+def test_browser_thumbnail_failure_has_no_api_retry_url():
+    from app.models import Publication
+
+    publication = Publication(thumbnail_status="failed", thumbnail_error="browser_ui")
+    assert "studio" in publication.thumbnail_note.lower()
+    assert publication.thumbnail_retry_url is None

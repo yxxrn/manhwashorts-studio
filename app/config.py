@@ -203,11 +203,12 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     llm_timeout: int = 90
 
-    # --- YouTube ---
-    youtube_client_id: str | None = None
-    youtube_client_secret: SecretStr | None = None
-    youtube_redirect_uri: str = "http://127.0.0.1:8000/api/youtube/callback"
-    youtube_enabled: bool = False
+    # --- YouTube Studio browser publisher ---
+    youtube_browser_enabled: bool = True
+    youtube_browser_profile_dir: Path = Path.home() / ".config" / "manhwashorts" / "youtube-browser-runtime"
+    youtube_browser_executable: str = "/usr/bin/google-chrome"
+    youtube_browser_headless: bool = True
+    youtube_browser_timeout_seconds: int = 120
 
     # --- Policy guardrails ---
     require_rights_declaration: bool = False

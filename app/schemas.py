@@ -772,6 +772,7 @@ class LocalCapabilitiesOut(BaseModel):
     render_async: bool
     stages: list[str]
     source_connectors: list[str] = Field(default_factory=list)
+    publishers: list[str] = Field(default_factory=list)
 
 
 class ProjectPipelineStatusOut(BaseModel):

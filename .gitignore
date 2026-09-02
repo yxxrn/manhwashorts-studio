@@ -48,3 +48,8 @@ node_modules/
 
 # Downloaded installers (cloudflared etc)
 *.deb
+
+# Browser authentication exports / profiles -- never commit
+cookies*.json
+*storage_state*.json
+youtube-browser/

@@ -30,7 +30,7 @@ os.environ["MS_DATABASE_URL"] = f"sqlite:///{TEST_RUN_DIR / 'test.db'}"
 os.environ["MS_TTS_PROVIDER"] = "null"
 os.environ["MS_SECRET_KEY"] = "test-secret-key-not-for-production-use"
 os.environ["MS_ENVIRONMENT"] = "local"
-os.environ["MS_YOUTUBE_ENABLED"] = "false"
+os.environ["MS_YOUTUBE_BROWSER_ENABLED"] = "false"
 os.environ["MS_SUWAYOMI_AUTO_START"] = "false"
 
 
@@ -78,7 +78,7 @@ def _isolate_environment() -> Iterator[None]:
     os.environ["MS_TTS_PROVIDER"] = "null"
     os.environ["MS_SECRET_KEY"] = "test-secret-key-not-for-production-use"
     os.environ["MS_ENVIRONMENT"] = "local"
-    os.environ["MS_YOUTUBE_ENABLED"] = "false"
+    os.environ["MS_YOUTUBE_BROWSER_ENABLED"] = "false"
     os.environ["MS_SUWAYOMI_AUTO_START"] = "false"
 
     yield

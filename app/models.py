@@ -593,22 +593,20 @@ class Publication(Base, TimestampMixin):
 
     @property
     def thumbnail_note(self) -> str:
-        if self.thumbnail_status == "failed" and self.thumbnail_error.startswith("thumbnail_http_403"):
+        if self.thumbnail_status == 'failed':
             return (
-                "Video uploaded, but this YouTube channel cannot currently set custom thumbnails. "
-                "Enable custom-thumbnail access for the channel, then retry the thumbnail upload."
+                'Video uploaded, but YouTube Studio could not set the custom thumbnail. '
+                'Check custom-thumbnail access for this channel in Studio.'
             )
-        if self.thumbnail_status == "failed":
-            return "Video uploaded, but the custom thumbnail failed. Check it manually or retry the thumbnail upload."
-        if self.thumbnail_status == "not_available":
-            return "Video uploaded without a custom thumbnail because no publishable thumbnail file was available."
-        return ""
+        if self.thumbnail_status == 'not_available':
+            return 'Video uploaded without a custom thumbnail; YouTube Studio will use a generated frame.'
+        return ''
 
     @property
     def thumbnail_retry_url(self) -> str | None:
-        if self.thumbnail_status not in {"failed", "not_available"}:
-            return None
-        return f"/api/publications/{self.id}/thumbnail/retry"
+        # Standalone thumbnail retry belonged to the archived Data API publisher.
+        return None
+
 
 
 class VideoStat(Base, TimestampMixin):
