@@ -175,3 +175,32 @@ def test_story_commentary_phrases_are_not_misclassified_as_cta():
 
     assert report.cta_hits == ()
     assert not any(result.code == "narrative.cta" for result in results)
+
+
+def test_ai_slop_marker_is_blocking_and_reported():
+    passages = _passages()
+    passages[0]["text"] = "Everything changes when raw energy fills the scene."
+    report = editorial_qc.screen_narrative_naturalness(passages, _claims(), _profile())
+    results = quality.check_narrative_naturalness(report)
+    assert set(report.ai_slop_hits) >= {"everything changes", "raw energy"}
+    assert any(result.code == "narrative.ai_slop" and result.blocking for result in results)
+
+
+def test_repeated_reporter_prose_is_blocking_visual_recap():
+    passages = _passages()
+    passages[0]["text"] = "A blue-haired fighter is shown near the route."
+    passages[1]["text"] = "A second figure is depicted beside the barrier."
+    report = editorial_qc.screen_narrative_naturalness(passages, _claims(), _profile())
+    results = quality.check_narrative_naturalness(report)
+    assert report.visual_description_ratio == 0.5
+    assert any(result.code == "narrative.visual_recap_prose" and result.blocking for result in results)
+
+
+def test_mechanical_sequence_is_warning_not_blocking():
+    passages = _passages()
+    passages[0]["text"] = "Then the route changes because the group hesitates."
+    passages[1]["text"] = "Meanwhile, the visible clue points somewhere new."
+    report = editorial_qc.screen_narrative_naturalness(passages, _claims(), _profile())
+    results = quality.check_narrative_naturalness(report)
+    assert report.mechanical_opening_ratio >= 0.5
+    assert any(result.code == "narrative.mechanical_sequence" and not result.blocking for result in results)

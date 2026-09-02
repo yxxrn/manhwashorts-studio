@@ -1169,6 +1169,12 @@ def check_narrative_naturalness(report: object) -> list[CheckResult]:
         "qualified_interpretation_coverage_ratio": float(
             getattr(report, "qualified_interpretation_coverage_ratio", 0.0)
         ),
+        "visual_description_ratio": float(
+            getattr(report, "visual_description_ratio", 0.0)
+        ),
+        "mechanical_opening_ratio": float(
+            getattr(report, "mechanical_opening_ratio", 0.0)
+        ),
     }
     results: list[CheckResult] = []
     blocking = {
@@ -1178,12 +1184,15 @@ def check_narrative_naturalness(report: object) -> list[CheckResult]:
         "narrative.balloon_dialogue_copied": "Narrative text copies speech-balloon dialogue.",
         "narrative.cta": "Narrative text contains channel call-to-action language.",
         "narrative.generic_hype": "Narrative text contains generic hype language.",
+        "narrative.ai_slop": "Narrative text contains generic AI-style filler or empty intensity.",
+        "narrative.visual_recap_prose": "Narrative prose is describing panels instead of telling the grounded story.",
         "narrative.ending_invalid": "Narrative ending does not match its ending kind.",
         "narrative.display_derivation_invalid": "Narrative display derivation is invalid.",
     }
     warning_messages = {
         "narrative.template_risk": "Narrative structure shows repeated template openings or sentences.",
         "narrative.rhythm_warning": "Narrative sentence rhythm is unusually uniform.",
+        "narrative.mechanical_sequence": "Narrative passages rely too heavily on mechanical sequence openings.",
     }
     for code in warnings:
         if code in blocking:
@@ -1192,6 +1201,10 @@ def check_narrative_naturalness(report: object) -> list[CheckResult]:
                 detail["markers"] = list(getattr(report, "generic_hype_hits", ()))
             if code == "narrative.cta":
                 detail["markers"] = list(getattr(report, "cta_hits", ()))
+            if code == "narrative.ai_slop":
+                detail["markers"] = list(getattr(report, "ai_slop_hits", ()))
+            if code == "narrative.visual_recap_prose":
+                detail["markers"] = list(getattr(report, "reporter_prose_hits", ()))
             results.append(_fail(code, CheckSeverity.ERROR, blocking[code], detail))
         elif code in warning_messages:
             results.append(

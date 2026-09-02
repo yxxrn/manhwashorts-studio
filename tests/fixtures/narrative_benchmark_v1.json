@@ -1,0 +1,685 @@
+{
+  "version": "narrative-benchmark-v1",
+  "cases": [
+    {
+      "case_id": "good_01",
+      "expected_pass": true,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "The warning is simple: the barrier will not hold forever.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "The route has changed, so the group loses the easy way forward.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "That delay changes the timing without erasing the threat.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "One problem remains unresolved, and the next decision has to account for it.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "story_understanding__bench": {
+          "claim_id": "story_understanding__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "story_understanding",
+          "narrative_priority": "primary"
+        }
+      }
+    },
+    {
+      "case_id": "good_02",
+      "expected_pass": true,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "The real problem is not the attack. It is what the new information changes.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "A grounded reveal reframes the earlier choice without inventing a motive.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "Because the situation shifts, the consequence now matters more than the spectacle.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "The chapter leaves that consequence open instead of pretending it is settled.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "story_understanding__bench": {
+          "claim_id": "story_understanding__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "story_understanding",
+          "narrative_priority": "primary"
+        }
+      }
+    },
+    {
+      "case_id": "good_03",
+      "expected_pass": true,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "A small clue carries the biggest story value here.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "The evidence establishes a change first, then gives enough context to understand it.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "The important part is the result: the old assumption no longer works.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "That leaves a concrete question for the next move.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "story_understanding__bench": {
+          "claim_id": "story_understanding__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "story_understanding",
+          "narrative_priority": "primary"
+        }
+      }
+    },
+    {
+      "case_id": "good_04",
+      "expected_pass": true,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "The timeline itself becomes the pressure point.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "A grounded event changes when the characters can act, and the explanation stays tied to evidence.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "The consequence is practical rather than decorative: their next window is different.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "The story stops before that pressure is resolved.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "story_understanding__bench": {
+          "claim_id": "story_understanding__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "story_understanding",
+          "narrative_priority": "primary"
+        }
+      }
+    },
+    {
+      "case_id": "good_05",
+      "expected_pass": true,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "The reveal lands before the chapter explains all of it.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "Known facts establish the situation while uncertain intent stays qualified.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "That separation keeps the narration clear without turning a guess into a fact.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "The unresolved piece is allowed to remain unresolved.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "story_understanding__bench": {
+          "claim_id": "story_understanding__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "story_understanding",
+          "narrative_priority": "primary"
+        }
+      }
+    },
+    {
+      "case_id": "bad_ai_slop",
+      "expected_pass": false,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "Everything changes as raw energy fills the moment.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "The grounded route changes because the group hesitates.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "The consequence remains tied to the same evidence.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "The next decision is still unresolved.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "story_understanding__bench": {
+          "claim_id": "story_understanding__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "story_understanding",
+          "narrative_priority": "primary"
+        }
+      }
+    },
+    {
+      "case_id": "bad_visual_recap",
+      "expected_pass": false,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "A blue-haired fighter is shown beside the route.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "A second figure is depicted near the barrier.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "The consequence remains tied to the same evidence.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "The next decision is still unresolved.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "story_understanding__bench": {
+          "claim_id": "story_understanding__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "story_understanding",
+          "narrative_priority": "primary"
+        }
+      }
+    },
+    {
+      "case_id": "bad_mechanical",
+      "expected_pass": false,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "Then the route changes because the group hesitates.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "Meanwhile, the clue changes what they can do.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "Later, the consequence becomes clear from the same evidence.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "As the chapter closes, the next decision stays unresolved.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "story_understanding__bench": {
+          "claim_id": "story_understanding__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "story_understanding",
+          "narrative_priority": "primary"
+        }
+      }
+    },
+    {
+      "case_id": "bad_support_only",
+      "expected_pass": false,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "The warning changes how the situation reads.",
+          "claim_ids": [
+            "visual_story_map__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "The route creates a concrete limitation for the group.",
+          "claim_ids": [
+            "visual_story_map__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "That limitation carries a grounded consequence.",
+          "claim_ids": [
+            "visual_story_map__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "The next decision remains unresolved.",
+          "claim_ids": [
+            "visual_story_map__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "visual_story_map__bench": {
+          "claim_id": "visual_story_map__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "visual_story_map",
+          "narrative_priority": "support_only"
+        }
+      }
+    },
+    {
+      "case_id": "bad_template",
+      "expected_pass": false,
+      "passages": [
+        {
+          "passage_id": "p1",
+          "editorial_role": "hook",
+          "text": "The route changes because the group hesitates.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p2",
+          "editorial_role": "setup",
+          "text": "The route changes because the group waits.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p3",
+          "editorial_role": "consequence",
+          "text": "The route changes because the group reacts.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        },
+        {
+          "passage_id": "p4",
+          "editorial_role": "open_loop",
+          "text": "The route changes because the group stops.",
+          "claim_ids": [
+            "story_understanding__bench"
+          ],
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ],
+      "claims": {
+        "story_understanding__bench": {
+          "claim_id": "story_understanding__bench",
+          "claim_type": "fact",
+          "text": "The grounded situation changes and leaves a consequence.",
+          "qualification": "Directly grounded by benchmark evidence.",
+          "evidence_panel_ids": [
+            "p1",
+            "p2"
+          ],
+          "claim_origin": "story_understanding",
+          "narrative_priority": "primary"
+        }
+      }
+    }
+  ]
+}

@@ -696,7 +696,7 @@ NARRATION_REPAIR_INSTRUCTION = (
     "synonymous formal filler; keep every grounded fact and the exact evidence scope unchanged."
 )
 
-EDITORIAL_SELECTION_VERSION = "editorial-selection-v1"
+EDITORIAL_SELECTION_VERSION = "editorial-selection-v2"
 EDITORIAL_SELECTION_TARGET_BEATS = 10
 EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT = 4
 STAGE_PARALLEL_WORKERS = 4
@@ -2411,6 +2411,7 @@ def select_editorial_beats(
     visual: VisualStageResult,
     story_map: StoryMapResult,
     *,
+    story_context: Mapping[str, Any] | None = None,
     target_count: int = EDITORIAL_SELECTION_TARGET_BEATS,
 ) -> EditorialSelection:
     """Select 8-12 chronologically distributed strong beats without sampling."""
@@ -2432,6 +2433,7 @@ def select_editorial_beats(
         for panel in visual.panels
         if isinstance(panel, Mapping) and str(panel.get("panel_id", "")).strip()
     }
+    story_weight_by_panel = story_understanding.primary_story_panel_weights(story_context)
     claims = tuple(
         claim
         for claim in (getattr(story_map, "claims", ()) or ())
@@ -2464,6 +2466,7 @@ def select_editorial_beats(
             + (len(state_changes) if isinstance(state_changes, (list, tuple)) else 0) * 5
             + (len(causal_turns) if isinstance(causal_turns, (list, tuple)) else 0) * 3
             + sum(story_signal_by_panel.get(panel_id, 0) for panel_id in panel_ids) * 20
+            + sum(story_weight_by_panel.get(panel_id, 0) for panel_id in panel_ids) * 4
             + min(len(panel_ids), 16)
         )
         beat_rows.append(
@@ -2516,33 +2519,45 @@ def select_editorial_beats(
         story_ranked_panel_ids = sorted(
             row["panel_ids"],
             key=lambda panel_id: (
+                -story_weight_by_panel.get(panel_id, 0),
                 -story_signal_by_panel.get(panel_id, 0),
                 panel_order[panel_id],
             ),
         )
         for panel_id in story_ranked_panel_ids:
-            if story_signal_by_panel.get(panel_id, 0) <= 0:
+            if (
+                story_weight_by_panel.get(panel_id, 0) <= 0
+                and story_signal_by_panel.get(panel_id, 0) <= 0
+            ):
                 break
             if panel_id not in local_panel_ids:
                 local_panel_ids.append(panel_id)
         for panel_id in (row["panel_ids"][0], row["panel_ids"][-1]):
             if panel_id not in local_panel_ids:
                 local_panel_ids.append(panel_id)
-        local_panel_ids.sort(key=panel_order.__getitem__)
-        selected_panel_set.update(local_panel_ids[:EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT])
+        chosen_panel_ids = local_panel_ids[:EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT]
+        chosen_panel_ids.sort(key=panel_order.__getitem__)
+        selected_panel_set.update(chosen_panel_ids)
         score_rows.append(
             {
                 "beat_id": row["beat_id"],
                 "source_order": int(row["first_order"]),
                 "score": int(row["score"]),
-                "selected_panel_ids": local_panel_ids[:EDITORIAL_SELECTION_MAX_PANELS_PER_BEAT],
+                "selected_panel_ids": chosen_panel_ids,
                 "claim_count": len(row["claims"]),
                 "story_signal_score": sum(
                     story_signal_by_panel.get(panel_id, 0)
                     for panel_id in row["panel_ids"]
                 ),
+                "primary_story_score": sum(
+                    story_weight_by_panel.get(panel_id, 0)
+                    for panel_id in row["panel_ids"]
+                ),
             }
         )
+    selected_panel_set.update(
+        panel_id for panel_id in story_weight_by_panel if panel_id in panel_order
+    )
     panel_ids = tuple(panel_id for panel_id in panel_order if panel_id in selected_panel_set)
     beat_ids = tuple(str(row["beat_id"]) for row in selected)
     identity = {
@@ -2553,6 +2568,7 @@ def select_editorial_beats(
         "beat_scores": score_rows,
         "visual_evidence_hash": visual.visual_evidence_hash,
         "story_map_hash": story_map.story_map_hash,
+        "story_understanding_hash": str((story_context or {}).get("understanding_hash", "")),
     }
     return EditorialSelection(
         beat_ids=beat_ids,
@@ -2585,6 +2601,13 @@ def _load_story_understanding_prompt() -> tuple[str, str, str]:
         raise CloudStageError("cloud.prompt_invalid") from None
 
 
+def _load_story_semantic_audit_prompt() -> tuple[str, str, str]:
+    try:
+        return story_understanding.load_semantic_audit_instruction()
+    except story_understanding.StoryUnderstandingError:
+        raise CloudStageError("cloud.prompt_invalid") from None
+
+
 def _load_strip_boundary_prompt() -> tuple[str, str, str]:
     try:
         text = STRIP_BOUNDARY_PROMPT_PATH.read_text(encoding="utf-8")
@@ -2605,6 +2628,7 @@ def _prompt_specs() -> dict[str, tuple[str, str, str]]:
         "visual": visual_scoring.load_visual_evidence_instruction(),
         "story_map": _load_causal_prompt(),
         "story_understanding": _load_story_understanding_prompt(),
+        "story_semantic_audit": _load_story_semantic_audit_prompt(),
         "narration": narrative_identity.load_narrative_instruction("sharp_friend_v1"),
         "segmentation": _load_strip_boundary_prompt(),
         "visual_narrative_repair": visual_narrative_repair.load_repair_prompt(),
@@ -2622,6 +2646,7 @@ def _narration_retry_feedback(
     failed_predicate: str | None = None,
     per_position_word_counts: Sequence[int | None] | None = None,
     expected_ranges: Sequence[Mapping[str, Any]] | None = None,
+    anti_slop_markers: Sequence[str] | None = None,
 ) -> str:
     """Return bounded, sanitized guidance for one rejected narration attempt."""
 
@@ -2633,6 +2658,11 @@ def _narration_retry_feedback(
         return (
             "repeat only exact current panel IDs and include every claim's evidence IDs "
             "in the referencing passage"
+        )
+    if "script passage copies source dialogue" in value:
+        return (
+            "paraphrase the same grounded meaning in fresh spoken prose; preserve every claim ID and evidence panel ID, "
+            "but do not quote or closely mirror source dialogue/OCR phrasing and do not add facts"
         )
     if "open_question ending must be evidence-grounded and end with ?" in value:
         return (
@@ -2650,9 +2680,24 @@ def _narration_retry_feedback(
             "passage punctuation agree with that choice"
         )
     if "cloud.narrative_qc_blocked" in value:
+        markers = [str(item).strip() for item in (anti_slop_markers or ()) if str(item).strip()]
+        marker_note = f" Detected phrases/patterns: {', '.join(markers[:8])}." if markers else ""
+        if failed_predicate == "narrative.visual_recap_prose":
+            return (
+                "rewrite the affected prose as story events, reveals, decisions, or consequences; "
+                "use PRIMARY story-understanding claims as the semantic skeleton and use support_only "
+                "visual claims only for evidence. Do not describe what is shown, depicted, or where focus shifts. "
+                "Do not add facts." + marker_note
+            )
+        if failed_predicate == "narrative.ai_slop":
+            return (
+                "remove generic AI-style filler and empty intensity while preserving exact grounded meaning, "
+                "claim IDs, and evidence. Replace filler with the concrete event or consequence already present "
+                "in PRIMARY story claims; do not add facts." + marker_note
+            )
         return (
-            "use natural evidence-grounded prose and avoid generic hype, CTA language, "
-            "copied dialogue, and unsupported claims"
+            "use natural evidence-grounded prose and avoid generic hype, CTA language, copied dialogue, "
+            "panel-description prose, AI filler, and unsupported claims." + marker_note
         )
     if value == "cloud.narrative_repair_position_contract_invalid":
         return (
@@ -2980,6 +3025,13 @@ def _visual_narrative_repair_retry_feedback(
             "sequences, close-ups, what is shown, what appears, or what is visible. State the "
             "grounded change, contrast, consequence, or uncertainty and connect adjacent beats "
             "causally when the supplied story map supports it; obey every max_lexical_words limit"
+        )
+    if predicate == "narrative.ai_slop":
+        return (
+            "remove generic AI-style filler and empty intensity from the affected passage while "
+            "preserving its exact claim_ids, evidence_panel_ids, grounded meaning, and word-capacity "
+            "limits. Replace filler with the concrete event or consequence already supported by the "
+            "claims; do not add facts"
         )
     if predicate == "narrative.hook_weak" or value == "cloud.narrative_hook_weak":
         return (
@@ -6525,7 +6577,7 @@ def resolve_cloud_runner(
         prompt_versions={
             stage: prompt[0]
             for stage, prompt in _prompt_specs().items()
-            if stage != "story_understanding"
+            if stage not in {"story_understanding", "story_semantic_audit"}
         },
     )
     return CloudStageRunner(

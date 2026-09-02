@@ -84,12 +84,12 @@ def test_profile_is_frozen_and_has_exact_sharp_friend_identity_fields():
     module = _identity_module()
     profile = getattr(module, "SHARP_FRIEND_V1", None)
     assert profile.profile_id == "sharp_friend_v1"
-    assert profile.profile_version == "1.0.0"
+    assert profile.profile_version == "1.1.0"
     assert profile.language == "en-US"
     assert profile.identity == (
         "a clever, friendly, perceptive friend under controlled tension"
     )
-    assert (profile.target_word_min, profile.target_word_max) == (90, 125)
+    assert (profile.target_word_min, profile.target_word_max) == (115, 125)
     assert (profile.passage_min, profile.passage_max) == (4, 6)
     assert profile.allowed_ending_kinds == (
         "cliffhanger",
@@ -116,13 +116,16 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     module = _identity_module()
     version, digest, text = module.load_narrative_instruction("sharp_friend_v1")
     assert version == "vision-first-story-analyzer-v3"
-    assert digest == "391c4ab146067eee73154857d59a79425b6db41f957c21fbf83cba08678f50d5"
+    assert digest == "f7fbea43b23d42d848b8000f2d0379102bf8b1982b3a14c370a56925839513ac"
     assert digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert "\r" not in text
     assert "observe every ordered panel" in text.lower()
+    assert "contract id: manhwashorts.house_voice" in text.lower()
+    assert "primary story-understanding claims decide what the narration is about" in text.lower()
+    assert "support_only visual claims" in text.lower()
     assert (
         module.get_narrative_identity("sharp_friend_v1").contract_sha256
-        == "ab9e9bf86e25d2d10a80cf3ec12dae575c5a1d1aab07660fb20900bbb2f13fe3"
+        == "678543c42e7894ae10a04fd6ce84105d044c2b4922770b2c7baaed5f36ac3e40"
     )
 
 
@@ -568,3 +571,12 @@ def test_v2_default_dispatch_validates_the_legacy_shape_unchanged():
             item["panel_id"] for item in chapter["observations"]
         ),
     )
+
+
+def test_house_voice_resource_is_versioned_and_loaded_into_identity():
+    module = _identity_module()
+    voice = module._load_house_voice()
+    assert f"Version: {module.HOUSE_VOICE_VERSION}" in voice
+    assert "Tell the story, do not describe the manga." in voice
+    _, _, combined = module.load_narrative_instruction("sharp_friend_v1")
+    assert voice in combined

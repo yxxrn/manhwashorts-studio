@@ -46,18 +46,39 @@ _bound = runtime_bound(_RUNTIME_NAMES)
 
 class NarrationMixin:
     @_bound
-    def _run_story_understanding(
-        self,
-        observations: Sequence[Mapping[str, Any]],
-        structural: Mapping[str, Any],
-        story_map: StoryMapResult,
-        visual: VisualStageResult,
-    ) -> dict[str, Any]:
+    def _run_story_semantic_audit(self, understanding, observations, structural, story_map):
+        prompt = self.prompts["story_semantic_audit"]
+        source = story_understanding.build_semantic_audit_packet(
+            understanding, observations, story_map.as_dict(), structural["continuity_ledger"]
+        )
+        key = _cache_key("story_semantic_audit", source, self.model_identity, prompt)
+        if self.cache is not None and (cached := self.cache.get(key)) is not None:
+            try:
+                return story_understanding.validate_semantic_audit(
+                    cached,
+                    expected_beat_ids=[beat["beat_id"] for beat in understanding["narration_ready_beats"]],
+                )
+            except story_understanding.StoryUnderstandingError:
+                pass
+        raw = self._call(
+            lambda: self.provider.complete_json(
+                stage="story_semantic_audit", prompt_version=prompt[0],
+                prompt_sha256=prompt[1], prompt_text=prompt[2], payload=source,
+            ), request_stage="other",
+        )
+        audit = story_understanding.validate_semantic_audit(
+            raw,
+            expected_beat_ids=[beat["beat_id"] for beat in understanding["narration_ready_beats"]],
+        )
+        if self.cache is not None:
+            self.cache.put(key, audit)
+        return audit
+
+    @_bound
+    def _run_story_understanding(self, observations, structural, story_map, visual):
         prompt = self.prompts["story_understanding"]
         source = story_understanding.build_source_packet(
-            observations,
-            story_map.as_dict(),
-            structural["continuity_ledger"],
+            observations, story_map.as_dict(), structural["continuity_ledger"]
         )
         key = _cache_key("story_understanding", source, self.model_identity, prompt)
         if (
@@ -65,45 +86,56 @@ class NarrationMixin:
             and (cached := self.cache.get(key)) is not None
             and isinstance(cached, Mapping)
         ):
-            cached_hash = str(cached.get("understanding_hash", ""))
-            candidate = {
-                key: value for key, value in cached.items() if key != "understanding_hash"
-            }
-            try:
-                normalized = story_understanding.validate_result(
-                    candidate,
-                    expected_panel_ids=visual.panel_ids,
-                    story_map=story_map.as_dict(),
-                )
-            except story_understanding.StoryUnderstandingError:
-                normalized = None
-            if normalized is not None and normalized["understanding_hash"] == cached_hash:
-                return normalized
-
+                try:
+                    cached_understanding = dict(cached.get("understanding") or {})
+                    cached_understanding_hash = str(cached_understanding.pop("understanding_hash", ""))
+                    normalized = story_understanding.validate_result(
+                        cached_understanding, expected_panel_ids=visual.panel_ids,
+                        story_map=story_map.as_dict(),
+                    )
+                    if normalized["understanding_hash"] != cached_understanding_hash:
+                        raise story_understanding.StoryUnderstandingError("cached understanding hash mismatch")
+                    audit = story_understanding.validate_semantic_audit(
+                        cached.get("semantic_audit"),
+                        expected_beat_ids=[beat["beat_id"] for beat in normalized["narration_ready_beats"]],
+                    )
+                    return story_understanding.apply_semantic_audit(normalized, audit)
+                except story_understanding.StoryUnderstandingError:
+                    pass
+        feedback = []
         for attempt in range(self.max_attempts):
+            request_source = dict(source)
+            if feedback:
+                request_source["semantic_audit_feedback"] = feedback
             try:
-                raw = self._call(
-                    lambda: self.provider.complete_json(
-                        stage="story_understanding",
-                        prompt_version=prompt[0],
-                        prompt_sha256=prompt[1],
-                        prompt_text=prompt[2],
-                        payload=source,
-                    ),
-                    request_stage="other",
-                )
+                raw = self._call(lambda request_source=request_source: self.provider.complete_json(
+                    stage="story_understanding", prompt_version=prompt[0],
+                    prompt_sha256=prompt[1], prompt_text=prompt[2], payload=request_source,
+                ), request_stage="other")
                 normalized = story_understanding.validate_result(
-                    raw,
-                    expected_panel_ids=visual.panel_ids,
-                    story_map=story_map.as_dict(),
+                    raw, expected_panel_ids=visual.panel_ids, story_map=story_map.as_dict()
+                )
+                audit = self._run_story_semantic_audit(
+                    normalized, observations, structural, story_map
                 )
             except story_understanding.StoryUnderstandingError:
                 if attempt + 1 < self.max_attempts:
                     continue
                 raise CloudStageError("cloud.story_understanding_invalid", reviewable=True) from None
+            try:
+                final = story_understanding.apply_semantic_audit(normalized, audit)
+            except story_understanding.StoryUnderstandingError:
+                feedback = [
+                    item for item in audit["verdicts"] if item["supported"] is False
+                ]
+                if attempt + 1 < self.max_attempts:
+                    continue
+                raise CloudStageError("cloud.story_understanding_ungrounded", reviewable=True) from None
             if self.cache is not None:
-                self.cache.put(key, normalized)
-            return normalized
+                # Cache the original proposal with the complete audit. Admission
+                # reapplies the deterministic filter and never revives a failed beat.
+                self.cache.put(key, {"understanding": normalized, "semantic_audit": audit})
+            return final
         raise CloudStageError("cloud.story_understanding_invalid", reviewable=True)
 
     @_bound
@@ -118,7 +150,12 @@ class NarrationMixin:
 
         prompt = self.prompts["narration"]
         observations, _structural = self._narration_observations(visual, panels)
-        selection = select_editorial_beats(visual, story_map)
+        full_story_context = self._run_story_understanding(
+            observations, _structural, story_map, visual
+        )
+        selection = select_editorial_beats(
+            visual, story_map, story_context=full_story_context
+        )
         selected_ids = set(selection.panel_ids)
         selected_visual = replace(
             visual,
@@ -189,19 +226,41 @@ class NarrationMixin:
             selected_visual,
             selected_panels,
         )
-        story_context = self._run_story_understanding(
-            selected_observations,
-            selected_structural,
-            selected_story,
-            selected_visual,
+        story_context = story_understanding.project_to_panels(
+            full_story_context, selection.panel_ids
         )
+        support_claims = story_understanding.support_only_claims(selected_story.claims)
         understanding_claims = story_understanding.materialize_grounded_claims(story_context)
+        understanding_beats = tuple(
+            {
+                "beat_id": f"su--{beat['beat_id']}",
+                "panel_ids": [str(value) for value in beat.get("evidence_panel_ids", ())],
+                "summary": str(beat.get("fact", "")),
+                "story_role": str(beat.get("story_role", "")),
+                "narrative_function": str(beat.get("narrative_function", "")),
+                "grounded_source": "story_understanding",
+            }
+            for beat in story_context.get("narration_ready_beats", ())
+            if isinstance(beat, Mapping)
+        )
+        panel_order = {
+            str(panel_id): index for index, panel_id in enumerate(selected_story.panel_ids)
+        }
+        combined_beats = tuple(sorted(
+            [*selected_story.beats, *understanding_beats],
+            key=lambda beat: min(
+                (panel_order.get(str(panel_id), len(panel_order)) for panel_id in beat.get("panel_ids", ())),
+                default=len(panel_order),
+            ),
+        ))
         writer_story = replace(
             selected_story,
-            claims=tuple([*selected_story.claims, *understanding_claims]),
+            beats=combined_beats,
+            claims=(*support_claims, *understanding_claims),
             story_map_hash=_hash({
                 "base_story_map_hash": selected_story.story_map_hash,
                 "story_understanding_hash": story_context["understanding_hash"],
+                "combined_beats": list(combined_beats),
                 "understanding_claims": list(understanding_claims),
             }),
         )
@@ -242,13 +301,17 @@ class NarrationMixin:
                 and cached_result.qc_report.get("editorial_selection", {}).get("selection_hash")
                 == selection.selection_hash
                 and cached_result.qc_report.get("narration_topology")
-                == "chapter_story_understanding_v1"
-                and cached_result.qc_report.get("narration_cache_contract") == "narration-final-v2"
+                == "chapter_story_understanding_v2"
+                and cached_result.qc_report.get("narration_cache_contract") == "narration-final-v3"
                 and cached_result.qc_report.get("story_map_hash") == writer_story.story_map_hash
                 and cached_result.qc_report.get("story_understanding_version")
                 == story_understanding.STORY_UNDERSTANDING_VERSION
                 and cached_result.qc_report.get("story_understanding_hash")
                 == story_context["understanding_hash"]
+                and cached_result.qc_report.get("story_understanding_full_hash")
+                == full_story_context["understanding_hash"]
+                and cached_result.qc_report.get("story_semantic_audit_hash")
+                == full_story_context["semantic_audit_hash"]
                 and cached_result.qc_report.get("visual_evidence_hash")
                 == visual.visual_evidence_hash
                 and cached_result.qc_report.get("model_identity_hash")
@@ -350,11 +413,20 @@ class NarrationMixin:
                 )
         qc_report = dict(result.qc_report)
         qc_report["editorial_selection"] = selection.as_dict()
-        qc_report["narration_topology"] = "chapter_story_understanding_v1"
-        qc_report["narration_cache_contract"] = "narration-final-v2"
+        qc_report["narration_topology"] = "chapter_story_understanding_v2"
+        qc_report["narration_cache_contract"] = "narration-final-v3"
         qc_report["story_map_hash"] = writer_story.story_map_hash
         qc_report["story_understanding_version"] = story_understanding.STORY_UNDERSTANDING_VERSION
         qc_report["story_understanding_hash"] = story_context["understanding_hash"]
+        qc_report["story_understanding_full_hash"] = full_story_context["understanding_hash"]
+        qc_report["story_semantic_audit_version"] = full_story_context["semantic_audit_version"]
+        qc_report["story_semantic_audit_hash"] = full_story_context["semantic_audit_hash"]
+        qc_report["story_semantic_audit_dropped_beat_ids"] = list(
+            full_story_context.get("semantic_audit_dropped_beat_ids", ())
+        )
+        qc_report["story_semantic_audit_supported_beat_count"] = int(
+            full_story_context.get("semantic_audit_supported_beat_count", 0)
+        )
         qc_report["visual_evidence_hash"] = visual.visual_evidence_hash
         qc_report["model_identity_hash"] = self.model_identity.identity_hash
         qc_report["prompt_version"] = prompt[0]
@@ -773,6 +845,54 @@ class NarrationMixin:
             prompt,
         )
 
+    @staticmethod
+    def _grounded_narrative_outline(story_context, passages, provider_outline=None):
+        """Build the reasoning envelope only from semantically audited story beats."""
+        context = story_context if isinstance(story_context, Mapping) else {}
+        beats = [
+            beat for beat in context.get("narration_ready_beats", ())
+            if isinstance(beat, Mapping)
+        ]
+        if not beats:
+            if isinstance(provider_outline, Mapping):
+                return dict(provider_outline)
+            raise CloudStageError("cloud.narrative_not_grounded", reviewable=True)
+
+        def first_fact(*roles):
+            wanted = {str(role).casefold() for role in roles}
+            for beat in beats:
+                role = str(beat.get("story_role", "")).casefold()
+                fact = " ".join(str(beat.get("fact", "")).split()).strip()
+                if fact and (not wanted or role in wanted):
+                    return fact
+            return ""
+
+        def first_field(field):
+            for beat in beats:
+                value = " ".join(str(beat.get(field, "")).split()).strip()
+                if value:
+                    return value
+            return ""
+
+        goal = first_fact("decision", "choice", "setup", "hook") or first_fact()
+        obstacle = first_fact("obstacle", "escalation")
+        decision = first_fact("decision", "choice")
+        consequence = first_field("consequence") or first_fact("consequence")
+        changed_stakes = first_field("change")
+        unresolved = first_field("open_question")
+        spine = {
+            "who_wants_what": goal,
+            "obstacle": obstacle or "No single explicit obstacle is established by the selected grounded evidence.",
+            "decision": decision or "No explicit decision is established by the selected grounded evidence.",
+            "consequence": consequence or "No explicit consequence is established by the selected grounded evidence.",
+            "changed_stakes": changed_stakes or "No additional changed stakes are explicitly established by the selected grounded evidence.",
+            "unresolved_question": unresolved or "No explicit unresolved question is established by the selected grounded evidence.",
+        }
+        final_text = ""
+        if isinstance(passages, list) and passages and isinstance(passages[-1], Mapping):
+            final_text = str(passages[-1].get("text", "")).strip()
+        ending_kind = "open_question" if unresolved and final_text.endswith("?") else "consequence"
+        return {"story_spine": spine, "ending_kind": ending_kind}
     @_bound
     def _run_narration_batched(
         self,
@@ -1062,7 +1182,11 @@ class NarrationMixin:
                             "reconciliation_complete": True,
                         },
                         "evidence_graph": {"claims": claims_list},
-                        "narrative_outline": provider_output.get("narrative_outline"),
+                        "narrative_outline": self._grounded_narrative_outline(
+                            source.get("story_understanding"),
+                            provider_output.get("script_passages"),
+                            provider_output.get("narrative_outline"),
+                        ),
                         "script_passages": provider_output.get("script_passages"),
                     }
                     analyzer_contract.validate_analyzer_output(
@@ -1078,8 +1202,21 @@ class NarrationMixin:
                         narrative_identity.SHARP_FRIEND_V1,
                     )
                     checks = quality.check_narrative_naturalness(report)
-                    if any(not check.passed and check.severity == "error" for check in checks):
-                        raise CloudStageError("cloud.narrative_qc_blocked", reviewable=True)
+                    blocking_checks = [
+                        check for check in checks if not check.passed and check.severity == "error"
+                    ]
+                    if blocking_checks:
+                        marker_values = list(getattr(report, "ai_slop_hits", ()) or ())
+                        marker_values.extend(getattr(report, "reporter_prose_hits", ()) or ())
+                        raise CloudStageError(
+                            "cloud.narrative_qc_blocked",
+                            reviewable=True,
+                            safe_metadata={
+                                "failed_predicate": str(blocking_checks[0].code),
+                                "qc_codes": [str(check.code) for check in blocking_checks],
+                                "anti_slop_markers": list(dict.fromkeys(marker_values))[:8],
+                            },
+                        )
                     outline = output.get("narrative_outline")
                     if isinstance(outline, Mapping):
                         candidate_spine = outline.get("story_spine")
@@ -1158,6 +1295,11 @@ class NarrationMixin:
                             ),
                             expected_ranges=(
                                 exc.safe_metadata.get("expected_ranges")
+                                if isinstance(exc.safe_metadata, Mapping)
+                                else None
+                            ),
+                            anti_slop_markers=(
+                                exc.safe_metadata.get("anti_slop_markers")
                                 if isinstance(exc.safe_metadata, Mapping)
                                 else None
                             ),

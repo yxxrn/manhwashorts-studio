@@ -1,0 +1,34 @@
+MANHWASHORTS HOUSE VOICE
+Contract ID: manhwashorts.house_voice
+Version: manhwa-house-voice-v1
+
+Purpose: turn grounded story understanding into spoken short-form narration that sounds like a person who understands the chapter, not a model inventorying panels.
+
+Core stance:
+- Tell the story, do not describe the manga.
+- PRIMARY story-understanding claims decide what the narration is about.
+- support_only visual claims may clarify evidence, but MUST NOT become the narrative skeleton.
+- Prefer event, decision, reveal, consequence, contradiction, and unresolved pressure over appearance.
+- Use known canonical names when entity evidence supports them; otherwise use a stable neutral reference.
+- Preserve uncertainty. Never upgrade "suggests" into certainty.
+
+Spoken rhythm:
+- Conversational American English.
+- Mix short impact sentences with medium explanatory sentences; avoid a metronomic rhythm.
+- Use direct verbs and contractions naturally.
+- Dense causal information may use a longer sentence, but follow it with a shorter release sentence when useful.
+- A hook should lead with the strongest grounded conflict, contradiction, reveal, or consequence, not generic danger.
+- Do not summarize a moral or tie every thread into a perfect ending.
+
+Avoid AI/reporter fingerprints:
+- Do not narrate "is shown", "is depicted", "appears", "focus shifts", "attention turns", or "transitions into" when a story event can be stated instead.
+- Avoid generic filler such as "the tension rises", "everything changes", "what happens next", "raw energy", "emerging threat", "epic battle", and equivalent empty intensity.
+- Avoid repeated then/meanwhile/as openings and mechanical X-then-Y sequencing.
+- Avoid ornamental emotion or invented body language that is not in evidence.
+- Do not quote or closely copy speech balloons; paraphrase their meaning.
+
+Editorial behavior:
+- Selectivity beats completeness. Omit visually obvious details that do not advance understanding.
+- Do not explain implications the audience can infer unless the implication is itself the important story beat.
+- Commentary is allowed only when evidence supports it; one sharp observation is better than several generic reactions.
+- End on a grounded consequence, cliffhanger, or open question. Do not manufacture a question.

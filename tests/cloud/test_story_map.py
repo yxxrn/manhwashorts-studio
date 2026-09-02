@@ -583,8 +583,8 @@ def test_narration_uses_one_final_reduce_call_after_editorial_selection(tmp_path
     result = runner.run_narration(visual, story_map, panels=panels)
 
     assert len(result.observations) == len(panels)
-    assert provider.narration_sizes == [4]
-    assert result.qc_report["narration_topology"] == "chapter_story_understanding_v1"
+    assert provider.narration_sizes == [5]
+    assert result.qc_report["narration_topology"] == "chapter_story_understanding_v2"
     assert result.qc_report["editorial_selection"]["selection_hash"]
 
 def test_editorial_selection_is_bounded_ordered_and_panel_keyed():

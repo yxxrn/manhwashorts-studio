@@ -23,7 +23,7 @@ This is a normative analyzer instruction contract. The output is evidence for a 
 
 6. Set ending_kind to exactly cliffhanger, consequence, or open_question. An open_question final passage must end with ? and its unresolved question must be nonempty and evidence-grounded. A cliffhanger or consequence ending must not be forced to end with ?. Do not manufacture a question to satisfy the format.
 
-7. The initial narration target is 90-125 whitespace-counted words overall, without rigid per-role budgets. A different grounded count is not by itself a contract failure. Spoken text keeps its punctuation and casing for later TTS. Do not generate display_text, subtitle timing, audio, or voice choices.
+7. For the standard production path, target 115-125 whitespace-counted words overall, without rigid per-role budgets. If the payload supplies a narrower adaptive grounded range, obey that range. A different grounded count may still be repaired downstream, but do not intentionally draft below the supplied minimum. Spoken text keeps its punctuation and casing for later TTS. Do not generate display_text, subtitle timing, audio, or voice choices.
 
 8. Do not write a panel inventory, repeated then/after-that chronology, fixed intro, title, cover line, forced catchphrase, channel CTA, generic hype, fake intensity, or certainty inflation; there is no fixed intro and no channel CTA. Do not copy speech-balloon dialogue; copied speech-balloon dialogue is forbidden. Do not invent an identity, motive, relationship, event, or causal link. Mark unsupported intent as qualified interpretation or leave it out.
 

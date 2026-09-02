@@ -83,6 +83,10 @@ class NarrativeNaturalnessReport:
     contraction_count: int
     generic_hype_hits: tuple[str, ...]
     cta_hits: tuple[str, ...]
+    ai_slop_hits: tuple[str, ...]
+    reporter_prose_hits: tuple[str, ...]
+    mechanical_opening_ratio: float
+    visual_description_ratio: float
     claim_evidence_coverage_ratio: float
     qualified_interpretation_coverage_ratio: float
     warnings: tuple[str, ...]
@@ -122,6 +126,25 @@ _NARRATIVE_CTA_MARKERS = (
     "follow for more",
     "watch until the end",
 )
+_NARRATIVE_AI_SLOP_MARKERS = (
+    "the tension rises",
+    "everything changes",
+    "what happens next",
+    "raw energy",
+    "emerging threat",
+    "things are about to",
+    "little did",
+)
+_NARRATIVE_REPORTER_MARKERS = (
+    "is shown",
+    "is depicted",
+    "focus shifts",
+    "attention turns",
+    "transitions into",
+    "comes into view",
+    "we see",
+)
+_NARRATIVE_MECHANICAL_OPENINGS = ("then", "meanwhile", "next", "after that", "later", "as")
 
 
 def _narrative_words(text: object) -> list[str]:
@@ -233,6 +256,24 @@ def screen_narrative_naturalness(
         marker for marker in _NARRATIVE_HYPE_MARKERS if marker in lower_text
     )
     cta_hits = tuple(marker for marker in _NARRATIVE_CTA_MARKERS if marker in lower_text)
+    ai_slop_hits = tuple(marker for marker in _NARRATIVE_AI_SLOP_MARKERS if marker in lower_text)
+    reporter_prose_hits = tuple(
+        marker for marker in _NARRATIVE_REPORTER_MARKERS if marker in lower_text
+    )
+    reporter_passages = sum(
+        any(marker in text.casefold() for marker in _NARRATIVE_REPORTER_MARKERS)
+        for text in passage_texts
+    )
+    mechanical_openings = sum(
+        any(
+            text.casefold().lstrip().startswith(marker + " ")
+            or text.casefold().lstrip().startswith(marker + ",")
+            for marker in _NARRATIVE_MECHANICAL_OPENINGS
+        )
+        for text in passage_texts
+    )
+    visual_description_ratio = _narrative_ratio(reporter_passages, len(passage_texts))
+    mechanical_opening_ratio = _narrative_ratio(mechanical_openings, len(passage_texts))
 
     unsupported_claim = False
     evidence_missing = False
@@ -289,6 +330,12 @@ def screen_narrative_naturalness(
         warnings.add("narrative.generic_hype")
     if cta_hits:
         warnings.add("narrative.cta")
+    if ai_slop_hits:
+        warnings.add("narrative.ai_slop")
+    if len(reporter_prose_hits) >= 2 or visual_description_ratio >= 0.4:
+        warnings.add("narrative.visual_recap_prose")
+    if mechanical_opening_ratio >= 0.5 and mechanical_openings >= 2:
+        warnings.add("narrative.mechanical_sequence")
     if unsupported_claim:
         warnings.add("narrative.unsupported_claim")
     if evidence_missing:
@@ -325,6 +372,10 @@ def screen_narrative_naturalness(
         contraction_count=contraction_count,
         generic_hype_hits=generic_hype_hits,
         cta_hits=cta_hits,
+        ai_slop_hits=ai_slop_hits,
+        reporter_prose_hits=reporter_prose_hits,
+        mechanical_opening_ratio=mechanical_opening_ratio,
+        visual_description_ratio=visual_description_ratio,
         claim_evidence_coverage_ratio=(
             round(
                 sum(

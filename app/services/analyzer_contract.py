@@ -429,29 +429,40 @@ def _ngrams(words: list[str], size: int) -> set[tuple[str, ...]]:
 
 
 def _source_dialogue_ngrams(observations: Any) -> set[tuple[str, ...]]:
+    """Build adaptive verbatim signatures without punishing short shared terminology."""
+
     result: set[tuple[str, ...]] = set()
     for observation_value in observations:
         observation = _mapping(observation_value, "observation")
         for line in _string_list(observation["dialogue_or_ocr"], "dialogue_or_ocr"):
-            result.update(_ngrams(_normalized_lexical_words(line), 4))
+            words = _normalized_lexical_words(line)
+            if len(words) < 4:
+                continue
+            size = len(words) if len(words) < 6 else 6
+            result.update(_ngrams(words, size))
     return result
 
 
 def contains_source_dialogue_copy(observations: Any, passages: Any) -> bool:
-    """Return whether narration text shares a strict four-word dialogue n-gram."""
+    """Detect substantial verbatim source dialogue while allowing faithful paraphrase."""
 
     try:
-        source_dialogue = _source_dialogue_ngrams(observations)
-        if not source_dialogue or not isinstance(passages, (list, tuple)):
+        signatures = _source_dialogue_ngrams(observations)
+        if not signatures or not isinstance(passages, (list, tuple)):
             return False
+        by_size: dict[int, set[tuple[str, ...]]] = {}
+        for signature in signatures:
+            by_size.setdefault(len(signature), set()).add(signature)
         for passage in passages:
             if not isinstance(passage, Mapping):
                 continue
             text = passage.get("text")
-            if isinstance(text, str) and _ngrams(
-                _normalized_lexical_words(text), 4
-            ) & source_dialogue:
-                return True
+            if not isinstance(text, str):
+                continue
+            words = _normalized_lexical_words(text)
+            for size, source_ngrams in by_size.items():
+                if len(words) >= size and _ngrams(words, size) & source_ngrams:
+                    return True
     except (KeyError, TypeError, ValueError):
         return False
     return False
@@ -553,7 +564,6 @@ def _validate_script_passages_v3(
     if not isinstance(value, list) or not profile.passage_min <= len(value) <= profile.passage_max:
         _fail("script_passages must contain four to six passages")
     passage_ids: set[str] = set()
-    source_dialogue = _source_dialogue_ngrams(observations)
     covered_claim_evidence: dict[str, set[str]] = {
         claim_id: set() for claim_id in claim_evidence
     }
@@ -572,9 +582,8 @@ def _validate_script_passages_v3(
         normalized_text = " ".join(_normalized_lexical_words(text))
         if any(marker in normalized_text for marker in _V3_GENERIC_HYPE):
             _fail("generic hype language is not allowed")
-        if (
-            not allow_dialogue_copy
-            and _ngrams(_normalized_lexical_words(text), 4) & source_dialogue
+        if not allow_dialogue_copy and contains_source_dialogue_copy(
+            observations, (passage,)
         ):
             _fail("script passage copies source dialogue")
         claim_ids = _string_list(

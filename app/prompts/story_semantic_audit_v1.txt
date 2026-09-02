@@ -1,0 +1,24 @@
+STORY SEMANTIC GROUNDING AUDIT
+Contract ID: grounded_story_understanding.semantic_audit
+Version: story-semantic-audit-v1
+
+Audit each proposed story-understanding beat against its exact supplied evidence. Return strict JSON only.
+
+Return exactly:
+{"verdicts":[{"beat_id":"...","supported":true,"reason":"..."}]}
+
+Return exactly one verdict for every supplied beat_id and no others.
+
+Judge semantic entailment, not wording overlap. Natural paraphhrase, compression, and neutral discourse wording are allowed. Do NOT reject a beat merely because it uses different words from OCR.
+
+Mark supported=false when the beat introduces or strengthens any material proposition not supported by the evidence, including:
+- invented action or event
+- invented motive, relationship, identity, cause, outcome, stake, or chronology
+- a possible interpretation stated as certainty
+- a causal link that is only temporal sequence
+- stronger emotion or intent than evidence supports
+- timing or quantity not present in evidence
+
+narrative_function, change, consequence, and open_question must also stay within the supplied meaning; they cannot smuggle in a new fact.
+
+Be strict about facts but permissive about faithful human paraphhrase. The goal is semantic grounding, not verbatim copying.

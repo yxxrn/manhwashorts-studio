@@ -689,8 +689,21 @@ class VisualNarrativeRepairMixin:
                     narrative_identity.SHARP_FRIEND_V1,
                 )
                 checks = quality.check_narrative_naturalness(report)
-                if any(not check.passed and check.severity == "error" for check in checks):
-                    raise CloudStageError("cloud.narrative_qc_blocked", reviewable=True)
+                blocking_checks = [
+                    check for check in checks if not check.passed and check.severity == "error"
+                ]
+                if blocking_checks:
+                    raise CloudStageError(
+                        "cloud.narrative_qc_blocked",
+                        reviewable=True,
+                        safe_metadata={
+                            "failed_predicate": str(blocking_checks[0].code),
+                            "anti_slop_markers": list(dict.fromkeys([
+                                *list(getattr(report, "ai_slop_hits", ()) or ()),
+                                *list(getattr(report, "reporter_prose_hits", ()) or ()),
+                            ]))[:8],
+                        },
+                    )
                 spoken_text = "\n\n".join(str(item["text"]).strip() for item in passage_rows)
                 display_words = derive_display_words(spoken_text)
                 duration_metrics = script.narration_duration_metrics(
@@ -779,12 +792,20 @@ class VisualNarrativeRepairMixin:
                         narrative_identity.SHARP_FRIEND_V1,
                     )
                     checks = quality.check_narrative_naturalness(report)
-                    if any(
-                        not check.passed and check.severity == "error"
-                        for check in checks
-                    ):
+                    blocking_checks = [
+                        check for check in checks if not check.passed and check.severity == "error"
+                    ]
+                    if blocking_checks:
                         raise CloudStageError(
-                            "cloud.narrative_qc_blocked", reviewable=True
+                            "cloud.narrative_qc_blocked",
+                            reviewable=True,
+                            safe_metadata={
+                                "failed_predicate": str(blocking_checks[0].code),
+                                "anti_slop_markers": list(dict.fromkeys([
+                                    *list(getattr(report, "ai_slop_hits", ()) or ()),
+                                    *list(getattr(report, "reporter_prose_hits", ()) or ()),
+                                ]))[:8],
+                            },
                         )
                     spoken_text = "\n\n".join(
                         str(item["text"]).strip() for item in passage_rows

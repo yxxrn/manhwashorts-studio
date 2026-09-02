@@ -196,6 +196,12 @@ class _FakeProvider:
                     for candidate in payload["candidate_boundaries"]
                 ],
             }
+        if stage == "story_semantic_audit":
+            return {"verdicts": [
+                {"beat_id": str(beat["beat_id"]), "supported": True,
+                 "reason": "The supplied evidence semantically supports this beat."}
+                for beat in payload.get("beats", [])
+            ]}
         panel_ids = list(payload["panel_ids"])
         if stage == "story_understanding":
             story_map = payload.get("story_map", {})
@@ -208,22 +214,26 @@ class _FakeProvider:
             first = panel_ids[:1] or panel_ids
             last = panel_ids[-1:] or panel_ids
             return {
+                "entity_registry": [],
                 "narration_ready_beats": [
                     {
-                        "beat_id": "understanding-1",
-                        "story_role": "setup",
+                        "beat_id": "understanding-1", "story_role": "setup",
                         "fact": "The grounded situation changes around the current choice.",
-                        "evidence_panel_ids": first,
-                        "source_claim_ids": claim_ids[:1],
-                        "confidence": "qualified",
+                        "narrative_function": "Establish the chapter's grounded change.",
+                        "change": "The situation changes around the current choice.",
+                        "consequence": "", "open_question": "", "importance": 4,
+                        "evidence_strength": "supported_interpretation",
+                        "evidence_panel_ids": first, "source_claim_ids": claim_ids[:1],
+                        "entity_ids": [], "confidence": "qualified",
                         "qualification": "The supplied evidence supports this cautious reading.",
                     },
                     {
-                        "beat_id": "understanding-2",
-                        "story_role": "consequence",
+                        "beat_id": "understanding-2", "story_role": "consequence",
                         "fact": "The next grounded consequence remains unresolved.",
-                        "evidence_panel_ids": last,
-                        "source_claim_ids": [],
+                        "narrative_function": "Preserve the unresolved consequence.",
+                        "change": "", "consequence": "", "open_question": "What follows?",
+                        "importance": 3, "evidence_strength": "supported_interpretation",
+                        "evidence_panel_ids": last, "source_claim_ids": [], "entity_ids": [],
                         "confidence": "qualified",
                         "qualification": "The supplied evidence does not establish a final outcome.",
                     },

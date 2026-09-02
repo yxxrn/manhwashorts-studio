@@ -184,7 +184,7 @@ def test_narration_uses_the_same_bounded_ordered_chunk_contract(tmp_path):
     assert result.observations[0]["panel_id"] == panels[0].panel_id
     assert result.observations[-1]["panel_id"] == panels[-1].panel_id
     assert len([call for call in provider.calls if call[0] == "narration"]) == 1
-    assert result.qc_report["narration_topology"] == "chapter_story_understanding_v1"
+    assert result.qc_report["narration_topology"] == "chapter_story_understanding_v2"
     assert result.qc_report["editorial_selection"]["selection_hash"]
     assert len(result.observations) == len(panels)
 
@@ -284,6 +284,18 @@ def test_narration_retry_feedback_requires_supported_ending_contract():
 
     assert "exact keys story_spine and ending_kind" in feedback
     assert "cliffhanger, consequence, or open_question" in feedback
+
+def test_narration_retry_feedback_paraphrases_source_dialogue_copy():
+    module = _module()
+
+    feedback = module._narration_retry_feedback(
+        "script passage copies source dialogue"
+    )
+
+    assert "paraphrase" in feedback
+    assert "claim ID" in feedback and "evidence panel ID" in feedback
+    assert "do not add facts" in feedback
+
 
 def test_narration_retry_feedback_retargets_uncompactable_position_vector():
     module = _module()
@@ -590,6 +602,21 @@ def test_run_narration_selected_story_tracks_selected_visual_hash(monkeypatch):
         ),
     )
     monkeypatch.setattr(module, "select_editorial_beats", lambda *_args, **_kwargs: selection)
+    grounded_context = {
+        "version": "story-understanding-v2", "entity_registry": [],
+        "narration_ready_beats": [
+            {"beat_id": "test-story-1", "story_role": "setup", "fact": "A grounded change begins.",
+             "narrative_function": "Establish the change.", "change": "A grounded change begins.",
+             "consequence": "", "open_question": "", "importance": 4, "evidence_strength": "visual_explicit",
+             "evidence_panel_ids": [selected_panel_ids[0]], "source_claim_ids": [], "entity_ids": [], "confidence": "explicit", "qualification": ""},
+            {"beat_id": "test-story-2", "story_role": "consequence", "fact": "The consequence remains visible.",
+             "narrative_function": "Preserve the consequence.", "change": "", "consequence": "The consequence remains visible.",
+             "open_question": "", "importance": 3, "evidence_strength": "visual_explicit",
+             "evidence_panel_ids": [selected_panel_ids[1]], "source_claim_ids": [], "entity_ids": [], "confidence": "explicit", "qualification": ""}],
+        "unresolved_threads": [], "understanding_hash": "u" * 64,
+        "semantic_audit_version": "story-semantic-audit-v1", "semantic_audit_hash": "a" * 64,
+    }
+    monkeypatch.setattr(runner, "_run_story_understanding", lambda *_args, **_kwargs: grounded_context)
 
     def stop_after_selection(_prompt, _source, _obs, _struct, selected_story, selected_visual, **_kwargs):
         assert selected_visual.visual_evidence_hash != visual.visual_evidence_hash
@@ -898,3 +925,28 @@ def test_visual_repair_ending_canonicalization_preserves_passage_text():
     assert passages[0]["text"] == "What could the visible change mean?"
     assert provenance["to"] == "open_question"
 
+
+
+def test_narration_retry_feedback_targets_visual_recap_prose():
+    module = _module()
+    feedback = module._narration_retry_feedback(
+        "cloud.narrative_qc_blocked",
+        failed_predicate="narrative.visual_recap_prose",
+        anti_slop_markers=("is shown", "focus shifts"),
+    )
+    assert "PRIMARY story-understanding claims" in feedback
+    assert "is shown" in feedback
+    assert "focus shifts" in feedback
+    assert "do not add facts" not in feedback.lower() or "Do not add facts" in feedback
+
+
+def test_narration_retry_feedback_targets_ai_slop_without_new_facts():
+    module = _module()
+    feedback = module._narration_retry_feedback(
+        "cloud.narrative_qc_blocked",
+        failed_predicate="narrative.ai_slop",
+        anti_slop_markers=("everything changes", "raw energy"),
+    )
+    assert "everything changes" in feedback
+    assert "raw energy" in feedback
+    assert "do not add facts" in feedback.lower()

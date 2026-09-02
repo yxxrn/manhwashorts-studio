@@ -1,0 +1,67 @@
+STORY UNDERSTANDING
+Contract ID: grounded_story_understanding.prewriter
+Version: story-understanding-v2
+
+You receive one FULL CHAPTER evidence packet before editorial selection. Understand the story first. Do not write narration. Return strict JSON only.
+
+Return exactly these top-level keys:
+- entity_registry
+- narration_ready_beats
+- unresolved_threads
+
+entity_registry contains zero or more objects with exactly:
+- entity_id: stable unique local ID
+- canonical_name: explicit name when supported, otherwise a neutral descriptive identity
+- aliases: list of supported aliases/descriptions
+- evidence_panel_ids: nonempty list using only supplied panel IDs
+- confidence: explicit or qualified
+
+narration_ready_beats contains 2-12 objects. Each object has exactly:
+- beat_id: unique nonempty string
+- story_role: semantic role such as hook, setup, escalation, reveal, consequence, or open_loop
+- fact: concise paraphrase of what happened, changed, was revealed, or remains unresolved
+- narrative_function: why this beat matters to the story, stated without inventing new facts
+- change: what changed in the situation; empty string if no grounded change exists
+- consequence: grounded consequence; empty string if none is established
+- open_question: grounded unresolved question/direction; empty string if none exists
+- importance: integer 1-5 for narrative importance
+- evidence_strength: exactly ocr_explicit, visual_explicit, or supported_interpretation
+- evidence_panel_ids: 1-4 exact supplied panel IDs
+- source_claim_ids: supplied story-map claim IDs; may be empty when grounded directly by OCR/dialogue
+- entity_ids: IDs from entity_registry; may be empty
+- confidence: explicit or qualified
+- qualification: empty for explicit facts, nonempty for qualified facts
+
+unresolved_threads contains zero or more objects with exactly:
+- text
+- evidence_panel_ids
+- entity_ids
+
+Priority order:
+1. Explicit dialogue/OCR meaning: identities, decisions, revelations, stakes, timing, causal statements, consequences.
+2. Continuity state changes and causal links.
+3. Explicit visible action/facts.
+4. Supported interpretation with clear qualification.
+Never upgrade a plausible inference into a fact.
+
+Atomic grounding rules:
+- Each beat must contain one compact semantic proposition. Do not bundle a supported fact with extra lore, a superlative, history, stage/level, speaker attribution, or outcome unless that extra proposition is supported by the same cited evidence.
+- Treat story_map and continuity_ledger as navigation hints, not independent truth. The supplied observations are authoritative; omit any story-map proposition that the cited OCR/dialogue/visible evidence does not support.
+- Prefer fewer clean beats over a richer beat that mixes grounded and speculative clauses.
+- If any clause in fact, change, consequence, or open_question would require guessing, remove that clause instead of qualifying the whole bundle.
+
+This packet spans the whole chapter. Use it to recover the actual story, not to summarize panels. Prefer beats that explain what changed, why a reveal matters, what consequence follows, and what remains unresolved. A visually plain text panel can be more important than a spectacular action panel.
+
+Entity discipline:
+- Reuse one entity_id for the same supported character/entity across the chapter.
+- Do not guess a name from appearance.
+- If a name is explicit in dialogue/OCR and the evidence supports which entity it refers to, use it.
+- Otherwise keep a neutral canonical_name and mark qualified when appropriate.
+
+Dialogue/OCR is semantic evidence, not narration copy. Paraphrase meaning. Ignore credits, scanlation branding, SFX-only text, decorative title cards, and empty reaction noise.
+
+The strongest grounded reveal or consequence may later become the hook even if it occurs late in chapter chronology. Do not reorder facts here to create fake causality.
+
+If semantic_audit_feedback is present in the input, it lists beats rejected by the previous semantic audit. Revise or remove only the unsupported proposition(s) identified there. Preserve supported beats and their evidence lineage; do not respond by weakening every beat or inventing replacement facts.
+
+Never invent motives, relationships, causes, outcomes, identities, timing, or stakes. Do not return hashes, narration prose, TTS text, subtitles, or commentary outside JSON.

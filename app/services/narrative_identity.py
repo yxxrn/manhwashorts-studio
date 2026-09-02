@@ -7,6 +7,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+HOUSE_VOICE_VERSION = "manhwa-house-voice-v1"
+HOUSE_VOICE_FILENAME = "manhwa_house_voice_v1.txt"
+
 
 class NarrativeIdentityError(ValueError):
     """Safe failure for an unknown or drifted narrative identity resource."""
@@ -20,7 +23,7 @@ class NarrativeIdentityProfile:
     profile_version: str
     language: str
     identity: str
-    target_word_min: int = 90
+    target_word_min: int = 115
     target_word_max: int = 125
     passage_min: int = 4
     passage_max: int = 6
@@ -31,12 +34,12 @@ class NarrativeIdentityProfile:
     )
     prompt_version: str = "vision-first-story-analyzer-v3"
     prompt_filename: str = "vision_first_story_analyzer_v3.txt"
-    contract_sha256: str = "ab9e9bf86e25d2d10a80cf3ec12dae575c5a1d1aab07660fb20900bbb2f13fe3"
+    contract_sha256: str = "678543c42e7894ae10a04fd6ce84105d044c2b4922770b2c7baaed5f36ac3e40"
 
 
 SHARP_FRIEND_V1 = NarrativeIdentityProfile(
     profile_id="sharp_friend_v1",
-    profile_version="1.0.0",
+    profile_version="1.1.0",
     language="en-US",
     identity="a clever, friendly, perceptive friend under controlled tension",
 )
@@ -87,6 +90,18 @@ def canonical_profile_contract_json(
     )
 
 
+def _load_house_voice() -> str:
+    path = Path(__file__).resolve().parents[1] / "prompts" / HOUSE_VOICE_FILENAME
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        raise NarrativeIdentityError("narrative identity resource is invalid") from None
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if f"Version: {HOUSE_VOICE_VERSION}" not in normalized:
+        raise NarrativeIdentityError("narrative identity resource is invalid")
+    return normalized.strip()
+
+
 def _load_prompt(profile: NarrativeIdentityProfile) -> tuple[str, str]:
     prompt_path = Path(__file__).resolve().parents[1] / "prompts" / profile.prompt_filename
     try:
@@ -97,8 +112,9 @@ def _load_prompt(profile: NarrativeIdentityProfile) -> tuple[str, str]:
     version_line = f"Version: {profile.prompt_version}"
     if version_line not in normalized:
         raise NarrativeIdentityError("narrative identity resource is invalid")
-    prompt_sha256 = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    return prompt_sha256, normalized
+    combined = normalized.rstrip() + "\n\n" + _load_house_voice() + "\n"
+    prompt_sha256 = hashlib.sha256(combined.encode("utf-8")).hexdigest()
+    return prompt_sha256, combined
 
 
 def load_narrative_instruction(profile_id: str) -> tuple[str, str, str]:
