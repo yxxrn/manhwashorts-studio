@@ -154,7 +154,7 @@ def capabilities() -> dict:
         "orchestration": True,
         "approval_required": True,
         "render_async": True,
-        "stages": ["analysis", "draft", "voice", "timeline", "quality", "render"],
+        "stages": ["analysis", "draft", "voice", "timeline", "quality", "render", "publish"],
         "source_connectors": ["suwayomi"] if settings.suwayomi_enabled else [],
     }
 

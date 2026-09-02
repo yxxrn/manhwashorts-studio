@@ -1556,9 +1556,22 @@ def update_script(db: Session, script_id: str, sections: list[dict], *, selected
     return pipeline_stages.script.update_script(sys.modules[__name__], db, script_id, sections, selected_hook=selected_hook, actor_id=actor_id)
 
 
-def approve_script(db: Session, script_id: str, actor_id: str='', *, editorial_review_confirmed: bool=False) -> ScriptVersion:
-    """Approve only a current, explicitly confirmed evidence-backed script."""
-    return pipeline_stages.script.approve_script(sys.modules[__name__], db, script_id, actor_id, editorial_review_confirmed=editorial_review_confirmed)
+def approve_script(
+    db: Session,
+    script_id: str,
+    actor_id: str = "",
+    *,
+    editorial_review_confirmed: bool = False,
+    approval_actor_type: str = "human",
+    approval_reason: str = "",
+) -> ScriptVersion:
+    """Approve a current evidence-backed script with an explicit actor type."""
+    return pipeline_stages.script.approve_script(
+        sys.modules[__name__], db, script_id, actor_id,
+        editorial_review_confirmed=editorial_review_confirmed,
+        approval_actor_type=approval_actor_type,
+        approval_reason=approval_reason,
+    )
 
 
 # --- stage: voice-over -----------------------------------------------------

@@ -704,3 +704,19 @@ def test_youtube_metadata_within_limits():
     assert len(meta["tags"]) <= 15
     # Rights notice belongs in every description.
     assert "hak" in meta["description"].lower()
+
+
+def test_youtube_metadata_is_hook_first_not_series_first():
+    from app.services.youtube import build_metadata
+
+    story = (
+        "Arin discovers the sealed sword is whispering his name. "
+        "But touching it wakes the guardian everyone was warned about."
+    )
+    meta = build_metadata("Recap", "Infinite Mage", "22-25", story)
+    assert len(meta["title"]) <= 100
+    assert not meta["title"].startswith("Infinite Mage")
+    assert "Infinite Mage" in meta["title"]
+    assert "22-25" not in meta["title"]
+    assert "Ch." not in meta["title"]
+    assert any(word in meta["title"].casefold() for word in {"arin", "sword", "guardian"})

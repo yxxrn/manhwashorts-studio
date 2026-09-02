@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 
-from app.constants import JobStatus
+from app.constants import JobStatus, UploadStatus
 from app.deps import CurrentUser, DbSession, OwnedProject
 from app.models import (
     AudioSegment,
@@ -54,6 +54,7 @@ from app.schemas import (
     VoiceRequest,
 )
 from app.services import pipeline as pl
+from app.services import publish as publish_svc
 from app.services import quality as quality_svc
 from app.services import timeline as timeline_svc
 from app.services import voice_auditions as audition_svc
@@ -379,7 +380,7 @@ def download_srt(project: OwnedProject, db: DbSession):
 
 
 _STAGE_ORDER = {name: index for index, name in enumerate(
-    ("analysis", "draft", "voice", "timeline", "quality", "render")
+    ("analysis", "draft", "voice", "timeline", "quality", "render", "publish")
 )}
 
 
@@ -401,6 +402,9 @@ def _project_pipeline_status(project, db) -> dict:
     scenes = pl.project_scenes(db, project.id)
     checks = pl.project_quality_checks(db, project.id)
     render = pl.latest_render(db, project.id, "final")
+    publications = publish_svc.project_publications(db, project.id)
+    publication = publications[0] if publications else None
+    published = bool(publication is not None and str(publication.upload_status) == UploadStatus.UPLOADED)
 
     voice_ready = bool(segments)
     voice_time = _latest_row_time(segments)
@@ -432,7 +436,9 @@ def _project_pipeline_status(project, db) -> dict:
         and (check_time is None or render_time >= check_time)
     )
 
-    if render_current and str(render.status) == JobStatus.SUCCEEDED:
+    if published:
+        current_stage = "published"
+    elif render_current and str(render.status) == JobStatus.SUCCEEDED:
         current_stage = "complete"
     elif render_current:
         current_stage = "render"
@@ -454,6 +460,8 @@ def _project_pipeline_status(project, db) -> dict:
         action_required = "quality_blocked"
     elif render_current and str(render.status) in {JobStatus.FAILED, JobStatus.CANCELLED}:
         action_required = "render_retry"
+    elif publication is not None and str(publication.upload_status) == UploadStatus.FAILED:
+        action_required = "publish_retry"
 
     downloadable = bool(
         render_current and str(render.status) == JobStatus.SUCCEEDED and render.output_key
@@ -478,6 +486,17 @@ def _project_pipeline_status(project, db) -> dict:
         "download_url": (
             f"/api/projects/{project.id}/download/{render.id}" if downloadable else None
         ),
+        "publication_id": publication.id if publication is not None else None,
+        "publish_status": str(publication.upload_status) if publication is not None else None,
+        "youtube_video_id": publication.youtube_video_id if publication is not None and publication.youtube_video_id else None,
+        "youtube_url": (
+            f"https://www.youtube.com/watch?v={publication.youtube_video_id}"
+            if publication is not None and publication.youtube_video_id and not publication.youtube_video_id.startswith("dryrun_")
+            else None
+        ),
+        "thumbnail_upload_status": publication.thumbnail_status if publication is not None else None,
+        "thumbnail_upload_note": publication.thumbnail_note if publication is not None else "",
+        "thumbnail_retry_url": publication.thumbnail_retry_url if publication is not None else None,
         "_quality_current": quality_current,
         "_render_current": render_current,
     }
@@ -529,7 +548,24 @@ def run_pipeline(
 
     status_view = _project_pipeline_status(project, db)
     if not status_view["script_approved"]:
-        return status_view
+        trusted_publish = bool(
+            payload.until == "publish"
+            and payload.approval_mode == "trusted_agent"
+            and payload.confirm_publish_intent is True
+            and script is not None
+        )
+        if not trusted_publish:
+            return status_view
+        _guard(
+            pl.approve_script,
+            db,
+            script.id,
+            user.id,
+            editorial_review_confirmed=True,
+            approval_actor_type="trusted_agent",
+            approval_reason="explicit_user_publish_request",
+        )
+        db.commit()
 
     if script is not None and not pl.audio_segments(db, script.id):
         _guard(pl.generate_voiceover, db, project.id, actor_id=user.id)
@@ -552,12 +588,33 @@ def run_pipeline(
     if target == _STAGE_ORDER["quality"] or status_view["quality_blocking_codes"]:
         return status_view
 
-    if status_view["_render_current"]:
+    if not status_view["_render_current"]:
+        render = _guard(pl.enqueue_render, db, project.id, "final", user.id, "auto", "Auto")
+        job_id = render.id
+        db.commit()
+        background.add_task(_run_render_task, job_id)
+        return _project_pipeline_status(project, db)
+
+    if target == _STAGE_ORDER["render"]:
         return status_view
-    render = _guard(pl.enqueue_render, db, project.id, "final", user.id, "auto", "Auto")
-    job_id = render.id
-    db.commit()
-    background.add_task(_run_render_task, job_id)
+    if str(status_view.get("render_status") or "") != JobStatus.SUCCEEDED:
+        return status_view
+    if status_view.get("publish_status") == UploadStatus.UPLOADED:
+        return status_view
+
+    _guard(
+        publish_svc.publish,
+        db,
+        project.id,
+        channel_id=payload.channel_id,
+        video_title="",
+        description="",
+        tags=[],
+        privacy_status=payload.privacy_status,
+        scheduled_at=payload.scheduled_at,
+        confirm_public=payload.confirm_public,
+        actor_id=user.id,
+    )
     return _project_pipeline_status(project, db)
 
 

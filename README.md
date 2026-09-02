@@ -7,12 +7,13 @@ chapter images
   → ingest + segmentation
   → resumable multimodal visual/story analysis
   → grounded five-beat narration
-  → explicit script approval
+  → explicit human/trusted-agent script approval
   → TTS + measured word timing
   → exact-panel / ROI visual planning
   → motion + subtitles + render
   → pre/post-render QC
   → final MP4 + thumbnail package
+  → optional YouTube publish + best-effort custom thumbnail
 ```
 
 The current design is built around **durable resume state, evidence lineage, deterministic visual planning, and fail-closed production gates**. Expensive cloud analysis is reused when its checkpoint identity is still valid; a later local failure should not force a full provider rerun.
@@ -30,6 +31,7 @@ The current design is built around **durable resume state, evidence lineage, det
 - Audio timing is authoritative for voiced production; timeline and subtitles follow measured TTS timing.
 - Production requires the exact approved script hash + version.
 - A successful final package must pass both pre-render and post-render blocking QC.
+- Local-agent orchestration can continue through YouTube publish; a custom-thumbnail API failure is reported as a non-blocking note and can be retried independently without re-uploading the video.
 
 ## Reliability and resume behavior
 

@@ -198,6 +198,22 @@ def retry_publication(
     return _guard(publish_svc.retry_publish, db, publication_id, user.id)
 
 
+@router.post("/publications/{publication_id}/thumbnail/retry", response_model=PublicationOut)
+def retry_publication_thumbnail(
+    publication_id: str,
+    db: DbSession,
+    workspace: CurrentWorkspace,
+    user: CurrentUser,
+) -> Publication:
+    publication = db.get(Publication, publication_id)
+    if publication is None:
+        raise HTTPException(status_code=404, detail="Publication not found.")
+    project = publication.project
+    if project is None or project.workspace_id != workspace.id:
+        raise HTTPException(status_code=404, detail="Publication not found.")
+    return _guard(publish_svc.retry_thumbnail, db, publication_id, user.id)
+
+
 # --- analytics (FR-12) ----------------------------------------------------
 
 

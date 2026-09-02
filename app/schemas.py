@@ -558,6 +558,11 @@ class PublicationOut(BaseModel):
     published_at: datetime | None
     error_message: str
     attempt: int
+    thumbnail_status: str = "pending"
+    thumbnail_error: str = ""
+    thumbnail_attempt: int = 0
+    thumbnail_note: str = ""
+    thumbnail_retry_url: str | None = None
 
 
 class MetadataOut(BaseModel):
@@ -787,12 +792,25 @@ class ProjectPipelineStatusOut(BaseModel):
     render_progress: int = 0
     render_stage: str = ""
     download_url: str | None = None
+    publication_id: str | None = None
+    publish_status: str | None = None
+    youtube_video_id: str | None = None
+    youtube_url: str | None = None
+    thumbnail_upload_status: str | None = None
+    thumbnail_upload_note: str = ""
+    thumbnail_retry_url: str | None = None
 
 
 class ProjectRunRequest(BaseModel):
-    until: Literal["analysis", "draft", "voice", "timeline", "quality", "render"] = "draft"
+    until: Literal["analysis", "draft", "voice", "timeline", "quality", "render", "publish"] = "draft"
     seed: int | None = None
     narrative_profile_id: str | None = None
+    approval_mode: Literal["manual", "trusted_agent"] = "manual"
+    confirm_publish_intent: bool = False
+    channel_id: str | None = None
+    privacy_status: PrivacyStatus = PrivacyStatus.PRIVATE
+    scheduled_at: datetime | None = None
+    confirm_public: bool = False
 
 
 class SuwayomiStatusOut(BaseModel):

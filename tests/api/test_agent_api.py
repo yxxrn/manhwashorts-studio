@@ -254,7 +254,7 @@ def test_local_capabilities_are_small_and_machine_readable(client):
     assert body["orchestration"] is True
     assert body["approval_required"] is True
     assert body["render_async"] is True
-    assert body["stages"] == ["analysis", "draft", "voice", "timeline", "quality", "render"]
+    assert body["stages"] == ["analysis", "draft", "voice", "timeline", "quality", "render", "publish"]
     assert body["openapi_url"] == "/openapi.json"
 
 

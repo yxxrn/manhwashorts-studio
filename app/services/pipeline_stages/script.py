@@ -146,7 +146,7 @@ def update_script(api, db, script_id, sections, *, selected_hook, actor_id):
 
 
 
-def approve_script(api, db, script_id, actor_id, *, editorial_review_confirmed):
+def approve_script(api, db, script_id, actor_id, *, editorial_review_confirmed, approval_actor_type="human", approval_reason=""):
     """Approve only a current, explicitly confirmed evidence-backed script."""
     Mapping = api.Mapping
     PipelineError = api.PipelineError
@@ -169,6 +169,10 @@ def approve_script(api, db, script_id, actor_id, *, editorial_review_confirmed):
         raise PipelineError('an editorial review actor is required')
     if editorial_review_confirmed is not True:
         raise PipelineError('explicit editorial review confirmation is required')
+    if approval_actor_type not in {'human', 'trusted_agent'}:
+        raise PipelineError('unknown script approval actor type')
+    if approval_actor_type == 'trusted_agent' and not str(approval_reason).strip():
+        raise PipelineError('trusted-agent approval requires an explicit reason')
     latest_script = latest_script_row(db, script.project_id)
     if latest_script is None or latest_script.id != script.id:
         raise PipelineError('only the latest script version can be approved')
@@ -227,9 +231,9 @@ def approve_script(api, db, script_id, actor_id, *, editorial_review_confirmed):
     script.approved_at = _now()
     script.approved_by = actor_id
     approved_hash = _script_content_hash(script)
-    script.editorial_metadata = {**metadata, 'human_review_required': True, 'editorial_review_confirmed': True, 'editorial_review_actor': actor_id, 'approved_script_hash': approved_hash, 'approved_script_version': script.version}
+    script.editorial_metadata = {**metadata, 'human_review_required': True, 'editorial_review_confirmed': True, 'editorial_review_actor': actor_id, 'approval_actor_type': approval_actor_type, 'approval_reason': str(approval_reason), 'human_review_performed': approval_actor_type == 'human', 'approved_script_hash': approved_hash, 'approved_script_version': script.version}
     analysis.state = 'SCRIPT_APPROVED'
-    audit(db, 'script.approve', 'script_version', script.id, actor_id, version=script.version)
+    audit(db, 'script.approve', 'script_version', script.id, actor_id, version=script.version, approval_actor_type=approval_actor_type, approval_reason=str(approval_reason))
     db.flush()
     return script
 

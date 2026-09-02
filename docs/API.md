@@ -500,12 +500,17 @@ job for the audit trail.
 `GET /api/projects/{id}/download/{job_id}` streams the MP4. 409 if the render did
 not succeed; 410 if the file has since been removed.
 
+## Local-agent publish orchestration
+
+`POST /api/projects/{id}/run` also accepts `until: "publish"`. For an explicit user instruction to create and upload a recap, a local agent may send `approval_mode: "trusted_agent"` plus `confirm_publish_intent: true`. That approval is persisted with `approval_actor_type: trusted_agent` and `human_review_performed: false`; normal UI/manual approval remains unchanged.
+
+Render stays asynchronous: the first call may return a queued/running render. The agent polls `/status` and calls `/run` again after render success; the next pass publishes using generated metadata. A successful video with a failed thumbnail still returns `current_stage: published` plus a non-blocking thumbnail note and retry URL.
+
 ## Publishing
 
 ### `GET /api/projects/{id}/metadata`
 
-Drafts title, description, and tags from the approved script. Always editable. The
-description includes a rights notice automatically.
+Drafts a hook-first title, description, and tags from the approved script. The title prefers a concrete grounded event, reveal, decision, threat, or mystery and rejects generic clickbait fallbacks. Always editable. The description includes a rights notice automatically.
 
 ### `GET /api/projects/{id}/publish/readiness`
 
@@ -517,7 +522,7 @@ description includes a rights notice automatically.
 
 ```json
 {
-  "video_title": "Peringkat Terakhir Chapter 12 #shorts",
+  "video_title": "Dia Menemukan Kekuatan yang Seharusnya Tersegel | Peringkat Terakhir #shorts",
   "description": "…",
   "tags": ["manhwa", "shorts"],
   "privacy_status": "private",
@@ -540,8 +545,13 @@ With YouTube unconfigured, the dry-run provider writes a receipt to
 
 ### `POST /api/publications/{id}/retry`
 
-Retries a failed upload. Reuses the same `Publication` row, so it never
-re-renders.
+Retries a failed video upload. Reuses the same `Publication` row, preserves the generated metadata, and never re-renders.
+
+Custom thumbnail upload is best-effort after the video id is durably stored. A thumbnail API failure does **not** fail or repeat the video upload; the publication returns `thumbnail_status: failed`, `thumbnail_note`, and `thumbnail_retry_url`.
+
+### `POST /api/publications/{id}/thumbnail/retry`
+
+Retries only `thumbnail.jpg` against the already-uploaded YouTube video. The video itself is never uploaded again.
 
 ### YouTube channels
 

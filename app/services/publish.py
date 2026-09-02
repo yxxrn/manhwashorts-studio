@@ -94,6 +94,48 @@ def verify_artifact(job: RenderJob) -> Path:
     return path
 
 
+def _thumbnail_path(job: RenderJob) -> Path | None:
+    if not job.output_key:
+        return None
+    path = Path(job.output_key).parent / "thumbnail.jpg"
+    return path if path.is_file() else None
+
+
+def _attempt_thumbnail_upload(
+    db: Session,
+    publication: Publication,
+    job: RenderJob,
+    provider: yt.YouTubeProvider,
+    credentials: dict,
+    actor_id: str = "",
+) -> bool:
+    """Best-effort thumbnail upload. Video publication must never fail here."""
+    publication.thumbnail_attempt = (publication.thumbnail_attempt or 0) + 1
+    path = _thumbnail_path(job)
+    if path is None:
+        publication.thumbnail_status = "not_available"
+        publication.thumbnail_error = "publishable thumbnail.jpg was not found"
+        audit(db, "publish.thumbnail_missing", "publication", publication.id, actor_id)
+        return False
+    try:
+        provider.set_thumbnail(publication.youtube_video_id, path, credentials)
+    except Exception as exc:  # thumbnail failure is explicitly non-blocking
+        if isinstance(exc, yt.YouTubeError):
+            detail = f"{exc.code}: {exc}"
+            code = exc.code
+        else:
+            detail = f"thumbnail_upload_failed: {type(exc).__name__}: {exc}"
+            code = "thumbnail_upload_failed"
+        publication.thumbnail_status = "failed"
+        publication.thumbnail_error = detail[:1000]
+        audit(db, "publish.thumbnail_failed", "publication", publication.id, actor_id, code=code)
+        return False
+    publication.thumbnail_status = "uploaded"
+    publication.thumbnail_error = ""
+    audit(db, "publish.thumbnail_succeeded", "publication", publication.id, actor_id)
+    return True
+
+
 def build_metadata_for(db: Session, project_id: str) -> dict:
     """Draft publish metadata from the approved script and asset attributions."""
     project = get_project(db, project_id)
@@ -168,13 +210,7 @@ def publish(
     if isinstance(provider, yt.GoogleYouTubeProvider) and not credentials:
         raise PipelineError("connect a YouTube channel before publishing")
 
-    # 4. Fill any missing metadata from the script.
-    defaults = build_metadata_for(db, project_id)
-    final_title = (video_title or defaults["title"])[:100]
-    final_description = (description or defaults["description"])[:5000]
-    final_tags = (tags if tags else defaults["tags"])[:20]
-
-    # 5. Reuse a pending row so a retry is idempotent.
+    # 4. Reuse a pending row so retries preserve the exact metadata/title.
     publication = db.scalars(
         select(Publication)
         .where(
@@ -185,6 +221,15 @@ def publish(
         )
         .order_by(Publication.created_at.desc())
     ).first()
+
+    saved_title = publication.video_title if publication is not None else ""
+    saved_description = publication.description if publication is not None else ""
+    saved_tags = list(publication.tags or []) if publication is not None else []
+    needs_defaults = not (video_title or saved_title) or not (description or saved_description) or not (tags or saved_tags)
+    defaults = build_metadata_for(db, project_id) if needs_defaults else {"title": "", "description": "", "tags": []}
+    final_title = (video_title or saved_title or defaults["title"])[:100]
+    final_description = (description or saved_description or defaults["description"])[:5000]
+    final_tags = (tags if tags else saved_tags or defaults["tags"])[:20]
 
     if publication is None:
         publication = Publication(
@@ -234,6 +279,8 @@ def publish(
         db.commit()
         raise PipelineError(str(exc)) from exc
 
+    # Persist the successful video first. A later thumbnail failure must never
+    # cause a retry to upload the video twice.
     publication.youtube_video_id = result.video_id
     publication.upload_status = UploadStatus.UPLOADED
     publication.privacy_status = result.privacy_status
@@ -243,13 +290,21 @@ def publish(
         publication.published_at = _now()
         project.status = ProjectStatus.PUBLISHED
     project.error_message = ""
+    audit(
+        db, "publish.video_succeeded", "publication", publication.id, actor_id,
+        provider=result.provider, video_id=result.video_id, privacy=result.privacy_status,
+    )
+    db.flush()
+    db.commit()
 
+    _attempt_thumbnail_upload(db, publication, job, provider, credentials, actor_id)
     audit(
         db, "publish.succeeded", "publication", publication.id, actor_id,
         provider=result.provider,
         video_id=result.video_id,
         privacy=result.privacy_status,
         scheduled=scheduled_at.isoformat() if scheduled_at else None,
+        thumbnail_status=publication.thumbnail_status,
     )
     db.flush()
     db.commit()
@@ -276,6 +331,35 @@ def retry_publish(db: Session, publication_id: str, actor_id: str = "") -> Publi
         confirm_public=publication.privacy_status == PrivacyStatus.PUBLIC,
         actor_id=actor_id,
     )
+
+
+def retry_thumbnail(db: Session, publication_id: str, actor_id: str = "") -> Publication:
+    """Retry only the custom thumbnail; never upload the video again."""
+    publication = db.get(Publication, publication_id)
+    if publication is None:
+        raise PipelineError("publication not found")
+    if publication.upload_status != UploadStatus.UPLOADED or not publication.youtube_video_id:
+        raise PipelineError("the video must be uploaded before retrying its thumbnail")
+    job = db.get(RenderJob, publication.render_job_id) if publication.render_job_id else None
+    if job is None:
+        raise PipelineError("the publication no longer has its render job")
+    project = get_project(db, publication.project_id)
+    channel = resolve_channel(db, project, publication.channel_id)
+    provider = yt.get_provider()
+    credentials: dict = {}
+    if channel is not None and channel.encrypted_credentials:
+        try:
+            credentials = decrypt_json(channel.encrypted_credentials)
+        except ValueError as exc:
+            raise PipelineError("stored channel credentials could not be decrypted. Reconnect the channel.") from exc
+    if not publication.youtube_video_id.startswith("dryrun_") and not isinstance(provider, yt.GoogleYouTubeProvider):
+        raise PipelineError("YouTube OAuth is not configured; reconnect the channel before retrying the thumbnail")
+    if isinstance(provider, yt.GoogleYouTubeProvider) and not credentials:
+        raise PipelineError("connect a YouTube channel before retrying the thumbnail")
+    _attempt_thumbnail_upload(db, publication, job, provider, credentials, actor_id)
+    db.flush()
+    db.commit()
+    return publication
 
 
 def sync_stats(db: Session, publication_id: str, actor_id: str = "") -> VideoStat | None:

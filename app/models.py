@@ -585,8 +585,25 @@ class Publication(Base, TimestampMixin):
     error_message: Mapped[str] = mapped_column(Text, default="")
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     idempotency_key: Mapped[str] = mapped_column(String(64), default="", index=True)
+    thumbnail_status: Mapped[str] = mapped_column(String(20), default="pending")
+    thumbnail_error: Mapped[str] = mapped_column(Text, default="")
+    thumbnail_attempt: Mapped[int] = mapped_column(Integer, default=0)
 
     project: Mapped[Project] = relationship(back_populates="publications")
+
+    @property
+    def thumbnail_note(self) -> str:
+        if self.thumbnail_status == "failed":
+            return "Video uploaded, but the custom thumbnail failed. Check it manually or retry the thumbnail upload."
+        if self.thumbnail_status == "not_available":
+            return "Video uploaded without a custom thumbnail because no publishable thumbnail file was available."
+        return ""
+
+    @property
+    def thumbnail_retry_url(self) -> str | None:
+        if self.thumbnail_status not in {"failed", "not_available"}:
+            return None
+        return f"/api/publications/{self.id}/thumbnail/retry"
 
 
 class VideoStat(Base, TimestampMixin):
