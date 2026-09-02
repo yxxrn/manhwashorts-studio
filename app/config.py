@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
+    # --- Suwayomi local source sidecar ---
+    suwayomi_enabled: bool = True
+    suwayomi_url: str = "http://127.0.0.1:4567"
+    suwayomi_auto_start: bool = True
+    suwayomi_jar_path: Path = BASE_DIR / "vendor" / "suwayomi" / "Suwayomi-Server.jar"
+    suwayomi_java_bin: str = "java"
+    suwayomi_start_timeout: float = 30.0
+    suwayomi_request_timeout: float = 45.0
+    suwayomi_username: str = ""
+    suwayomi_password: SecretStr | None = None
+
     # --- Storage ---
     data_dir: Path = BASE_DIR / "data"
     storage_dir: Path = BASE_DIR / "data" / "storage"

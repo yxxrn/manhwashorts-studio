@@ -59,6 +59,7 @@ Do not stage those paths.
 - A subtitle font
 - A configured cloud multimodal provider for the production review workflow
 - A configured TTS provider for voiced production
+- Java **21+** only when using the bundled Suwayomi source sidecar
 
 GPU encoding is optional. `MS_VIDEO_ENCODER=auto` probes supported encoders and falls back to CPU when necessary.
 
@@ -73,6 +74,14 @@ cp .env.example .env
 ```
 
 For development and the full regression suite, install `requirements-dev.txt` instead.
+
+Optional Suwayomi source sidecar (one-time setup):
+
+```bash
+python3 scripts/setup_suwayomi.py
+```
+
+The setup downloads the pinned official Suwayomi JAR, verifies its SHA-256, and leaves the binary outside Git. ManhwaShorts then starts/stops that sidecar automatically on `127.0.0.1:4567`. Suwayomi ships no default online extensions; configure an extension store/source once before title search. The REST API reports this explicitly as `needs_extension_setup`.
 
 Optional API/UI server:
 
@@ -267,7 +276,7 @@ The slow/render suites exercise real FFmpeg behavior and verify codec/container 
 
 ## Scope and rights
 
-ManhwaShorts Studio does not scrape source material, remove watermarks, generate replacement artwork, or automatically authorize publication rights. Source rights metadata is retained for audit; it becomes a blocking gate only when rights enforcement is explicitly enabled.
+ManhwaShorts Studio does not implement website scrapers itself. Its optional Suwayomi connector can import pages from user-configured Suwayomi/Mihon sources, while preserving them as ordinary ordered source assets. It does not remove watermarks, generate replacement artwork, or automatically authorize publication rights. Imported material remains subject to the same rights metadata and policy gates as manual uploads.
 
 The repository code and third-party assets/services have separate licences. Verify the rights for source art, fonts, models, voices, and provider services before commercial publication.
 

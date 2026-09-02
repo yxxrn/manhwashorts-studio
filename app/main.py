@@ -21,10 +21,11 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import BASE_DIR, settings
 from app.db import init_db
-from app.routers import auth, credentials, pipeline, projects, publish
+from app.routers import auth, credentials, pipeline, projects, publish, sources
 from app.schemas import EncoderCapabilityOut, HealthOut, LocalCapabilitiesOut
 from app.services import encoders
 from app.services import render as render_svc
+from app.services import suwayomi as suwayomi_svc
 from app.services import tts as tts_svc
 
 logging.basicConfig(
@@ -58,7 +59,19 @@ async def lifespan(app: FastAPI):
         settings.llm_provider,
         "configured" if settings.youtube_enabled else "dry-run",
     )
-    yield
+    if settings.suwayomi_enabled and settings.suwayomi_auto_start:
+        try:
+            sidecar = suwayomi_svc.ensure_sidecar()
+            if sidecar.get("available"):
+                logger.info("Suwayomi source sidecar ready at %s", sidecar.get("url"))
+            elif sidecar.get("installed"):
+                logger.warning("Suwayomi sidecar is installed but unavailable: %s", sidecar.get("error", "unknown error"))
+        except Exception as exc:
+            logger.warning("Suwayomi sidecar startup skipped: %s", exc)
+    try:
+        yield
+    finally:
+        suwayomi_svc.stop_sidecar()
 
 
 app = FastAPI(
@@ -76,6 +89,7 @@ app.include_router(credentials.router)
 app.include_router(projects.router)
 app.include_router(pipeline.router)
 app.include_router(publish.router)
+app.include_router(sources.router)
 
 TEMPLATES_DIR = BASE_DIR / "app" / "templates"
 STATIC_DIR = BASE_DIR / "app" / "static"
@@ -141,6 +155,7 @@ def capabilities() -> dict:
         "approval_required": True,
         "render_async": True,
         "stages": ["analysis", "draft", "voice", "timeline", "quality", "render"],
+        "source_connectors": ["suwayomi"] if settings.suwayomi_enabled else [],
     }
 
 

@@ -14,6 +14,29 @@ that an id exists.
 Errors use `{"detail": "human readable message"}`. Validation failures are 422
 with the offending field named.
 
+## Suwayomi source connector
+
+Suwayomi runs as an optional localhost sidecar; agents still talk only to ManhwaShorts.
+
+- `GET /api/sources/suwayomi/status` — sidecar health, installed/searchable source counts, and `needs_extension_setup`.
+- `POST /api/sources/suwayomi/search` — search installed Suwayomi sources by title, optionally constrained by language or source id.
+- `POST /api/projects/{project_id}/sources/suwayomi/import` — resolve an exact title and chapter range, fetch ordered chapter pages, and ingest them as normal project image assets.
+
+Example import body:
+
+```json
+{
+  "title": "Infinite Mage",
+  "chapter_from": 20,
+  "chapter_to": 25,
+  "language": "en"
+}
+```
+
+Decimal chapters inside the requested range are retained in reading order. The import is idempotent by source provenance + page identity, refuses ambiguous equally suitable sources with HTTP 409, and refuses to mutate a corpus after vision analysis exists. Rights default to undeclared unless a normal `rights` declaration is supplied in the request.
+
+Suwayomi itself intentionally ships no default online extensions. A fresh sidecar can therefore be healthy while reporting `searchable_sources: 0` and `needs_extension_setup: true`.
+
 ## Conventions
 
 | Code | Meaning |

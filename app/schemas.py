@@ -766,6 +766,7 @@ class LocalCapabilitiesOut(BaseModel):
     approval_required: bool
     render_async: bool
     stages: list[str]
+    source_connectors: list[str] = Field(default_factory=list)
 
 
 class ProjectPipelineStatusOut(BaseModel):
@@ -792,6 +793,58 @@ class ProjectRunRequest(BaseModel):
     until: Literal["analysis", "draft", "voice", "timeline", "quality", "render"] = "draft"
     seed: int | None = None
     narrative_profile_id: str | None = None
+
+
+class SuwayomiStatusOut(BaseModel):
+    enabled: bool = True
+    available: bool = False
+    url: str = ""
+    sources: int = 0
+    searchable_sources: int = 0
+    needs_extension_setup: bool = False
+    managed: bool = False
+    installed: bool = False
+    error: str = ""
+
+
+class SuwayomiSearchRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    language: str | None = Field(default=None, max_length=20)
+    source_id: str | None = None
+
+
+class SuwayomiSearchItemOut(BaseModel):
+    manga_id: int
+    title: str
+    source_id: str
+    source: str
+    language: str
+    thumbnail_url: str = ""
+
+
+class SuwayomiImportRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    chapter_from: float = Field(ge=0)
+    chapter_to: float = Field(ge=0)
+    language: str | None = Field(default=None, max_length=20)
+    source_id: str | None = None
+    rights: RightsIn = Field(default_factory=RightsIn)
+
+
+class SuwayomiImportOut(BaseModel):
+    status: str
+    project_id: str
+    manga_id: int
+    title: str
+    source_id: str
+    source: str
+    language: str
+    chapters: list[str]
+    pages_downloaded: int
+    assets_created: int
+    duplicates_skipped: int
+    asset_ids: list[str]
+    rights_status: str
 
 
 class MessageOut(BaseModel):
