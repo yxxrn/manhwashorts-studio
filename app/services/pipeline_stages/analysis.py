@@ -64,6 +64,7 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
     _persist_panel_regions = api._persist_panel_regions
     _preferred_visual_panel_ids = api._preferred_visual_panel_ids
     _frameable_preferred_visual_panel_ids = api._frameable_preferred_visual_panel_ids
+    _frameable_preferred_visual_panel_selection = api._frameable_preferred_visual_panel_selection
     analyzer_contract = api.analyzer_contract
     audit = api.audit
     build_observation_chunks = api.build_observation_chunks
@@ -158,15 +159,17 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
         )
         semantic, chunk_ledger, first_chunk = _observe_chunks(provider, chunks, panel_transports, analysis_run_id=run_id, instruction_version=instruction_version, instruction_sha256=instruction_sha256, visual_instruction_version=visual_instruction_version, visual_instruction_sha256=visual_instruction_sha256)
         enriched, chain_observations = _enrich_observations(panel_regions, semantic, first_chunk, coverage)
-        preferred_visual_panel_ids = _frameable_preferred_visual_panel_ids(
-            panel_regions, input_by_asset, resolved_reference_profile
+        preferred_visual_panel_ids, preferred_visual_panel_ids_by_section = (
+            _frameable_preferred_visual_panel_selection(
+                panel_regions, input_by_asset, resolved_reference_profile
+            )
         )
         duplicate_observations = sum(len(chunk) for chunk in chunks) - len(enriched)
         manifest = _coverage_manifest(inputs, coverage, processed_panels=len(enriched), duplicate_observations=duplicate_observations)
         row.coverage_manifest_json = manifest
         synthesis_chunks = tuple({'chunk_id': item['chunk_id'], 'panel_ids': list(item['panel_ids']), 'observation_ids': list(item['observation_ids']), 'overlap_with_previous': list(item['overlap_with_previous']), 'overlap_with_next': list(item['overlap_with_next'])} for item in chunk_ledger)
         expected_panel_ids = tuple(panel.panel_id for panel in panel_regions)
-        synthesis_request = VisionChapterSynthesisRequest(analysis_run_id=run_id, instruction_version=instruction_version, instruction_sha256=instruction_sha256, instruction_text=instruction_text, expected_panel_ids=expected_panel_ids, coverage_manifest=manifest, ordered_observations=tuple(enriched[panel_id] for panel_id in expected_panel_ids), chunks=synthesis_chunks, narrative_profile_id=selected_profile.profile_id if selected_profile is not None else None, narrative_profile_version=selected_profile.profile_version if selected_profile is not None else None, narrative_profile_sha256=selected_profile.contract_sha256 if selected_profile is not None else None, target_word_count_min=target_word_count_min, target_word_count_max=target_word_count_max, preferred_visual_panel_ids=preferred_visual_panel_ids if target_word_count_min is not None else ())
+        synthesis_request = VisionChapterSynthesisRequest(analysis_run_id=run_id, instruction_version=instruction_version, instruction_sha256=instruction_sha256, instruction_text=instruction_text, expected_panel_ids=expected_panel_ids, coverage_manifest=manifest, ordered_observations=tuple(enriched[panel_id] for panel_id in expected_panel_ids), chunks=synthesis_chunks, narrative_profile_id=selected_profile.profile_id if selected_profile is not None else None, narrative_profile_version=selected_profile.profile_version if selected_profile is not None else None, narrative_profile_sha256=selected_profile.contract_sha256 if selected_profile is not None else None, target_word_count_min=target_word_count_min, target_word_count_max=target_word_count_max, preferred_visual_panel_ids=preferred_visual_panel_ids if target_word_count_min is not None else (), preferred_visual_panel_ids_by_section=preferred_visual_panel_ids_by_section if target_word_count_min is not None else None)
         try:
             synthesis_output = _synthesize_with_cache(provider, synthesis_request)
         except analyzer_contract.AnalyzerContractError:

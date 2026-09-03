@@ -149,6 +149,7 @@ def _request(
     target_word_count_min=None,
     target_word_count_max=None,
     preferred_visual_panel_ids=(),
+    preferred_visual_panel_ids_by_section=None,
 ):
     if narrative_profile_id is None:
         committed_version, committed_digest, committed_text = _instruction_contract()
@@ -205,6 +206,11 @@ def _request(
         target_word_count_min=target_word_count_min,
         target_word_count_max=target_word_count_max,
         preferred_visual_panel_ids=tuple(preferred_visual_panel_ids),
+        preferred_visual_panel_ids_by_section=(
+            {str(section): tuple(panel_ids) for section, panel_ids in preferred_visual_panel_ids_by_section.items()}
+            if preferred_visual_panel_ids_by_section is not None
+            else None
+        ),
     )
 
 
@@ -852,6 +858,55 @@ def test_production_visual_selection_requires_preferred_panel_coverage():
     with pytest.raises(module.VisionResponseInvalid) as caught:
         module.validate_synthesis_visual_selection(output, request)
     assert caught.value.validation_subtype == "production_visual_selection_insufficient"
+
+
+def test_production_visual_selection_requires_section_safe_panel_coverage():
+    module = _vision_module()
+    preferred = ("panel-a", "panel-b", "panel-c", "panel-d", "panel-e")
+    by_section = {
+        "hook": preferred[:4],
+        "setup": preferred[:4],
+        "conflict": preferred[:4],
+        "twist": preferred[:4],
+        "cta": preferred[:4],
+    }
+    request = _request(
+        module,
+        target_word_count_min=115,
+        target_word_count_max=125,
+        preferred_visual_panel_ids=preferred,
+        preferred_visual_panel_ids_by_section=by_section,
+    )
+    output = _valid_output()
+    for passage in output["script_passages"]:
+        passage["evidence_panel_ids"] = list(preferred[:4])
+    output["script_passages"][0]["evidence_panel_ids"] = list(preferred)
+    module.validate_synthesis_visual_selection(output, request)
+    output["script_passages"][1]["evidence_panel_ids"] = [
+        "panel-a", "panel-b", "panel-c", "panel-e"
+    ]
+    with pytest.raises(module.VisionResponseInvalid) as caught:
+        module.validate_synthesis_visual_selection(output, request)
+    assert caught.value.validation_subtype == "production_visual_selection_insufficient"
+
+
+def test_production_visual_selection_fails_closed_when_section_allowlist_is_too_small():
+    module = _vision_module()
+    preferred = ("panel-a", "panel-b", "panel-c", "panel-d")
+    by_section = {
+        "hook": preferred, "setup": preferred[:3], "conflict": preferred,
+        "twist": preferred, "cta": preferred,
+    }
+    request = _request(
+        module, target_word_count_min=115, target_word_count_max=125,
+        preferred_visual_panel_ids=preferred, preferred_visual_panel_ids_by_section=by_section,
+    )
+    output = _valid_output()
+    for passage in output["script_passages"]:
+        passage["evidence_panel_ids"] = list(preferred)
+    with pytest.raises(module.VisionResponseInvalid) as caught:
+        module.validate_synthesis_visual_selection(output, request)
+    assert caught.value.validation_subtype == "production_visual_section_capacity_insufficient"
 
 
 def test_preferred_visual_panel_ids_are_sent_as_input_only_hints(mock_provider_url, monkeypatch):

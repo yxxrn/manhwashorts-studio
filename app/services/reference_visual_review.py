@@ -467,23 +467,24 @@ def _review_ready_evidence(
     )
 
 
-def panel_has_feasible_reference_roi(
+def panel_reference_roi_safety(
     region: object,
     crop: Image.Image,
     candidate: object,
     profile: object,
     *,
+    editorial_sections: Sequence[str] = (),
     allow_conservative_full_panel: bool = True,
-) -> bool:
-    """Return whether an exact panel has at least one production-safe 9:16 ROI."""
+) -> tuple[bool, tuple[str, ...]]:
+    """Return generic framing safety plus section-specific editorial safety."""
     if not reference_profile.review_panel_source_geometry_is_renderable(crop.size):
-        return False
+        return False, ()
     if _panel_is_blank_dominant(crop) or crop.width > crop.height * 1.2:
-        return False
+        return False, ()
     observation = getattr(region, "observation_json", None)
     raw = observation.get("visual_evidence") if isinstance(observation, Mapping) else None
     if not isinstance(raw, Mapping):
-        return False
+        return False, ()
     try:
         evidence = visual_scoring.parse_panel_visual_evidence(raw)
         ready = _review_ready_evidence(
@@ -491,7 +492,7 @@ def panel_has_feasible_reference_roi(
             allow_conservative_full_panel=allow_conservative_full_panel,
         )
         if ready is None:
-            return False
+            return False, ()
         mask = framing_analysis.build_color_agnostic_border_mask(
             crop,
             ready,
@@ -501,8 +502,16 @@ def panel_has_feasible_reference_roi(
         rois = enumerate_reference_roi_alternatives(
             crop.size, candidate, profile, image=crop, border_mask=mask,
         )
+        sections = tuple(dict.fromkeys(str(value) for value in editorial_sections if str(value)))
+        safe_sections: set[str] = set()
+        generic_feasible = False
+        editorial_candidate = type(
+            "EditorialSafetyCandidate",
+            (),
+            {"panel_size": crop.size, "visual_evidence": ready, "panel_candidate": candidate},
+        )()
         for roi in rois:
-            feasible, _ = editorial_visual_planner._review_framing_candidate_is_feasible(
+            feasible, telemetry = editorial_visual_planner._review_framing_candidate_is_feasible(
                 roi.crop_box,
                 ready,
                 mask,
@@ -512,11 +521,36 @@ def panel_has_feasible_reference_roi(
                 standard_blank_target=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
                 allow_conservative_full_panel=allow_conservative_full_panel,
             )
-            if feasible:
-                return True
+            if not feasible:
+                continue
+            generic_feasible = True
+            for section in sections:
+                metrics = editorial_visual_planner._review_crop_editorial_metrics(
+                    editorial_candidate, roi, telemetry, section=section, beat=""
+                )
+                if editorial_visual_planner._review_editorial_rejection_code(metrics) is None:
+                    safe_sections.add(section)
+            if generic_feasible and len(safe_sections) == len(sections):
+                break
+        return generic_feasible, tuple(section for section in sections if section in safe_sections)
     except (AttributeError, TypeError, ValueError, visual_scoring.VisualEvidenceError):
-        return False
-    return False
+        return False, ()
+
+
+def panel_has_feasible_reference_roi(
+    region: object,
+    crop: Image.Image,
+    candidate: object,
+    profile: object,
+    *,
+    allow_conservative_full_panel: bool = True,
+) -> bool:
+    """Return whether an exact panel has at least one production-safe 9:16 ROI."""
+    feasible, _sections = panel_reference_roi_safety(
+        region, crop, candidate, profile,
+        allow_conservative_full_panel=allow_conservative_full_panel,
+    )
+    return feasible
 
 
 def validated_visual_snapshot(

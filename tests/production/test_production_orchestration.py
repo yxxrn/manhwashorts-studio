@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 
@@ -147,6 +148,15 @@ def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp
 
     assert first.id == second.id
     assert calls == {"audio": 1, "timeline": 1, "enqueue": 1, "execute": 1}
+    package = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    assert package["contract_version"] == "manual-upload-package-v1"
+    assert package["language"] == "en"
+    assert package["video"] == "final.mp4"
+    assert package["thumbnail"] == "thumbnail.jpg"
+    assert "this video is a recap and commentary" in package["description"].lower()
+    assert "video ini" not in package["description"].lower()
+    assert script.editorial_metadata["production"]["upload_metadata_status"] == "passed"
+    assert script.editorial_metadata["production"]["upload_metadata_path"] == str(tmp_path / "metadata.json")
 
 
 def test_production_rerenders_when_existing_artifact_fails_current_qc(db, monkeypatch, tmp_path):

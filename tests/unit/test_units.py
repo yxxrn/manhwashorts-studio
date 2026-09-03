@@ -701,8 +701,48 @@ def test_youtube_metadata_within_limits():
     assert len(meta["title"]) <= 100
     assert len(meta["description"]) <= 5000
     assert len(meta["tags"]) <= 15
-    # Rights notice belongs in every description.
-    assert "hak" in meta["description"].lower()
+    # Rights notice belongs in every description and defaults to English.
+    assert "rights" in meta["description"].lower()
+    assert "video ini" not in meta["description"].lower()
+
+
+def test_youtube_metadata_keeps_english_package_language_consistent_and_tags_specific():
+    from app.services.youtube_metadata import build_metadata
+
+    story = (
+        "Against Verzak, escape requires someone to stay behind long enough to draw the monsters away. "
+        "The warriors volunteer as bait so the others can escape."
+    )
+    meta = build_metadata(
+        "Recap", "Surviving The Game as a Barbarian", "148-150", story, language="en"
+    )
+    lower = meta["description"].lower()
+    assert "this video is a recap and commentary" in lower
+    assert "all rights to the original work" in lower
+    assert "video ini" not in lower
+    assert "rangkuman" not in lower
+    assert "rangkumanmanhwa" not in meta["tags"]
+    assert "the" not in meta["tags"]
+    assert "game" not in meta["tags"]
+    assert "surviving" in meta["tags"]
+    assert "barbarian" in meta["tags"]
+    assert story in meta["description"]
+
+
+def test_youtube_metadata_title_never_truncates_mid_word():
+    from app.services.youtube_metadata import build_metadata
+
+    story = (
+        "Skeletal warrior's immortality forces the entire barbarian team into a desperate "
+        "deadly race against the clock."
+    )
+    meta = build_metadata(
+        "Recap", "Surviving The Game as a Barbarian", "148-150", story, language="en"
+    )
+    core = meta["title"].split(" | ", 1)[0]
+    assert len(meta["title"]) <= 100
+    assert core != "Skeletal warrior's immortality forces barbarian team int"
+    assert not core.endswith(" int")
 
 
 def test_youtube_metadata_is_hook_first_not_series_first():

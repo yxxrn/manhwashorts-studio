@@ -260,6 +260,7 @@ class VisionChapterSynthesisRequest:
     target_word_count_min: int | None = None
     target_word_count_max: int | None = None
     preferred_visual_panel_ids: tuple[str, ...] = ()
+    preferred_visual_panel_ids_by_section: Mapping[str, tuple[str, ...]] | None = None
     retry_word_counts: tuple[int, ...] | None = None
     retry_visual_selection: bool = False
     retry_evidence_lineage: bool = False
@@ -1794,15 +1795,26 @@ def _validate_synthesis_request(
             _synthesis_string_list(passage.get("claim_ids"), allow_empty=False)
             _synthesis_string_list(passage.get("evidence_panel_ids"), allow_empty=False)
     preferred = request.preferred_visual_panel_ids
+    preferred_by_section = request.preferred_visual_panel_ids_by_section or {}
     if (
         not isinstance(preferred, tuple)
         or any(not _valid_synthesis_text(panel_id) for panel_id in preferred)
         or len(set(preferred)) != len(preferred)
         or not set(preferred) <= set(expected_panel_ids)
+        or not isinstance(preferred_by_section, Mapping)
+        or set(preferred_by_section) - {"hook", "setup", "conflict", "twist", "cta"}
         or not isinstance(request.retry_visual_selection, bool)
         or not isinstance(request.retry_evidence_lineage, bool)
     ):
         raise VisionRequestInvalid()
+    for _section, panel_ids in preferred_by_section.items():
+        if (
+            not isinstance(panel_ids, tuple)
+            or any(not _valid_synthesis_text(panel_id) for panel_id in panel_ids)
+            or len(set(panel_ids)) != len(panel_ids)
+            or not set(panel_ids) <= set(preferred)
+        ):
+            raise VisionRequestInvalid()
 
     try:
         analyzer_contract = importlib.import_module(
@@ -1994,6 +2006,14 @@ def validate_synthesis_visual_selection(
     if not isinstance(passages, list) or not passages:
         raise VisionResponseInvalid()
     preferred_set = set(preferred)
+    preferred_by_section = request.preferred_visual_panel_ids_by_section or {}
+    role_sections = {
+        "hook": "hook",
+        "setup": "setup",
+        "escalation": "conflict",
+        "editorial_insight": "twist",
+        "payoff_open_loop": "cta",
+    }
     per_passage_min = min(4, len(preferred_set))
     unique_min = min(18, len(preferred_set))
     used_preferred: set[str] = set()
@@ -2003,6 +2023,19 @@ def validate_synthesis_visual_selection(
         evidence = passage.get("evidence_panel_ids")
         if not isinstance(evidence, list):
             raise VisionResponseInvalid()
+        editorial_role = str(passage.get("editorial_role", ""))
+        section = role_sections.get(editorial_role, "")
+        section_preferred = set(preferred_by_section.get(section, ()))
+        if preferred_by_section and section:
+            if len(section_preferred) < 4:
+                raise VisionResponseInvalid(
+                    validation_subtype="production_visual_section_capacity_insufficient"
+                )
+            selected_section = {panel_id for panel_id in evidence if panel_id in section_preferred}
+            if len(selected_section) < 4:
+                raise VisionResponseInvalid(
+                    validation_subtype="production_visual_selection_insufficient"
+                )
         selected = {panel_id for panel_id in evidence if panel_id in preferred_set}
         if len(selected) < per_passage_min:
             raise VisionResponseInvalid(
@@ -2032,6 +2065,10 @@ def _build_synthesis_payload(
         ],
         "chunks": [dict(chunk) for chunk in request.chunks],
         "preferred_visual_panel_ids": list(request.preferred_visual_panel_ids),
+        "preferred_visual_panel_ids_by_section": {
+            str(section): list(panel_ids)
+            for section, panel_ids in sorted((request.preferred_visual_panel_ids_by_section or {}).items())
+        },
     }
     ledger_json = json.dumps(
         ledger, ensure_ascii=False, separators=(",", ":")
@@ -2054,7 +2091,9 @@ def _build_synthesis_payload(
             "Each passage MUST include at least four panel IDs from preferred_visual_panel_ids, and across all five passages "
             "use at least eighteen distinct preferred_visual_panel_ids when that many are available. These preferred panels have "
             "known balloon geometry, protected visual subjects, and at least one production-safe balloon-avoiding ROI; choose only panels whose ordered observation supports the "
-            "same passage meaning. Claim evidence must still be fully covered. "
+            "same passage meaning. When preferred_visual_panel_ids_by_section is present in the evidence ledger, each passage MUST include at least four IDs from its corresponding "
+            "section allowlist (hook, setup, conflict for escalation, twist for editorial_insight, cta for payoff_open_loop). Those allowlists are already validated against the exact "
+            "section-specific face, subject, balloon, blank-area, and crop-quality gates. Claim evidence must still be fully covered. "
         )
         if request.retry_visual_selection:
             visual_selection_instruction += (
@@ -2074,9 +2113,9 @@ def _build_synthesis_payload(
     if request.retry_passages is not None:
         locked_json = json.dumps([dict(item) for item in request.retry_passages], ensure_ascii=False, separators=(",", ":"))
         locked_passage_instruction = (
-            "The previous response passed semantic/evidence structure but failed a narration-length gate. "
+            "The previous response passed semantic/evidence structure but failed a narration-length or subtitle-layout gate. "
             "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, claim_ids, "
-            "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only each passage text enough to satisfy the exact production word ranges. "
+            "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only passage text. Keep the exact production word ranges, prefer shorter ordinary words and balanced phrase lengths, and avoid long token combinations that cannot fit the fixed two-line subtitle layout. "
             f"Previous locked script_passages: {locked_json}. "
         )
     retry_instruction = ""

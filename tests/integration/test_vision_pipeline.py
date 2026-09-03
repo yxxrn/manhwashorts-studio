@@ -1498,6 +1498,36 @@ def test_synthesis_visual_selection_retry_preserves_evidence_input(db, tmp_path,
     assert provider.synthesis_requests[1].coverage_manifest == provider.synthesis_requests[0].coverage_manifest
 
 
+class _SubtitleOverflowCorrectiveSynthesisSpy(_RetryablePersistentSynthesisSpy):
+    def synthesize(self, request):
+        self.synthesis_attempts += 1
+        self.synthesis_requests.append(request)
+        candidate = _valid_synthesis_output(request)
+        if self.synthesis_attempts == 1:
+            candidate["script_passages"][0]["text"] = (
+                "Canceling giantification at the precise right instant, the barbarian dodges death "
+                "and reveals the immortal's hidden flaw."
+            )
+        return candidate
+
+
+def test_synthesis_subtitle_overflow_uses_locked_corrective_retry(db, tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    project_id, _ = _seed_vision_project(db, standalone_count=13)
+    provider = _SubtitleOverflowCorrectiveSynthesisSpy()
+    _install_provider(monkeypatch, provider)
+    row = module.run_analysis(db, project_id)
+    assert row.state == "RECONCILED"
+    assert provider.synthesis_attempts == 2
+    retry = provider.synthesis_requests[1]
+    assert retry.retry_word_counts is not None
+    assert retry.retry_passages is not None
+    assert retry.retry_passages[0]["text"].startswith("Canceling giantification")
+    assert retry.ordered_observations == provider.synthesis_requests[0].ordered_observations
+    assert retry.coverage_manifest == provider.synthesis_requests[0].coverage_manifest
+
+
 def test_preferred_visual_panel_ids_exclude_front_matter_and_invalid_bounds():
     module = _pipeline_module()
     def panel(panel_id, source_order, bounds):
@@ -1533,8 +1563,33 @@ def test_frameable_preferred_visual_ids_translate_segmented_source_bounds(monkey
     seen = {}
     def feasible(_panel, crop, _candidate, _profile, **_kwargs):
         seen["size"] = crop.size
-        return True
-    monkeypatch.setattr(module.reference_visual_review, "panel_has_feasible_reference_roi", feasible)
+        return True, tuple(_kwargs.get("editorial_sections", ()))
+    monkeypatch.setattr(module.reference_visual_review, "panel_reference_roi_safety", feasible)
     result = module._frameable_preferred_visual_panel_ids((panel,), {"asset-a": source}, SimpleNamespace())
     assert result == ("story",)
     assert seen["size"] == (800, 300)
+
+
+def test_frameable_preferred_visual_selection_tracks_section_safety(monkeypatch):
+    module = _pipeline_module()
+    raw = io.BytesIO()
+    Image.new("RGB", (800, 400), (80, 120, 160)).save(raw, format="PNG")
+    panel = SimpleNamespace(
+        panel_id="story", source_asset_id="asset-a", source_order=3,
+        bounds_json={"x": 0, "y": 150, "width": 800, "height": 300},
+        observation_json={"visual_evidence": {"balloon_mask_status": "known_nonempty", "protected_regions": [{"kind": "subject"}]}},
+    )
+    source = SimpleNamespace(payload=raw.getvalue(), source_bounds=(0, 100, 800, 500), source_family="family-a")
+    def feasible(_panel, _crop, _candidate, _profile, **_kwargs):
+        assert tuple(_kwargs["editorial_sections"]) == ("hook", "setup", "conflict", "twist", "cta")
+        return True, ("hook", "conflict")
+    monkeypatch.setattr(module.reference_visual_review, "panel_reference_roi_safety", feasible)
+    generic, by_section = module._frameable_preferred_visual_panel_selection(
+        (panel,), {"asset-a": source}, SimpleNamespace()
+    )
+    assert generic == ("story",)
+    assert by_section["hook"] == ("story",)
+    assert by_section["conflict"] == ("story",)
+    assert by_section["setup"] == ()
+    assert by_section["twist"] == ()
+    assert by_section["cta"] == ()

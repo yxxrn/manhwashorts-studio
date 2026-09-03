@@ -75,6 +75,7 @@ def build_metadata_for(db: Session, project_id: str) -> dict:
         chapter=project.chapter,
         script_text=script.plain_text if script else "",
         attribution="; ".join(attributions),
+        language=project.language,
     )
 
 

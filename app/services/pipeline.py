@@ -1084,6 +1084,10 @@ def _vision_synthesis_cache_key(provider: Any, request: VisionChapterSynthesisRe
         "target_word_count_min": request.target_word_count_min,
         "target_word_count_max": request.target_word_count_max,
         "preferred_visual_panel_ids": list(request.preferred_visual_panel_ids),
+        "preferred_visual_panel_ids_by_section": {
+            str(section): list(panel_ids)
+            for section, panel_ids in sorted((request.preferred_visual_panel_ids_by_section or {}).items())
+        },
     }
     try:
         encoded = json.dumps(source, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -1096,6 +1100,38 @@ def _vision_synthesis_cache_path(cache_key: str) -> Path:
     return settings.data_dir / "vision-synthesis-cache" / f"{cache_key}.json"
 
 
+def _validate_synthesis_subtitle_admission(
+    output: Mapping[str, Any], request: VisionChapterSynthesisRequest
+) -> None:
+    if request.target_word_count_min is None:
+        return
+    passages = output.get("script_passages")
+    if not isinstance(passages, list) or not passages:
+        return
+    overflow = subtitle_karaoke.provisional_caption_overflow_passage_indexes(
+        passages, STANDARD_FINAL_DURATION_MIN_SECONDS
+    )
+    if not overflow:
+        return
+    locked = tuple(
+        {
+            "passage_id": str(item.get("passage_id", "")),
+            "editorial_role": str(item.get("editorial_role", "")),
+            "text": str(item.get("text", "")),
+            "claim_ids": list(item.get("claim_ids") or ()),
+            "evidence_panel_ids": list(item.get("evidence_panel_ids") or ()),
+        }
+        for item in passages
+        if isinstance(item, Mapping)
+    )
+    counts = tuple(script_svc.narration_word_count(str(item.get("text", ""))) for item in passages)
+    raise VisionResponseInvalid(
+        validation_subtype="production_subtitle_overflow",
+        passage_word_counts=counts,
+        retry_passages=locked,
+    )
+
+
 def _validated_synthesis_cache_output(value: Any, request: VisionChapterSynthesisRequest) -> Mapping[str, Any]:
     output = _classify_synthesis_output(value, request.expected_panel_ids, request.chunks)
     try:
@@ -1105,6 +1141,7 @@ def _validated_synthesis_cache_output(value: Any, request: VisionChapterSynthesi
             narrative_profile_id=request.narrative_profile_id,
         )
         validate_synthesis_visual_selection(output, request)
+        _validate_synthesis_subtitle_admission(output, request)
     except analyzer_contract.AnalyzerContractError:
         raise _AnalysisBlocked("analysis_incomplete", stage="analyzer_validation") from None
     return output
@@ -1153,6 +1190,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
     for attempt in range(1, _VISION_SYNTHESIS_MAX_ATTEMPTS + 1):
         try:
             response = provider.synthesize(active_request)
+            _validate_synthesis_subtitle_admission(response, active_request)
             break
         except VisionResponseInvalid as exc:
             retryable_subtypes = {
@@ -1160,6 +1198,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "script_passage_narration_must_contain_90-125_words",
                 "production_narration_word_count_out_of_range",
                 "production_visual_selection_insufficient",
+                "production_subtitle_overflow",
             }
             subtype = str(getattr(exc, "validation_subtype", "") or "")
             evidence_lineage_retryable = (
@@ -1438,22 +1477,28 @@ def _preferred_visual_panel_ids(panel_regions: Sequence[PanelRegion]) -> tuple[s
     return tuple(preferred)
 
 
-def _frameable_preferred_visual_panel_ids(
+_PRODUCTION_VISUAL_SECTIONS = ("hook", "setup", "conflict", "twist", "cta")
+
+
+def _frameable_preferred_visual_panel_selection(
     panel_regions: Sequence[PanelRegion],
     source_inputs: Mapping[str, object],
     profile: object | None,
-) -> tuple[str, ...]:
-    """Filter preferred visual panels through the exact production framing gate."""
+) -> tuple[tuple[str, ...], Mapping[str, tuple[str, ...]]]:
+    """Compute generic and section-safe preferred panels in one pixel pass."""
     if profile is None:
-        return _preferred_visual_panel_ids(panel_regions)
+        generic = _preferred_visual_panel_ids(panel_regions)
+        return generic, dict.fromkeys(_PRODUCTION_VISUAL_SECTIONS, generic)
     preferred = set(_preferred_visual_panel_ids(panel_regions))
+    section_rows: dict[str, list[str]] = {section: [] for section in _PRODUCTION_VISUAL_SECTIONS}
     if not preferred:
-        return ()
+        return (), dict.fromkeys(_PRODUCTION_VISUAL_SECTIONS, ())
     decoded: dict[str, Image.Image] = {}
-    result: list[str] = []
+    generic_rows: list[str] = []
     try:
         for panel in panel_regions:
-            if str(panel.panel_id) not in preferred:
+            panel_id = str(panel.panel_id)
+            if panel_id not in preferred:
                 continue
             source_input = source_inputs.get(str(panel.source_asset_id))
             payload = getattr(source_input, "payload", None)
@@ -1478,12 +1523,7 @@ def _frameable_preferred_visual_panel_ids(
                 continue
             if not (sx0 <= bounds[0] < bounds[2] <= sx1 and sy0 <= bounds[1] < bounds[3] <= sy1):
                 continue
-            local_bounds = (
-                bounds[0] - sx0,
-                bounds[1] - sy0,
-                bounds[2] - sx0,
-                bounds[3] - sy0,
-            )
+            local_bounds = (bounds[0] - sx0, bounds[1] - sy0, bounds[2] - sx0, bounds[3] - sy0)
             crop = source.crop(local_bounds)
             try:
                 encoded = io.BytesIO()
@@ -1494,22 +1534,44 @@ def _frameable_preferred_visual_panel_ids(
                     order_index=int(panel.source_order),
                     source_family=str(getattr(source_input, "source_family", "") or ""),
                 )
-                if reference_visual_review.panel_has_feasible_reference_roi(
+                generic_safe, safe_sections = reference_visual_review.panel_reference_roi_safety(
                     panel,
                     crop,
                     candidate,
                     profile,
+                    editorial_sections=_PRODUCTION_VISUAL_SECTIONS,
                     allow_conservative_full_panel=True,
-                ):
-                    result.append(str(panel.panel_id))
+                )
+                if generic_safe:
+                    generic_rows.append(panel_id)
+                for section in safe_sections:
+                    section_rows[section].append(panel_id)
             finally:
                 crop.close()
     except (OSError, UnidentifiedImageError, ValueError):
-        return ()
+        return (), dict.fromkeys(_PRODUCTION_VISUAL_SECTIONS, ())
     finally:
         for image in decoded.values():
             image.close()
-    return tuple(result)
+    return tuple(generic_rows), {section: tuple(section_rows[section]) for section in _PRODUCTION_VISUAL_SECTIONS}
+
+
+def _frameable_preferred_visual_panel_ids(
+    panel_regions: Sequence[PanelRegion],
+    source_inputs: Mapping[str, object],
+    profile: object | None,
+) -> tuple[str, ...]:
+    """Filter preferred visual panels through the exact production framing gate."""
+    return _frameable_preferred_visual_panel_selection(panel_regions, source_inputs, profile)[0]
+
+
+def _frameable_preferred_visual_panel_ids_by_section(
+    panel_regions: Sequence[PanelRegion],
+    source_inputs: Mapping[str, object],
+    profile: object | None,
+) -> Mapping[str, tuple[str, ...]]:
+    """Return exact production-safe preferred panel IDs for each editorial section."""
+    return _frameable_preferred_visual_panel_selection(panel_regions, source_inputs, profile)[1]
 
 
 def _classify_synthesis_output(

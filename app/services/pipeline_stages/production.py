@@ -5,10 +5,61 @@ Public callers should continue importing app.services.pipeline.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from app.constants import (
     STANDARD_FINAL_DURATION_MAX_SECONDS,
     STANDARD_FINAL_DURATION_MIN_SECONDS,
 )
+
+
+def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manifest):
+    """Persist the upload-ready metadata package beside the final artifact."""
+    from app.services.youtube_metadata import build_metadata
+
+    if not getattr(job, "output_key", ""):
+        raise api.PipelineError("manual upload metadata requires a final video artifact")
+    assets = api.project_assets(db, project.id)
+    attributions = sorted(
+        {str(asset.attribution).strip() for asset in assets if str(asset.attribution or "").strip()}
+    )
+    generated = build_metadata(
+        project_title=project.title,
+        manhwa_title=project.manhwa_title,
+        chapter=project.chapter,
+        script_text=script.plain_text,
+        attribution="; ".join(attributions),
+        language=project.language,
+    )
+    output_dir = Path(job.output_key).parent
+    thumbnail_path = str((thumbnail_manifest or {}).get("thumbnail_path", "") or "")
+    if not thumbnail_path and getattr(job, "thumbnail_key", ""):
+        thumbnail_path = str(job.thumbnail_key)
+    subtitle_path = str(getattr(job, "subtitle_key", "") or "")
+    payload = {
+        "contract_version": "manual-upload-package-v1",
+        "project_id": str(project.id),
+        "language": str(project.language or "en"),
+        "title": generated["title"],
+        "description": generated["description"],
+        "tags": list(generated["tags"]),
+        "video": Path(job.output_key).name,
+        "thumbnail": Path(thumbnail_path).name if thumbnail_path else "",
+        "subtitles": Path(subtitle_path).name if subtitle_path else "",
+    }
+    target = output_dir / "metadata.json"
+    temporary = output_dir / ".metadata.json.tmp"
+    try:
+        temporary.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(target)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise api.PipelineError(f"manual upload metadata could not be written: {exc}") from exc
+    return target, payload
 
 
 def run_production(api, db, project_id, *, actor_id, approved_script_hash, approved_script_version, speed, provider_name, encoder, profile):
@@ -66,7 +117,18 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
         if not any(result.blocking for result in results):
             thumbnail_manifest = _ensure_final_thumbnail(db, existing, script=script, required=True)
             if thumbnail_manifest is not None:
-                production.update({'thumbnail_status': 'passed', 'thumbnail_path': thumbnail_manifest.get('thumbnail_path', ''), 'thumbnail_headline': thumbnail_manifest.get('headline', '')})
+                metadata_path, upload_metadata = _write_manual_upload_metadata(
+                    api, db, project=get_project(db, project_id), script=script,
+                    job=existing, thumbnail_manifest=thumbnail_manifest,
+                )
+                production.update({
+                    'thumbnail_status': 'passed',
+                    'thumbnail_path': thumbnail_manifest.get('thumbnail_path', ''),
+                    'thumbnail_headline': thumbnail_manifest.get('headline', ''),
+                    'upload_metadata_status': 'passed',
+                    'upload_metadata_path': str(metadata_path),
+                    'upload_metadata_title': upload_metadata.get('title', ''),
+                })
                 metadata = _persist_production_metadata(db, script, metadata, production)
             return existing
         # A stricter/new QC contract may invalidate a previously successful
@@ -153,6 +215,21 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
     if any(result.blocking for result in postflight):
         raise PipelineError('post-render QC failed: ' + '; '.join(result.message for result in postflight if result.blocking)[:1000])
     thumbnail_manifest = _ensure_final_thumbnail(db, job, script=script, required=True)
-    production.update({'script_hash': script_hash, 'script_version': script.version, 'render_job_id': job.id, 'post_render_qc': 'passed', 'thumbnail_status': 'passed' if thumbnail_manifest is not None else 'disabled', 'thumbnail_path': (thumbnail_manifest or {}).get('thumbnail_path', ''), 'thumbnail_headline': (thumbnail_manifest or {}).get('headline', '')})
+    metadata_path, upload_metadata = _write_manual_upload_metadata(
+        api, db, project=project, script=script, job=job,
+        thumbnail_manifest=thumbnail_manifest,
+    )
+    production.update({
+        'script_hash': script_hash,
+        'script_version': script.version,
+        'render_job_id': job.id,
+        'post_render_qc': 'passed',
+        'thumbnail_status': 'passed' if thumbnail_manifest is not None else 'disabled',
+        'thumbnail_path': (thumbnail_manifest or {}).get('thumbnail_path', ''),
+        'thumbnail_headline': (thumbnail_manifest or {}).get('headline', ''),
+        'upload_metadata_status': 'passed',
+        'upload_metadata_path': str(metadata_path),
+        'upload_metadata_title': upload_metadata.get('title', ''),
+    })
     _persist_production_metadata(db, script, metadata, production)
     return job
