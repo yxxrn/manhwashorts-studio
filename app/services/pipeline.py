@@ -23,9 +23,9 @@ import secrets
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from copy import copy as shallow_copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,11 +98,17 @@ from app.services import (
 from app.services import timeline as timeline_svc
 from app.services import tts as tts_svc
 from app.services.vision_adapter import (
+    ANALYSIS_WINDOW_CONTRACT_VERSION,
+    ANALYSIS_WINDOW_MAX_COUNT,
+    SYNTHESIS_WIRE_CONTRACT_VERSION,
     VisionCapabilityError,
     VisionChapterSynthesisRequest,
     VisionObservationRequest,
     VisionProviderRequestFailed,
     VisionResponseInvalid,
+    grounded_visible_facts_from_visual_evidence,
+    normalize_dialogue_or_ocr_items,
+    validate_synthesis_visual_selection,
     validate_visual_evidence_observation,
 )
 
@@ -260,26 +266,24 @@ def build_observation_chunks(
     *,
     chunk_size: int = 12,
     overlap: int = 2,
+    estimated_bytes_by_panel_id: Mapping[str, int] | None = None,
+    max_estimated_request_bytes: int | None = None,
 ) -> list[tuple[PanelRegion, ...]]:
-    """Build deterministic ordered chunks with an exact adjacent overlap."""
+    """Build deterministic ordered chunks with exact adjacent overlap.
 
-    if (
-        isinstance(chunk_size, bool)
-        or not isinstance(chunk_size, int)
-        or chunk_size <= 0
-    ):
+    When provider-byte estimates are supplied, chunk count is bounded by both
+    panel count and the estimated encoded request size. This prevents one set
+    of unusually large webtoon panels from creating a provider-invalid body.
+    """
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
     if isinstance(overlap, bool) or not isinstance(overlap, int) or overlap < 0:
         raise ValueError("overlap must be non-negative")
     if overlap >= chunk_size:
         raise ValueError("overlap must be smaller than chunk_size")
-
     ordered = sorted(
         panel_regions,
-        key=lambda panel: (
-            getattr(panel, "source_order", -1),
-            getattr(panel, "panel_id", ""),
-        ),
+        key=lambda panel: (getattr(panel, "source_order", -1), getattr(panel, "panel_id", "")),
     )
     seen_orders: set[int] = set()
     seen_panel_ids: set[str] = set()
@@ -288,11 +292,7 @@ def build_observation_chunks(
             raise ValueError("panel_regions must contain PanelRegion rows")
         source_order = panel.source_order
         panel_id = panel.panel_id
-        if (
-            isinstance(source_order, bool)
-            or not isinstance(source_order, int)
-            or source_order < 0
-        ):
+        if isinstance(source_order, bool) or not isinstance(source_order, int) or source_order < 0:
             raise ValueError("source_order must be a non-negative integer")
         if source_order in seen_orders:
             raise ValueError("source_order must be unique")
@@ -307,29 +307,57 @@ def build_observation_chunks(
         _panel_region_bounds(panel)
         seen_orders.add(source_order)
         seen_panel_ids.add(panel_id)
-
     if not ordered:
         return []
-    if len(ordered) <= chunk_size:
-        return [tuple(ordered)]
+    if estimated_bytes_by_panel_id is None:
+        if len(ordered) <= chunk_size:
+            return [tuple(ordered)]
+        step = chunk_size - overlap
+        chunks: list[tuple[PanelRegion, ...]] = []
+        start_index = 0
+        while start_index < len(ordered):
+            end_index = min(start_index + chunk_size, len(ordered))
+            chunk = tuple(ordered[start_index:end_index])
+            chunks.append(chunk)
+            if end_index == len(ordered):
+                break
+            start_index += step
+        return chunks
 
-    step = chunk_size - overlap
+    limit = 16 * 1024 * 1024 if max_estimated_request_bytes is None else max_estimated_request_bytes
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("max_estimated_request_bytes must be positive")
+    estimates: dict[str, int] = {}
+    for panel in ordered:
+        value = estimated_bytes_by_panel_id.get(panel.panel_id)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError("estimated bytes must be a positive integer for every panel")
+        estimates[panel.panel_id] = value
     chunks: list[tuple[PanelRegion, ...]] = []
-    start = 0
-    while start < len(ordered):
-        end = min(start + chunk_size, len(ordered))
-        chunk = tuple(ordered[start:end])
-        if chunks and chunk == chunks[-1]:
-            break
-        chunks.append(chunk)
-        if end == len(ordered):
-            break
-        next_start = start + step
-        if next_start <= start:
+    start_index = 0
+    while start_index < len(ordered):
+        end_index = start_index
+        estimated_total = 128 * 1024
+        minimum_count = min(max(overlap + 1, overlap * 2), len(ordered) - start_index)
+        while end_index < len(ordered) and end_index - start_index < chunk_size:
+            panel = ordered[end_index]
+            candidate = estimated_total + estimates[panel.panel_id]
+            current_count = end_index - start_index
+            if current_count >= minimum_count and candidate > limit:
+                break
+            estimated_total = candidate
+            end_index += 1
+        if end_index <= start_index:
             raise ValueError("chunk planner did not advance")
-        start = next_start
+        chunk = tuple(ordered[start_index:end_index])
+        chunks.append(chunk)
+        if end_index == len(ordered):
+            break
+        next_start = end_index - overlap
+        if next_start <= start_index:
+            raise ValueError("chunk planner did not advance")
+        start_index = next_start
     return chunks
-
 
 def _deduplicate_codes(codes: Sequence[str]) -> list[str]:
     result: list[str] = []
@@ -352,7 +380,7 @@ def _persist_blocked_analysis(
         [code if code in _VISION_BLOCKING_CODES else "analysis_incomplete" for code in codes]
     )
     safe_findings = [
-        {str(key): value for key, value in finding.items() if key in {"code", "stage", "count", "error_count", "panel_count", "chunk_index", "coverage_map_hash", "provider_type", "provider_name", "model"}}
+        {str(key): value for key, value in finding.items() if key in {"code", "stage", "count", "error_count", "panel_count", "chunk_index", "coverage_map_hash", "provider_type", "provider_name", "model", "status_code", "retryable", "timeout", "transport_subtype", "validation_subtype", "passage_word_counts"}}
         for finding in findings
         if isinstance(finding, Mapping)
     ]
@@ -763,13 +791,131 @@ def _encode_panel_payload(
     return payload
 
 
+_VISION_ANALYSIS_WINDOW_MIN_RATIO = 3.0
+_VISION_ANALYSIS_WINDOW_MAX_WIDTH = 512
+_VISION_ANALYSIS_WINDOW_MAX_HEIGHT = 768
+_VISION_ANALYSIS_WINDOW_JPEG_QUALITY = 72
+_VISION_ANALYSIS_WINDOW_OVERLAP_FRACTION = 0.18
+_VISION_PROVIDER_OVERVIEW_RESIZE_THRESHOLD = 180_000
+_VISION_PROVIDER_OVERVIEW_MAX_SIZE = (384, 576)
+_VISION_PROVIDER_OVERVIEW_MIN_SIZE = (32, 32)
+_VISION_PROVIDER_OVERVIEW_JPEG_QUALITY = 68
+
+
+def _vision_provider_payload(payload: bytes, mime_type: str) -> tuple[bytes, str]:
+    """Create a bounded provider overview while leaving canonical bytes untouched."""
+    needs_resize = len(payload) > _VISION_PROVIDER_OVERVIEW_RESIZE_THRESHOLD
+    if not needs_resize and mime_type.lower() in {"image/jpeg", "image/jpg"}:
+        return payload, mime_type
+    try:
+        with Image.open(io.BytesIO(payload)) as source:
+            source.load()
+            image = source.convert("RGB")
+        needs_resize = (
+            needs_resize
+            or image.width > _VISION_PROVIDER_OVERVIEW_MAX_SIZE[0]
+            or image.height > _VISION_PROVIDER_OVERVIEW_MAX_SIZE[1]
+            or image.width < _VISION_PROVIDER_OVERVIEW_MIN_SIZE[0]
+            or image.height < _VISION_PROVIDER_OVERVIEW_MIN_SIZE[1]
+        )
+        if needs_resize:
+            image.thumbnail(_VISION_PROVIDER_OVERVIEW_MAX_SIZE, Image.Resampling.LANCZOS)
+            target_size = (
+                max(_VISION_PROVIDER_OVERVIEW_MIN_SIZE[0], image.width),
+                max(_VISION_PROVIDER_OVERVIEW_MIN_SIZE[1], image.height),
+            )
+            if image.size != target_size:
+                # Some OpenAI-compatible providers reject otherwise valid image
+                # inputs when one side is only a handful of pixels. Scale the
+                # provider-only overview to a safe minimum; normalized evidence
+                # coordinates remain invariant and canonical bytes stay untouched.
+                image = image.resize(target_size, Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=_VISION_PROVIDER_OVERVIEW_JPEG_QUALITY, optimize=True, progressive=False, subsampling=2)
+        encoded = output.getvalue()
+    except (OSError, ValueError, UnidentifiedImageError):
+        return payload, mime_type
+    return encoded, "image/jpeg"
+
+
+def _vision_analysis_windows(payload: bytes) -> tuple[dict[str, Any], ...]:
+    """Create complete overlapping detail windows for unusually tall panels."""
+    try:
+        with Image.open(io.BytesIO(payload)) as source:
+            source.load()
+            image = source.convert("RGB")
+    except (OSError, ValueError, UnidentifiedImageError):
+        return ()
+    width, height = image.size
+    if width <= 0 or height <= 0 or height / width < _VISION_ANALYSIS_WINDOW_MIN_RATIO:
+        return ()
+    tile_height = min(height, max(1024, int(round(width * 2.0))))
+    overlap = max(128, int(round(tile_height * _VISION_ANALYSIS_WINDOW_OVERLAP_FRACTION)))
+    overlap = min(overlap, max(0, tile_height - 1))
+    step = max(1, tile_height - overlap)
+    estimated_count = 1 + max(0, (height - tile_height + step - 1) // step)
+    if estimated_count > ANALYSIS_WINDOW_MAX_COUNT:
+        tile_height = min(
+            height,
+            max(tile_height, (height + ANALYSIS_WINDOW_MAX_COUNT - 1) // ANALYSIS_WINDOW_MAX_COUNT + overlap),
+        )
+        overlap = max(128, int(round(tile_height * _VISION_ANALYSIS_WINDOW_OVERLAP_FRACTION)))
+        overlap = min(overlap, max(0, tile_height - 1))
+        step = max(1, tile_height - overlap)
+    windows: list[dict[str, Any]] = []
+    start_y = 0
+    index = 0
+    while start_y < height:
+        end_y = min(height, start_y + tile_height)
+        preview = image.crop((0, start_y, width, end_y))
+        preview.thumbnail((_VISION_ANALYSIS_WINDOW_MAX_WIDTH, _VISION_ANALYSIS_WINDOW_MAX_HEIGHT), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        preview.save(output, format="JPEG", quality=_VISION_ANALYSIS_WINDOW_JPEG_QUALITY, optimize=True, progressive=False, subsampling=2)
+        windows.append({
+            "window_index": index,
+            "y0": start_y,
+            "y1": end_y,
+            "overlap_above": 0 if start_y == 0 else overlap,
+            "overlap_below": 0 if end_y == height else overlap,
+            "mime_type": "image/jpeg",
+            "payload": output.getvalue(),
+        })
+        if end_y == height:
+            break
+        next_start = end_y - overlap
+        if next_start <= start_y:
+            return ()
+        start_y = next_start
+        index += 1
+    if not windows or windows[0]["y0"] != 0 or windows[-1]["y1"] != height or len(windows) > ANALYSIS_WINDOW_MAX_COUNT:
+        return ()
+    return tuple(windows)
+
+
+def _vision_transport_estimated_bytes(transport: Mapping[str, Any]) -> int:
+    payloads = [transport.get("payload")]
+    payloads.extend(
+        window.get("payload")
+        for window in transport.get("analysis_windows", ())
+        if isinstance(window, Mapping)
+    )
+    total = 0
+    for payload in payloads:
+        if not isinstance(payload, bytes) or not payload:
+            raise ValueError("vision transport contains an invalid image payload")
+        total += (len(payload) * 4 + 2) // 3 + 2048
+    return total
+
+
 def _panel_transport(
     panel: PanelRegion,
     source_input: segmentation.SourceAssetInput,
     coverage: segmentation.CoverageMap,
 ) -> dict[str, Any]:
     bounds = _panel_region_bounds(panel)
-    return {
+    canonical_payload = _encode_panel_payload(panel, source_input)
+    provider_payload, provider_mime = _vision_provider_payload(canonical_payload, "image/png")
+    transport: dict[str, Any] = {
         "panel_id": panel.panel_id,
         "source_asset_id": panel.source_asset_id,
         "strip_region_id": panel.strip_region_id,
@@ -782,10 +928,15 @@ def _panel_transport(
         },
         "coverage_map_version": coverage.version,
         "coverage_map_hash": coverage.map_sha256,
-        "mime_type": "image/png",
-        "payload": _encode_panel_payload(panel, source_input),
+        "mime_type": provider_mime,
+        "payload": provider_payload,
     }
-
+    windows = _vision_analysis_windows(canonical_payload)
+    if windows:
+        transport["analysis_window_version"] = ANALYSIS_WINDOW_CONTRACT_VERSION
+        transport["analysis_window_source_size"] = [bounds[2] - bounds[0], bounds[3] - bounds[1]]
+        transport["analysis_windows"] = windows
+    return transport
 
 def _validate_observation_rows(
     value: Any,
@@ -811,6 +962,16 @@ def _validate_observation_rows(
         for key in _VISION_OBSERVATION_KEYS - {"panel_id"}:
             if not isinstance(row.get(key), list):
                 raise _AnalysisBlocked("vision_response_invalid", stage="observation_reconcile")
+        try:
+            row["dialogue_or_ocr"] = normalize_dialogue_or_ocr_items(row["dialogue_or_ocr"])
+        except VisionResponseInvalid:
+            raise _AnalysisBlocked("vision_response_invalid", stage="observation_reconcile") from None
+        for key in ("visible_facts", "inferences", "uncertainties"):
+            if any(not isinstance(item, str) or not item.strip() for item in row[key]):
+                raise _AnalysisBlocked("vision_response_invalid", stage="observation_reconcile")
+        visible_facts = row["visible_facts"]
+        if any(not isinstance(item, str) or not item.strip() for item in visible_facts):
+            raise _AnalysisBlocked("vision_response_invalid", stage="observation_reconcile")
         refs = row["evidence_refs"]
         if not refs or panel_id not in refs or any(ref not in expected_set for ref in refs):
             raise _AnalysisBlocked("analysis_observation_missing", stage="observation_reconcile")
@@ -829,8 +990,249 @@ def _validate_observation_rows(
                 )
             except VisionResponseInvalid:
                 raise _AnalysisBlocked("vision_response_invalid", stage="visual_evidence") from None
+            if not row["visible_facts"]:
+                try:
+                    row["visible_facts"] = grounded_visible_facts_from_visual_evidence(row["visual_evidence"])
+                except VisionResponseInvalid:
+                    raise _AnalysisBlocked("vision_response_invalid", stage="observation_reconcile") from None
+        if not row["visible_facts"]:
+            raise _AnalysisBlocked("vision_response_invalid", stage="observation_reconcile")
         rows.append(row)
     return rows
+
+
+_VISION_OBSERVATION_CACHE_VERSION = "vision-observation-chunk-v2"
+_VISION_OBSERVATION_MAX_ATTEMPTS = 3
+
+
+def _vision_observation_panel_identity(panel: Mapping[str, Any]) -> dict[str, Any] | None:
+    payload = panel.get("payload")
+    if not isinstance(payload, bytes) or not payload:
+        return None
+    identity = {key: value for key, value in panel.items() if key not in {"payload", "analysis_windows"}}
+    identity["payload_sha256"] = hashlib.sha256(payload).hexdigest()
+    windows: list[dict[str, Any]] = []
+    for raw in panel.get("analysis_windows", ()):
+        if not isinstance(raw, Mapping):
+            return None
+        window_payload = raw.get("payload")
+        if not isinstance(window_payload, bytes) or not window_payload:
+            return None
+        window = {key: value for key, value in raw.items() if key != "payload"}
+        window["payload_sha256"] = hashlib.sha256(window_payload).hexdigest()
+        windows.append(window)
+    if windows:
+        identity["analysis_windows"] = windows
+    return identity
+
+
+def _vision_observation_cache_key(provider: Any, request: VisionObservationRequest) -> str | None:
+    model = str(getattr(provider, "model_id", "") or "").strip()
+    endpoint = str(getattr(provider, "endpoint", "") or "").strip()
+    if not model or not endpoint:
+        return None
+    panels: list[dict[str, Any]] = []
+    for panel in request.panels:
+        identity = _vision_observation_panel_identity(panel)
+        if identity is None:
+            return None
+        panels.append(identity)
+    source = {
+        "version": _VISION_OBSERVATION_CACHE_VERSION,
+        "provider_type": f"{type(provider).__module__}.{type(provider).__qualname__}",
+        "model": model,
+        "endpoint": endpoint,
+        "chunk_index": request.chunk_index,
+        "instruction_version": request.instruction_version,
+        "instruction_sha256": request.instruction_sha256,
+        "visual_instruction_version": request.visual_instruction_version,
+        "visual_instruction_sha256": request.visual_instruction_sha256,
+        "panels": panels,
+    }
+    encoded = json.dumps(source, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+def _vision_observation_cache_path(cache_key: str) -> Path:
+    return settings.data_dir / "vision-observation-cache" / f"{cache_key}.json"
+
+
+_VISION_SYNTHESIS_CACHE_VERSION = "vision-synthesis-v2"
+_VISION_SYNTHESIS_MAX_ATTEMPTS = 5
+
+
+def _vision_synthesis_cache_key(provider: Any, request: VisionChapterSynthesisRequest) -> str | None:
+    model = str(getattr(provider, "model_id", "") or "").strip()
+    endpoint = str(getattr(provider, "endpoint", "") or "").strip()
+    if not model or not endpoint:
+        return None
+    source = {
+        "version": _VISION_SYNTHESIS_CACHE_VERSION,
+        "wire_contract_version": SYNTHESIS_WIRE_CONTRACT_VERSION,
+        "provider_type": f"{type(provider).__module__}.{type(provider).__qualname__}",
+        "model": model,
+        "endpoint": endpoint,
+        "instruction_version": request.instruction_version,
+        "instruction_sha256": request.instruction_sha256,
+        "instruction_text_sha256": hashlib.sha256(request.instruction_text.encode("utf-8")).hexdigest(),
+        "expected_panel_ids": list(request.expected_panel_ids),
+        "coverage_manifest": request.coverage_manifest,
+        "ordered_observations": list(request.ordered_observations),
+        "chunks": list(request.chunks),
+        "narrative_profile_id": request.narrative_profile_id,
+        "narrative_profile_version": request.narrative_profile_version,
+        "narrative_profile_sha256": request.narrative_profile_sha256,
+        "target_word_count_min": request.target_word_count_min,
+        "target_word_count_max": request.target_word_count_max,
+        "preferred_visual_panel_ids": list(request.preferred_visual_panel_ids),
+    }
+    try:
+        encoded = json.dumps(source, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _vision_synthesis_cache_path(cache_key: str) -> Path:
+    return settings.data_dir / "vision-synthesis-cache" / f"{cache_key}.json"
+
+
+def _validated_synthesis_cache_output(value: Any, request: VisionChapterSynthesisRequest) -> Mapping[str, Any]:
+    output = _classify_synthesis_output(value, request.expected_panel_ids, request.chunks)
+    try:
+        analyzer_contract.validate_analyzer_output(
+            output,
+            expected_panel_ids=request.expected_panel_ids,
+            narrative_profile_id=request.narrative_profile_id,
+        )
+        validate_synthesis_visual_selection(output, request)
+    except analyzer_contract.AnalyzerContractError:
+        raise _AnalysisBlocked("analysis_incomplete", stage="analyzer_validation") from None
+    return output
+
+
+def _load_cached_synthesis_output(cache_key: str | None, request: VisionChapterSynthesisRequest) -> Mapping[str, Any] | None:
+    if cache_key is None:
+        return None
+    path = _vision_synthesis_cache_path(cache_key)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping) or payload.get("version") != _VISION_SYNTHESIS_CACHE_VERSION:
+            return None
+        return _validated_synthesis_cache_output(payload.get("output"), request)
+    except (OSError, TypeError, ValueError, _AnalysisBlocked, VisionResponseInvalid):
+        return None
+
+
+def _store_cached_synthesis_output(cache_key: str | None, output: Mapping[str, Any]) -> None:
+    if cache_key is None:
+        return
+    path = _vision_synthesis_cache_path(cache_key)
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+    payload = {"version": _VISION_SYNTHESIS_CACHE_VERSION, "output": dict(output)}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    except OSError:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+
+
+def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest) -> Mapping[str, Any]:
+    cache_key = _vision_synthesis_cache_key(provider, request)
+    cached = _load_cached_synthesis_output(cache_key, request)
+    if cached is not None:
+        return cached
+    response: Any = None
+    active_request = request
+    for attempt in range(1, _VISION_SYNTHESIS_MAX_ATTEMPTS + 1):
+        try:
+            response = provider.synthesize(active_request)
+            break
+        except VisionResponseInvalid as exc:
+            retryable_subtypes = {
+                "script_passage_word_count_is_outside_its_role_guardrail",
+                "script_passage_narration_must_contain_90-125_words",
+                "production_narration_word_count_out_of_range",
+                "production_visual_selection_insufficient",
+            }
+            subtype = str(getattr(exc, "validation_subtype", "") or "")
+            if subtype not in retryable_subtypes or attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS:
+                raise
+            counts = tuple(getattr(exc, "passage_word_counts", ()) or ())
+            retry_passages = getattr(exc, "retry_passages", None)
+            if counts:
+                active_request = replace(
+                    active_request,
+                    retry_word_counts=counts,
+                    retry_passages=retry_passages if retry_passages is not None else active_request.retry_passages,
+                )
+            if subtype == "production_visual_selection_insufficient":
+                active_request = replace(active_request, retry_visual_selection=True)
+            time.sleep(0.05)
+        except VisionProviderRequestFailed as exc:
+            if not exc.retryable or attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS:
+                raise
+            delay = exc.retry_after_s if isinstance(exc.retry_after_s, (int, float)) else min(2 ** (attempt - 1), 4)
+            time.sleep(max(0.05, min(float(delay), 10.0)))
+    if response is None:
+        raise VisionProviderRequestFailed()
+    output = _validated_synthesis_cache_output(response, request)
+    _store_cached_synthesis_output(cache_key, output)
+    return output
+
+
+def _load_cached_observation_rows(
+    cache_key: str | None,
+    panel_ids: Sequence[str],
+    panel_transports: Mapping[str, Mapping[str, Any]],
+    *,
+    require_visual_evidence: bool,
+) -> list[dict[str, Any]] | None:
+
+    if cache_key is None:
+        return None
+    path = _vision_observation_cache_path(cache_key)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping):
+            return None
+        if payload.get("version") != _VISION_OBSERVATION_CACHE_VERSION:
+            return None
+        rows = payload.get("rows")
+        return _validate_observation_rows(
+            rows,
+            panel_ids,
+            expected_panels={panel_id: panel_transports[panel_id] for panel_id in panel_ids},
+            require_visual_evidence=require_visual_evidence,
+        )
+    except (OSError, TypeError, ValueError, _AnalysisBlocked):
+        return None
+
+
+def _store_cached_observation_rows(cache_key: str | None, rows: Sequence[Mapping[str, Any]]) -> None:
+    if cache_key is None:
+        return
+    path = _vision_observation_cache_path(cache_key)
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+    payload = {"version": _VISION_OBSERVATION_CACHE_VERSION, "rows": list(rows)}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    except OSError:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
 
 
 def _observe_chunks(
@@ -862,26 +1264,52 @@ def _observe_chunks(
             visual_instruction_version=visual_instruction_version,
             visual_instruction_sha256=visual_instruction_sha256,
         )
-        try:
-            response = provider.observe(request)
-        except VisionResponseInvalid:
-            raise _AnalysisBlocked("vision_response_invalid", stage="observation_provider") from None
-        except VisionProviderRequestFailed:
-            raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider") from None
-        except VisionCapabilityError:
-            raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider") from None
-        except Exception:
-            raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider") from None
-        rows = _validate_observation_rows(
-            response,
-            panel_ids,
-            expected_panels={panel_id: panel_transports[panel_id] for panel_id in panel_ids},
+        cache_key = _vision_observation_cache_key(provider, request)
+        rows = _load_cached_observation_rows(
+            cache_key, panel_ids, panel_transports,
             require_visual_evidence=require_visual_evidence,
         )
+        if rows is None:
+            response = None
+            for attempt in range(1, _VISION_OBSERVATION_MAX_ATTEMPTS + 1):
+                try:
+                    response = provider.observe(request)
+                    break
+                except VisionResponseInvalid:
+                    raise _AnalysisBlocked("vision_response_invalid", stage="observation_provider", chunk_index=chunk_index) from None
+                except VisionProviderRequestFailed as exc:
+                    if not exc.retryable or attempt >= _VISION_OBSERVATION_MAX_ATTEMPTS:
+                        raise _AnalysisBlocked(
+                            "vision_provider_request_failed",
+                            stage="observation_provider",
+                            chunk_index=chunk_index,
+                            attempts=attempt,
+                        ) from None
+                    delay = exc.retry_after_s if isinstance(exc.retry_after_s, (int, float)) else min(2 ** (attempt - 1), 4)
+                    time.sleep(max(0.05, min(float(delay), 10.0)))
+                except VisionCapabilityError:
+                    raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index) from None
+                except Exception:
+                    raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index) from None
+            if response is None:
+                raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index)
+            rows = _validate_observation_rows(
+                response,
+                panel_ids,
+                expected_panels={panel_id: panel_transports[panel_id] for panel_id in panel_ids},
+                require_visual_evidence=require_visual_evidence,
+            )
+            _store_cached_observation_rows(cache_key, rows)
         for row in rows:
             panel_id = row["panel_id"]
             if panel_id in unique:
-                if last_seen[panel_id] + 1 != chunk_index or unique[panel_id] != row:
+                # Adjacent overlap rows are context/reconciliation evidence, not a
+                # determinism test for a generative vision provider. Every row has
+                # already passed strict schema, panel/source lineage, and evidence
+                # validation above. Keep the first valid observation canonical and
+                # require only that a duplicate comes from the immediately adjacent
+                # chunk; descriptive wording may legitimately drift between calls.
+                if last_seen[panel_id] + 1 != chunk_index:
                     raise _AnalysisBlocked("analysis_observation_missing", stage="observation_overlap")
             else:
                 unique[panel_id] = row
@@ -963,6 +1391,98 @@ def _enrich_observations(
             }
         )
     return enriched, chain_rows
+
+
+def _preferred_visual_panel_ids(panel_regions: Sequence[PanelRegion]) -> tuple[str, ...]:
+    preferred: list[str] = []
+    for panel in panel_regions:
+        source_order = getattr(panel, "source_order", None)
+        if isinstance(source_order, bool) or not isinstance(source_order, int) or source_order <= 0:
+            continue
+        try:
+            _panel_region_bounds(panel)
+        except ValueError:
+            continue
+        observation = getattr(panel, "observation_json", None)
+        visual = observation.get("visual_evidence") if isinstance(observation, Mapping) else None
+        protected = visual.get("protected_regions") if isinstance(visual, Mapping) else None
+        if (
+            isinstance(visual, Mapping)
+            and visual.get("balloon_mask_status") == "known_empty"
+            and isinstance(protected, list)
+            and bool(protected)
+        ):
+            preferred.append(str(panel.panel_id))
+    return tuple(preferred)
+
+
+def _frameable_preferred_visual_panel_ids(
+    panel_regions: Sequence[PanelRegion],
+    source_inputs: Mapping[str, object],
+    profile: object | None,
+) -> tuple[str, ...]:
+    """Filter preferred visual panels through the exact production framing gate."""
+    if profile is None:
+        return _preferred_visual_panel_ids(panel_regions)
+    preferred = set(_preferred_visual_panel_ids(panel_regions))
+    if not preferred:
+        return ()
+    decoded: dict[str, Image.Image] = {}
+    result: list[str] = []
+    try:
+        for panel in panel_regions:
+            if str(panel.panel_id) not in preferred:
+                continue
+            source_input = source_inputs.get(str(panel.source_asset_id))
+            payload = getattr(source_input, "payload", None)
+            if not isinstance(payload, (bytes, bytearray)):
+                continue
+            source = decoded.get(str(panel.source_asset_id))
+            if source is None:
+                with Image.open(io.BytesIO(bytes(payload))) as opened:
+                    source = opened.convert("RGB")
+                    source.load()
+                decoded[str(panel.source_asset_id)] = source
+            bounds = _panel_region_bounds(panel)
+            if (
+                bounds[0] >= source.width
+                or bounds[1] >= source.height
+                or bounds[2] <= 0
+                or bounds[3] <= 0
+            ):
+                continue
+            clamped = (
+                max(0, bounds[0]),
+                max(0, bounds[1]),
+                min(source.width, bounds[2]),
+                min(source.height, bounds[3]),
+            )
+            crop = source.crop(clamped)
+            try:
+                encoded = io.BytesIO()
+                crop.save(encoded, format="PNG")
+                candidate = visual_scoring.analyze_panel(
+                    encoded.getvalue(),
+                    asset_id=str(panel.source_asset_id),
+                    order_index=int(panel.source_order),
+                    source_family=str(getattr(source_input, "source_family", "") or ""),
+                )
+                if reference_visual_review.panel_has_feasible_reference_roi(
+                    panel,
+                    crop,
+                    candidate,
+                    profile,
+                    allow_conservative_full_panel=True,
+                ):
+                    result.append(str(panel.panel_id))
+            finally:
+                crop.close()
+    except (OSError, UnidentifiedImageError, ValueError):
+        return ()
+    finally:
+        for image in decoded.values():
+            image.close()
+    return tuple(result)
 
 
 def _classify_synthesis_output(
@@ -1289,6 +1809,12 @@ _SAFE_STATUS_FINDING_KEYS = frozenset(
         "provider_type",
         "provider_name",
         "model",
+        "status_code",
+        "retryable",
+        "timeout",
+        "transport_subtype",
+        "validation_subtype",
+        "passage_word_counts",
     }
 )
 
@@ -1753,6 +2279,9 @@ def _load_reference_panel_fallback_candidates(
     source_upscale_manifests: dict[str, Mapping[str, Any]] = {}
     resolved_source_paths: dict[str, Path] = {}
     for region in regions:
+        if int(region.source_order) <= 0:
+            skipped_panel_ids.add(str(region.panel_id))
+            continue
         asset = assets.get(region.source_asset_id)
         if asset is None:
             raise PipelineError(
@@ -1858,7 +2387,7 @@ def _load_reference_panel_fallback_candidates(
             # pre-Task7 callers from receiving a source-path traceback.
             return ()
     return _build_reference_panel_fallback_candidates(
-        panel_regions=panel_regions_for_builder or regions,
+        panel_regions=panel_regions_for_builder,
         panel_candidates_by_region_id=panel_candidates,
         panel_crops_by_region_id=panel_crops,
         section_evidence_panel_ids=effective_evidence,

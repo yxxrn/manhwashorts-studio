@@ -1808,6 +1808,49 @@ def _plan_reference_panel_candidates(
                 )
                 > len(used_rois.get(candidate.panel_id, set()))
             ]
+            # Preserve enough feasible monotonic capacity for every later
+            # section. A late choice now must not strand multiple future shots.
+            future_section_shots: dict[str, list[dict]] = {}
+            for future_shot in base_shots[shot_index + 1 :]:
+                future_section = str(future_shot.get("section", ""))
+                if not future_section or future_section == section:
+                    continue
+                future_section_shots.setdefault(future_section, []).append(future_shot)
+            if future_section_shots and eligible:
+                preserves_future: list[ReferencePanelFallbackCandidate] = []
+                for candidate in eligible:
+                    floor = int(candidate.source_order)
+                    all_future_sections_viable = True
+                    for future_section, future_shots in future_section_shots.items():
+                        required_capacity = len(future_shots)
+                        available_capacity = 0
+                        for future in ordered:
+                            if int(future.source_order) < floor:
+                                continue
+                            if not _candidate_is_eligible(future, future_section, ""):
+                                continue
+                            capacity = _feasible_roi_capacity(
+                                future,
+                                profile,
+                                allow_source_resolution_warning=allow_source_resolution_warning,
+                                review_aggressive_crop=True,
+                                allow_conservative_full_panel=allow_conservative_full_panel,
+                                section=future_section,
+                                beat="",
+                            )
+                            consumed = len(used_rois.get(future.panel_id, set()))
+                            if future.panel_id == candidate.panel_id:
+                                consumed += 1
+                            available_capacity += max(0, capacity - consumed)
+                            if available_capacity >= required_capacity:
+                                break
+                        if available_capacity < required_capacity:
+                            all_future_sections_viable = False
+                            break
+                    if all_future_sections_viable:
+                        preserves_future.append(candidate)
+                if preserves_future:
+                    eligible = preserves_future
             remaining_in_section = max(
                 1,
                 section_shot_totals.get(section, 1)

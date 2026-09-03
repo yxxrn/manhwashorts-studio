@@ -451,7 +451,7 @@ def test_color_agnostic_rows_bridge_micro_content_island_between_gutters(monkeyp
     assert all("micro_gap_bridge" in rows[y][2] for y in range(300, 307))
 
 
-def test_color_agnostic_rows_keep_non_micro_story_band_between_gutters(monkeypatch):
+def test_color_agnostic_rows_bridge_nine_row_content_island_between_gutters(monkeypatch):
     from app.services import strips
 
     image = Image.new("RGB", (900, 700), (120, 120, 120))
@@ -463,7 +463,23 @@ def test_color_agnostic_rows_keep_non_micro_story_band_between_gutters(monkeypat
 
     rows = strips.color_agnostic_row_classifications(image)
 
-    assert all(rows[y][0] == "canonical_panel" for y in range(300, 309))
+    assert all(rows[y][0] == "verified_gutter" for y in range(300, 309))
+    assert all("micro_gap_bridge" in rows[y][2] for y in range(300, 309))
+
+
+def test_color_agnostic_rows_keep_thirteen_row_story_band_between_gutters(monkeypatch):
+    from app.services import strips
+
+    image = Image.new("RGB", (900, 700), (120, 120, 120))
+    candidates = (
+        strips.SeparatorCandidate(250, 0.95, 0.95, 200, 300, "left"),
+        strips.SeparatorCandidate(357, 0.94, 0.94, 313, 400, "right"),
+    )
+    monkeypatch.setattr(strips, "color_agnostic_separator_candidates", lambda _image: candidates)
+
+    rows = strips.color_agnostic_row_classifications(image)
+
+    assert all(rows[y][0] == "canonical_panel" for y in range(300, 313))
 
 
 

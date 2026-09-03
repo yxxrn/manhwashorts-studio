@@ -58,14 +58,19 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
     _observe_chunks = api._observe_chunks
     _panel_region_bounds = api._panel_region_bounds
     _panel_transport = api._panel_transport
+    _vision_transport_estimated_bytes = api._vision_transport_estimated_bytes
+    _synthesize_with_cache = api._synthesize_with_cache
     _persist_blocked_analysis = api._persist_blocked_analysis
     _persist_panel_regions = api._persist_panel_regions
+    _preferred_visual_panel_ids = api._preferred_visual_panel_ids
+    _frameable_preferred_visual_panel_ids = api._frameable_preferred_visual_panel_ids
     analyzer_contract = api.analyzer_contract
     audit = api.audit
     build_observation_chunks = api.build_observation_chunks
     get_project = api.get_project
     image_assets = api.image_assets
     narrative_identity = api.narrative_identity
+    reference_profile = api.reference_profile
     project_assets = api.project_assets
     resolver_svc = api.resolver_svc
     secrets = api.secrets
@@ -73,6 +78,15 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
     select = api.select
     visual_scoring = api.visual_scoring
     project = get_project(db, project_id)
+    resolved_reference_profile = reference_profile.resolve_reference_profile(project.template)
+    target_word_count_min = None
+    target_word_count_max = None
+    if resolved_reference_profile is not None and (
+        float(resolved_reference_profile.duration_min_s) >= 50.0
+        and float(resolved_reference_profile.duration_max_s) <= 60.0
+    ):
+        target_word_count_min = 115
+        target_word_count_max = 125
     selected_profile = None
     if narrative_profile_id is not None:
         try:
@@ -117,7 +131,6 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
         panel_regions = _persist_panel_regions(db, row, coverage, asset_by_id)
         if not panel_regions:
             raise _AnalysisBlocked('coverage_incomplete', stage='panel_persistence')
-        chunks = build_observation_chunks(panel_regions)
         input_by_asset = {item.source_asset_id: item for item in inputs}
         try:
             provider, capability = resolver_svc.resolve_vision(db, project.workspace_id)
@@ -135,22 +148,45 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
         row.provider_name = capability.provider_name
         row.model_name = capability.model
         panel_transports = {panel.panel_id: _panel_transport(panel, input_by_asset[panel.source_asset_id], coverage) for panel in panel_regions}
+        estimated_bytes = {
+            panel_id: _vision_transport_estimated_bytes(transport)
+            for panel_id, transport in panel_transports.items()
+        }
+        chunks = build_observation_chunks(
+            panel_regions,
+            estimated_bytes_by_panel_id=estimated_bytes,
+        )
         semantic, chunk_ledger, first_chunk = _observe_chunks(provider, chunks, panel_transports, analysis_run_id=run_id, instruction_version=instruction_version, instruction_sha256=instruction_sha256, visual_instruction_version=visual_instruction_version, visual_instruction_sha256=visual_instruction_sha256)
         enriched, chain_observations = _enrich_observations(panel_regions, semantic, first_chunk, coverage)
+        preferred_visual_panel_ids = _frameable_preferred_visual_panel_ids(
+            panel_regions, input_by_asset, resolved_reference_profile
+        )
         duplicate_observations = sum(len(chunk) for chunk in chunks) - len(enriched)
         manifest = _coverage_manifest(inputs, coverage, processed_panels=len(enriched), duplicate_observations=duplicate_observations)
         row.coverage_manifest_json = manifest
         synthesis_chunks = tuple({'chunk_id': item['chunk_id'], 'panel_ids': list(item['panel_ids']), 'observation_ids': list(item['observation_ids']), 'overlap_with_previous': list(item['overlap_with_previous']), 'overlap_with_next': list(item['overlap_with_next'])} for item in chunk_ledger)
         expected_panel_ids = tuple(panel.panel_id for panel in panel_regions)
-        synthesis_request = VisionChapterSynthesisRequest(analysis_run_id=run_id, instruction_version=instruction_version, instruction_sha256=instruction_sha256, instruction_text=instruction_text, expected_panel_ids=expected_panel_ids, coverage_manifest=manifest, ordered_observations=tuple(enriched[panel_id] for panel_id in expected_panel_ids), chunks=synthesis_chunks, narrative_profile_id=selected_profile.profile_id if selected_profile is not None else None, narrative_profile_version=selected_profile.profile_version if selected_profile is not None else None, narrative_profile_sha256=selected_profile.contract_sha256 if selected_profile is not None else None)
+        synthesis_request = VisionChapterSynthesisRequest(analysis_run_id=run_id, instruction_version=instruction_version, instruction_sha256=instruction_sha256, instruction_text=instruction_text, expected_panel_ids=expected_panel_ids, coverage_manifest=manifest, ordered_observations=tuple(enriched[panel_id] for panel_id in expected_panel_ids), chunks=synthesis_chunks, narrative_profile_id=selected_profile.profile_id if selected_profile is not None else None, narrative_profile_version=selected_profile.profile_version if selected_profile is not None else None, narrative_profile_sha256=selected_profile.contract_sha256 if selected_profile is not None else None, target_word_count_min=target_word_count_min, target_word_count_max=target_word_count_max, preferred_visual_panel_ids=preferred_visual_panel_ids if target_word_count_min is not None else ())
         try:
-            synthesis_output = provider.synthesize(synthesis_request)
+            synthesis_output = _synthesize_with_cache(provider, synthesis_request)
         except analyzer_contract.AnalyzerContractError:
             raise _AnalysisBlocked('analyzer_contract_invalid', stage='synthesis_request') from None
-        except VisionResponseInvalid:
-            raise _AnalysisBlocked('vision_response_invalid', stage='synthesis_response') from None
-        except VisionProviderRequestFailed:
-            raise _AnalysisBlocked('vision_provider_request_failed', stage='synthesis_provider') from None
+        except VisionResponseInvalid as exc:
+            raise _AnalysisBlocked(
+                'vision_response_invalid',
+                stage='synthesis_response',
+                validation_subtype=str(getattr(exc, 'validation_subtype', '') or ''),
+                passage_word_counts=list(getattr(exc, 'passage_word_counts', ()) or ()),
+            ) from None
+        except VisionProviderRequestFailed as exc:
+            raise _AnalysisBlocked(
+                'vision_provider_request_failed',
+                stage='synthesis_provider',
+                status_code=exc.status_code if exc.status_code is not None else 0,
+                retryable=bool(exc.retryable),
+                timeout=bool(getattr(exc, 'timeout', False)),
+                transport_subtype=str(getattr(exc, 'transport_subtype', '') or ''),
+            ) from None
         except VisionCapabilityError:
             raise _AnalysisBlocked('vision_provider_request_failed', stage='synthesis_provider') from None
         except Exception:

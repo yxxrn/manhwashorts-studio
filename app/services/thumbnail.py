@@ -24,7 +24,7 @@ from app.config import settings
 from app.services import visual_scoring
 from app.services.file_integrity import sha256_file
 
-THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v2"
+THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v3"
 TARGET_SIZE = (1080, 1920)
 MAX_HEADLINE_WORDS = 7
 MAX_HEADLINE_CHARS = 38
@@ -118,10 +118,10 @@ def _fallback_headlines(sections: Mapping[str, str], language: str) -> list[Head
             (("hood", "hooded"), "WHO IS REALLY UNDER THAT HOOD?!", "twist", 3.15),
             (("sword", "blade"), "WHAT DID THAT SWORD JUST AWAKEN?!", "hook", 3.35),
             (("photo", "photograph", "picture"), "WHAT ARE THESE PHOTOS HIDING?!", "cta", 3.05),
-            (("smile", "smiling"), "WHY IS SHE SMILING RIGHT NOW?!", "conflict", 3.2),
-            (("surprise", "surprised", "shock", "shocked"), "HE REALIZED IT WAY TOO LATE", "conflict", 3.1),
+            (("smile", "smiling"), "WHY SMILE AT A TIME LIKE THIS?!", "conflict", 3.2),
+            (("surprise", "surprised", "shock", "shocked"), "THE TRUTH CAME WAY TOO LATE", "conflict", 3.1),
             (("secret", "truth"), "THEY WERE NEVER MEANT TO KNOW", "twist", 3.25),
-            (("power", "energy"), "WHAT POWER DID SHE JUST AWAKEN?!", "hook", 3.25),
+            (("power", "energy"), "WHAT POWER JUST AWAKENED?!", "hook", 3.25),
             (("monster", "demon"), "THAT THING ISN'T EVEN HUMAN?!", "twist", 3.35),
         )
     for needles, text, section, strength in triggers:
@@ -198,6 +198,18 @@ def _llm_headlines(sections: Mapping[str, str], language: str) -> list[HeadlineC
     return rows
 
 
+def _headline_pronouns_are_grounded(text: str, story: str, language: str) -> bool:
+    """Reject English headline pronouns unsupported by the approved narration."""
+    if language != "en":
+        return True
+    headline_tokens = set(re.findall(r"[A-Za-z']+", text.lower()))
+    story_tokens = set(re.findall(r"[A-Za-z']+", story.lower()))
+    for group in ({"she", "her", "hers"}, {"he", "him", "his"}):
+        if headline_tokens & group and not story_tokens & group:
+            return False
+    return True
+
+
 def generate_headlines(script: object) -> tuple[list[HeadlineCandidate], dict[str, str], str]:
     sections, story = _script_sections(script)
     language = _language(story)
@@ -205,7 +217,11 @@ def generate_headlines(script: object) -> tuple[list[HeadlineCandidate], dict[st
     unique: list[HeadlineCandidate] = []
     seen: set[str] = set()
     for row in rows:
-        if row.text and row.text not in seen:
+        if (
+            row.text
+            and _headline_pronouns_are_grounded(row.text, story, language)
+            and row.text not in seen
+        ):
             unique.append(row)
             seen.add(row.text)
     if not unique:

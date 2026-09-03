@@ -15,6 +15,7 @@ import httpx
 from app.services import visual_scoring
 
 VISION_REQUEST_TIMEOUT = 600.0
+SYNTHESIS_WIRE_CONTRACT_VERSION = "vision-synthesis-wire-v10"
 ANALYSIS_WINDOW_CONTRACT_VERSION = "visual-analysis-windows-v1"
 ANALYSIS_WINDOW_MAX_COUNT = 12
 
@@ -256,6 +257,12 @@ class VisionChapterSynthesisRequest:
     narrative_profile_id: str | None = None
     narrative_profile_version: str | None = None
     narrative_profile_sha256: str | None = None
+    target_word_count_min: int | None = None
+    target_word_count_max: int | None = None
+    preferred_visual_panel_ids: tuple[str, ...] = ()
+    retry_word_counts: tuple[int, ...] | None = None
+    retry_visual_selection: bool = False
+    retry_passages: tuple[Mapping[str, Any], ...] | None = None
 
 
 class VisionObservationProvider(Protocol):
@@ -292,11 +299,21 @@ class VisionRequestInvalid(VisionCapabilityError):
 class VisionResponseInvalid(VisionCapabilityError):
     code = "vision_response_invalid"
 
-    def __init__(self, message: str = "invalid vision response") -> None:
+    def __init__(
+        self,
+        message: str = "invalid vision response",
+        *,
+        validation_subtype: str | None = None,
+        passage_word_counts: tuple[int, ...] | None = None,
+        retry_passages: tuple[Mapping[str, Any], ...] | None = None,
+    ) -> None:
         super().__init__(message)
         self.retryable = False
         self.status_code: int | None = None
         self.retry_after_s: float | None = None
+        self.validation_subtype = validation_subtype
+        self.passage_word_counts = passage_word_counts
+        self.retry_passages = retry_passages
 
 
 class VisionProviderRequestFailed(VisionCapabilityError):
@@ -318,6 +335,21 @@ class VisionProviderRequestFailed(VisionCapabilityError):
         self.retry_after_s = retry_after_s
         self.timeout = bool(timeout)
         self.transport_subtype = transport_subtype
+
+
+def _retry_passages_from_candidate(value: Any) -> tuple[Mapping[str, Any], ...] | None:
+    passages = value.get("script_passages") if isinstance(value, Mapping) else None
+    if not isinstance(passages, list) or len(passages) != 5 or any(not isinstance(item, Mapping) for item in passages):
+        return None
+    return tuple(dict(item) for item in passages)
+
+
+def _safe_validation_subtype(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = "_".join(value.lower().strip().split())
+    safe = "".join(ch for ch in normalized if ch.isalnum() or ch in {"_", "-"})
+    return safe[:96] or None
 
 
 def _chat_completion_content(response: httpx.Response) -> str:
@@ -413,6 +445,55 @@ def _raise_http_failure(response: httpx.Response) -> None:
         retry_after_s=retry_after,
         retryable=retryable,
     ) from None
+
+
+def _reconcile_synthesis_echo_fields(
+    result: Any,
+    request: VisionChapterSynthesisRequest,
+) -> Mapping[str, Any]:
+    if not isinstance(result, Mapping):
+        raise VisionResponseInvalid()
+    reconciled = dict(result)
+    canonical_observations = [dict(item) for item in request.ordered_observations]
+    provider_observations = reconciled.get("observations")
+    if provider_observations not in (None, []) and provider_observations != canonical_observations:
+        raise VisionResponseInvalid()
+    reconciled["observations"] = canonical_observations
+
+    canonical_coverage = dict(request.coverage_manifest)
+    provider_coverage = reconciled.get("coverage_manifest")
+    if provider_coverage not in (None, {}):
+        if not isinstance(provider_coverage, Mapping):
+            raise VisionResponseInvalid()
+        for key, value in provider_coverage.items():
+            if key in canonical_coverage and canonical_coverage[key] != value:
+                raise VisionResponseInvalid()
+    reconciled["coverage_manifest"] = canonical_coverage
+
+    ledger = reconciled.get("continuity_ledger")
+    if not isinstance(ledger, Mapping):
+        raise VisionResponseInvalid()
+    ledger = dict(ledger)
+    canonical_chunks = [dict(chunk) for chunk in request.chunks]
+    canonical_identity = [
+        {"chunk_id": chunk["chunk_id"], "panel_ids": list(chunk["panel_ids"])}
+        for chunk in canonical_chunks
+    ]
+    provider_chunks = ledger.get("chunks")
+    if provider_chunks in (None, []):
+        ledger["chunks"] = canonical_chunks
+    else:
+        if not isinstance(provider_chunks, list):
+            raise VisionResponseInvalid()
+        normalized_provider = []
+        for chunk in provider_chunks:
+            if not isinstance(chunk, Mapping):
+                raise VisionResponseInvalid()
+            normalized_provider.append({"chunk_id": chunk.get("chunk_id"), "panel_ids": chunk.get("panel_ids")})
+        if normalized_provider != canonical_identity:
+            raise VisionResponseInvalid()
+    reconciled["continuity_ledger"] = ledger
+    return reconciled
 
 
 class OpenAICompatibleVisionProvider:
@@ -520,6 +601,10 @@ class OpenAICompatibleVisionProvider:
             observations = _decode_json_content(content)
         except (TypeError, ValueError):
             raise VisionResponseInvalid() from None
+        if isinstance(observations, Mapping):
+            if set(observations) != {"observations"}:
+                raise VisionResponseInvalid()
+            observations = observations.get("observations")
         if request.visual_instruction_version is not None:
             observations = [
                 _normalize_provider_visual_evidence(item)
@@ -577,29 +662,83 @@ class OpenAICompatibleVisionProvider:
             content = provider_payload["choices"][0]["message"]["content"]
             if not isinstance(content, str):
                 raise ValueError
-            result = json.loads(content)
+            result = _decode_json_content(content)
+            result = _reconcile_synthesis_echo_fields(result, request)
+        except VisionResponseInvalid:
+            raise
         except Exception:
             raise VisionResponseInvalid() from None
 
+        validation_candidate = result
         try:
             analyzer_contract = importlib.import_module(
                 "app.services.analyzer_contract"
             )
-            if profile is None:
-                analyzer_contract.validate_analyzer_output(
-                    result, expected_panel_ids=expected_panel_ids
-                )
-            else:
-                analyzer_contract.validate_analyzer_output(
-                    result,
-                    expected_panel_ids=expected_panel_ids,
-                    narrative_profile_id=profile.profile_id,
-                )
+            try:
+                if profile is None:
+                    analyzer_contract.validate_analyzer_output(
+                        result, expected_panel_ids=expected_panel_ids
+                    )
+                else:
+                    analyzer_contract.validate_analyzer_output(
+                        result,
+                        expected_panel_ids=expected_panel_ids,
+                        narrative_profile_id=profile.profile_id,
+                    )
+                validated_result = result
+            except analyzer_contract.AnalyzerContractError:
+                projected = _project_provider_synthesis_output(result, request)
+                validation_candidate = projected
+                if profile is None:
+                    analyzer_contract.validate_analyzer_output(
+                        projected, expected_panel_ids=expected_panel_ids
+                    )
+                else:
+                    analyzer_contract.validate_analyzer_output(
+                        projected,
+                        expected_panel_ids=expected_panel_ids,
+                        narrative_profile_id=profile.profile_id,
+                    )
+                validated_result = projected
+        except analyzer_contract.AnalyzerContractError as exc:
+            counts: tuple[int, ...] | None = None
+            passages = validation_candidate.get("script_passages") if isinstance(validation_candidate, Mapping) else None
+            if isinstance(passages, list):
+                values: list[int] = []
+                for passage in passages:
+                    if not isinstance(passage, Mapping) or not isinstance(passage.get("text"), str):
+                        values = []
+                        break
+                    values.append(len(passage["text"].split()))
+                if values:
+                    counts = tuple(values)
+            raise VisionResponseInvalid(
+                validation_subtype=_safe_validation_subtype(str(exc)),
+                passage_word_counts=counts,
+                retry_passages=_retry_passages_from_candidate(validation_candidate),
+            ) from None
         except Exception:
             raise VisionResponseInvalid() from None
-        if not isinstance(result, Mapping):
+        if not isinstance(validated_result, Mapping):
             raise VisionResponseInvalid()
-        return result
+        passages = validated_result.get("script_passages")
+        if request.target_word_count_min is not None and isinstance(passages, list):
+            counts = tuple(
+                len(passage["text"].split())
+                for passage in passages
+                if isinstance(passage, Mapping) and isinstance(passage.get("text"), str)
+            )
+            if len(counts) != len(passages):
+                raise VisionResponseInvalid()
+            total = sum(counts)
+            if not request.target_word_count_min <= total <= int(request.target_word_count_max or 0):
+                raise VisionResponseInvalid(
+                    validation_subtype="production_narration_word_count_out_of_range",
+                    passage_word_counts=counts,
+                    retry_passages=_retry_passages_from_candidate(validated_result),
+                )
+        validate_synthesis_visual_selection(validated_result, request)
+        return validated_result
 
     def complete_json(
         self,
@@ -1037,9 +1176,10 @@ def _build_payload(
         legacy_fields = ", ".join(sorted(_REQUIRED_OBSERVATION_KEYS))
         instruction = (
             f"{visual_prompt.rstrip()}\n\n"
-            "Return a JSON array containing the exact legacy observation fields "
+            "Return one JSON object with exactly one top-level key named observations. Its observations value must be an array containing the exact legacy observation fields "
             f"{legacy_fields} plus exactly one visual_evidence object per panel. "
             "Every legacy field is mandatory; return no markdown fences or commentary. "
+            "visible_facts must contain at least one concise, objective fact for every panel; never return an empty visible_facts list. If there is no action or dialogue, describe only the clearly visible subject, object, expression, setting, or composition without guessing. "
             "Visual sidecar keys exactly: balloon_mask_status, balloon_regions, "
             "protected_regions, mask_confidence, evidence_source, mask_reason, "
             "panel_id, source_asset_id, source_order. "
@@ -1056,9 +1196,9 @@ def _build_payload(
     else:
         instruction = (
             "Observe every supplied image panel in the ordered manifest. Return only "
-            "a structured JSON list. Each observation must contain panel_id, "
+            "a structured JSON object with exactly one top-level key named observations; its observations value must be a list. Each observation must contain panel_id, "
             "visible_facts, dialogue_or_ocr, inferences, uncertainties, entities, "
-            "state_changes, causal_links, and evidence_refs. Do not write a recap "
+            "state_changes, causal_links, and evidence_refs. visible_facts must contain at least one concise objective fact per panel and must never be empty. Do not write a recap "
             "or use file labels or list positions as evidence; never infer missing "
             f"panels.{window_instruction} Request metadata: "
             f"{json.dumps(metadata, sort_keys=True, separators=(',', ':'))}"
@@ -1272,6 +1412,63 @@ def validate_visual_evidence_observation(
         raise VisionResponseInvalid() from None
 
 
+def normalize_dialogue_or_ocr_items(value: Any) -> list[str]:
+    """Project provider dialogue/OCR variants onto the canonical string contract."""
+    if not isinstance(value, list):
+        raise VisionResponseInvalid()
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, Mapping) and set(item) <= {"text", "type"}:
+            raw_text = item.get("text")
+            raw_type = item.get("type")
+            if not isinstance(raw_text, str) or (raw_type is not None and not isinstance(raw_type, str)):
+                raise VisionResponseInvalid()
+            text = raw_text.strip()
+        else:
+            raise VisionResponseInvalid()
+        if not text:
+            raise VisionResponseInvalid()
+        result.append(text)
+    return result
+
+
+def grounded_visible_facts_from_visual_evidence(value: Any) -> list[str]:
+    """Derive minimal objective facts only from validated visual sidecar data."""
+    if not isinstance(value, Mapping):
+        raise VisionResponseInvalid()
+    labels = {
+        "subject": "A subject is visibly localized in the panel.",
+        "face": "A face is visibly localized in the panel.",
+        "action": "An action region is visibly localized in the panel.",
+        "effect": "A visual effect is visibly localized in the panel.",
+        "background": "A background region is visibly localized in the panel.",
+        "continuity_context": "A continuity-context region is visibly localized in the panel.",
+        "speech_balloon": "A speech balloon is visibly localized in the panel.",
+    }
+    facts: list[str] = []
+    seen: set[str] = set()
+    regions = list(value.get("protected_regions", [])) + list(value.get("balloon_regions", []))
+    for raw in regions:
+        if not isinstance(raw, Mapping):
+            raise VisionResponseInvalid()
+        kind = raw.get("kind")
+        fact = labels.get(kind) if isinstance(kind, str) else None
+        if fact and fact not in seen:
+            seen.add(fact)
+            facts.append(fact)
+    if facts:
+        return facts
+    reason = value.get("mask_reason")
+    if isinstance(reason, str) and reason.strip():
+        return [f"Validated visual evidence note: {reason.strip()}"]
+    source = value.get("evidence_source")
+    if isinstance(source, str) and source.strip():
+        return [f"Validated visual evidence source: {source.strip()}"]
+    raise VisionResponseInvalid()
+
+
 def _validate_observations(
     observations: Any,
     panels: tuple[dict[str, Any], ...],
@@ -1304,6 +1501,9 @@ def _validate_observations(
             )
         ):
             raise VisionResponseInvalid()
+        visible_facts = observation["visible_facts"]
+        if any(not isinstance(item, str) or not item.strip() for item in visible_facts):
+            raise VisionResponseInvalid()
         evidence_refs = observation["evidence_refs"]
         if (
             not evidence_refs
@@ -1319,6 +1519,10 @@ def _validate_observations(
             key: observation[key]
             for key in sorted(required_observation_keys)
         }
+        row["dialogue_or_ocr"] = normalize_dialogue_or_ocr_items(row["dialogue_or_ocr"])
+        for key in ("visible_facts", "inferences", "uncertainties"):
+            if any(not isinstance(item, str) or not item.strip() for item in row[key]):
+                raise VisionResponseInvalid()
         if require_visual_evidence:
             requested_panel = requested_by_panel_id[panel_id]
             row["visual_evidence"] = dict(
@@ -1329,6 +1533,10 @@ def _validate_observations(
                     expected_source_order=requested_panel["source_order"],
                 )
             )
+            if not row["visible_facts"]:
+                row["visible_facts"] = grounded_visible_facts_from_visual_evidence(row["visual_evidence"])
+        if not row["visible_facts"]:
+            raise VisionResponseInvalid()
         by_panel_id[panel_id] = row
 
     if set(by_panel_id) != requested_set:
@@ -1560,6 +1768,39 @@ def _validate_synthesis_request(
         raise VisionRequestInvalid()
 
     profile = validate_narrative_identity(request)
+    target_min = request.target_word_count_min
+    target_max = request.target_word_count_max
+    if (target_min is None) != (target_max is None):
+        raise VisionRequestInvalid()
+    if target_min is not None and (
+        isinstance(target_min, bool)
+        or isinstance(target_max, bool)
+        or not isinstance(target_min, int)
+        or not isinstance(target_max, int)
+        or target_min <= 0
+        or target_max < target_min
+    ):
+        raise VisionRequestInvalid()
+    if request.retry_passages is not None:
+        if not isinstance(request.retry_passages, tuple) or len(request.retry_passages) != 5:
+            raise VisionRequestInvalid()
+        required_passage_keys = {"passage_id", "editorial_role", "text", "claim_ids", "evidence_panel_ids"}
+        for passage in request.retry_passages:
+            if not isinstance(passage, Mapping) or set(passage) != required_passage_keys:
+                raise VisionRequestInvalid()
+            if any(not _valid_synthesis_text(passage.get(key)) for key in ("passage_id", "editorial_role", "text")):
+                raise VisionRequestInvalid()
+            _synthesis_string_list(passage.get("claim_ids"), allow_empty=False)
+            _synthesis_string_list(passage.get("evidence_panel_ids"), allow_empty=False)
+    preferred = request.preferred_visual_panel_ids
+    if (
+        not isinstance(preferred, tuple)
+        or any(not _valid_synthesis_text(panel_id) for panel_id in preferred)
+        or len(set(preferred)) != len(preferred)
+        or not set(preferred) <= set(expected_panel_ids)
+        or not isinstance(request.retry_visual_selection, bool)
+    ):
+        raise VisionRequestInvalid()
 
     try:
         analyzer_contract = importlib.import_module(
@@ -1625,6 +1866,153 @@ def validate_narrative_identity(
     return profile
 
 
+_SYNTHESIS_TOP_KEYS = frozenset({
+    "observations", "continuity_ledger", "evidence_graph",
+    "coverage_manifest", "narrative_outline", "script_passages",
+})
+_SYNTHESIS_STORY_SPINE_FIELDS = frozenset({
+    "who_wants_what", "obstacle", "decision", "consequence",
+    "changed_stakes", "unresolved_question",
+})
+
+
+def _project_provider_synthesis_output(
+    result: Any,
+    request: VisionChapterSynthesisRequest,
+) -> Mapping[str, Any]:
+    """Attach caller-owned deterministic lineage to provider semantic synthesis."""
+    if not isinstance(result, Mapping) or set(result) != _SYNTHESIS_TOP_KEYS:
+        raise VisionResponseInvalid()
+    if not isinstance(result.get("observations"), list):
+        raise VisionResponseInvalid()
+    if not isinstance(result.get("coverage_manifest"), Mapping):
+        raise VisionResponseInvalid()
+
+    continuity = result.get("continuity_ledger")
+    if not isinstance(continuity, Mapping):
+        raise VisionResponseInvalid()
+    semantic_continuity_keys = ("entities", "motives", "state_changes", "causal_links")
+    if any(not isinstance(continuity.get(key), list) for key in semantic_continuity_keys):
+        raise VisionResponseInvalid()
+    if not continuity.get("entities") or continuity.get("reconciled_after_final_chunk") is not True:
+        raise VisionResponseInvalid()
+
+    graph = result.get("evidence_graph")
+    claims = graph.get("claims") if isinstance(graph, Mapping) else None
+    if not isinstance(claims, list) or not claims:
+        raise VisionResponseInvalid()
+
+    outline = result.get("narrative_outline")
+    if not isinstance(outline, Mapping):
+        raise VisionResponseInvalid()
+    projected_outline = dict(outline)
+    if request.narrative_profile_id is None and "story_spine" not in projected_outline:
+        if set(projected_outline) != _SYNTHESIS_STORY_SPINE_FIELDS:
+            raise VisionResponseInvalid()
+        projected_outline = {"story_spine": projected_outline}
+
+    passages = result.get("script_passages")
+    if not isinstance(passages, list):
+        raise VisionResponseInvalid()
+
+    expected_set = set(request.expected_panel_ids)
+    claim_evidence: dict[str, tuple[str, ...]] = {}
+    for raw_claim in claims:
+        if not isinstance(raw_claim, Mapping):
+            raise VisionResponseInvalid()
+        claim_id = raw_claim.get("claim_id")
+        evidence = raw_claim.get("evidence_panel_ids")
+        if (
+            not isinstance(claim_id, str)
+            or not claim_id.strip()
+            or claim_id in claim_evidence
+            or not isinstance(evidence, list)
+            or not evidence
+            or any(not isinstance(panel_id, str) or panel_id not in expected_set for panel_id in evidence)
+        ):
+            raise VisionResponseInvalid()
+        claim_evidence[claim_id] = tuple(evidence)
+
+    projected_passages: list[dict[str, Any]] = []
+    for raw_passage in passages:
+        if not isinstance(raw_passage, Mapping):
+            raise VisionResponseInvalid()
+        passage = dict(raw_passage)
+        claim_ids = passage.get("claim_ids")
+        current_evidence = passage.get("evidence_panel_ids", [])
+        if (
+            not isinstance(claim_ids, list)
+            or not claim_ids
+            or any(not isinstance(claim_id, str) or claim_id not in claim_evidence for claim_id in claim_ids)
+            or not isinstance(current_evidence, list)
+            or any(not isinstance(panel_id, str) or panel_id not in expected_set for panel_id in current_evidence)
+        ):
+            raise VisionResponseInvalid()
+        needed = {panel_id for claim_id in claim_ids for panel_id in claim_evidence[claim_id]}
+        if not needed.issubset(current_evidence):
+            present = set(current_evidence)
+            passage["evidence_panel_ids"] = list(current_evidence) + [
+                panel_id for panel_id in request.expected_panel_ids
+                if panel_id in needed and panel_id not in present
+            ]
+        projected_passages.append(passage)
+
+    projected_entities: list[dict[str, Any]] = []
+    for raw_entity in continuity["entities"]:
+        if not isinstance(raw_entity, Mapping):
+            raise VisionResponseInvalid()
+        entity = dict(raw_entity)
+        entity.setdefault("aliases", [])
+        projected_entities.append(entity)
+    projected_continuity = {
+        "chunks": [dict(chunk) for chunk in request.chunks],
+        "entities": projected_entities,
+        "motives": list(continuity["motives"]),
+        "state_changes": list(continuity["state_changes"]),
+        "causal_links": list(continuity["causal_links"]),
+        "reconciled_after_final_chunk": True,
+    }
+    return {
+        "observations": [dict(observation) for observation in request.ordered_observations],
+        "continuity_ledger": projected_continuity,
+        "evidence_graph": {"claims": list(claims)},
+        "coverage_manifest": dict(request.coverage_manifest),
+        "narrative_outline": projected_outline,
+        "script_passages": projected_passages,
+    }
+
+
+def validate_synthesis_visual_selection(
+    output: Mapping[str, Any], request: VisionChapterSynthesisRequest
+) -> None:
+    preferred = tuple(request.preferred_visual_panel_ids)
+    if request.target_word_count_min is None or not preferred:
+        return
+    passages = output.get("script_passages") if isinstance(output, Mapping) else None
+    if not isinstance(passages, list) or not passages:
+        raise VisionResponseInvalid()
+    preferred_set = set(preferred)
+    per_passage_min = min(4, len(preferred_set))
+    unique_min = min(18, len(preferred_set))
+    used_preferred: set[str] = set()
+    for passage in passages:
+        if not isinstance(passage, Mapping):
+            raise VisionResponseInvalid()
+        evidence = passage.get("evidence_panel_ids")
+        if not isinstance(evidence, list):
+            raise VisionResponseInvalid()
+        selected = {panel_id for panel_id in evidence if panel_id in preferred_set}
+        if len(selected) < per_passage_min:
+            raise VisionResponseInvalid(
+                validation_subtype="production_visual_selection_insufficient"
+            )
+        used_preferred.update(selected)
+    if len(used_preferred) < unique_min:
+        raise VisionResponseInvalid(
+            validation_subtype="production_visual_selection_insufficient"
+        )
+
+
 def _build_synthesis_payload(
     request: VisionChapterSynthesisRequest,
     expected_panel_ids: tuple[str, ...],
@@ -1641,14 +2029,82 @@ def _build_synthesis_payload(
             dict(observation) for observation in request.ordered_observations
         ],
         "chunks": [dict(chunk) for chunk in request.chunks],
+        "preferred_visual_panel_ids": list(request.preferred_visual_panel_ids),
     }
     ledger_json = json.dumps(
         ledger, ensure_ascii=False, separators=(",", ":")
     )
+    target_instruction = (
+        f"For this production, total narration MUST be {request.target_word_count_min}-{request.target_word_count_max} words. "
+        if request.target_word_count_min is not None
+        else "Keep total narration within the committed analyzer word-count contract. "
+    )
+    allocation_instruction = (
+        "Production passage ranges are mandatory: hook 16-18 words, setup 24-26, escalation 33-35, "
+        "editorial_insight 24-26, payoff_open_loop 18-20. These ranges sum to exactly 115-125 words. "
+        if request.target_word_count_min is not None
+        else "Distribute words naturally across roles without exceeding any hard role limit. "
+    )
+    visual_selection_instruction = ""
+    if request.preferred_visual_panel_ids:
+        visual_selection_instruction = (
+            "For production visual coverage, evidence_panel_ids may include grounded visual-support panels beyond claim evidence. "
+            "Each passage MUST include at least four panel IDs from preferred_visual_panel_ids, and across all five passages "
+            "use at least eighteen distinct preferred_visual_panel_ids when that many are available. These preferred panels are "
+            "speech-balloon-free and contain protected visual subjects; choose only panels whose ordered observation supports the "
+            "same passage meaning. Claim evidence must still be fully covered. "
+        )
+        if request.retry_visual_selection:
+            visual_selection_instruction += (
+                "Corrective retry: the prior response selected too few preferred visual panels. Keep narration, claims, passage IDs, "
+                "roles, and grounded meaning stable, but broaden evidence_panel_ids with semantically relevant preferred panels. "
+            )
+    locked_passage_instruction = ""
+    if request.retry_passages is not None:
+        locked_json = json.dumps([dict(item) for item in request.retry_passages], ensure_ascii=False, separators=(",", ":"))
+        locked_passage_instruction = (
+            "The previous response passed semantic/evidence structure but failed a narration-length gate. "
+            "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, claim_ids, "
+            "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only each passage text enough to satisfy the exact production word ranges. "
+            f"Previous locked script_passages: {locked_json}. "
+        )
+    retry_instruction = ""
+    if request.retry_word_counts is not None:
+        previous_total = sum(request.retry_word_counts)
+        retry_instruction = (
+            f"Corrective retry: the previous five passage word counts were {list(request.retry_word_counts)} "
+            f"for a total of {previous_total}. Rewrite only the passage text lengths as needed so the total "
+            "matches this exact five-passage word-count target using whitespace-separated words: "
+            "hook=17, setup=25, escalation=34, editorial_insight=25, payoff_open_loop=19 (total=120). "
+            "Do not approximate these counts. Preserve the same claims, evidence references, passage IDs, roles, and grounded meaning. "
+        )
     ledger_instruction = (
+        f"Synthesis wire contract: {SYNTHESIS_WIRE_CONTRACT_VERSION}. "
         "Synthesize the chapter from this complete ordered evidence ledger. "
-        "Return exactly one structured JSON object matching the analyzer "
-        "contract. Do not invent, repair, or omit evidence.\n"
+        "Return exactly the six top-level analyzer structures required by the system contract. "
+        "The caller already owns validated observations, coverage, and chunk lineage; return observations=[], "
+        "coverage_manifest={}, and continuity_ledger.chunks=[]. "
+        "continuity_ledger must also contain reconciled_after_final_chunk=true and semantic arrays with exact schemas. "
+        "entities: {entity_id:string,canonical_name:string,aliases:list[string],panel_ids:nonempty list[panel_id]}; "
+        "motives: {entity_id:string,text:string,evidence_panel_ids:nonempty list[panel_id]}; "
+        "state_changes: {entity_id:string,from:string,to:string,evidence_panel_ids:nonempty list[panel_id]}; "
+        "causal_links: {from_panel_id:panel_id,to_panel_id:panel_id,reason:string,evidence_panel_ids:nonempty list[panel_id]}. "
+        "Use aliases=[] when no alias is evidenced; never omit panel_ids or evidence_panel_ids. "
+        "evidence_graph must be {claims:[...]} and every claim exactly "
+        "{claim_id:string,claim_type:'fact'|'interpretation',text:string,qualification:string,evidence_panel_ids:nonempty list[panel_id]}. "
+        "narrative_outline.story_spine must contain exactly who_wants_what, obstacle, decision, consequence, changed_stakes, unresolved_question. "
+        "script_passages must contain exactly five passages in order hook, setup, escalation, editorial_insight, payoff_open_loop; "
+        "each passage exactly {passage_id,editorial_role,text,claim_ids,evidence_panel_ids}. "
+        "Hard word limits: hook 8-18, setup 15-28, escalation 22-38, editorial_insight 15-30, payoff_open_loop 10-24. "
+        + target_instruction
+        + allocation_instruction
+        + locked_passage_instruction
+        + retry_instruction
+        + visual_selection_instruction
+        + "Never exceed the hard limit for any role. "
+        "payoff_open_loop must end with an evidence-grounded question. "
+        "Every semantic evidence reference must use only panel IDs from expected_panel_ids, every claim_id referenced by a passage must exist, "
+        "and passage evidence must cover every referenced claim. Never invent, repair, or omit semantic evidence.\n"
         f"{ledger_json}"
     )
     payload: dict[str, Any] = {

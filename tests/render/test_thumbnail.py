@@ -85,6 +85,23 @@ def test_generate_thumbnail_package_is_upload_ready(tmp_path, monkeypatch):
     assert reused["headline"] == manifest["headline"]
 
 
+
+def test_headlines_reject_unsupported_gender_pronouns(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "rules")
+    script = SimpleNamespace(
+        sections=[
+            {"section": "hook", "text": "Kim Suho awakens a dangerous power as he faces the demon king."},
+            {"section": "conflict", "text": "He sacrifices his strength to keep a promise."},
+        ],
+        hook_options=[],
+        selected_hook=0,
+    )
+    headlines, _sections, language = thumbnail.generate_headlines(script)
+    assert language == "en"
+    assert headlines
+    assert all("SHE" not in row.text.split() for row in headlines)
+    assert any("POWER" in row.text for row in headlines)
+
 def test_text_placement_avoids_face_region():
     frame = Image.new("RGB", thumbnail.TARGET_SIZE, (120, 120, 120))
     placement, _score, overlap = thumbnail._safe_text_placement(

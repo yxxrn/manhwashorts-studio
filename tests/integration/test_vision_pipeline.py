@@ -123,6 +123,46 @@ def test_build_observation_chunks_keeps_small_chapter_in_one_chunk():
     assert _chunk_panel_ids(chunks) == [[f"panel-{index}" for index in range(12)]]
 
 
+def test_build_observation_chunks_respects_byte_budget_and_two_panel_overlap():
+    module = _pipeline_module()
+    builder = _chunk_builder(module)
+    panels = _panel_regions(12)
+    estimate = 2 * 1024 * 1024
+    estimates = {panel.panel_id: estimate for panel in panels}
+    limit = 9 * 1024 * 1024
+
+    chunks = builder(
+        panels,
+        chunk_size=12,
+        overlap=2,
+        estimated_bytes_by_panel_id=estimates,
+        max_estimated_request_bytes=limit,
+    )
+    assert len(chunks) > 1
+    assert all(len(chunk) >= 4 for chunk in chunks[:-1])
+    assert all(
+        128 * 1024 + sum(estimates[panel.panel_id] for panel in chunk) <= limit
+        for chunk in chunks
+    )
+    assert all(
+        [panel.panel_id for panel in left[-2:]] == [panel.panel_id for panel in right[:2]]
+        for left, right in zip(chunks, chunks[1:], strict=False)
+    )
+    positions: dict[str, int] = {}
+    for chunk in chunks:
+        for panel in chunk:
+            positions[panel.panel_id] = positions.get(panel.panel_id, 0) + 1
+    assert max(positions.values()) <= 2
+
+
+def test_build_observation_chunks_rejects_incomplete_byte_estimates():
+    module = _pipeline_module()
+    builder = _chunk_builder(module)
+    panels = _panel_regions(4)
+    with pytest.raises(ValueError, match="estimated bytes"):
+        builder(panels, estimated_bytes_by_panel_id={"panel-0": 1024})
+
+
 def _png_bytes(width: int, height: int, seed: int) -> bytes:
     image = Image.new("RGB", (width, height))
     for y in range(height):
@@ -132,6 +172,60 @@ def _png_bytes(width: int, height: int, seed: int) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def test_provider_transport_bounds_overview_and_preserves_tall_detail_windows():
+    module = _pipeline_module()
+    image = Image.new("RGB", (800, 5000), (32, 64, 96))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    canonical = buffer.getvalue()
+
+    overview, mime_type = module._vision_provider_payload(canonical, "image/png")
+    assert mime_type == "image/jpeg"
+    with Image.open(io.BytesIO(overview)) as decoded:
+        assert decoded.width <= 384
+        assert decoded.height <= 576
+
+    windows = module._vision_analysis_windows(canonical)
+    assert 1 < len(windows) <= module.ANALYSIS_WINDOW_MAX_COUNT
+    assert windows[0]["y0"] == 0
+    assert windows[0]["overlap_above"] == 0
+    assert windows[-1]["y1"] == 5000
+    assert windows[-1]["overlap_below"] == 0
+    for left, right in zip(windows, windows[1:], strict=False):
+        expected_overlap = left["y1"] - right["y0"]
+        assert expected_overlap > 0
+        assert left["overlap_below"] == expected_overlap
+        assert right["overlap_above"] == expected_overlap
+    transport = {
+        "payload": overview,
+        "analysis_window_version": module.ANALYSIS_WINDOW_CONTRACT_VERSION,
+        "analysis_window_source_size": [800, 5000],
+        "analysis_windows": windows,
+    }
+    assert module._vision_transport_estimated_bytes(transport) < 4 * 1024 * 1024
+    identity = module._vision_observation_panel_identity(transport)
+    assert identity is not None
+    assert len(identity["payload_sha256"]) == 64
+    assert len(identity["analysis_windows"]) == len(windows)
+    assert all(len(item["payload_sha256"]) == 64 for item in identity["analysis_windows"])
+
+
+def test_provider_transport_upscales_tiny_overview_to_provider_safe_minimum():
+    module = _pipeline_module()
+    image = Image.new("RGB", (800, 9), (220, 220, 220))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+
+    overview, mime_type = module._vision_provider_payload(buffer.getvalue(), "image/png")
+
+    assert mime_type == "image/jpeg"
+    with Image.open(io.BytesIO(overview)) as decoded:
+        assert decoded.width <= module._VISION_PROVIDER_OVERVIEW_MAX_SIZE[0]
+        assert decoded.height <= module._VISION_PROVIDER_OVERVIEW_MAX_SIZE[1]
+        assert decoded.width >= module._VISION_PROVIDER_OVERVIEW_MIN_SIZE[0]
+        assert decoded.height >= module._VISION_PROVIDER_OVERVIEW_MIN_SIZE[1]
 
 
 def _seed_vision_project(
@@ -643,8 +737,13 @@ def test_provider_spy_observes_all_ordered_panels_then_synthesizes_once(db, monk
             assert panel["mime_type"].lower().startswith("image/")
             bounds = panel["region_bounds"]
             assert set(bounds) == {"x", "y", "width", "height"}
+            assert bounds["width"] > 0
+            assert bounds["height"] > 0
             with Image.open(io.BytesIO(panel["payload"])) as decoded:
-                assert decoded.size == (bounds["width"], bounds["height"])
+                assert decoded.width <= module._VISION_PROVIDER_OVERVIEW_MAX_SIZE[0]
+                assert decoded.height <= module._VISION_PROVIDER_OVERVIEW_MAX_SIZE[1]
+                assert decoded.width >= module._VISION_PROVIDER_OVERVIEW_MIN_SIZE[0]
+                assert decoded.height >= module._VISION_PROVIDER_OVERVIEW_MIN_SIZE[1]
             if bounds["y"] > 0:
                 assert panel["source_asset_id"] == assets[-1].id
                 assert bounds["y"] == 3
@@ -815,6 +914,175 @@ def _run_visual_observation(module, provider, panels, transports, version, diges
     )
 
 
+class _EmptyFactsPersistentObservationSpy:
+    model_id = "fixture-grounded-facts-model"
+    endpoint = "https://fixture.invalid/v1"
+
+    def __init__(self) -> None:
+        self.requests = []
+
+    def observe(self, request):
+        self.requests.append(request)
+        rows = [_visual_row(panel) for panel in request.panels]
+        for row in rows:
+            row["visible_facts"] = []
+        return rows
+
+
+def test_visual_observation_repairs_empty_facts_and_reuses_repaired_cache(tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(3)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"grounded-facts-" + panel.panel_id.encode(),
+        }
+        for panel in panels
+    }
+    first = _EmptyFactsPersistentObservationSpy()
+    semantic, _, _ = _run_visual_observation(
+        module, first, panels, transports, version, digest
+    )
+    assert first.requests
+    assert all(row["visible_facts"] for row in semantic.values())
+
+    second = _EmptyFactsPersistentObservationSpy()
+    reused, _, _ = _run_visual_observation(
+        module, second, panels, transports, version, digest
+    )
+    assert second.requests == []
+    assert reused == semantic
+
+
+class _NondeterministicOverlapSpy:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def observe(self, request):
+        self.requests.append(request)
+        rows = []
+        for panel in request.panels:
+            row = _visual_row(panel)
+            row["visible_facts"] = [
+                f"wording-{request.chunk_index}-{panel['panel_id']}"
+            ]
+            rows.append(row)
+        return rows
+
+
+def test_observe_chunks_keeps_first_overlap_observation_when_wording_drifts():
+    module = _pipeline_module()
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(14)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"synthetic-image-payload",
+        }
+        for panel in panels
+    }
+    provider = _NondeterministicOverlapSpy()
+    semantic, ledger, first_chunk = _run_visual_observation(
+        module, provider, panels, transports, version, digest
+    )
+
+    assert len(provider.requests) == 2
+    assert ledger[0]["overlap_with_next"] == ["panel-10", "panel-11"]
+    assert ledger[1]["overlap_with_previous"] == ["panel-10", "panel-11"]
+    assert semantic["panel-10"]["visible_facts"] == ["wording-0-panel-10"]
+    assert semantic["panel-11"]["visible_facts"] == ["wording-0-panel-11"]
+    assert first_chunk["panel-10"] == 0
+    assert first_chunk["panel-12"] == 1
+
+
+def test_observe_chunks_still_rejects_nonadjacent_duplicate_panel():
+    module = _pipeline_module()
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(5)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"synthetic-image-payload",
+        }
+        for panel in panels
+    }
+    chunks = ((panels[0], panels[1]), (panels[2], panels[3]), (panels[0], panels[4]))
+    provider = _VisualObservationSpy()
+    with pytest.raises(Exception) as caught:
+        module._observe_chunks(
+            provider, chunks, transports, analysis_run_id="run-nonadjacent-overlap",
+            instruction_version="vision-first-story-analyzer-v1",
+            instruction_sha256="a" * 64, visual_instruction_version=version,
+            visual_instruction_sha256=digest,
+        )
+    assert getattr(caught.value, "code", None) == "analysis_observation_missing"
+    assert getattr(caught.value, "finding", {}).get("stage") == "observation_overlap"
+
+
+class _RetryablePersistentObservationSpy:
+    model_id = "fixture-cache-model"
+    endpoint = "https://fixture.invalid/v1"
+
+    def __init__(self, *, fail_once_chunk: int | None = None) -> None:
+        self.fail_once_chunk = fail_once_chunk
+        self.attempted_chunks: list[int] = []
+        self._failed = False
+
+    def observe(self, request):
+        from app.services.vision_adapter import VisionProviderRequestFailed
+
+        self.attempted_chunks.append(request.chunk_index)
+        if request.chunk_index == self.fail_once_chunk and not self._failed:
+            self._failed = True
+            raise VisionProviderRequestFailed(retryable=True, transport_subtype="connect")
+        return [_visual_row(panel) for panel in request.panels]
+
+
+def test_observe_chunks_retries_failed_chunk_and_reuses_validated_cache(tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(14)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"cache-test-image-" + panel.panel_id.encode(),
+        }
+        for panel in panels
+    }
+    first = _RetryablePersistentObservationSpy(fail_once_chunk=1)
+    semantic, _, _ = _run_visual_observation(
+        module, first, panels, transports, version, digest
+    )
+    assert len(semantic) == 14
+    assert first.attempted_chunks == [0, 1, 1]
+
+    cache_files = sorted((tmp_path / "vision-observation-cache").glob("*.json"))
+    assert len(cache_files) == 2
+    assert all('"payload"' not in path.read_text(encoding="utf-8") for path in cache_files)
+
+    second = _RetryablePersistentObservationSpy()
+    reused, _, _ = _run_visual_observation(
+        module, second, panels, transports, version, digest
+    )
+    assert second.attempted_chunks == []
+    assert reused == semantic
+
+
 def test_observe_chunks_activates_visual_prompt_and_locally_hashes_sidecars():
     module = _pipeline_module()
     scoring, (version, digest, prompt) = _visual_loader()
@@ -930,3 +1198,181 @@ def test_legacy_observation_spy_request_without_visual_fields_stays_compatible()
     )
     assert semantic
     assert all("visual_evidence" not in row for row in semantic.values())
+
+
+class _RetryablePersistentSynthesisSpy(_ProviderSpy):
+    model_id = "fixture-synthesis-cache-model"
+    endpoint = "https://fixture.invalid/v1"
+
+    def __init__(self, *, fail_once: bool = False) -> None:
+        super().__init__()
+        self.fail_once = fail_once
+        self.synthesis_attempts = 0
+
+    def synthesize(self, request):
+        from app.services.vision_adapter import VisionProviderRequestFailed
+
+        self.synthesis_attempts += 1
+        self.synthesis_requests.append(request)
+        if self.fail_once and self.synthesis_attempts == 1:
+            raise VisionProviderRequestFailed(retryable=True, transport_subtype="timeout")
+        return _valid_synthesis_output(request)
+
+
+
+def test_synthesis_retries_transport_failure_and_reuses_validated_cache(db, tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    project_id, _ = _seed_vision_project(db, standalone_count=13)
+
+    first = _RetryablePersistentSynthesisSpy(fail_once=True)
+    _install_provider(monkeypatch, first)
+    row = module.run_analysis(db, project_id)
+    assert row.state == "RECONCILED"
+    assert first.synthesis_attempts == 2
+
+    cache_files = sorted((tmp_path / "vision-synthesis-cache").glob("*.json"))
+    assert len(cache_files) == 1
+
+    second = _RetryablePersistentSynthesisSpy()
+    _install_provider(monkeypatch, second)
+    resumed = module.run_analysis(db, project_id)
+    assert resumed.state == "RECONCILED"
+    assert second.observe_requests == []
+    assert second.synthesis_attempts == 0
+
+def test_observation_reconcile_normalizes_structured_dialogue_for_cache_reuse():
+    module = _pipeline_module()
+    panel = {
+        "panel_id": "panel-dialogue",
+        "source_asset_id": "asset-dialogue",
+        "source_order": 0,
+        "mime_type": "image/png",
+        "payload": b"synthetic",
+    }
+    row = {
+        "panel_id": "panel-dialogue",
+        "visible_facts": ["A speaker is visible."],
+        "dialogue_or_ocr": [{"text": "TEN SECONDS", "type": "speech"}],
+        "inferences": [],
+        "uncertainties": [],
+        "entities": [],
+        "state_changes": [],
+        "causal_links": [],
+        "evidence_refs": ["panel-dialogue"],
+    }
+    normalized = module._validate_observation_rows(
+        [row], ["panel-dialogue"], expected_panels={"panel-dialogue": panel}
+    )
+    assert normalized[0]["dialogue_or_ocr"] == ["TEN SECONDS"]
+
+class _WordCountCorrectiveSynthesisSpy(_RetryablePersistentSynthesisSpy):
+    def synthesize(self, request):
+        from app.services.vision_adapter import VisionResponseInvalid
+        self.synthesis_attempts += 1
+        self.synthesis_requests.append(request)
+        if self.synthesis_attempts == 1:
+            candidate = _valid_synthesis_output(request)
+            raise VisionResponseInvalid(
+                validation_subtype="production_narration_word_count_out_of_range",
+                passage_word_counts=(17, 18, 25, 17, 15),
+                retry_passages=tuple(dict(item) for item in candidate["script_passages"]),
+            )
+        return _valid_synthesis_output(request)
+
+
+def test_synthesis_word_count_retry_carries_only_safe_count_feedback(db, tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    project_id, _ = _seed_vision_project(db, standalone_count=13)
+    provider = _WordCountCorrectiveSynthesisSpy()
+    _install_provider(monkeypatch, provider)
+    row = module.run_analysis(db, project_id)
+    assert row.state == "RECONCILED"
+    assert provider.synthesis_attempts == 2
+    assert provider.synthesis_requests[0].retry_word_counts is None
+    assert provider.synthesis_requests[1].retry_word_counts == (17, 18, 25, 17, 15)
+    assert provider.synthesis_requests[1].retry_passages is not None
+    assert len(provider.synthesis_requests[1].retry_passages) == 5
+    assert provider.synthesis_requests[1].retry_passages == tuple(
+        dict(item) for item in _valid_synthesis_output(provider.synthesis_requests[0])["script_passages"]
+    )
+    assert provider.synthesis_requests[1].ordered_observations == provider.synthesis_requests[0].ordered_observations
+    assert provider.synthesis_requests[1].coverage_manifest == provider.synthesis_requests[0].coverage_manifest
+
+
+class _AnalyzerWordCountCorrectiveSynthesisSpy(_WordCountCorrectiveSynthesisSpy):
+    def synthesize(self, request):
+        from app.services.vision_adapter import VisionResponseInvalid
+        self.synthesis_attempts += 1
+        self.synthesis_requests.append(request)
+        if self.synthesis_attempts == 1:
+            candidate = _valid_synthesis_output(request)
+            raise VisionResponseInvalid(
+                validation_subtype="script_passage_narration_must_contain_90-125_words",
+                passage_word_counts=(18, 27, 35, 28, 22),
+                retry_passages=tuple(dict(item) for item in candidate["script_passages"]),
+            )
+        return _valid_synthesis_output(request)
+
+
+def test_analyzer_word_count_subtype_uses_locked_retry(db, tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    project_id, _ = _seed_vision_project(db, standalone_count=13)
+    provider = _AnalyzerWordCountCorrectiveSynthesisSpy()
+    _install_provider(monkeypatch, provider)
+    row = module.run_analysis(db, project_id)
+    assert row.state == "RECONCILED"
+    assert provider.synthesis_attempts == 2
+    assert provider.synthesis_requests[1].retry_word_counts == (18, 27, 35, 28, 22)
+    assert provider.synthesis_requests[1].retry_passages is not None
+
+
+class _VisualSelectionCorrectiveSynthesisSpy(_RetryablePersistentSynthesisSpy):
+    def synthesize(self, request):
+        from app.services.vision_adapter import VisionResponseInvalid
+        self.synthesis_attempts += 1
+        self.synthesis_requests.append(request)
+        if self.synthesis_attempts == 1:
+            raise VisionResponseInvalid(
+                validation_subtype="production_visual_selection_insufficient"
+            )
+        return _valid_synthesis_output(request)
+
+
+def test_synthesis_visual_selection_retry_preserves_evidence_input(db, tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    project_id, _ = _seed_vision_project(db, standalone_count=13)
+    provider = _VisualSelectionCorrectiveSynthesisSpy()
+    _install_provider(monkeypatch, provider)
+    row = module.run_analysis(db, project_id)
+    assert row.state == "RECONCILED"
+    assert provider.synthesis_attempts == 2
+    assert provider.synthesis_requests[0].retry_visual_selection is False
+    assert provider.synthesis_requests[1].retry_visual_selection is True
+    assert provider.synthesis_requests[1].ordered_observations == provider.synthesis_requests[0].ordered_observations
+    assert provider.synthesis_requests[1].coverage_manifest == provider.synthesis_requests[0].coverage_manifest
+
+
+def test_preferred_visual_panel_ids_exclude_front_matter_and_invalid_bounds():
+    module = _pipeline_module()
+    def panel(panel_id, source_order, bounds):
+        return SimpleNamespace(
+            panel_id=panel_id,
+            source_order=source_order,
+            bounds_json=bounds,
+            observation_json={
+                "visual_evidence": {
+                    "balloon_mask_status": "known_empty",
+                    "protected_regions": [{"kind": "subject"}],
+                }
+            },
+        )
+    preferred = module._preferred_visual_panel_ids([
+        panel("front", 0, {"x": 0, "y": 0, "width": 800, "height": 1200}),
+        panel("invalid", 2, {"x": 0, "y": 0, "width": 0, "height": 1200}),
+        panel("story", 3, {"x": 0, "y": 0, "width": 800, "height": 1200}),
+    ])
+    assert preferred == ("story",)

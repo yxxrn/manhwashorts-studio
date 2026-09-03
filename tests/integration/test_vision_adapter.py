@@ -184,7 +184,7 @@ def test_ordered_multimodal_request_contains_each_panel_and_image_once(
     assert "vision-first-story-analyzer-v1" in text
     assert "a" * 64 in text
     assert "4" in text
-    assert "structured JSON list" in text
+    assert "structured JSON object" in text
     for key in REQUIRED_OBSERVATION_KEYS:
         assert key in text
 
@@ -517,6 +517,8 @@ def test_invalid_observations_fail_closed_without_inference(mock_provider_url):
     missing_required_key[0].pop("entities")
     wrong_list_type = copy.deepcopy(complete)
     wrong_list_type[0]["visible_facts"] = "not-a-list"
+    empty_visible_facts = copy.deepcopy(complete)
+    empty_visible_facts[0]["visible_facts"] = []
     empty_evidence_refs = copy.deepcopy(complete)
     empty_evidence_refs[0]["evidence_refs"] = []
     foreign_evidence_refs = copy.deepcopy(complete)
@@ -528,10 +530,11 @@ def test_invalid_observations_fail_closed_without_inference(mock_provider_url):
         json.dumps(duplicate_panel_id),
         json.dumps(missing_required_key),
         json.dumps(wrong_list_type),
+        json.dumps(empty_visible_facts),
         json.dumps(empty_evidence_refs),
         json.dumps(foreign_evidence_refs),
         "{malformed-json",
-        json.dumps({"observations": complete}),
+        json.dumps({"observations": complete, "provider_note": "untrusted"}),
     )
     for content in invalid_responses:
         _assert_invalid_response(module, mock_provider_url, content)
@@ -558,6 +561,29 @@ def test_observation_missing_required_fields_still_fail_closed(mock_provider_url
     response = copy.deepcopy(mock_provider.default_vision_response())
     mutate(response)
     _assert_invalid_response(module, mock_provider_url, json.dumps(response))
+
+
+def test_visual_observation_repairs_empty_visible_facts_from_valid_sidecar(
+    mock_provider_url,
+):
+    module = _vision_module()
+    import mock_provider
+
+    response = copy.deepcopy(mock_provider.default_visual_vision_response())
+    response[0]["visible_facts"] = []
+    mock_provider.reset_vision_state()
+    mock_provider.set_vision_response_content(json.dumps(response))
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url=mock_provider_url,
+        model="mock-large",
+        api_key=mock_provider.GOOD_KEY,
+    )
+
+    observations = provider.observe(_visual_request(module)[0])
+
+    assert observations[0]["visible_facts"]
+    assert all(isinstance(item, str) and item.strip() for item in observations[0]["visible_facts"])
+    assert any("visibly localized" in item for item in observations[0]["visible_facts"])
 
 
 def test_visual_observation_projects_optional_provider_fields_to_trusted_contract(
@@ -628,6 +654,44 @@ def _assert_visual_invalid(module, mock_provider_url, content):
         mock_provider.reset_vision_state()
 
 
+def test_observation_accepts_exact_json_object_envelope(mock_provider_url):
+    module = _vision_module()
+    import mock_provider
+
+    request, _, _, _ = _visual_request(module)
+    response = {"observations": mock_provider.default_visual_vision_response()}
+    mock_provider.reset_vision_state()
+    mock_provider.set_vision_response_content(json.dumps(response))
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url=mock_provider_url, model="mock-large", api_key=mock_provider.GOOD_KEY
+    )
+
+    observations = provider.observe(request)
+
+    assert [row["panel_id"] for row in observations] == [
+        panel["panel_id"] for panel in _panels()
+    ]
+
+
+def test_observation_rejects_envelope_with_extra_top_level_keys(mock_provider_url):
+    module = _vision_module()
+    import mock_provider
+
+    request, _, _, _ = _visual_request(module)
+    response = {
+        "observations": mock_provider.default_visual_vision_response(),
+        "provider_note": "untrusted",
+    }
+    mock_provider.reset_vision_state()
+    mock_provider.set_vision_response_content(json.dumps(response))
+    provider = module.OpenAICompatibleVisionProvider(
+        base_url=mock_provider_url, model="mock-large", api_key=mock_provider.GOOD_KEY
+    )
+
+    with pytest.raises(module.VisionResponseInvalid):
+        provider.observe(request)
+
+
 def test_visual_request_uses_committed_prompt_and_ordered_provider_sidecars(
     mock_provider_url,
 ):
@@ -654,7 +718,7 @@ def test_visual_request_uses_committed_prompt_and_ordered_provider_sidecars(
     assert version in text
     assert digest in text
     assert prompt.strip() in text
-    assert "Return a JSON array" in text
+    assert "top-level key named observations" in text
     for key in REQUIRED_OBSERVATION_KEYS:
         assert key in text
     for key in (
@@ -911,3 +975,17 @@ def test_provider_bbox_xywh_alias_is_normalized_only_when_xyxy_is_impossible():
     # An alias that would leave the unit frame is not repaired and must fail later.
     invalid = [0.8, 0.8, 0.4, 0.4]
     assert module._normalize_provider_bbox(invalid) == invalid
+
+def test_dialogue_or_ocr_structured_items_are_projected_to_canonical_strings():
+    module = _vision_module()
+    assert module.normalize_dialogue_or_ocr_items(
+        [" plain text ", {"text": " TEN SECONDS ", "type": "speech"}]
+    ) == ["plain text", "TEN SECONDS"]
+
+    for invalid in (
+        [{"text": "valid", "type": "speech", "extra": True}],
+        [{"text": "", "type": "speech"}],
+        [{"text": "valid", "type": 1}],
+    ):
+        with pytest.raises(module.VisionResponseInvalid):
+            module.normalize_dialogue_or_ocr_items(invalid)

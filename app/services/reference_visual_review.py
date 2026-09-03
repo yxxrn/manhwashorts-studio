@@ -467,6 +467,58 @@ def _review_ready_evidence(
     )
 
 
+def panel_has_feasible_reference_roi(
+    region: object,
+    crop: Image.Image,
+    candidate: object,
+    profile: object,
+    *,
+    allow_conservative_full_panel: bool = True,
+) -> bool:
+    """Return whether an exact panel has at least one production-safe 9:16 ROI."""
+    if not reference_profile.review_panel_source_geometry_is_renderable(crop.size):
+        return False
+    if _panel_is_blank_dominant(crop) or crop.width > crop.height * 1.2:
+        return False
+    observation = getattr(region, "observation_json", None)
+    raw = observation.get("visual_evidence") if isinstance(observation, Mapping) else None
+    if not isinstance(raw, Mapping):
+        return False
+    try:
+        evidence = visual_scoring.parse_panel_visual_evidence(raw)
+        ready = _review_ready_evidence(
+            region, evidence,
+            allow_conservative_full_panel=allow_conservative_full_panel,
+        )
+        if ready is None:
+            return False
+        mask = framing_analysis.build_color_agnostic_border_mask(
+            crop,
+            ready,
+            grid_long_edge=int(profile.framing_mask_grid_long_edge),
+            allow_conservative_full_panel=allow_conservative_full_panel,
+        )
+        rois = enumerate_reference_roi_alternatives(
+            crop.size, candidate, profile, image=crop, border_mask=mask,
+        )
+        for roi in rois:
+            feasible, _ = editorial_visual_planner._review_framing_candidate_is_feasible(
+                roi.crop_box,
+                ready,
+                mask,
+                crop.size,
+                (int(profile.final_width), int(profile.final_height)),
+                review_aggressive_crop=True,
+                standard_blank_target=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+                allow_conservative_full_panel=allow_conservative_full_panel,
+            )
+            if feasible:
+                return True
+    except (AttributeError, TypeError, ValueError, visual_scoring.VisualEvidenceError):
+        return False
+    return False
+
+
 def validated_visual_snapshot(
     region: object,
     *,

@@ -49,8 +49,9 @@ _MIN_SEGMENT_FRACTION = 0.55
 
 # This detector is intentionally based on structure rather than brightness.
 # The version participates in downstream cache/review identities.
-COLOR_AGNOSTIC_DETECTOR_VERSION = "color-agnostic-gutter-v5"
-_MICRO_GUTTER_GAP_MAX_ROWS = 8
+COLOR_AGNOSTIC_DETECTOR_VERSION = "color-agnostic-gutter-v6"
+_MICRO_GUTTER_GAP_MAX_ROWS = 12
+_MICRO_BOUNDARY_GAP_MAX_ROWS = 8
 VERIFIED_BLANK_DETECTOR_VERSION = "extreme-full-width-blank-v2"
 _BLANK_VARIANCE_MAX = 25.0
 _BLANK_BRIGHT_MIN = 245.0
@@ -241,7 +242,7 @@ def color_agnostic_row_classifications(
 
     # Detector spans from different gutter signals can occasionally leave a
     # microscopic full-width content island between two verified separators
-    # (observed in production at 1-7 source rows). Such a strip cannot carry a
+    # (observed in production at up to 9 source rows). Such a strip cannot carry a
     # usable visual panel and some vision providers reject the resulting image
     # outright. Bridge only tiny islands that are bounded by verified gutters
     # on both sides; real story bands remain untouched.
@@ -254,12 +255,16 @@ def color_agnostic_row_classifications(
         while index < height and classifications[index][0] == "canonical_panel":
             index += 1
         end = index
-        is_micro = end - start <= _MICRO_GUTTER_GAP_MAX_ROWS
+        run_length = end - start
         left_gutter = start > 0 and classifications[start - 1][0] == "verified_gutter"
         right_gutter = end < height and classifications[end][0] == "verified_gutter"
         bounded_gap = left_gutter and right_gutter
         boundary_sliver = (start == 0 and right_gutter) or (end == height and left_gutter)
-        if is_micro and (bounded_gap or boundary_sliver):
+        bridge_bounded_gap = bounded_gap and run_length <= _MICRO_GUTTER_GAP_MAX_ROWS
+        bridge_boundary_sliver = (
+            boundary_sliver and run_length <= _MICRO_BOUNDARY_GAP_MAX_ROWS
+        )
+        if bridge_bounded_gap or bridge_boundary_sliver:
             neighbor_confidences = []
             if left_gutter:
                 neighbor_confidences.append(float(classifications[start - 1][1]))

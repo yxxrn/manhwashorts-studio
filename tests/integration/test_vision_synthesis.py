@@ -146,6 +146,9 @@ def _request(
     narrative_profile_id=None,
     narrative_profile_version=None,
     narrative_profile_sha256=None,
+    target_word_count_min=None,
+    target_word_count_max=None,
+    preferred_visual_panel_ids=(),
 ):
     if narrative_profile_id is None:
         committed_version, committed_digest, committed_text = _instruction_contract()
@@ -199,6 +202,9 @@ def _request(
         narrative_profile_id=narrative_profile_id,
         narrative_profile_version=narrative_profile_version,
         narrative_profile_sha256=narrative_profile_sha256,
+        target_word_count_min=target_word_count_min,
+        target_word_count_max=target_word_count_max,
+        preferred_visual_panel_ids=tuple(preferred_visual_panel_ids),
     )
 
 
@@ -360,6 +366,8 @@ def test_synthesis_sends_exact_prompt_complete_ordered_evidence_and_no_images(
     for chunk in request.chunks:
         assert chunk["chunk_id"] in body_json
     assert "source_content_coverage_ratio" in body_json
+    assert module.SYNTHESIS_WIRE_CONTRACT_VERSION in body_json
+    assert "committed analyzer word-count contract" in body_json
     assert "data:image" not in body_json.lower()
     assert "base64" not in body_json.lower()
 
@@ -370,6 +378,26 @@ def test_synthesis_sends_exact_prompt_complete_ordered_evidence_and_no_images(
     assert "story_spine" not in ledger_json
     assert "payload" not in ledger_json
     assert result == _valid_output()
+
+
+def test_synthesis_enforces_production_target_word_range(mock_provider_url, monkeypatch):
+    module = _vision_module()
+    request = _request(
+        module, target_word_count_min=115, target_word_count_max=125
+    )
+    provider = _provider(module, mock_provider_url)
+    captured = []
+    _install_response(monkeypatch, module, _valid_output(), captured)
+
+    with pytest.raises(module.VisionResponseInvalid) as caught:
+        provider.synthesize(request)
+
+    assert caught.value.validation_subtype == "production_narration_word_count_out_of_range"
+    assert caught.value.passage_word_counts
+    body_json = json.dumps(captured[0]["kwargs"]["json"], ensure_ascii=False)
+    assert "total narration MUST be 115-125 words" in body_json
+    assert "hook 16-18 words" in body_json
+    assert "payoff_open_loop 18-20" in body_json
 
 
 def test_sharp_friend_synthesis_carries_identity_and_validates_v3(
@@ -708,3 +736,105 @@ def test_synthesis_capability_remains_network_free(mock_provider_url, monkeypatc
     assert report.available is True
     assert report.image_input is True
     assert report.structured_json is True
+
+
+def test_semantic_synthesis_projection_reattaches_only_validated_local_lineage(
+    mock_provider_url, monkeypatch
+):
+    module = _vision_module()
+    request = _request(module)
+    provider = _provider(module, mock_provider_url)
+    semantic = _valid_output()
+    semantic["observations"] = []
+    semantic["coverage_manifest"] = {}
+    semantic["continuity_ledger"]["chunks"] = []
+    _install_response(monkeypatch, module, semantic)
+
+    result = provider.synthesize(request)
+
+    assert result == _valid_output()
+    assert len(result["observations"]) == len(request.expected_panel_ids)
+    assert result["coverage_manifest"] == request.coverage_manifest
+    assert result["continuity_ledger"]["chunks"] == list(request.chunks)
+
+
+def test_semantic_synthesis_projection_completes_passage_evidence_from_claims(
+    mock_provider_url, monkeypatch
+):
+    module = _vision_module()
+    request = _request(module)
+    provider = _provider(module, mock_provider_url)
+    semantic = _valid_output()
+    semantic["observations"] = []
+    semantic["coverage_manifest"] = {}
+    semantic["continuity_ledger"]["chunks"] = []
+    semantic["script_passages"][0]["evidence_panel_ids"] = ["panel-a"]
+    _install_response(monkeypatch, module, semantic)
+
+    result = provider.synthesize(request)
+
+    assert result["script_passages"][0]["evidence_panel_ids"] == list(PANEL_IDS)
+    assert result["evidence_graph"] == _valid_output()["evidence_graph"]
+
+
+def test_semantic_synthesis_projection_rejects_foreign_passage_evidence(
+    mock_provider_url, monkeypatch
+):
+    module = _vision_module()
+    request = _request(module)
+    provider = _provider(module, mock_provider_url)
+    semantic = _valid_output()
+    semantic["observations"] = []
+    semantic["coverage_manifest"] = {}
+    semantic["continuity_ledger"]["chunks"] = []
+    semantic["script_passages"][0]["evidence_panel_ids"] = ["panel-foreign"]
+    _install_response(monkeypatch, module, semantic)
+
+    with pytest.raises(module.VisionResponseInvalid):
+        provider.synthesize(request)
+
+
+def test_semantic_synthesis_projection_still_rejects_nodes_edges_graph(
+    mock_provider_url, monkeypatch
+):
+    module = _vision_module()
+    request = _request(module)
+    provider = _provider(module, mock_provider_url)
+    semantic = _valid_output()
+    semantic["observations"] = []
+    semantic["coverage_manifest"] = {}
+    semantic["continuity_ledger"]["chunks"] = []
+    semantic["evidence_graph"] = {"nodes": [], "edges": []}
+    _install_response(monkeypatch, module, semantic)
+
+    with pytest.raises(module.VisionResponseInvalid):
+        provider.synthesize(request)
+
+
+def test_production_visual_selection_requires_preferred_panel_coverage():
+    module = _vision_module()
+    request = _request(
+        module,
+        target_word_count_min=115,
+        target_word_count_max=125,
+        preferred_visual_panel_ids=PANEL_IDS,
+    )
+    output = _valid_output()
+    module.validate_synthesis_visual_selection(output, request)
+    output["script_passages"][0]["evidence_panel_ids"] = [PANEL_IDS[0]]
+    with pytest.raises(module.VisionResponseInvalid) as caught:
+        module.validate_synthesis_visual_selection(output, request)
+    assert caught.value.validation_subtype == "production_visual_selection_insufficient"
+
+
+def test_preferred_visual_panel_ids_are_sent_as_input_only_hints(mock_provider_url, monkeypatch):
+    module = _vision_module()
+    request = _request(module, preferred_visual_panel_ids=PANEL_IDS)
+    provider = _provider(module, mock_provider_url)
+    captured = []
+    _install_response(monkeypatch, module, _valid_output(), captured)
+    result = provider.synthesize(request)
+    body_json = json.dumps(captured[0]["kwargs"]["json"], ensure_ascii=False)
+    assert "preferred_visual_panel_ids" in body_json
+    assert all(panel_id in body_json for panel_id in PANEL_IDS)
+    assert result == _valid_output()
