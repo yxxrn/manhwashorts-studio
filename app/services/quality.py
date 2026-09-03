@@ -761,6 +761,15 @@ def check_standard_reference_profile(
         key = _reference_panel_key(scene)
         if key:
             positions.setdefault(key, []).append(scene)
+    for left, right in zip(scenes, scenes[1:], strict=False):
+        left_key = _reference_panel_key(left)
+        if left_key and left_key == _reference_panel_key(right):
+            results.append(_fail(
+                "reference.standard_panel_reuse_consecutive",
+                CheckSeverity.ERROR,
+                "Standard reference production may not reuse the same panel in consecutive shots.",
+            ))
+            break
     invalid_repeats: list[str] = []
     for key, repeated_scenes in positions.items():
         if len(repeated_scenes) > int(profile.max_canonical_panel_uses):

@@ -1162,11 +1162,22 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "production_visual_selection_insufficient",
             }
             subtype = str(getattr(exc, "validation_subtype", "") or "")
-            if subtype not in retryable_subtypes or attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS:
+            evidence_lineage_retryable = (
+                subtype.endswith("_contains_an_unknown_panel")
+                or subtype.endswith("_references_an_unknown_panel")
+            )
+            if (subtype not in retryable_subtypes and not evidence_lineage_retryable) or attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS:
                 raise
+            if evidence_lineage_retryable:
+                active_request = replace(
+                    active_request,
+                    retry_evidence_lineage=True,
+                    retry_word_counts=None,
+                    retry_passages=None,
+                )
             counts = tuple(getattr(exc, "passage_word_counts", ()) or ())
             retry_passages = getattr(exc, "retry_passages", None)
-            if counts:
+            if counts and not evidence_lineage_retryable:
                 active_request = replace(
                     active_request,
                     retry_word_counts=counts,
@@ -1276,7 +1287,18 @@ def _observe_chunks(
                     response = provider.observe(request)
                     break
                 except VisionResponseInvalid:
-                    raise _AnalysisBlocked("vision_response_invalid", stage="observation_provider", chunk_index=chunk_index) from None
+                    if attempt >= _VISION_OBSERVATION_MAX_ATTEMPTS:
+                        raise _AnalysisBlocked(
+                            "vision_response_invalid",
+                            stage="observation_provider",
+                            chunk_index=chunk_index,
+                            attempts=attempt,
+                        ) from None
+                    # Observation responses are generative and can be transiently
+                    # malformed even when the request/provider is healthy. Keep
+                    # the strict validator/cache boundary, but spend the same
+                    # bounded retry budget before failing closed.
+                    time.sleep(min(0.25 * attempt, 1.0))
                 except VisionProviderRequestFailed as exc:
                     if not exc.retryable or attempt >= _VISION_OBSERVATION_MAX_ATTEMPTS:
                         raise _AnalysisBlocked(
@@ -1408,7 +1430,7 @@ def _preferred_visual_panel_ids(panel_regions: Sequence[PanelRegion]) -> tuple[s
         protected = visual.get("protected_regions") if isinstance(visual, Mapping) else None
         if (
             isinstance(visual, Mapping)
-            and visual.get("balloon_mask_status") == "known_empty"
+            and visual.get("balloon_mask_status") in {"known_empty", "known_nonempty"}
             and isinstance(protected, list)
             and bool(protected)
         ):
@@ -1444,20 +1466,25 @@ def _frameable_preferred_visual_panel_ids(
                     source.load()
                 decoded[str(panel.source_asset_id)] = source
             bounds = _panel_region_bounds(panel)
+            source_bounds = getattr(source_input, "source_bounds", None)
             if (
-                bounds[0] >= source.width
-                or bounds[1] >= source.height
-                or bounds[2] <= 0
-                or bounds[3] <= 0
+                not isinstance(source_bounds, (tuple, list))
+                or len(source_bounds) != 4
+                or any(isinstance(value, bool) or not isinstance(value, int) for value in source_bounds)
             ):
                 continue
-            clamped = (
-                max(0, bounds[0]),
-                max(0, bounds[1]),
-                min(source.width, bounds[2]),
-                min(source.height, bounds[3]),
+            sx0, sy0, sx1, sy1 = tuple(int(value) for value in source_bounds)
+            if (source.width, source.height) != (sx1 - sx0, sy1 - sy0):
+                continue
+            if not (sx0 <= bounds[0] < bounds[2] <= sx1 and sy0 <= bounds[1] < bounds[3] <= sy1):
+                continue
+            local_bounds = (
+                bounds[0] - sx0,
+                bounds[1] - sy0,
+                bounds[2] - sx0,
+                bounds[3] - sy0,
             )
-            crop = source.crop(clamped)
+            crop = source.crop(local_bounds)
             try:
                 encoded = io.BytesIO()
                 crop.save(encoded, format="PNG")
@@ -2299,6 +2326,34 @@ def _load_reference_panel_fallback_candidates(
                 source.load()
                 source_dimensions = tuple(int(value) for value in source.size)
                 bounds = _panel_region_bounds(region)
+                raw_source_bounds = getattr(asset, "source_bounds_json", None)
+                if isinstance(raw_source_bounds, Mapping) and all(
+                    key in raw_source_bounds for key in ("x", "y", "width", "height")
+                ):
+                    materialized_source_bounds = _asset_source_bounds(asset)
+                else:
+                    materialized_source_bounds = (0, 0, source_dimensions[0], source_dimensions[1])
+                expected_materialized_size = (
+                    materialized_source_bounds[2] - materialized_source_bounds[0],
+                    materialized_source_bounds[3] - materialized_source_bounds[1],
+                )
+                if source_dimensions != expected_materialized_size:
+                    raise PipelineError(
+                        "visual.panel_lineage_unavailable: stored source dimensions do not match source bounds"
+                    )
+                if not (
+                    materialized_source_bounds[0] <= bounds[0] < bounds[2] <= materialized_source_bounds[2]
+                    and materialized_source_bounds[1] <= bounds[1] < bounds[3] <= materialized_source_bounds[3]
+                ):
+                    raise PipelineError(
+                        "visual.panel_lineage_unavailable: panel bounds are outside stored source lineage"
+                    )
+                crop_bounds = (
+                    bounds[0] - materialized_source_bounds[0],
+                    bounds[1] - materialized_source_bounds[1],
+                    bounds[2] - materialized_source_bounds[0],
+                    bounds[3] - materialized_source_bounds[1],
+                )
                 source_materialization = (
                     review_source_upscale.ORIGINAL_SOURCE_MATERIALIZATION
                 )
@@ -2320,22 +2375,11 @@ def _load_reference_panel_fallback_candidates(
                 )
                 if source_path is not None:
                     resolved_source_paths[str(asset.id)] = source_path
-            # Clamp stale/legacy panel bounds to the source asset. Regions whose
-            # bounds lie completely outside the asset are corrupt and cannot be
-            # framed meaningfully; skip them instead of cropping garbage text.
-            src_w, src_h = source_dimensions
-            if bounds[0] >= src_w or bounds[1] >= src_h or bounds[2] <= 0 or bounds[3] <= 0:
-                skipped_panel_ids.add(str(region.panel_id))
-                continue
-            clamped = (
-                max(0, bounds[0]),
-                max(0, bounds[1]),
-                min(src_w, bounds[2]),
-                min(src_h, bounds[3]),
-            )
-            crop = source.convert("RGB").crop(clamped)
+            if review_source_upscale_policy is not None:
+                crop_bounds = bounds
+            crop = source.convert("RGB").crop(crop_bounds)
             source.close()
-            if crop.size != (clamped[2] - clamped[0], clamped[3] - clamped[1]):
+            if crop.size != (bounds[2] - bounds[0], bounds[3] - bounds[1]):
                 raise ValueError("panel crop dimensions changed")
             # Keep the source-crop geometry contract identical to narrative
             # repair. Upscaling cannot turn a segmentation sliver into a
@@ -2352,13 +2396,13 @@ def _load_reference_panel_fallback_candidates(
                     source_asset_id=str(asset.id),
                     panel_region_id=str(region.id),
                     source_asset_checksum=current_checksum,
-                    source_panel_bounds=clamped,
+                    source_panel_bounds=bounds,
                     source_dimensions=source_dimensions,
                     source_materialization=source_materialization,
                 )
                 builder_region = shallow_copy(region)
                 builder_region.bounds_json = _panel_bounds_json(
-                    review_source_upscale.transform_panel_bounds(clamped, manifest)
+                    review_source_upscale.transform_panel_bounds(bounds, manifest)
                 )
                 source_upscale_manifests[str(region.id)] = manifest
             encoded = io.BytesIO()
@@ -2862,11 +2906,41 @@ def _materialize_reference_panel_crop(
         with source_context as source:
             source.load()
             source_width, source_height = source.size
-            if source_bounds[2] > source_width or source_bounds[3] > source_height:
+            crop_bounds = source_bounds
+            if review_source_upscale_policy is None:
+                raw_asset_bounds = getattr(asset, "source_bounds_json", None)
+                if isinstance(raw_asset_bounds, Mapping) and all(
+                    key in raw_asset_bounds for key in ("x", "y", "width", "height")
+                ):
+                    materialized_source_bounds = _asset_source_bounds(asset)
+                else:
+                    materialized_source_bounds = (0, 0, source_width, source_height)
+                expected_source_size = (
+                    materialized_source_bounds[2] - materialized_source_bounds[0],
+                    materialized_source_bounds[3] - materialized_source_bounds[1],
+                )
+                if (source_width, source_height) != expected_source_size:
+                    raise PipelineError(
+                        "visual.panel_lineage_unavailable: stored source dimensions do not match source bounds"
+                    )
+                if not (
+                    materialized_source_bounds[0] <= source_bounds[0] < source_bounds[2] <= materialized_source_bounds[2]
+                    and materialized_source_bounds[1] <= source_bounds[1] < source_bounds[3] <= materialized_source_bounds[3]
+                ):
+                    raise PipelineError(
+                        "visual.panel_lineage_unavailable: panel bounds are outside stored source lineage"
+                    )
+                crop_bounds = (
+                    source_bounds[0] - materialized_source_bounds[0],
+                    source_bounds[1] - materialized_source_bounds[1],
+                    source_bounds[2] - materialized_source_bounds[0],
+                    source_bounds[3] - materialized_source_bounds[1],
+                )
+            elif source_bounds[2] > source_width or source_bounds[3] > source_height:
                 raise PipelineError(
                     "visual.panel_lineage_unavailable: panel exceeds source dimensions"
                 )
-            cropped = source.convert("RGB").crop(source_bounds)
+            cropped = source.convert("RGB").crop(crop_bounds)
             if review_source_upscale_policy is not None:
                 prepared, generated_manifest = review_source_upscale.prepare_review_panel(
                     cropped,

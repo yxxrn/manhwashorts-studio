@@ -1661,11 +1661,32 @@ def _plan_reference_panel_candidates(
     cadence_adapted = bool(
         allow_review_cadence_adaptation or allow_standard_cadence_adaptation
     )
+    feasibility_capacity_cache: dict[tuple[object, ...], int] = {}
+
+    def _section_eligible(candidate: ReferencePanelFallbackCandidate, section: str) -> bool:
+        return bool(candidate.eligible_sections and section in candidate.eligible_sections)
+
+    def _cached_feasible_roi_capacity(candidate, profile_arg, **kwargs):
+        key = (
+            candidate.panel_region_id,
+            str(kwargs.get("section", "") or ""),
+            str(kwargs.get("beat", "") or ""),
+            bool(kwargs.get("allow_source_resolution_warning", False)),
+            bool(kwargs.get("review_aggressive_crop", False)),
+            bool(kwargs.get("allow_conservative_full_panel", False)),
+        )
+        if key not in feasibility_capacity_cache:
+            feasibility_capacity_cache[key] = _feasible_roi_capacity(
+                candidate, profile_arg, **kwargs
+            )
+        return feasibility_capacity_cache[key]
+
     section_names = tuple(
         dict.fromkeys(str(span.section) for span in spans if str(span.section))
     )
     section_capacity: dict[str, int] = {}
     review_capacity_by_panel: dict[str, int] = {}
+    review_capacity_by_section_panel: dict[tuple[str, str], int] = {}
     for section in section_names:
         eligible_for_section = [
             candidate
@@ -1685,7 +1706,7 @@ def _plan_reference_panel_candidates(
             )
             continue
         capacities = [
-            _feasible_roi_capacity(
+            _cached_feasible_roi_capacity(
                 candidate,
                 profile,
                 allow_source_resolution_warning=allow_source_resolution_warning,
@@ -1703,7 +1724,10 @@ def _plan_reference_panel_candidates(
             # sufficient, and the future-capacity guard prevents avoidable reuse.
             capacities = [max(0, int(capacity)) for capacity in capacities]
         for candidate, capacity in zip(eligible_for_section, capacities, strict=True):
-            review_capacity_by_panel[candidate.panel_id] = capacity
+            review_capacity_by_section_panel[(section, candidate.panel_id)] = int(capacity)
+            review_capacity_by_panel[candidate.panel_id] = max(
+                review_capacity_by_panel.get(candidate.panel_id, 0), int(capacity)
+            )
         section_spans = [span for span in spans if str(span.section) == section]
         section_duration = (
             max(float(span.end_time) for span in section_spans)
@@ -1760,9 +1784,143 @@ def _plan_reference_panel_candidates(
         section_shot_totals[section_key] = section_shot_totals.get(section_key, 0) + 1
     section_shots_done: dict[str, int] = {}
     last_non_hook_source_order: int | None = None
+    last_non_hook_section = ""
+    section_floor_relaxations: dict[str, tuple[int, int]] = {}
+
+    def _remaining_standard_capacity_feasible(
+        *,
+        current_section: str,
+        current_floor: int | None,
+        consume_panel_id: str | None = None,
+    ) -> bool:
+        if not allow_standard_cadence_adaptation:
+            return True
+        simulated_uses = dict(uses)
+        if consume_panel_id is not None:
+            simulated_uses[consume_panel_id] = simulated_uses.get(consume_panel_id, 0) + 1
+        requirements: dict[str, int] = {}
+        for section_name, total in section_shot_totals.items():
+            remaining = int(total) - section_shots_done.get(section_name, 0)
+            if section_name == current_section and consume_panel_id is not None:
+                remaining -= 1
+            if remaining > 0:
+                requirements[section_name] = remaining
+        if not requirements:
+            return True
+
+        source = "__source__"
+        sink = "__sink__"
+        residual: dict[str, dict[str, int]] = {}
+
+        def add_edge(left: str, right: str, capacity: int) -> None:
+            if capacity <= 0:
+                return
+            residual.setdefault(left, {})[right] = (
+                residual.setdefault(left, {}).get(right, 0) + int(capacity)
+            )
+            residual.setdefault(right, {}).setdefault(left, 0)
+
+        for candidate in ordered:
+            panel_id = candidate.panel_id
+            global_remaining = max(
+                0,
+                review_capacity_by_panel.get(panel_id, 0)
+                - simulated_uses.get(panel_id, 0),
+            )
+            if global_remaining <= 0:
+                continue
+            panel_node = f"panel:{panel_id}"
+            add_edge(source, panel_node, global_remaining)
+            for section_name in requirements:
+                if not _section_eligible(candidate, section_name):
+                    continue
+                if (
+                    section_name == current_section
+                    and current_floor is not None
+                    and int(candidate.source_order) < current_floor
+                ):
+                    continue
+                section_remaining = max(
+                    0,
+                    review_capacity_by_section_panel.get(
+                        (section_name, panel_id), 0
+                    )
+                    - simulated_uses.get(panel_id, 0),
+                )
+                add_edge(
+                    panel_node,
+                    f"section:{section_name}",
+                    min(global_remaining, section_remaining),
+                )
+        required_total = sum(requirements.values())
+        for section_name, required in requirements.items():
+            add_edge(f"section:{section_name}", sink, required)
+
+        flow = 0
+        while flow < required_total:
+            parent: dict[str, str | None] = {source: None}
+            queue = [source]
+            for node in queue:
+                for nxt, capacity in residual.get(node, {}).items():
+                    if capacity > 0 and nxt not in parent:
+                        parent[nxt] = node
+                        queue.append(nxt)
+                        if nxt == sink:
+                            break
+                if sink in parent:
+                    break
+            if sink not in parent:
+                break
+            path_capacity = required_total - flow
+            node = sink
+            while parent[node] is not None:
+                prev = parent[node]
+                path_capacity = min(path_capacity, residual[prev][node])
+                node = prev
+            node = sink
+            while parent[node] is not None:
+                prev = parent[node]
+                residual[prev][node] -= path_capacity
+                residual[node][prev] += path_capacity
+                node = prev
+            flow += path_capacity
+        return flow >= required_total
+
     for shot_index, shot in enumerate(base_shots):
         section = str(shot.get("section", ""))
         beat = str(shot.get("camera_intent", "") or "")
+        if (
+            allow_standard_cadence_adaptation
+            and section != "hook"
+            and section != last_non_hook_section
+        ):
+            previous_floor = last_non_hook_source_order
+            if previous_floor is not None:
+                section_orders = sorted(
+                    {
+                        int(candidate.source_order)
+                        for candidate in ordered
+                        if _section_eligible(candidate, section)
+                    }
+                )
+                if not _remaining_standard_capacity_feasible(
+                    current_section=section, current_floor=previous_floor
+                ):
+                    viable_floors = [
+                        order
+                        for order in section_orders
+                        if order <= previous_floor
+                        and _remaining_standard_capacity_feasible(
+                            current_section=section, current_floor=order
+                        )
+                    ]
+                    if viable_floors:
+                        relaxed_floor = max(viable_floors)
+                        section_floor_relaxations[section] = (
+                            previous_floor, relaxed_floor
+                        )
+                        last_non_hook_source_order = relaxed_floor
+            last_non_hook_section = section
         rotated = ordered[shot_index % len(ordered) :] + ordered[: shot_index % len(ordered)]
         panel_uses_cap = int(profile.max_canonical_panel_uses)
         eligible = [
@@ -1788,6 +1946,7 @@ def _plan_reference_panel_candidates(
                 if int(candidate.source_order) >= last_non_hook_source_order
             ]
         recent_set: set[str] = set()
+        repeat_avoidance_backtrack_from: int | None = None
         if not cadence_adapted:
             eligible = [
                 candidate for candidate in eligible if candidate.panel_id != last_panel_id
@@ -1797,7 +1956,7 @@ def _plan_reference_panel_candidates(
             eligible = [
                 candidate
                 for candidate in eligible
-                if _feasible_roi_capacity(
+                if _cached_feasible_roi_capacity(
                     candidate,
                     profile,
                     allow_source_resolution_warning=allow_source_resolution_warning,
@@ -1808,6 +1967,25 @@ def _plan_reference_panel_candidates(
                 )
                 > len(used_rois.get(candidate.panel_id, set()))
             ]
+            if allow_standard_cadence_adaptation and eligible:
+                preserves_remaining = [
+                    candidate
+                    for candidate in eligible
+                    if _remaining_standard_capacity_feasible(
+                        current_section=section,
+                        current_floor=(
+                            None if section == "hook" else int(candidate.source_order)
+                        ),
+                        consume_panel_id=candidate.panel_id,
+                    )
+                ]
+                if not preserves_remaining:
+                    raise ReferencePlanningError(
+                        "remaining grounded visual capacity cannot satisfy the planned cadence",
+                        "visual.capacity_insufficient",
+                    )
+                eligible = preserves_remaining
+
             # Preserve enough feasible monotonic capacity for every later
             # section. A late choice now must not strand multiple future shots.
             future_section_shots: dict[str, list[dict]] = {}
@@ -1816,7 +1994,11 @@ def _plan_reference_panel_candidates(
                 if not future_section or future_section == section:
                     continue
                 future_section_shots.setdefault(future_section, []).append(future_shot)
-            if future_section_shots and eligible:
+            if (
+                not allow_standard_cadence_adaptation
+                and future_section_shots
+                and eligible
+            ):
                 preserves_future: list[ReferencePanelFallbackCandidate] = []
                 for candidate in eligible:
                     floor = int(candidate.source_order)
@@ -1829,7 +2011,7 @@ def _plan_reference_panel_candidates(
                                 continue
                             if not _candidate_is_eligible(future, future_section, ""):
                                 continue
-                            capacity = _feasible_roi_capacity(
+                            capacity = _cached_feasible_roi_capacity(
                                 future,
                                 profile,
                                 allow_source_resolution_warning=allow_source_resolution_warning,
@@ -1891,7 +2073,7 @@ def _plan_reference_panel_candidates(
                                     - uses.get(future.panel_id, 0)
                                 )
                             else:
-                                remaining_capacity = _feasible_roi_capacity(
+                                remaining_capacity = _cached_feasible_roi_capacity(
                                     future,
                                     profile,
                                     allow_source_resolution_warning=allow_source_resolution_warning,
@@ -1920,7 +2102,49 @@ def _plan_reference_panel_candidates(
                 non_reused = [
                     candidate for candidate in eligible if candidate.panel_id != last_panel_id
                 ]
-                eligible = non_reused or eligible
+                if non_reused:
+                    eligible = non_reused
+                elif allow_standard_cadence_adaptation and last_panel_id:
+                    backtrack_candidates = [
+                        candidate
+                        for candidate in ordered
+                        if candidate.panel_id != last_panel_id
+                        and _candidate_is_eligible(candidate, section, beat)
+                        and uses.get(candidate.panel_id, 0)
+                        < review_capacity_by_panel.get(candidate.panel_id, panel_uses_cap)
+                        and _cached_feasible_roi_capacity(
+                            candidate,
+                            profile,
+                            allow_source_resolution_warning=allow_source_resolution_warning,
+                            review_aggressive_crop=True,
+                            allow_conservative_full_panel=allow_conservative_full_panel,
+                            section=section,
+                            beat=beat,
+                        )
+                        > len(used_rois.get(candidate.panel_id, set()))
+                        and _remaining_standard_capacity_feasible(
+                            current_section=section,
+                            current_floor=(
+                                None if section == "hook" else int(candidate.source_order)
+                            ),
+                            consume_panel_id=candidate.panel_id,
+                        )
+                    ]
+                    preferred_backtracks = [
+                        candidate
+                        for candidate in backtrack_candidates
+                        if candidate.panel_id not in recent_set
+                    ]
+                    backtrack_candidates = preferred_backtracks or backtrack_candidates
+                    if not backtrack_candidates:
+                        raise ReferencePlanningError(
+                            "standard cadence would require consecutive panel reuse",
+                            "visual.capacity_insufficient",
+                        )
+                    repeat_avoidance_backtrack_from = last_non_hook_source_order
+                    eligible = list(
+                        _prioritize_resolution_candidates(backtrack_candidates)
+                    )
             eligible.sort(
                 key=lambda candidate: _review_candidate_priority_key(
                     candidate, uses, section, beat
@@ -2061,6 +2285,16 @@ def _plan_reference_panel_candidates(
         uses[candidate.panel_id] = uses.get(candidate.panel_id, 0) + 1
         used_rois.setdefault(candidate.panel_id, set()).add(_roi_key(roi))
         reasons = list(shot.get("alignment_reasons", ()))
+        if (
+            repeat_avoidance_backtrack_from is not None
+            and int(candidate.source_order) < repeat_avoidance_backtrack_from
+        ):
+            reasons.append(
+                f"source_order_repeat_avoidance:{repeat_avoidance_backtrack_from}->{candidate.source_order}"
+            )
+        relaxation = section_floor_relaxations.get(section)
+        if relaxation is not None and section_shots_done.get(section, 0) == 0:
+            reasons.append(f"source_order_relaxation:{relaxation[0]}->{relaxation[1]}")
         reasons.extend(
             (
                 "panel_evidence_alignment",

@@ -1083,6 +1083,82 @@ def test_observe_chunks_retries_failed_chunk_and_reuses_validated_cache(tmp_path
     assert reused == semantic
 
 
+class _TransientInvalidPersistentObservationSpy(_RetryablePersistentObservationSpy):
+    def __init__(self, *, invalid_once_chunk: int) -> None:
+        super().__init__()
+        self.invalid_once_chunk = invalid_once_chunk
+
+    def observe(self, request):
+        from app.services.vision_adapter import VisionResponseInvalid
+
+        self.attempted_chunks.append(request.chunk_index)
+        if request.chunk_index == self.invalid_once_chunk and not self._failed:
+            self._failed = True
+            raise VisionResponseInvalid(validation_subtype="structured_json")
+        return [_visual_row(panel) for panel in request.panels]
+
+
+def test_observe_chunks_retries_transient_invalid_response_and_caches_valid_result(tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(14)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"invalid-retry-image-" + panel.panel_id.encode(),
+        }
+        for panel in panels
+    }
+    first = _TransientInvalidPersistentObservationSpy(invalid_once_chunk=1)
+    semantic, _, _ = _run_visual_observation(
+        module, first, panels, transports, version, digest
+    )
+    assert len(semantic) == 14
+    assert first.attempted_chunks == [0, 1, 1]
+
+    second = _TransientInvalidPersistentObservationSpy(invalid_once_chunk=-1)
+    reused, _, _ = _run_visual_observation(
+        module, second, panels, transports, version, digest
+    )
+    assert second.attempted_chunks == []
+    assert reused == semantic
+
+
+class _AlwaysInvalidObservationSpy(_RetryablePersistentObservationSpy):
+    def observe(self, request):
+        from app.services.vision_adapter import VisionResponseInvalid
+
+        self.attempted_chunks.append(request.chunk_index)
+        raise VisionResponseInvalid(validation_subtype="structured_json")
+
+
+def test_observe_chunks_persistent_invalid_response_still_fails_closed(tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(3)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"always-invalid-image-" + panel.panel_id.encode(),
+        }
+        for panel in panels
+    }
+    provider = _AlwaysInvalidObservationSpy()
+    with pytest.raises(Exception) as caught:
+        _run_visual_observation(module, provider, panels, transports, version, digest)
+    assert getattr(caught.value, "code", None) == "vision_response_invalid"
+    assert getattr(caught.value, "finding", {}).get("attempts") == module._VISION_OBSERVATION_MAX_ATTEMPTS
+    assert provider.attempted_chunks == [0] * module._VISION_OBSERVATION_MAX_ATTEMPTS
+
+
 def test_observe_chunks_activates_visual_prompt_and_locally_hashes_sidecars():
     module = _pipeline_module()
     scoring, (version, digest, prompt) = _visual_loader()
@@ -1266,6 +1342,72 @@ def test_observation_reconcile_normalizes_structured_dialogue_for_cache_reuse():
     )
     assert normalized[0]["dialogue_or_ocr"] == ["TEN SECONDS"]
 
+class _UnknownPanelCorrectiveSynthesisSpy(_RetryablePersistentSynthesisSpy):
+    def synthesize(self, request):
+        from app.services.vision_adapter import VisionResponseInvalid
+
+        self.synthesis_attempts += 1
+        self.synthesis_requests.append(request)
+        if self.synthesis_attempts == 1:
+            raise VisionResponseInvalid(
+                validation_subtype="state_change_evidence_contains_an_unknown_panel"
+            )
+        return _valid_synthesis_output(request)
+
+
+def test_synthesis_unknown_panel_reference_retries_with_locked_evidence_lineage(db, tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    project_id, _ = _seed_vision_project(db, standalone_count=13)
+    provider = _UnknownPanelCorrectiveSynthesisSpy()
+    _install_provider(monkeypatch, provider)
+
+    row = module.run_analysis(db, project_id)
+
+    assert row.state == "RECONCILED"
+    assert provider.synthesis_attempts == 2
+    first, second = provider.synthesis_requests
+    assert first.retry_evidence_lineage is False
+    assert second.retry_evidence_lineage is True
+    assert second.retry_word_counts is None
+    assert second.retry_passages is None
+    assert second.expected_panel_ids == first.expected_panel_ids
+    assert second.ordered_observations == first.ordered_observations
+    assert second.coverage_manifest == first.coverage_manifest
+    assert second.chunks == first.chunks
+
+
+class _PersistentUnknownPanelSynthesisSpy(_RetryablePersistentSynthesisSpy):
+    def synthesize(self, request):
+        from app.services.vision_adapter import VisionResponseInvalid
+
+        self.synthesis_attempts += 1
+        self.synthesis_requests.append(request)
+        raise VisionResponseInvalid(
+            validation_subtype="state_change_evidence_contains_an_unknown_panel"
+        )
+
+
+def test_synthesis_persistent_unknown_panel_reference_still_fails_closed(db, tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    project_id, _ = _seed_vision_project(db, standalone_count=13)
+    provider = _PersistentUnknownPanelSynthesisSpy()
+    _install_provider(monkeypatch, provider)
+
+    row = module.run_analysis(db, project_id)
+
+    assert row.state == "BLOCKED"
+    assert provider.synthesis_attempts == module._VISION_SYNTHESIS_MAX_ATTEMPTS
+    assert provider.synthesis_requests[0].retry_evidence_lineage is False
+    assert all(request.retry_evidence_lineage is True for request in provider.synthesis_requests[1:])
+    blocking = row.blocking_reasons_json or {}
+    assert blocking.get("codes") == ["vision_response_invalid"]
+    findings = blocking.get("findings") or []
+    assert findings and findings[0].get("stage") == "synthesis_response"
+    assert findings[0].get("validation_subtype") == "state_change_evidence_contains_an_unknown_panel"
+
+
 class _WordCountCorrectiveSynthesisSpy(_RetryablePersistentSynthesisSpy):
     def synthesize(self, request):
         from app.services.vision_adapter import VisionResponseInvalid
@@ -1376,3 +1518,23 @@ def test_preferred_visual_panel_ids_exclude_front_matter_and_invalid_bounds():
         panel("story", 3, {"x": 0, "y": 0, "width": 800, "height": 1200}),
     ])
     assert preferred == ("story",)
+
+
+def test_frameable_preferred_visual_ids_translate_segmented_source_bounds(monkeypatch):
+    module = _pipeline_module()
+    raw = io.BytesIO()
+    Image.new("RGB", (800, 400), (80, 120, 160)).save(raw, format="PNG")
+    panel = SimpleNamespace(
+        panel_id="story", source_asset_id="asset-a", source_order=3,
+        bounds_json={"x": 0, "y": 150, "width": 800, "height": 300},
+        observation_json={"visual_evidence": {"balloon_mask_status": "known_nonempty", "protected_regions": [{"kind": "subject"}]}},
+    )
+    source = SimpleNamespace(payload=raw.getvalue(), source_bounds=(0, 100, 800, 500), source_family="family-a")
+    seen = {}
+    def feasible(_panel, crop, _candidate, _profile, **_kwargs):
+        seen["size"] = crop.size
+        return True
+    monkeypatch.setattr(module.reference_visual_review, "panel_has_feasible_reference_roi", feasible)
+    result = module._frameable_preferred_visual_panel_ids((panel,), {"asset-a": source}, SimpleNamespace())
+    assert result == ("story",)
+    assert seen["size"] == (800, 300)

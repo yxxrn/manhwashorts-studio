@@ -322,6 +322,64 @@ def test_reference_crop_materializes_exact_global_bounds(tmp_path: Path, monkeyp
         assert cropped.getpixel((2, 1)) == image.getpixel((4, 2))
 
 
+
+def test_reference_crop_translates_global_bounds_for_segmented_stored_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pipeline = importlib.import_module("app.services.pipeline")
+    source = tmp_path / "segmented-source.png"
+    image = Image.new("RGB", (8, 6), (20, 30, 40))
+    image.putpixel((2, 1), (220, 120, 60))
+    image.save(source)
+    asset = _asset("asset-segmented")
+    asset.source_bounds_json = {"x": 10, "y": 20, "width": 8, "height": 6}
+    region = _region(
+        "region-segmented", "panel-segmented", asset.id, 1,
+        x=12, y=21, width=3, height=2,
+    )
+    scene = SimpleNamespace(
+        panel_region_id=region.id, panel_id=region.panel_id,
+        panel_bounds_json=region.bounds_json,
+        visual_evidence_json=region.observation_json["visual_evidence"],
+        source_asset_checksum=asset.original_checksum,
+    )
+    db = SimpleNamespace(get=lambda _model, key: region if key == region.id else None)
+    monkeypatch.setattr(pipeline.storage, "path_for", lambda _key: source)
+    result = pipeline._materialize_reference_panel_crop(
+        db, asset, scene, tmp_path / "scene-segmented.png"
+    )
+    with Image.open(result) as cropped:
+        assert cropped.size == (3, 2)
+        assert cropped.getpixel((0, 0)) == image.getpixel((2, 1))
+
+
+def test_reference_crop_rejects_global_bounds_outside_segmented_stored_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pipeline = importlib.import_module("app.services.pipeline")
+    source = tmp_path / "segmented-source-outside.png"
+    Image.new("RGB", (8, 6), (20, 30, 40)).save(source)
+    asset = _asset("asset-segmented-outside")
+    asset.source_bounds_json = {"x": 10, "y": 20, "width": 8, "height": 6}
+    region = _region(
+        "region-segmented-outside", "panel-segmented-outside", asset.id, 1,
+        x=9, y=21, width=3, height=2,
+    )
+    scene = SimpleNamespace(
+        panel_region_id=region.id, panel_id=region.panel_id,
+        panel_bounds_json=region.bounds_json,
+        visual_evidence_json=region.observation_json["visual_evidence"],
+        source_asset_checksum=asset.original_checksum,
+    )
+    db = SimpleNamespace(get=lambda _model, key: region if key == region.id else None)
+    monkeypatch.setattr(pipeline.storage, "path_for", lambda _key: source)
+    with pytest.raises(
+        pipeline.PipelineError, match="panel bounds are outside stored source lineage"
+    ):
+        pipeline._materialize_reference_panel_crop(
+            db, asset, scene, tmp_path / "scene-segmented-outside.png"
+        )
+
 def _canonical_rgb_content_hash(path: Path) -> str:
     with Image.open(path) as image:
         rgb = image.convert("RGB")

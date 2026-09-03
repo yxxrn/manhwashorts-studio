@@ -352,6 +352,59 @@ def test_reference_loader_excludes_order_zero_front_matter_before_candidate_buil
     assert captured == ["region-a"]
 
 
+def test_reference_loader_translates_global_bounds_into_segmented_asset_space(monkeypatch):
+    import io
+
+    image_bytes = io.BytesIO()
+    _crop((40, 60, 100), True).resize((100, 600)).save(image_bytes, format="PNG")
+    asset = SimpleNamespace(
+        id="asset-a", storage_key="asset-a.png", checksum="asset-checksum",
+        original_checksum="asset-checksum", source_family="family-a",
+        source_bounds_json={"x": 0, "y": 300, "width": 100, "height": 600},
+    )
+    region = _region("panel-a", "region-a", "asset-a", 3, (0, 350, 100, 850), "asset-checksum")
+    captured = {}
+
+    def builder(**kwargs):
+        captured["crop_size"] = kwargs["panel_crops_by_region_id"]["region-a"].size
+        captured["bounds"] = pipeline._panel_region_bounds(kwargs["panel_regions"][0])
+        return ()
+
+    monkeypatch.setattr(pipeline, "latest_analysis", lambda *_args: SimpleNamespace(id="analysis"))
+    monkeypatch.setattr(pipeline.storage, "read_bytes", lambda _key: image_bytes.getvalue())
+    monkeypatch.setattr(pipeline, "_build_reference_panel_fallback_candidates", builder)
+    db = SimpleNamespace(scalars=lambda _statement: [region])
+    script = SimpleNamespace(sections=[{"section": "hook", "evidence_panel_ids": ["panel-a"]}])
+
+    pipeline._load_reference_panel_fallback_candidates(
+        db, "project", script, [asset], reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    )
+
+    assert captured == {"crop_size": (100, 500), "bounds": (0, 350, 100, 850)}
+
+
+def test_reference_loader_rejects_panel_outside_segmented_source_lineage(monkeypatch):
+    import io
+
+    image_bytes = io.BytesIO()
+    _crop((40, 60, 100), True).resize((100, 300)).save(image_bytes, format="PNG")
+    asset = SimpleNamespace(
+        id="asset-a", storage_key="asset-a.png", checksum="asset-checksum",
+        original_checksum="asset-checksum", source_family="family-a",
+        source_bounds_json={"x": 0, "y": 300, "width": 100, "height": 300},
+    )
+    region = _region("panel-a", "region-a", "asset-a", 3, (0, 250, 100, 450), "asset-checksum")
+    monkeypatch.setattr(pipeline, "latest_analysis", lambda *_args: SimpleNamespace(id="analysis"))
+    monkeypatch.setattr(pipeline.storage, "read_bytes", lambda _key: image_bytes.getvalue())
+    db = SimpleNamespace(scalars=lambda _statement: [region])
+    script = SimpleNamespace(sections=[{"section": "hook", "evidence_panel_ids": ["panel-a"]}])
+
+    with pytest.raises(pipeline.PipelineError, match="panel bounds are outside stored source lineage"):
+        pipeline._load_reference_panel_fallback_candidates(
+            db, "project", script, [asset], reference_profile.REFERENCE_MATCHED_SHORTS_V1
+        )
+
+
 def test_reference_loader_skips_cited_order_zero_panel(monkeypatch):
     import io
 
@@ -1469,6 +1522,145 @@ def test_review_planner_preserves_future_section_monotonic_path(monkeypatch):
     assert [shot["source_order"] for shot in result] == [10, 50, 60]
 
 
+def test_standard_cadence_relaxes_floor_only_at_section_boundary(monkeypatch):
+    from app.services import editorial_visual_planner
+
+    orders = (50, 60, 90)
+    regions = tuple(
+        _region(f"panel-{o}", f"region-{o}", f"asset-{o}", o,
+                (0, 0, 100, 200), f"asset-{o}-checksum")
+        for o in orders
+    )
+    candidates = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id={
+            f"region-{o}": _candidate(f"asset-{o}", o, str(o)) for o in orders
+        },
+        panel_crops_by_region_id={
+            f"region-{o}": _crop((40, 60, 100), True) for o in orders
+        },
+        section_evidence_panel_ids={
+            "setup": ("panel-90",),
+            "conflict": ("panel-50", "panel-60"),
+        },
+        section_citations={}, beats_by_section={"setup": (), "conflict": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    seen_capacity_calls = set()
+
+    def fake_capacity(candidate, *_args, **kwargs):
+        key = (candidate.panel_id, kwargs.get("section", ""), kwargs.get("beat", ""))
+        assert key not in seen_capacity_calls, f"duplicate feasibility call: {key}"
+        seen_capacity_calls.add(key)
+        return 1
+
+    monkeypatch.setattr(editorial_visual_planner, "_feasible_roi_capacity", fake_capacity)
+    monkeypatch.setattr(editorial_visual_planner, "_review_candidate_priority_key",
+                        lambda candidate, *_a, **_k: (int(candidate.source_order),))
+    monkeypatch.setattr(editorial_visual_planner, "_review_crop_editorial_metrics",
+                        lambda *_a, **_k: {"subject_completeness_score": 1.0})
+
+    def fake_attempt(candidate, roi, **_kwargs):
+        return True, {"rejection_code": None}, {
+            "accepted": True, "panel_region_id": candidate.panel_region_id,
+            "panel_id": candidate.panel_id, "source_asset_id": candidate.source_asset_id,
+            "source_order": candidate.source_order,
+            "source_asset_checksum": candidate.source_asset_checksum,
+            "panel_size": list(candidate.panel_size), "evidence_hash": candidate.evidence_hash,
+            "roi_label": roi.roi_label, "crop_box": list(roi.crop_box),
+            "roi_kind": roi.kind, "telemetry": {},
+        }
+
+    monkeypatch.setattr(editorial_visual_planner, "_reference_panel_attempt", fake_attempt)
+    monkeypatch.setattr(editorial_visual_planner, "_plan_reference", lambda *_a, **_k: [
+        {"order_index": 0, "section": "setup", "start_time": 0.0, "end_time": 3.0,
+         "camera_intent": "neutral", "effect": "static", "asset_id": "unused",
+         "transition": "none", "focus_x": 0.5, "focus_y": 0.5,
+         "focus_end_x": 0.5, "focus_end_y": 0.5},
+        {"order_index": 1, "section": "conflict", "start_time": 3.0, "end_time": 6.0,
+         "camera_intent": "neutral", "effect": "static", "asset_id": "unused",
+         "transition": "fade", "focus_x": 0.5, "focus_y": 0.5,
+         "focus_end_x": 0.5, "focus_end_y": 0.5},
+        {"order_index": 2, "section": "conflict", "start_time": 6.0, "end_time": 9.0,
+         "camera_intent": "neutral", "effect": "static", "asset_id": "unused",
+         "transition": "fade", "focus_x": 0.5, "focus_y": 0.5,
+         "focus_end_x": 0.5, "focus_end_y": 0.5},
+    ])
+    result = editorial_visual_planner._plan_reference_panel_candidates(
+        [SimpleNamespace(section="setup", start_time=0.0, end_time=3.0),
+         SimpleNamespace(section="conflict", start_time=3.0, end_time=9.0)],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1, candidates,
+        allow_standard_cadence_adaptation=True, allow_review_duration=True,
+    )
+    assert [shot["source_order"] for shot in result] == [90, 50, 60]
+    assert "source_order_relaxation:90->50" in result[1]["alignment_reasons"]
+
+
+def test_standard_cadence_reserves_shared_panel_for_future_section(monkeypatch):
+    from app.services import editorial_visual_planner
+
+    orders = (10, 90, 100)
+    regions = tuple(
+        _region(f"panel-{o}", f"region-{o}", f"asset-{o}", o,
+                (0, 0, 100, 200), f"asset-{o}-checksum")
+        for o in orders
+    )
+    candidates = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id={
+            f"region-{o}": _candidate(f"asset-{o}", o, str(o)) for o in orders
+        },
+        panel_crops_by_region_id={
+            f"region-{o}": _crop((40, 60, 100), True) for o in orders
+        },
+        section_evidence_panel_ids={
+            "setup": ("panel-10", "panel-90"),
+            "twist": ("panel-90", "panel-100"),
+        },
+        section_citations={}, beats_by_section={"setup": (), "twist": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    monkeypatch.setattr(editorial_visual_planner, "_feasible_roi_capacity", lambda *_a, **_k: 1)
+    monkeypatch.setattr(editorial_visual_planner, "_review_candidate_priority_key",
+                        lambda candidate, *_a, **_k: (-int(candidate.source_order),))
+    monkeypatch.setattr(editorial_visual_planner, "_review_crop_editorial_metrics",
+                        lambda *_a, **_k: {"subject_completeness_score": 1.0})
+
+    def fake_attempt(candidate, roi, **_kwargs):
+        return True, {"rejection_code": None}, {
+            "accepted": True, "panel_region_id": candidate.panel_region_id,
+            "panel_id": candidate.panel_id, "source_asset_id": candidate.source_asset_id,
+            "source_order": candidate.source_order,
+            "source_asset_checksum": candidate.source_asset_checksum,
+            "panel_size": list(candidate.panel_size), "evidence_hash": candidate.evidence_hash,
+            "roi_label": roi.roi_label, "crop_box": list(roi.crop_box),
+            "roi_kind": roi.kind, "telemetry": {},
+        }
+
+    monkeypatch.setattr(editorial_visual_planner, "_reference_panel_attempt", fake_attempt)
+    monkeypatch.setattr(editorial_visual_planner, "_plan_reference", lambda *_a, **_k: [
+        {"order_index": 0, "section": "setup", "start_time": 0.0, "end_time": 3.0,
+         "camera_intent": "neutral", "effect": "static", "asset_id": "unused",
+         "transition": "none", "focus_x": 0.5, "focus_y": 0.5,
+         "focus_end_x": 0.5, "focus_end_y": 0.5},
+        {"order_index": 1, "section": "twist", "start_time": 3.0, "end_time": 6.0,
+         "camera_intent": "neutral", "effect": "static", "asset_id": "unused",
+         "transition": "fade", "focus_x": 0.5, "focus_y": 0.5,
+         "focus_end_x": 0.5, "focus_end_y": 0.5},
+        {"order_index": 2, "section": "twist", "start_time": 6.0, "end_time": 9.0,
+         "camera_intent": "neutral", "effect": "static", "asset_id": "unused",
+         "transition": "fade", "focus_x": 0.5, "focus_y": 0.5,
+         "focus_end_x": 0.5, "focus_end_y": 0.5},
+    ])
+    result = editorial_visual_planner._plan_reference_panel_candidates(
+        [SimpleNamespace(section="setup", start_time=0.0, end_time=3.0),
+         SimpleNamespace(section="twist", start_time=3.0, end_time=9.0)],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1, candidates,
+        allow_standard_cadence_adaptation=True, allow_review_duration=True,
+    )
+    assert [shot["source_order"] for shot in result] == [10, 90, 100]
+
+
 def test_review_planner_preserves_unique_path_before_roi_reuse(monkeypatch):
     from app.services import editorial_visual_planner
 
@@ -2252,3 +2444,28 @@ def test_review_qc_rejects_eighteen_percent_blank_even_with_coherence_rescue():
             blank_target_fraction=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
         )
     assert exc.value.code == "review.blank_space_exceeds_target"
+
+
+def test_standard_cadence_capacity_keeps_best_panel_capacity_across_sections(monkeypatch):
+    from app.services import editorial_visual_planner
+    regions, crops, candidates = _builder_inputs()
+    candidate = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions[:1], panel_candidates_by_region_id={"region-a": candidates["region-a"]},
+        panel_crops_by_region_id={"region-a": crops["region-a"]},
+        section_evidence_panel_ids={"hook": ("panel-a",), "cta": ("panel-a",)},
+        section_citations={}, beats_by_section={"hook": (), "cta": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )[0]
+    monkeypatch.setattr(editorial_visual_planner, "_feasible_roi_capacity", lambda *_a, **kw: 2 if kw.get("section") == "hook" else 1)
+    captured = {}
+    def fake_plan(*_a, **kw):
+        captured["capacity"] = kw["cadence_capacity_override"]
+        raise RuntimeError("captured")
+    monkeypatch.setattr(editorial_visual_planner, "_plan_reference", fake_plan)
+    spans = [SimpleNamespace(section="hook", start_time=0.0, end_time=3.0), SimpleNamespace(section="cta", start_time=3.0, end_time=6.0)]
+    with pytest.raises(RuntimeError, match="captured"):
+        editorial_visual_planner._plan_reference_panel_candidates(
+            spans, reference_profile.REFERENCE_MATCHED_SHORTS_V1, (candidate,),
+            allow_standard_cadence_adaptation=True, allow_review_duration=True,
+        )
+    assert captured["capacity"] == 2

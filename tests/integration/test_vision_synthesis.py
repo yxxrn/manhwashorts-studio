@@ -677,6 +677,33 @@ def test_invalid_synthesis_response_fails_closed_without_template_fill(
     assert payload == before
 
 
+def test_synthesis_evidence_lineage_retry_adds_corrective_prompt_without_mutating_evidence(
+    mock_provider_url, monkeypatch
+):
+    from dataclasses import replace
+
+    module = _vision_module()
+    base_request = _request(module)
+    request = replace(base_request, retry_evidence_lineage=True)
+    provider = _provider(module, mock_provider_url)
+    captured = []
+    _install_response(monkeypatch, module, _valid_output(), captured)
+
+    result = provider.synthesize(request)
+
+    assert result == _valid_output()
+    assert len(captured) == 1
+    body = captured[0]["kwargs"]["json"]
+    body_text = json.dumps(body, ensure_ascii=False)
+    assert "prior response referenced at least one panel ID outside expected_panel_ids" in body_text
+    assert "Every panel_id, panel_ids, from_panel_id, to_panel_id, and evidence_panel_ids" in body_text
+    for panel_id in base_request.expected_panel_ids:
+        assert panel_id in body_text
+    assert request.ordered_observations == base_request.ordered_observations
+    assert request.coverage_manifest == base_request.coverage_manifest
+    assert request.chunks == base_request.chunks
+
+
 def test_synthesis_network_failure_uses_safe_error_boundary(
     mock_provider_url, monkeypatch
 ):

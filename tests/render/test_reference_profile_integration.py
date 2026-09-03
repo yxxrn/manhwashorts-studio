@@ -513,6 +513,26 @@ def test_standard_reference_qc_accepts_long_hold_unique_panel_cadence():
     assert not any(result.blocking for result in results)
 
 
+def test_standard_reference_qc_rejects_consecutive_panel_reuse():
+    scenes = _qc_scenes(15, 50.652, cadence=False)
+    for index, scene in enumerate(scenes):
+        scene.panel_region_id = f"region-{index}"
+        scene.panel_id = f"panel-{index}"
+        scene.transition = "none" if index == 0 else "fade"
+    scenes[1].panel_region_id = scenes[0].panel_region_id
+    scenes[1].panel_id = scenes[0].panel_id
+    scenes[1].roi_label = "alternate"
+    scenes[1].focus_x = scenes[0].focus_x + 0.1
+    results = quality.check_standard_reference_profile(
+        scenes, 50.652, reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    )
+    assert any(
+        result.code == "reference.standard_panel_reuse_consecutive"
+        and result.blocking
+        for result in results
+    )
+
+
 def test_reference_reuse_uses_exact_panel_identity_before_source_asset():
     scenes = _qc_scenes(2, 2.6, cadence=False)
     scenes[0].asset_id = "shared-page"

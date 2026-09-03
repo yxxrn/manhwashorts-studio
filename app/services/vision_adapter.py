@@ -262,6 +262,7 @@ class VisionChapterSynthesisRequest:
     preferred_visual_panel_ids: tuple[str, ...] = ()
     retry_word_counts: tuple[int, ...] | None = None
     retry_visual_selection: bool = False
+    retry_evidence_lineage: bool = False
     retry_passages: tuple[Mapping[str, Any], ...] | None = None
 
 
@@ -1799,6 +1800,7 @@ def _validate_synthesis_request(
         or len(set(preferred)) != len(preferred)
         or not set(preferred) <= set(expected_panel_ids)
         or not isinstance(request.retry_visual_selection, bool)
+        or not isinstance(request.retry_evidence_lineage, bool)
     ):
         raise VisionRequestInvalid()
 
@@ -2050,8 +2052,8 @@ def _build_synthesis_payload(
         visual_selection_instruction = (
             "For production visual coverage, evidence_panel_ids may include grounded visual-support panels beyond claim evidence. "
             "Each passage MUST include at least four panel IDs from preferred_visual_panel_ids, and across all five passages "
-            "use at least eighteen distinct preferred_visual_panel_ids when that many are available. These preferred panels are "
-            "speech-balloon-free and contain protected visual subjects; choose only panels whose ordered observation supports the "
+            "use at least eighteen distinct preferred_visual_panel_ids when that many are available. These preferred panels have "
+            "known balloon geometry, protected visual subjects, and at least one production-safe balloon-avoiding ROI; choose only panels whose ordered observation supports the "
             "same passage meaning. Claim evidence must still be fully covered. "
         )
         if request.retry_visual_selection:
@@ -2059,6 +2061,15 @@ def _build_synthesis_payload(
                 "Corrective retry: the prior response selected too few preferred visual panels. Keep narration, claims, passage IDs, "
                 "roles, and grounded meaning stable, but broaden evidence_panel_ids with semantically relevant preferred panels. "
             )
+    evidence_lineage_retry_instruction = ""
+    if request.retry_evidence_lineage:
+        evidence_lineage_retry_instruction = (
+            "Corrective retry: the prior response referenced at least one panel ID outside expected_panel_ids. "
+            "Regenerate every semantic structure from the same ordered evidence ledger. Every panel_id, panel_ids, "
+            "from_panel_id, to_panel_id, and evidence_panel_ids value MUST be an exact member of expected_panel_ids. "
+            "Do not invent, repair, substitute, or silently omit evidence; keep all claims and continuity grounded only "
+            "in the supplied observations. "
+        )
     locked_passage_instruction = ""
     if request.retry_passages is not None:
         locked_json = json.dumps([dict(item) for item in request.retry_passages], ensure_ascii=False, separators=(",", ":"))
@@ -2100,6 +2111,7 @@ def _build_synthesis_payload(
         + allocation_instruction
         + locked_passage_instruction
         + retry_instruction
+        + evidence_lineage_retry_instruction
         + visual_selection_instruction
         + "Never exceed the hard limit for any role. "
         "payoff_open_loop must end with an evidence-grounded question. "
