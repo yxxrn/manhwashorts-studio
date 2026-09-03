@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import io
+import threading
+import time
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
@@ -1069,7 +1071,8 @@ def test_observe_chunks_retries_failed_chunk_and_reuses_validated_cache(tmp_path
         module, first, panels, transports, version, digest
     )
     assert len(semantic) == 14
-    assert first.attempted_chunks == [0, 1, 1]
+    assert first.attempted_chunks.count(0) == 1
+    assert first.attempted_chunks.count(1) == 2
 
     cache_files = sorted((tmp_path / "vision-observation-cache").glob("*.json"))
     assert len(cache_files) == 2
@@ -1081,6 +1084,69 @@ def test_observe_chunks_retries_failed_chunk_and_reuses_validated_cache(tmp_path
     )
     assert second.attempted_chunks == []
     assert reused == semantic
+
+
+class _ParallelObservationSpy:
+    model_id = "fixture-parallel-model"
+    endpoint = "https://fixture.invalid/v1"
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+        self.completed: list[int] = []
+
+    def observe(self, request):
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep({0: 0.09, 1: 0.05, 2: 0.02}.get(request.chunk_index, 0.02))
+            return [_visual_row(panel) for panel in request.panels]
+        finally:
+            with self.lock:
+                self.completed.append(request.chunk_index)
+                self.active -= 1
+
+
+def test_observe_chunks_runs_bounded_parallel_but_reconciles_original_order(tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(25)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"parallel-image-" + panel.panel_id.encode(),
+        }
+        for panel in panels
+    }
+    provider = _ParallelObservationSpy()
+    telemetry = {}
+    semantic, ledger, first_chunk = module._observe_chunks(
+        provider,
+        module.build_observation_chunks(panels),
+        transports,
+        analysis_run_id="run-parallel",
+        instruction_version="vision-first-story-analyzer-v1",
+        instruction_sha256="a" * 64,
+        visual_instruction_version=version,
+        visual_instruction_sha256=digest,
+        telemetry=telemetry,
+    )
+    assert provider.max_active == module._VISION_OBSERVATION_CONCURRENCY == 3
+    assert provider.completed != [0, 1, 2]
+    assert [item["chunk_id"] for item in ledger] == ["chunk-0", "chunk-1", "chunk-2"]
+    assert list(semantic) == [f"panel-{index}" for index in range(25)]
+    assert first_chunk["panel-10"] == 0
+    assert first_chunk["panel-20"] == 1
+    assert telemetry["max_provider_concurrency"] == 3
+    assert telemetry["effective_concurrency"] > 1.5
+    assert telemetry["cache_misses"] == 3
+
 
 
 class _TransientInvalidPersistentObservationSpy(_RetryablePersistentObservationSpy):
@@ -1118,7 +1184,8 @@ def test_observe_chunks_retries_transient_invalid_response_and_caches_valid_resu
         module, first, panels, transports, version, digest
     )
     assert len(semantic) == 14
-    assert first.attempted_chunks == [0, 1, 1]
+    assert first.attempted_chunks.count(0) == 1
+    assert first.attempted_chunks.count(1) == 2
 
     second = _TransientInvalidPersistentObservationSpy(invalid_once_chunk=-1)
     reused, _, _ = _run_visual_observation(
@@ -1477,8 +1544,10 @@ class _VisualSelectionCorrectiveSynthesisSpy(_RetryablePersistentSynthesisSpy):
         self.synthesis_attempts += 1
         self.synthesis_requests.append(request)
         if self.synthesis_attempts == 1:
+            candidate = _valid_synthesis_output(request)
             raise VisionResponseInvalid(
-                validation_subtype="production_visual_selection_insufficient"
+                validation_subtype="production_visual_selection_insufficient",
+                retry_passages=tuple(dict(item) for item in candidate["script_passages"]),
             )
         return _valid_synthesis_output(request)
 
@@ -1494,6 +1563,10 @@ def test_synthesis_visual_selection_retry_preserves_evidence_input(db, tmp_path,
     assert provider.synthesis_attempts == 2
     assert provider.synthesis_requests[0].retry_visual_selection is False
     assert provider.synthesis_requests[1].retry_visual_selection is True
+    assert provider.synthesis_requests[1].retry_passages == tuple(
+        dict(item)
+        for item in _valid_synthesis_output(provider.synthesis_requests[0])["script_passages"]
+    )
     assert provider.synthesis_requests[1].ordered_observations == provider.synthesis_requests[0].ordered_observations
     assert provider.synthesis_requests[1].coverage_manifest == provider.synthesis_requests[0].coverage_manifest
 
@@ -1550,8 +1623,9 @@ def test_preferred_visual_panel_ids_exclude_front_matter_and_invalid_bounds():
     assert preferred == ("story",)
 
 
-def test_frameable_preferred_visual_ids_translate_segmented_source_bounds(monkeypatch):
+def test_frameable_preferred_visual_ids_translate_segmented_source_bounds(monkeypatch, tmp_path):
     module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
     raw = io.BytesIO()
     Image.new("RGB", (800, 400), (80, 120, 160)).save(raw, format="PNG")
     panel = SimpleNamespace(
@@ -1570,8 +1644,9 @@ def test_frameable_preferred_visual_ids_translate_segmented_source_bounds(monkey
     assert seen["size"] == (800, 300)
 
 
-def test_frameable_preferred_visual_selection_tracks_section_safety(monkeypatch):
+def test_frameable_preferred_visual_selection_tracks_section_safety(monkeypatch, tmp_path):
     module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
     raw = io.BytesIO()
     Image.new("RGB", (800, 400), (80, 120, 160)).save(raw, format="PNG")
     panel = SimpleNamespace(
@@ -1593,3 +1668,81 @@ def test_frameable_preferred_visual_selection_tracks_section_safety(monkeypatch)
     assert by_section["setup"] == ()
     assert by_section["twist"] == ()
     assert by_section["cta"] == ()
+
+
+def test_frameability_cache_reuses_exact_result_and_invalidates_identity(monkeypatch, tmp_path):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+
+    def png(rgb):
+        raw = io.BytesIO()
+        Image.new("RGB", (800, 400), rgb).save(raw, format="PNG")
+        return raw.getvalue()
+
+    panel = SimpleNamespace(
+        panel_id="story-cache",
+        source_asset_id="asset-cache",
+        source_asset_checksum="source-checksum-v1",
+        source_order=3,
+        bounds_json={"x": 0, "y": 150, "width": 800, "height": 300},
+        observation_json={
+            "visual_evidence": {
+                "balloon_mask_status": "known_nonempty",
+                "protected_regions": [{"kind": "subject"}],
+                "evidence_hash": "e" * 64,
+            }
+        },
+    )
+    source = SimpleNamespace(
+        payload=png((80, 120, 160)),
+        source_bounds=(0, 100, 800, 500),
+        source_family="family-cache",
+        original_checksum="source-checksum-v1",
+    )
+    profile = SimpleNamespace(
+        profile_id="profile-cache",
+        version="1",
+        framing_contract_version="framing-v1",
+    )
+    calls = {"count": 0}
+
+    def feasible(_panel, _crop, _candidate, _profile, **_kwargs):
+        calls["count"] += 1
+        return True, ("hook", "twist")
+
+    monkeypatch.setattr(module.reference_visual_review, "panel_reference_roi_safety", feasible)
+    first_metrics = {}
+    first = module._frameable_preferred_visual_panel_selection(
+        (panel,), {"asset-cache": source}, profile, telemetry=first_metrics
+    )
+    second_metrics = {}
+    second = module._frameable_preferred_visual_panel_selection(
+        (panel,), {"asset-cache": source}, profile, telemetry=second_metrics
+    )
+    assert first == second
+    assert calls["count"] == 1
+    assert first_metrics == {"cache_hits": 0, "cache_misses": 1, "wall_s": first_metrics["wall_s"]}
+    assert second_metrics["cache_hits"] == 1 and second_metrics["cache_misses"] == 0
+
+    panel.observation_json["visual_evidence"]["mask_reason"] = "changed evidence"
+    module._frameable_preferred_visual_panel_selection((panel,), {"asset-cache": source}, profile)
+    assert calls["count"] == 2
+
+    source.payload = png((81, 120, 160))
+    module._frameable_preferred_visual_panel_selection((panel,), {"asset-cache": source}, profile)
+    assert calls["count"] == 3
+
+    profile.version = "2"
+    module._frameable_preferred_visual_panel_selection((panel,), {"asset-cache": source}, profile)
+    assert calls["count"] == 4
+
+    monkeypatch.setattr(module, "_FRAMEABILITY_EVALUATOR_VERSION", "panel-reference-roi-safety-v2")
+    module._frameable_preferred_visual_panel_selection((panel,), {"asset-cache": source}, profile)
+    assert calls["count"] == 5
+
+    cache_files = list((tmp_path / "frameability-cache").glob("*.json"))
+    assert cache_files
+    latest = max(cache_files, key=lambda path: path.stat().st_mtime_ns)
+    latest.write_text("{corrupt", encoding="utf-8")
+    module._frameable_preferred_visual_panel_selection((panel,), {"asset-cache": source}, profile)
+    assert calls["count"] == 6

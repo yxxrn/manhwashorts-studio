@@ -157,11 +157,26 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
             panel_regions,
             estimated_bytes_by_panel_id=estimated_bytes,
         )
-        semantic, chunk_ledger, first_chunk = _observe_chunks(provider, chunks, panel_transports, analysis_run_id=run_id, instruction_version=instruction_version, instruction_sha256=instruction_sha256, visual_instruction_version=visual_instruction_version, visual_instruction_sha256=visual_instruction_sha256)
+        observation_telemetry = {}
+        semantic, chunk_ledger, first_chunk = _observe_chunks(
+            provider,
+            chunks,
+            panel_transports,
+            analysis_run_id=run_id,
+            instruction_version=instruction_version,
+            instruction_sha256=instruction_sha256,
+            visual_instruction_version=visual_instruction_version,
+            visual_instruction_sha256=visual_instruction_sha256,
+            telemetry=observation_telemetry,
+        )
         enriched, chain_observations = _enrich_observations(panel_regions, semantic, first_chunk, coverage)
+        frameability_telemetry = {}
         preferred_visual_panel_ids, preferred_visual_panel_ids_by_section = (
             _frameable_preferred_visual_panel_selection(
-                panel_regions, input_by_asset, resolved_reference_profile
+                panel_regions,
+                input_by_asset,
+                resolved_reference_profile,
+                telemetry=frameability_telemetry,
             )
         )
         duplicate_observations = sum(len(chunk) for chunk in chunks) - len(enriched)
@@ -192,6 +207,10 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
             ) from None
         except VisionCapabilityError:
             raise _AnalysisBlocked('vision_provider_request_failed', stage='synthesis_provider') from None
+        except _AnalysisBlocked:
+            # Preserve fail-closed reconciliation/classification codes emitted by
+            # the synthesis validator; these are not provider transport failures.
+            raise
         except Exception:
             raise _AnalysisBlocked('vision_provider_request_failed', stage='synthesis_provider') from None
         synthesis_output = _classify_synthesis_output(synthesis_output, expected_panel_ids, synthesis_chunks)
@@ -215,7 +234,7 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
         row.evidence_graph_json = dict(synthesis_output['evidence_graph'])
         row.evidence_graph_json['script_passages'] = list(synthesis_output['script_passages'])
         row.story_spine_json = dict(synthesis_output['narrative_outline']['story_spine'])
-        row.reconciliation_json = {'coverage_map_hash': coverage.map_sha256, 'coverage_map_version': coverage.version, 'canonical_panel_count': coverage.panel_count, 'processed_panel_count': len(enriched), 'duplicate_overlap_observations': duplicate_observations, 'chain_reconciled': True, 'chain_errors': list(chain_errors), 'narrative_screening_warning_codes': []}
+        row.reconciliation_json = {'coverage_map_hash': coverage.map_sha256, 'coverage_map_version': coverage.version, 'canonical_panel_count': coverage.panel_count, 'processed_panel_count': len(enriched), 'duplicate_overlap_observations': duplicate_observations, 'chain_reconciled': True, 'chain_errors': list(chain_errors), 'narrative_screening_warning_codes': [], 'performance': {'observation': observation_telemetry, 'frameability': frameability_telemetry}}
         if selected_profile is not None:
             row.reconciliation_json['narrative_identity'] = {'profile_id': selected_profile.profile_id, 'version': selected_profile.profile_version, 'sha256': selected_profile.contract_sha256}
             row.reconciliation_json['narrative_ending_kind'] = synthesis_output['narrative_outline']['ending_kind']

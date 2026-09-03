@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 import string
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -509,6 +510,7 @@ class OpenAICompatibleVisionProvider:
         # in stage payloads.  The bounded cache avoids re-encoding the same
         # panel on a missing-only retry.
         self._ephemeral_image_cache: dict[str, str] = {}
+        self._ephemeral_image_cache_lock = threading.Lock()
 
     def __repr__(self) -> str:
         return (
@@ -532,12 +534,17 @@ class OpenAICompatibleVisionProvider:
     def _encoded_image(self, *, mime_type: str, payload: bytes) -> str:
         digest = hashlib.sha256(payload).hexdigest()
         key = f"{mime_type.lower()}:{digest}"
-        encoded = self._ephemeral_image_cache.get(key)
+        with self._ephemeral_image_cache_lock:
+            encoded = self._ephemeral_image_cache.get(key)
         if encoded is None:
             encoded = base64.b64encode(payload).decode("ascii")
-            if len(self._ephemeral_image_cache) >= 256:
-                self._ephemeral_image_cache.pop(next(iter(self._ephemeral_image_cache)))
-            self._ephemeral_image_cache[key] = encoded
+            with self._ephemeral_image_cache_lock:
+                existing = self._ephemeral_image_cache.get(key)
+                if existing is not None:
+                    return existing
+                if len(self._ephemeral_image_cache) >= 256:
+                    self._ephemeral_image_cache.pop(next(iter(self._ephemeral_image_cache)))
+                self._ephemeral_image_cache[key] = encoded
         return encoded
 
     def capability(self) -> VisionCapabilityReport:
@@ -739,7 +746,14 @@ class OpenAICompatibleVisionProvider:
                     passage_word_counts=counts,
                     retry_passages=_retry_passages_from_candidate(validated_result),
                 )
-        validate_synthesis_visual_selection(validated_result, request)
+        try:
+            validate_synthesis_visual_selection(validated_result, request)
+        except VisionResponseInvalid as exc:
+            raise VisionResponseInvalid(
+                validation_subtype=exc.validation_subtype,
+                passage_word_counts=exc.passage_word_counts,
+                retry_passages=_retry_passages_from_candidate(validated_result),
+            ) from None
         return validated_result
 
     def complete_json(
@@ -2006,6 +2020,7 @@ def validate_synthesis_visual_selection(
     if not isinstance(passages, list) or not passages:
         raise VisionResponseInvalid()
     preferred_set = set(preferred)
+    locked_passages = tuple(dict(passage) for passage in passages if isinstance(passage, Mapping))
     preferred_by_section = request.preferred_visual_panel_ids_by_section or {}
     role_sections = {
         "hook": "hook",
@@ -2034,17 +2049,20 @@ def validate_synthesis_visual_selection(
             selected_section = {panel_id for panel_id in evidence if panel_id in section_preferred}
             if len(selected_section) < 4:
                 raise VisionResponseInvalid(
-                    validation_subtype="production_visual_selection_insufficient"
+                    validation_subtype="production_visual_selection_insufficient",
+                    retry_passages=locked_passages,
                 )
         selected = {panel_id for panel_id in evidence if panel_id in preferred_set}
         if len(selected) < per_passage_min:
             raise VisionResponseInvalid(
-                validation_subtype="production_visual_selection_insufficient"
+                validation_subtype="production_visual_selection_insufficient",
+                retry_passages=locked_passages,
             )
         used_preferred.update(selected)
     if len(used_preferred) < unique_min:
         raise VisionResponseInvalid(
-            validation_subtype="production_visual_selection_insufficient"
+            validation_subtype="production_visual_selection_insufficient",
+            retry_passages=locked_passages,
         )
 
 
@@ -2112,12 +2130,21 @@ def _build_synthesis_payload(
     locked_passage_instruction = ""
     if request.retry_passages is not None:
         locked_json = json.dumps([dict(item) for item in request.retry_passages], ensure_ascii=False, separators=(",", ":"))
-        locked_passage_instruction = (
-            "The previous response passed semantic/evidence structure but failed a narration-length or subtitle-layout gate. "
-            "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, claim_ids, "
-            "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only passage text. Keep the exact production word ranges, prefer shorter ordinary words and balanced phrase lengths, and avoid long token combinations that cannot fit the fixed two-line subtitle layout. "
-            f"Previous locked script_passages: {locked_json}. "
-        )
+        if request.retry_visual_selection:
+            locked_passage_instruction = (
+                "The previous response passed semantic/narration structure but failed production visual selection. "
+                "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, text, "
+                "claim_ids, ordering, claims, and grounded meaning exactly; change only evidence_panel_ids. Broaden evidence_panel_ids "
+                "with semantically relevant IDs from the corresponding section allowlist while preserving all claim evidence. "
+                f"Previous locked script_passages: {locked_json}. "
+            )
+        else:
+            locked_passage_instruction = (
+                "The previous response passed semantic/evidence structure but failed a narration-length or subtitle-layout gate. "
+                "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, claim_ids, "
+                "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only passage text. Keep the exact production word ranges, prefer shorter ordinary words and balanced phrase lengths, and avoid long token combinations that cannot fit the fixed two-line subtitle layout. "
+                f"Previous locked script_passages: {locked_json}. "
+            )
     retry_instruction = ""
     if request.retry_word_counts is not None:
         previous_total = sum(request.retry_word_counts)

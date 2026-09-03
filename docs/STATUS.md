@@ -1,12 +1,13 @@
 # Current Status
 
-Last synchronized with current production behavior on 2026-09-03. Current code, tests, runtime health, and accepted artifacts override older benchmark/handoff notes below.
+Last synchronized with current production behavior on 2026-09-04. Current code, tests, runtime health, and accepted artifacts override older benchmark/handoff notes below.
 
 ## Current verified state
 
 - The stable orchestration boundaries remain `app.services.pipeline` → `pipeline_stages/` and `app.services.cloud_multimodal` → `cloud_runner_parts/`; the application import graph is contract-tested for cycles.
 - Production final duration remains 50–60s with a 55s default target; 1080×1920, 60 FPS H.264/AAC is the accepted final media profile.
 - Visual/story analysis is durable and resumable. Valid segmentation, visual/story, narration/repair, TTS, timeline, render, and thumbnail identities are reused instead of repeating expensive work after interruption.
+- Vision observation now uses fail-closed bounded concurrency of 3 while preserving original chunk ordering, per-chunk retry/cache boundaries, adjacent-overlap reconciliation, and full schema/lineage/evidence coverage gates. Exact production frameability/section-safety results use a persistent content/evidence/profile/version-keyed cache; corrupt or stale entries are recomputed rather than trusted.
 - Visual planning is evidence-first and lineage-preserving: exact persisted panels/ROIs are selected under chronology/framing/face/protected-region constraints, capped at 4s per shot, animated with deterministic in-shot motion, and joined with editorial fades. Repetition, static holds, jitter, black frames, subtitle timing, A/V drift, and artifact integrity are QC'd.
 - Source acquisition supports ordinary uploads plus an optional localhost Suwayomi sidecar. Suwayomi imports preserve chapter/page order and enter the same source/evidence pipeline; a corpus cannot be mutated through that connector after analysis exists.
 - Fresh-machine lifecycle is Alembic-first and reproducible through `install.sh`/`scripts/manhwashorts doctor`; Chrome and Java/Suwayomi readiness are included when enabled.
@@ -17,6 +18,16 @@ Last synchronized with current production behavior on 2026-09-03. Current code, 
 - Local agents can advance `/api/projects/{id}/run` through `until: "publish"`. Trusted-agent approval is allowed only for an explicit publish request with `approval_mode: "trusted_agent"` and `confirm_publish_intent: true`; ordinary UI/manual approval is unchanged.
 - Rights/source metadata remains auditable. `MS_REQUIRE_RIGHTS_DECLARATION=false` is the production default, so missing declarations do not block render/publish unless a deployment intentionally enables enforcement.
 - The production service was verified healthy after the browser-account/trust-defaults update (`GET /api/health` HTTP 200, version 1.7.0, YouTube enabled, no reported problems).
+
+## 2026-09-04 Run 4 production performance checkpoint
+
+- Fresh project `9c89e873dfc648b08c7cac14982914a9`: Infinite Mage chapters 174-177, Asura Scans (EN), 87 downloaded pages, 249 source assets, 411/411 reconciled panels, and 41 observation chunks. No YouTube publication was performed.
+- Cold observation completed in 762.131s (12m42s) with concurrency 3, 44 actual provider calls for 41 chunks, three transient-invalid single-chunk retries, peak concurrency 3, and effective concurrency 2.885. The Run 3 serial baseline was 1,960.684s (32m41s) for 34 chunks.
+- Cold exact frameability evaluated 193 eligible panels in 359.473s with 193 misses. A post-benchmark exact warm replay hit 193/193 entries and completed the frameability call in 0.062s; the cold benchmark itself remains uncontaminated.
+- Visual analysis completed in 1,331.376s (22m11s), synthesis in 29.894s, TTS in 15.820s, timeline planning in 68.562s, final render in 203.747s, and production orchestration in 325.498s. Total clean wall time was 1,809.949s (30m10s).
+- Final artifact `data/output/9c89e873dfc648b08c7cac14982914a9/final.mp4` is 50.700s, 1080x1920, 60 FPS, H.264/AAC, SHA-256 `cf24e35914943de0d11101ba696fc5aa00f227e2dc91ed6ff87b53262276102a`. Post-render QC has zero failures; thumbnail and manual-upload metadata packages passed; timeline has 16 scenes and zero consecutive panel repeats.
+- Run 5 profiling candidates, measured but intentionally not changed during Run 4: ~179.878s of non-observation/non-frameability/non-synthesis analysis CPU work (segmentation/panel transport/window materialization needs finer profiling); 68.562s timeline exact-ROI planning; 203.747s render across per-scene encode/join/subtitle passes; duplicate thumbnail generation (23.435s inside render plus 17.695s post-QC); and 15.297s metadata generation dominated by the grounded title-model call.
+- Release validation after Run 4: the synthesis-provider boundary now preserves analysis-domain reconciliation failures instead of misclassifying them as transport failures. Targeted vision/story/production regressions, Ruff, compileall, dependency-graph checks, diff-check, and the clean-environment full 1,693-test suite all pass. Production ms_env.sh must not be sourced for the BYOK test suite because those tests intentionally assert the no-environment-key fallback.
 
 ## 2026-08-31 local aggregate benchmark checkpoint
 

@@ -858,6 +858,9 @@ def test_production_visual_selection_requires_preferred_panel_coverage():
     with pytest.raises(module.VisionResponseInvalid) as caught:
         module.validate_synthesis_visual_selection(output, request)
     assert caught.value.validation_subtype == "production_visual_selection_insufficient"
+    assert caught.value.retry_passages == tuple(
+        dict(item) for item in output["script_passages"]
+    )
 
 
 def test_production_visual_selection_requires_section_safe_panel_coverage():
@@ -888,6 +891,9 @@ def test_production_visual_selection_requires_section_safe_panel_coverage():
     with pytest.raises(module.VisionResponseInvalid) as caught:
         module.validate_synthesis_visual_selection(output, request)
     assert caught.value.validation_subtype == "production_visual_selection_insufficient"
+    assert caught.value.retry_passages == tuple(
+        dict(item) for item in output["script_passages"]
+    )
 
 
 def test_production_visual_selection_fails_closed_when_section_allowlist_is_too_small():

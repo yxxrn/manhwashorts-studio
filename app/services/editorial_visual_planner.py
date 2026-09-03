@@ -1782,6 +1782,152 @@ def _plan_reference_panel_candidates(
     for base_shot in base_shots:
         section_key = str(base_shot.get("section", ""))
         section_shot_totals[section_key] = section_shot_totals.get(section_key, 0) + 1
+    standard_panel_assignment: tuple[str, ...] = ()
+    if allow_standard_cadence_adaptation:
+        candidate_index = {
+            candidate.panel_id: index for index, candidate in enumerate(ordered)
+        }
+        shot_options: list[
+            tuple[
+                str,
+                str,
+                tuple[tuple[ReferencePanelFallbackCandidate, int], ...],
+            ]
+        ] = []
+        for base_shot in base_shots:
+            section_name = str(base_shot.get("section", ""))
+            beat_name = str(base_shot.get("camera_intent", "") or "")
+            options: list[tuple[ReferencePanelFallbackCandidate, int]] = []
+            for candidate in ordered:
+                if not _candidate_is_eligible(candidate, section_name, beat_name):
+                    continue
+                capacity = _cached_feasible_roi_capacity(
+                    candidate,
+                    profile,
+                    allow_source_resolution_warning=allow_source_resolution_warning,
+                    review_aggressive_crop=True,
+                    allow_conservative_full_panel=allow_conservative_full_panel,
+                    section=section_name,
+                    beat=beat_name,
+                )
+                if capacity > 0:
+                    options.append((candidate, int(capacity)))
+            if not options:
+                raise ReferencePlanningError(
+                    f"no exact panel candidate is eligible for section {section_name}",
+                    "visual.visual_unavailable",
+                )
+            shot_options.append((section_name, beat_name, tuple(options)))
+
+        failed_states: set[tuple[object, ...]] = set()
+        search_nodes = 0
+        search_node_budget = 100_000
+        reuse_window = max(
+            1, int(reference_profile.REVIEW_PANEL_REUSE_WINDOW_SHOTS)
+        )
+
+        def _search_standard_assignment(
+            shot_index: int,
+            use_counts: tuple[int, ...],
+            recent_ids: tuple[str, ...],
+            last_section: str,
+            last_order: int,
+        ) -> tuple[str, ...] | None:
+            nonlocal search_nodes
+            if shot_index >= len(shot_options):
+                return ()
+            state = (
+                shot_index,
+                use_counts,
+                recent_ids,
+                last_section,
+                last_order,
+            )
+            if state in failed_states:
+                return None
+            search_nodes += 1
+            if search_nodes > search_node_budget:
+                failed_states.add(state)
+                return None
+            section_name, beat_name, options = shot_options[shot_index]
+            usage_map = {
+                candidate.panel_id: use_counts[index]
+                for index, candidate in enumerate(ordered)
+                if use_counts[index]
+            }
+
+            def _assignment_priority(
+                item: tuple[ReferencePanelFallbackCandidate, int],
+            ) -> tuple[object, ...]:
+                candidate, _capacity = item
+                order = int(candidate.source_order)
+                boundary_relaxation = bool(
+                    section_name != "hook"
+                    and section_name != last_section
+                    and last_order >= 0
+                    and order < last_order
+                )
+                return (
+                    1 if boundary_relaxation else 0,
+                    -order if boundary_relaxation else 0,
+                    1 if candidate.panel_id in recent_ids else 0,
+                    *_review_candidate_priority_key(
+                        candidate,
+                        usage_map,
+                        section_name,
+                        beat_name,
+                    ),
+                )
+
+            for candidate, beat_capacity in sorted(
+                options, key=_assignment_priority
+            ):
+                panel_id = candidate.panel_id
+                index = candidate_index[panel_id]
+                if recent_ids and panel_id == recent_ids[-1]:
+                    continue
+                if use_counts[index] >= review_capacity_by_panel.get(panel_id, 0):
+                    continue
+                if use_counts[index] >= beat_capacity:
+                    continue
+                order = int(candidate.source_order)
+                if (
+                    section_name != "hook"
+                    and section_name == last_section
+                    and last_order >= 0
+                    and order < last_order
+                ):
+                    continue
+                next_counts = list(use_counts)
+                next_counts[index] += 1
+                next_recent = (*recent_ids, panel_id)[-reuse_window:]
+                next_order = last_order if section_name == "hook" else order
+                tail = _search_standard_assignment(
+                    shot_index + 1,
+                    tuple(next_counts),
+                    next_recent,
+                    section_name,
+                    next_order,
+                )
+                if tail is not None:
+                    return (panel_id, *tail)
+            failed_states.add(state)
+            return None
+
+        resolved_assignment = _search_standard_assignment(
+            0,
+            tuple(0 for _ in ordered),
+            (),
+            "",
+            -1,
+        )
+        if resolved_assignment is None:
+            raise ReferencePlanningError(
+                "standard cadence has no globally feasible panel assignment",
+                "visual.capacity_insufficient",
+            )
+        standard_panel_assignment = resolved_assignment
+
     section_shots_done: dict[str, int] = {}
     last_non_hook_source_order: int | None = None
     last_non_hook_section = ""
@@ -1889,13 +2035,30 @@ def _plan_reference_panel_candidates(
     for shot_index, shot in enumerate(base_shots):
         section = str(shot.get("section", ""))
         beat = str(shot.get("camera_intent", "") or "")
+        assigned_panel_id = (
+            standard_panel_assignment[shot_index]
+            if standard_panel_assignment
+            else ""
+        )
         if (
             allow_standard_cadence_adaptation
             and section != "hook"
             and section != last_non_hook_section
         ):
             previous_floor = last_non_hook_source_order
-            if previous_floor is not None:
+            if previous_floor is not None and assigned_panel_id:
+                assigned_order = next(
+                    int(candidate.source_order)
+                    for candidate in ordered
+                    if candidate.panel_id == assigned_panel_id
+                )
+                if assigned_order < previous_floor:
+                    section_floor_relaxations[section] = (
+                        previous_floor,
+                        assigned_order,
+                    )
+                    last_non_hook_source_order = assigned_order
+            elif previous_floor is not None:
                 section_orders = sorted(
                     {
                         int(candidate.source_order)
@@ -1917,7 +2080,8 @@ def _plan_reference_panel_candidates(
                     if viable_floors:
                         relaxed_floor = max(viable_floors)
                         section_floor_relaxations[section] = (
-                            previous_floor, relaxed_floor
+                            previous_floor,
+                            relaxed_floor,
                         )
                         last_non_hook_source_order = relaxed_floor
             last_non_hook_section = section
@@ -1945,6 +2109,17 @@ def _plan_reference_panel_candidates(
                 for candidate in eligible
                 if int(candidate.source_order) >= last_non_hook_source_order
             ]
+        if assigned_panel_id:
+            eligible = [
+                candidate
+                for candidate in eligible
+                if candidate.panel_id == assigned_panel_id
+            ]
+            if not eligible:
+                raise ReferencePlanningError(
+                    "global panel assignment lost exact shot eligibility",
+                    "visual.capacity_insufficient",
+                )
         recent_set: set[str] = set()
         repeat_avoidance_backtrack_from: int | None = None
         if not cadence_adapted:
@@ -1967,7 +2142,11 @@ def _plan_reference_panel_candidates(
                 )
                 > len(used_rois.get(candidate.panel_id, set()))
             ]
-            if allow_standard_cadence_adaptation and eligible:
+            if (
+                allow_standard_cadence_adaptation
+                and not standard_panel_assignment
+                and eligible
+            ):
                 preserves_remaining = [
                     candidate
                     for candidate in eligible
@@ -2285,6 +2464,8 @@ def _plan_reference_panel_candidates(
         uses[candidate.panel_id] = uses.get(candidate.panel_id, 0) + 1
         used_rois.setdefault(candidate.panel_id, set()).add(_roi_key(roi))
         reasons = list(shot.get("alignment_reasons", ()))
+        if assigned_panel_id:
+            reasons.append("capacity_path:global_assignment_v1")
         if (
             repeat_avoidance_backtrack_from is not None
             and int(candidate.source_order) < repeat_avoidance_backtrack_from

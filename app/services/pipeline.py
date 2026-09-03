@@ -23,6 +23,7 @@ import secrets
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import nullcontext, suppress
 from copy import copy as shallow_copy
 from dataclasses import asdict, replace
@@ -1003,6 +1004,7 @@ def _validate_observation_rows(
 
 _VISION_OBSERVATION_CACHE_VERSION = "vision-observation-chunk-v2"
 _VISION_OBSERVATION_MAX_ATTEMPTS = 3
+_VISION_OBSERVATION_CONCURRENCY = 3
 
 
 def _vision_observation_panel_identity(panel: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1223,7 +1225,15 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                     retry_passages=retry_passages if retry_passages is not None else active_request.retry_passages,
                 )
             if subtype == "production_visual_selection_insufficient":
-                active_request = replace(active_request, retry_visual_selection=True)
+                active_request = replace(
+                    active_request,
+                    retry_visual_selection=True,
+                    retry_passages=(
+                        retry_passages
+                        if retry_passages is not None
+                        else active_request.retry_passages
+                    ),
+                )
             time.sleep(0.05)
         except VisionProviderRequestFailed as exc:
             if not exc.retryable or attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS:
@@ -1295,15 +1305,14 @@ def _observe_chunks(
     instruction_sha256: str,
     visual_instruction_version: str | None = None,
     visual_instruction_sha256: str | None = None,
+    telemetry: dict[str, Any] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
     if (visual_instruction_version is None) != (visual_instruction_sha256 is None):
         raise _AnalysisBlocked("analyzer_contract_invalid", stage="visual_instruction")
     require_visual_evidence = visual_instruction_version is not None
-    unique: dict[str, dict[str, Any]] = {}
-    last_seen: dict[str, int] = {}
-    first_chunk: dict[str, int] = {}
-    ledger: list[dict[str, Any]] = []
-    for chunk_index, chunk in enumerate(chunks):
+    stage_started = time.perf_counter()
+
+    def observe_one(chunk_index: int, chunk: Sequence[PanelRegion]) -> dict[str, Any]:
         panel_ids = tuple(panel.panel_id for panel in chunk)
         request = VisionObservationRequest(
             analysis_run_id=analysis_run_id,
@@ -1319,13 +1328,18 @@ def _observe_chunks(
             cache_key, panel_ids, panel_transports,
             require_visual_evidence=require_visual_evidence,
         )
+        provider_calls: list[dict[str, Any]] = []
+        cache_hit = rows is not None
         if rows is None:
             response = None
             for attempt in range(1, _VISION_OBSERVATION_MAX_ATTEMPTS + 1):
+                call_started = time.perf_counter()
+                outcome = "ok"
                 try:
                     response = provider.observe(request)
                     break
                 except VisionResponseInvalid:
+                    outcome = "invalid"
                     if attempt >= _VISION_OBSERVATION_MAX_ATTEMPTS:
                         raise _AnalysisBlocked(
                             "vision_response_invalid",
@@ -1333,12 +1347,9 @@ def _observe_chunks(
                             chunk_index=chunk_index,
                             attempts=attempt,
                         ) from None
-                    # Observation responses are generative and can be transiently
-                    # malformed even when the request/provider is healthy. Keep
-                    # the strict validator/cache boundary, but spend the same
-                    # bounded retry budget before failing closed.
                     time.sleep(min(0.25 * attempt, 1.0))
                 except VisionProviderRequestFailed as exc:
+                    outcome = "provider_retry" if exc.retryable else "provider_permanent"
                     if not exc.retryable or attempt >= _VISION_OBSERVATION_MAX_ATTEMPTS:
                         raise _AnalysisBlocked(
                             "vision_provider_request_failed",
@@ -1349,9 +1360,23 @@ def _observe_chunks(
                     delay = exc.retry_after_s if isinstance(exc.retry_after_s, (int, float)) else min(2 ** (attempt - 1), 4)
                     time.sleep(max(0.05, min(float(delay), 10.0)))
                 except VisionCapabilityError:
+                    outcome = "capability_error"
                     raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index) from None
                 except Exception:
+                    outcome = "provider_permanent"
                     raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index) from None
+                finally:
+                    call_finished = time.perf_counter()
+                    provider_calls.append(
+                        {
+                            "chunk_index": chunk_index,
+                            "attempt": attempt,
+                            "started_s": round(call_started - stage_started, 6),
+                            "finished_s": round(call_finished - stage_started, 6),
+                            "duration_s": round(call_finished - call_started, 6),
+                            "outcome": outcome,
+                        }
+                    )
             if response is None:
                 raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index)
             rows = _validate_observation_rows(
@@ -1361,15 +1386,64 @@ def _observe_chunks(
                 require_visual_evidence=require_visual_evidence,
             )
             _store_cached_observation_rows(cache_key, rows)
+        return {
+            "chunk_index": chunk_index,
+            "panel_ids": panel_ids,
+            "rows": rows,
+            "cache_hit": cache_hit,
+            "provider_calls": provider_calls,
+        }
+
+    workers = min(_VISION_OBSERVATION_CONCURRENCY, max(1, len(chunks)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="vision-observe") as executor:
+        futures = [executor.submit(observe_one, chunk_index, chunk) for chunk_index, chunk in enumerate(chunks)]
+        wait(futures)
+        ordered_results = [future.result() for future in futures]
+
+    wall_s = time.perf_counter() - stage_started
+    provider_calls = sorted(
+        (call for result in ordered_results for call in result["provider_calls"]),
+        key=lambda item: (item["started_s"], item["chunk_index"], item["attempt"]),
+    )
+    events: list[tuple[float, int]] = []
+    for call in provider_calls:
+        events.append((float(call["started_s"]), 1))
+        events.append((float(call["finished_s"]), -1))
+    active = 0
+    max_concurrency = 0
+    for _at, delta in sorted(events, key=lambda item: (item[0], -item[1])):
+        active += delta
+        max_concurrency = max(max_concurrency, active)
+    provider_busy_s = sum(float(call["duration_s"]) for call in provider_calls)
+    if telemetry is not None:
+        telemetry.clear()
+        telemetry.update(
+            {
+                "chunk_count": len(chunks),
+                "configured_concurrency": _VISION_OBSERVATION_CONCURRENCY,
+                "worker_count": workers,
+                "cache_hits": sum(1 for result in ordered_results if result["cache_hit"]),
+                "cache_misses": sum(1 for result in ordered_results if not result["cache_hit"]),
+                "provider_call_count": len(provider_calls),
+                "provider_calls": provider_calls,
+                "provider_busy_s": round(provider_busy_s, 6),
+                "wall_s": round(wall_s, 6),
+                "max_provider_concurrency": max_concurrency,
+                "effective_concurrency": round(provider_busy_s / wall_s, 3) if wall_s > 0 else 0.0,
+            }
+        )
+
+    unique: dict[str, dict[str, Any]] = {}
+    last_seen: dict[str, int] = {}
+    first_chunk: dict[str, int] = {}
+    ledger: list[dict[str, Any]] = []
+    for result in ordered_results:
+        chunk_index = int(result["chunk_index"])
+        panel_ids = tuple(result["panel_ids"])
+        rows = result["rows"]
         for row in rows:
             panel_id = row["panel_id"]
             if panel_id in unique:
-                # Adjacent overlap rows are context/reconciliation evidence, not a
-                # determinism test for a generative vision provider. Every row has
-                # already passed strict schema, panel/source lineage, and evidence
-                # validation above. Keep the first valid observation canonical and
-                # require only that a duplicate comes from the immediately adjacent
-                # chunk; descriptive wording may legitimately drift between calls.
                 if last_seen[panel_id] + 1 != chunk_index:
                     raise _AnalysisBlocked("analysis_observation_missing", stage="observation_overlap")
             else:
@@ -1478,38 +1552,167 @@ def _preferred_visual_panel_ids(panel_regions: Sequence[PanelRegion]) -> tuple[s
 
 
 _PRODUCTION_VISUAL_SECTIONS = ("hook", "setup", "conflict", "twist", "cta")
+_FRAMEABILITY_CACHE_VERSION = "exact-frameability-roi-v1"
+_FRAMEABILITY_EVALUATOR_VERSION = "panel-reference-roi-safety-v1"
+
+
+def _frameability_profile_identity(profile: object) -> Mapping[str, Any]:
+    try:
+        return asdict(profile)
+    except (TypeError, ValueError):
+        values = vars(profile) if hasattr(profile, "__dict__") else {}
+        return {str(key): value for key, value in sorted(values.items()) if not str(key).startswith("_")}
+
+
+def _frameability_cache_key(
+    panel: PanelRegion,
+    source_input: object,
+    profile: object,
+    *,
+    source_payload_sha256: str,
+) -> str | None:
+    raw_visual = getattr(panel, "observation_json", None)
+    visual = raw_visual.get("visual_evidence") if isinstance(raw_visual, Mapping) else None
+    if not isinstance(visual, Mapping) or not source_payload_sha256:
+        return None
+    try:
+        bounds = list(_panel_region_bounds(panel))
+        visual_sha256 = hashlib.sha256(
+            json.dumps(visual, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        source_bounds = list(source_input.source_bounds)
+        identity = {
+            "version": _FRAMEABILITY_CACHE_VERSION,
+            "evaluator_version": _FRAMEABILITY_EVALUATOR_VERSION,
+            "panel_id": str(panel.panel_id),
+            "source_asset_id": str(panel.source_asset_id),
+            "source_asset_checksum": str(getattr(panel, "source_asset_checksum", "") or ""),
+            "source_input_checksum": str(getattr(source_input, "original_checksum", "") or ""),
+            "source_payload_sha256": source_payload_sha256,
+            "panel_bounds": bounds,
+            "source_bounds": source_bounds,
+            "visual_evidence_sha256": visual_sha256,
+            "visual_evidence_contract_version": visual_scoring.VISUAL_EVIDENCE_CONTRACT_VERSION,
+            "profile": _frameability_profile_identity(profile),
+            "framing_contract_version": str(getattr(profile, "framing_contract_version", "") or ""),
+            "cadence_policy_version": reference_profile.PRODUCTION_REFERENCE_CADENCE_POLICY_VERSION,
+            "editorial_sections": list(_PRODUCTION_VISUAL_SECTIONS),
+        }
+        encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _frameability_cache_path(cache_key: str) -> Path:
+    return settings.data_dir / "frameability-cache" / f"{cache_key}.json"
+
+
+def _load_cached_frameability(cache_key: str | None) -> tuple[bool, tuple[str, ...]] | None:
+    if cache_key is None:
+        return None
+    path = _frameability_cache_path(cache_key)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping) or payload.get("version") != _FRAMEABILITY_CACHE_VERSION:
+            return None
+        generic_safe = payload.get("generic_safe")
+        sections = payload.get("safe_sections")
+        if not isinstance(generic_safe, bool) or not isinstance(sections, list):
+            return None
+        if any(not isinstance(section, str) or section not in _PRODUCTION_VISUAL_SECTIONS for section in sections):
+            return None
+        if len(sections) != len(set(sections)):
+            return None
+        return generic_safe, tuple(section for section in _PRODUCTION_VISUAL_SECTIONS if section in sections)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _store_cached_frameability(
+    cache_key: str | None, generic_safe: bool, safe_sections: Sequence[str]
+) -> None:
+    if cache_key is None:
+        return
+    path = _frameability_cache_path(cache_key)
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+    safe_set = set(safe_sections)
+    payload = {
+        "version": _FRAMEABILITY_CACHE_VERSION,
+        "generic_safe": bool(generic_safe),
+        "safe_sections": [section for section in _PRODUCTION_VISUAL_SECTIONS if section in safe_set],
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
 
 
 def _frameable_preferred_visual_panel_selection(
     panel_regions: Sequence[PanelRegion],
     source_inputs: Mapping[str, object],
     profile: object | None,
+    *,
+    telemetry: dict[str, Any] | None = None,
 ) -> tuple[tuple[str, ...], Mapping[str, tuple[str, ...]]]:
-    """Compute generic and section-safe preferred panels in one pixel pass."""
+    """Compute generic and section-safe preferred panels with exact persistent ROI caching."""
+    stage_started = time.perf_counter()
     if profile is None:
         generic = _preferred_visual_panel_ids(panel_regions)
+        if telemetry is not None:
+            telemetry.clear()
+            telemetry.update({"cache_hits": 0, "cache_misses": 0, "wall_s": round(time.perf_counter() - stage_started, 6)})
         return generic, dict.fromkeys(_PRODUCTION_VISUAL_SECTIONS, generic)
     preferred = set(_preferred_visual_panel_ids(panel_regions))
     section_rows: dict[str, list[str]] = {section: [] for section in _PRODUCTION_VISUAL_SECTIONS}
     if not preferred:
+        if telemetry is not None:
+            telemetry.clear()
+            telemetry.update({"cache_hits": 0, "cache_misses": 0, "wall_s": round(time.perf_counter() - stage_started, 6)})
         return (), dict.fromkeys(_PRODUCTION_VISUAL_SECTIONS, ())
     decoded: dict[str, Image.Image] = {}
+    source_hashes: dict[str, str] = {}
     generic_rows: list[str] = []
+    cache_hits = 0
+    cache_misses = 0
     try:
         for panel in panel_regions:
             panel_id = str(panel.panel_id)
             if panel_id not in preferred:
                 continue
-            source_input = source_inputs.get(str(panel.source_asset_id))
+            source_asset_id = str(panel.source_asset_id)
+            source_input = source_inputs.get(source_asset_id)
             payload = getattr(source_input, "payload", None)
             if not isinstance(payload, (bytes, bytearray)):
                 continue
-            source = decoded.get(str(panel.source_asset_id))
+            source_payload_sha256 = source_hashes.get(source_asset_id)
+            if source_payload_sha256 is None:
+                source_payload_sha256 = hashlib.sha256(bytes(payload)).hexdigest()
+                source_hashes[source_asset_id] = source_payload_sha256
+            cache_key = _frameability_cache_key(
+                panel, source_input, profile, source_payload_sha256=source_payload_sha256
+            )
+            cached = _load_cached_frameability(cache_key)
+            if cached is not None:
+                cache_hits += 1
+                generic_safe, safe_sections = cached
+                if generic_safe:
+                    generic_rows.append(panel_id)
+                for section in safe_sections:
+                    section_rows[section].append(panel_id)
+                continue
+            cache_misses += 1
+            source = decoded.get(source_asset_id)
             if source is None:
                 with Image.open(io.BytesIO(bytes(payload))) as opened:
                     source = opened.convert("RGB")
                     source.load()
-                decoded[str(panel.source_asset_id)] = source
+                decoded[source_asset_id] = source
             bounds = _panel_region_bounds(panel)
             source_bounds = getattr(source_input, "source_bounds", None)
             if (
@@ -1530,7 +1733,7 @@ def _frameable_preferred_visual_panel_selection(
                 crop.save(encoded, format="PNG")
                 candidate = visual_scoring.analyze_panel(
                     encoded.getvalue(),
-                    asset_id=str(panel.source_asset_id),
+                    asset_id=source_asset_id,
                     order_index=int(panel.source_order),
                     source_family=str(getattr(source_input, "source_family", "") or ""),
                 )
@@ -1542,6 +1745,7 @@ def _frameable_preferred_visual_panel_selection(
                     editorial_sections=_PRODUCTION_VISUAL_SECTIONS,
                     allow_conservative_full_panel=True,
                 )
+                _store_cached_frameability(cache_key, generic_safe, safe_sections)
                 if generic_safe:
                     generic_rows.append(panel_id)
                 for section in safe_sections:
@@ -1553,6 +1757,15 @@ def _frameable_preferred_visual_panel_selection(
     finally:
         for image in decoded.values():
             image.close()
+        if telemetry is not None:
+            telemetry.clear()
+            telemetry.update(
+                {
+                    "cache_hits": cache_hits,
+                    "cache_misses": cache_misses,
+                    "wall_s": round(time.perf_counter() - stage_started, 6),
+                }
+            )
     return tuple(generic_rows), {section: tuple(section_rows[section]) for section in _PRODUCTION_VISUAL_SECTIONS}
 
 
