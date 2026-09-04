@@ -92,6 +92,8 @@ def _load_state(path: Path, args: argparse.Namespace) -> dict[str, Any]:
             "source_id": args.source_id,
             "language": args.language,
             "voice_id": getattr(args, "voice_id", DEFAULT_ENGLISH_VOICE_ID),
+            "watermark_enabled": bool(getattr(args, "watermark", False)),
+            "watermark_text": str(getattr(args, "watermark_text", "") or ""),
             "status": "STARTING",
             "stages": {},
             "events": [],
@@ -103,6 +105,10 @@ def _load_state(path: Path, args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("run state identity does not match requested corpus")
     if "voice_id" in payload and payload["voice_id"] != getattr(args, "voice_id", DEFAULT_ENGLISH_VOICE_ID):
         raise RuntimeError("run state identity does not match requested voice profile")
+    if bool(payload.get("watermark_enabled", False)) != bool(getattr(args, "watermark", False)):
+        raise RuntimeError("run state identity does not match requested watermark toggle")
+    if str(payload.get("watermark_text", "")) != str(getattr(args, "watermark_text", "") or ""):
+        raise RuntimeError("run state identity does not match requested watermark text")
     return payload
 def _event(state: dict[str, Any], path: Path, name: str, **detail: Any) -> None:
     stamp = time.time()
@@ -199,6 +205,8 @@ def _ensure_project(db: Any, args: argparse.Namespace, state: dict[str, Any], st
             template="reference_matched_shorts_v2",
             target_duration=55,
             voice_id=args.voice_id,
+            watermark_enabled=bool(args.watermark),
+            watermark_text=args.watermark_text,
         ),
         db,
         workspace,
@@ -448,6 +456,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--source-id", required=True)
     parser.add_argument("--language", default="en")
     parser.add_argument("--voice-id", default=DEFAULT_ENGLISH_VOICE_ID)
+    parser.add_argument("--watermark", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--watermark-text", default="")
     parser.add_argument("--max-analysis-attempts", type=int, default=2)
     parser.add_argument("--max-production-attempts", type=int, default=2)
     parser.add_argument("--retry-delay-s", type=float, default=15.0)
@@ -463,6 +473,11 @@ def _parse_args() -> argparse.Namespace:
         parser.error("production-run currently requires whole-number chapter bounds")
     if args.max_analysis_attempts < 1 or args.max_production_attempts < 1:
         parser.error("attempt counts must be >= 1")
+    args.watermark_text = str(args.watermark_text or "").strip() if args.watermark else ""
+    if args.watermark and not args.watermark_text:
+        parser.error("--watermark requires nonempty --watermark-text")
+    if len(args.watermark_text) > 120:
+        parser.error("--watermark-text must be at most 120 characters")
     return args
 
 

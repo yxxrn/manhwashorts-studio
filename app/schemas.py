@@ -70,6 +70,8 @@ class ProjectCreate(BaseModel):
         le=PROJECT_DURATION_MAX_SECONDS,
     )
     voice_id: str = Field(default=DEFAULT_ENGLISH_VOICE_ID, max_length=80)
+    watermark_enabled: bool = False
+    watermark_text: str = Field(default="", max_length=120)
     series_name: str = Field(default="", max_length=200)
     cta_text: str = Field(default="", max_length=500)
     banned_words: list[str] = Field(default_factory=list)
@@ -91,6 +93,8 @@ class ProjectUpdate(BaseModel):
         le=PROJECT_DURATION_MAX_SECONDS,
     )
     voice_id: str | None = Field(default=None, max_length=80)
+    watermark_enabled: bool | None = None
+    watermark_text: str | None = Field(default=None, max_length=120)
     series_name: str | None = Field(default=None, max_length=200)
     cta_text: str | None = Field(default=None, max_length=500)
     banned_words: list[str] | None = None
@@ -116,6 +120,8 @@ class ProjectOut(BaseModel):
     series_name: str
     cta_text: str
     voice_id: str
+    watermark_enabled: bool
+    watermark_text: str
     template: str
     archived: bool
     error_message: str

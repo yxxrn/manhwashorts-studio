@@ -358,6 +358,8 @@ def test_english_is_the_default_render_language_and_voice():
     project = ProjectCreate(title="default")
     assert project.language == "en"
     assert project.voice_id == DEFAULT_ENGLISH_VOICE_ID
+    assert project.watermark_enabled is False
+    assert project.watermark_text == ""
     assert VoiceRequest().speed == 1.15
 
 

@@ -151,6 +151,8 @@ class RenderRequest:
     persisted_reference_framing: bool = False
     review_source_upscale_policy: str | None = None
     allow_conservative_full_panel: bool = False
+    watermark_enabled: bool = False
+    watermark_text: str = ""
 
 
 @dataclass
@@ -2629,6 +2631,54 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
     })
 
 
+WATERMARK_CONTRACT_VERSION = "render-watermark-v1"
+WATERMARK_X_FRACTION = 0.50
+WATERMARK_Y_FRACTION = 0.89
+WATERMARK_TEXT_ASS_ALPHA = 0x8F
+WATERMARK_OUTLINE_ASS_ALPHA = 0xB3
+WATERMARK_SHADOW_ASS_ALPHA = 0xC0
+
+
+def _watermark_manifest(text: str, width: int, height: int, *, enabled: bool) -> dict[str, Any]:
+    value = str(text or "").strip() if enabled else ""
+    return {
+        "contract_version": WATERMARK_CONTRACT_VERSION,
+        "enabled": bool(enabled),
+        "text": value,
+        "placement": "lower_center",
+        "anchor": [WATERMARK_X_FRACTION, WATERMARK_Y_FRACTION],
+        "font_size_px": max(34, min(54, int(round(height * 0.024)))) if enabled else 0,
+        "text_opacity": round(1.0 - WATERMARK_TEXT_ASS_ALPHA / 255.0, 3) if enabled else 0.0,
+    }
+
+
+def _append_watermark_ass(ass_text: str, text: str, width: int, height: int, duration: float) -> str:
+    """Append a translucent lower-center watermark to an existing ASS document."""
+    value = str(text or "").strip()
+    if not value:
+        raise RenderError("watermark is enabled but text is empty", code="watermark_text_missing")
+    if duration <= 0:
+        raise RenderError("watermark duration is invalid", code="watermark_duration_invalid")
+    font_name = settings.subtitle_font_name or "DejaVu Sans"
+    font_size = max(34, min(54, int(round(height * 0.024))))
+    style = (
+        f"Style: Watermark,{font_name},{font_size},&H{WATERMARK_TEXT_ASS_ALPHA:02X}FFFFFF,"
+        f"&H{WATERMARK_TEXT_ASS_ALPHA:02X}FFFFFF,&H{WATERMARK_OUTLINE_ASS_ALPHA:02X}000000,"
+        f"&H{WATERMARK_SHADOW_ASS_ALPHA:02X}000000,0,0,0,0,100,100,0,0,1,1,1,2,0,0,0,1"
+    )
+    marker = "\n[Events]\n"
+    if marker not in ass_text:
+        raise RenderError("watermark ASS base is invalid", code="watermark_ass_invalid")
+    enriched = ass_text.replace(marker, f"\n{style}\n\n[Events]\n", 1).rstrip()
+    x = round(width * WATERMARK_X_FRACTION)
+    y = round(height * WATERMARK_Y_FRACTION)
+    event = (
+        f"Dialogue: 10,0:00:00.00,{_ass_time(duration)},Watermark,,0,0,0,,"
+        f"{{\\an2\\pos({x},{y})}}{_ass_escape(value)}"
+    )
+    return enriched + "\n" + event + "\n"
+
+
 def _escape_filter_path(path: Path) -> str:
     """Escape a path for use inside an FFmpeg filter argument."""
     text = str(path)
@@ -3059,23 +3109,29 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             profile=request.profile,
         )
 
-    burn_vf = ""
-    if has_subtitles:
+    watermark_active = bool(request.watermark_enabled and not request.preview)
+    if watermark_active:
+        ass_text = _append_watermark_ass(
+            ass_text, request.watermark_text, width, height, sum(scene.duration for scene in request.scenes)
+        )
+
+    overlay_filters: list[str] = []
+    if has_subtitles or watermark_active:
         ass_path = work / "captions.ass"
         ass_path.write_text(ass_text, encoding="utf-8")
         subtitle_filter = f"subtitles='{_escape_filter_path(ass_path)}'"
         font_path = Path(settings.subtitle_font)
         if font_path.is_file():
             subtitle_filter += f":fontsdir='{_escape_filter_path(font_path.parent)}'"
-        burn_vf = encoders.apply_filter_suffix(selection, subtitle_filter)
-        burn_vf = _reference_final_video_filter(
-            burn_vf,
-            request.profile,
-            preview=request.preview,
-        )
+        overlay_filters.append(subtitle_filter)
+
+    burn_vf = ",".join(overlay_filters)
+    if burn_vf:
+        burn_vf = encoders.apply_filter_suffix(selection, burn_vf)
+        burn_vf = _reference_final_video_filter(burn_vf, request.profile, preview=request.preview)
 
     combine_join_subtitles = bool(
-        has_subtitles
+        bool(overlay_filters)
         and stabilized_reference_motion
         and not request.preview
         and selection.spec.key == encoders.CPU.key
@@ -3084,7 +3140,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     silent = work / "silent.mp4"
     video_stage = silent
     if combine_join_subtitles:
-        report(60, "joining scenes + burning subtitles")
+        report(60, "joining scenes + burning final overlays")
         burned = work / "burned.mp4"
         join_scene_clips(
             clips,
@@ -3109,8 +3165,8 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             require_transitions=stabilized_reference_motion,
             x264_threads=serial_x264_threads,
         )
-        report(65, "burning subtitles")
-        if has_subtitles:
+        report(65, "burning final overlays")
+        if overlay_filters:
             burned = work / "burned.mp4"
             _run(
                 [
@@ -3225,6 +3281,12 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             "subtitle_contract": request.subtitle_contract or {},
             "subtitle_contract_version": request.subtitle_contract_version,
             "subtitle_timing_source": request.subtitle_timing_source,
+            "watermark": _watermark_manifest(
+                request.watermark_text,
+                int(info.get("width") or 0),
+                int(info.get("height") or 0),
+                enabled=bool(request.watermark_enabled),
+            ),
             "subtitle_evidence": _subtitle_manifest_evidence(
                 request.sentence_groups,
                 profile=request.profile,

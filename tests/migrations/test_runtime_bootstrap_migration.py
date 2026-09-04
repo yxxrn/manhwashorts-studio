@@ -13,7 +13,7 @@ from app.db_base import Base
 
 ROOT = Path(__file__).resolve().parents[2]
 PREVIOUS = "d4a8f2c1b7e9"
-HEAD = "e8f1a2b3c4d5"
+HEAD = "f3c9a2d4e6b8"
 
 
 def _env(database: Path) -> dict[str, str]:

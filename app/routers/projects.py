@@ -43,6 +43,8 @@ def create_project(
         narration_style=payload.narration_style,
         target_duration=payload.target_duration,
         voice_id=payload.voice_id,
+        watermark_enabled=payload.watermark_enabled,
+        watermark_text=payload.watermark_text.strip(),
         series_name=payload.series_name.strip(),
         cta_text=payload.cta_text.strip(),
         banned_words=[w.strip() for w in payload.banned_words if w.strip()],
@@ -81,7 +83,7 @@ def update_project(
 ) -> Project:
     changes = payload.model_dump(exclude_unset=True)
     for field, value in changes.items():
-        if field in {"title", "manhwa_title", "chapter", "series_name", "cta_text"} and value:
+        if field in {"title", "manhwa_title", "chapter", "series_name", "cta_text", "watermark_text"} and value:
             value = str(value).strip()
         setattr(project, field, value)
     audit(db, "project.update", "project", project.id, user.id, fields=sorted(changes))
@@ -103,6 +105,8 @@ def duplicate_project(project: OwnedProject, db: DbSession, user: CurrentUser) -
         narration_style=project.narration_style,
         target_duration=project.target_duration,
         voice_id=project.voice_id,
+        watermark_enabled=project.watermark_enabled,
+        watermark_text=project.watermark_text,
         series_name=project.series_name,
         cta_text=project.cta_text,
         banned_words=list(project.banned_words or []),

@@ -102,6 +102,10 @@ token into the execution host just to make a push succeed.
 
 The accepted production baseline is approximately **18-20 minutes for a normal three-chapter Oracle run from source import through final render, QC, thumbnail, and metadata**. This is a practical operating target, not an SLA or a gate: provider latency and corpus size can move an individual run above or below it.
 
+### Optional final-video watermark
+
+Projects expose `watermark_enabled` and `watermark_text`. The unattended runner mirrors them with `--watermark/--no-watermark` and `--watermark-text`. When enabled, the watermark is rendered lower-center at the final stage with translucent white text and subtle dark outline/shadow, using the existing ASS/libass overlay path in the same encode pass as subtitles. It is disabled for previews/review artifacts. Watermark settings are included in render identity, so changing the toggle or text forces a new final render instead of reusing a stale MP4.
+
 Run 10 established the default performance baseline: keep the fused xfade/subtitle final encode and the stricter observation-response instruction. Further optimization is intentionally subject to diminishing-return discipline. Do not change quality settings, loosen evidence/lineage/coverage/reconciliation validation, weaken QC, increase unsafe provider pressure, or complicate the production path merely to save marginal time.
 
 A new optimization may replace the baseline only when an **equivalent-input benchmark** shows a **material and repeatable wall-time improvement** and the same output/quality contracts still pass. Small, noisy, corpus-only, or ambiguous gains are rejected. Prefer unattended durability and consistent output quality over shaving additional minutes from an already acceptable run.

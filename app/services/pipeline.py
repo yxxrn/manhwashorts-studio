@@ -3661,14 +3661,30 @@ def _timeline_stage_ready(db: Session, project_id: str) -> bool:
     return bool(scenes and cues and all(scene.end_time > scene.start_time for scene in scenes))
 
 
+def _render_output_identity(project: Project) -> dict[str, Any]:
+    enabled = bool(getattr(project, "watermark_enabled", False))
+    text = str(getattr(project, "watermark_text", "") or "").strip() if enabled else ""
+    return {"version": "render-watermark-v1", "watermark_enabled": enabled, "watermark_text": text}
+
+
 def _render_stage_ready(
     db: Session, project_id: str, script_hash: str
 ) -> RenderJob | None:
-    """Return an idempotent final artifact only when its exact script is known."""
+    """Return an idempotent final artifact only when script and visible overlays match."""
 
     script = latest_script_row(db, project_id)
     metadata = script.editorial_metadata if script and isinstance(script.editorial_metadata, Mapping) else {}
     production = metadata.get("production") if isinstance(metadata.get("production"), Mapping) else {}
+    project = db.get(Project, project_id)
+    if project is None:
+        return None
+    current_identity = _render_output_identity(project)
+    persisted_identity = production.get("render_output_identity")
+    if persisted_identity is None:
+        if current_identity["watermark_enabled"]:
+            return None
+    elif persisted_identity != current_identity:
+        return None
     job_id = production.get("render_job_id")
     if production.get("script_hash") != script_hash or not isinstance(job_id, str) or not job_id:
         return None

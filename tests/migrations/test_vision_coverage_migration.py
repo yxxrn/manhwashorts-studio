@@ -205,7 +205,12 @@ def test_upgrade_adds_columns_constraints_and_indexes(tmp_path, monkeypatch):
 
 
 def test_linked_story_analysis_asset_and_panel_region_round_trip(tmp_path, monkeypatch):
-    _config, engine = _upgrade_to_vision_boundary(tmp_path, monkeypatch)
+    config, engine = _upgrade_to_vision_boundary(tmp_path, monkeypatch)
+    # Historical-boundary assertions stay in the tests above. This round-trip
+    # uses the current ORM, so advance this database to current head first.
+    from alembic import command
+
+    command.upgrade(config, "head")
     try:
         models = _load_module("app.models")
         assert models is not None, "vision_model_missing: app.models"

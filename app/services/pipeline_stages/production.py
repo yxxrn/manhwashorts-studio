@@ -115,6 +115,7 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
     _ensure_final_thumbnail = api._ensure_final_thumbnail
     _persist_production_metadata = api._persist_production_metadata
     _render_stage_ready = api._render_stage_ready
+    _render_output_identity = api._render_output_identity
     _script_content_hash = api._script_content_hash
     _script_for_media = api._script_for_media
     _timeline_stage_ready = api._timeline_stage_ready
@@ -159,6 +160,7 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
                     job=existing, thumbnail_manifest=thumbnail_manifest,
                 )
                 production.update({
+                    'render_output_identity': _render_output_identity(get_project(db, project_id)),
                     'thumbnail_status': 'passed',
                     'thumbnail_path': thumbnail_manifest.get('thumbnail_path', ''),
                     'thumbnail_headline': thumbnail_manifest.get('headline', ''),
@@ -260,6 +262,7 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
         'script_hash': script_hash,
         'script_version': script.version,
         'render_job_id': job.id,
+        'render_output_identity': _render_output_identity(project),
         'post_render_qc': 'passed',
         'thumbnail_status': 'passed' if thumbnail_manifest is not None else 'disabled',
         'thumbnail_path': (thumbnail_manifest or {}).get('thumbnail_path', ''),
