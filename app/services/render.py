@@ -2631,7 +2631,8 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
     })
 
 
-WATERMARK_CONTRACT_VERSION = "render-watermark-v1"
+WATERMARK_CONTRACT_VERSION = "render-watermark-v2"
+WATERMARK_FONT_NAME = "DejaVu Sans"
 WATERMARK_X_FRACTION = 0.50
 WATERMARK_Y_FRACTION = 0.89
 WATERMARK_TEXT_ASS_ALPHA = 0x8F
@@ -2647,6 +2648,7 @@ def _watermark_manifest(text: str, width: int, height: int, *, enabled: bool) ->
         "text": value,
         "placement": "lower_center",
         "anchor": [WATERMARK_X_FRACTION, WATERMARK_Y_FRACTION],
+        "font_name": WATERMARK_FONT_NAME if enabled else "",
         "font_size_px": max(34, min(54, int(round(height * 0.024)))) if enabled else 0,
         "text_opacity": round(1.0 - WATERMARK_TEXT_ASS_ALPHA / 255.0, 3) if enabled else 0.0,
     }
@@ -2659,7 +2661,7 @@ def _append_watermark_ass(ass_text: str, text: str, width: int, height: int, dur
         raise RenderError("watermark is enabled but text is empty", code="watermark_text_missing")
     if duration <= 0:
         raise RenderError("watermark duration is invalid", code="watermark_duration_invalid")
-    font_name = settings.subtitle_font_name or "DejaVu Sans"
+    font_name = WATERMARK_FONT_NAME
     font_size = max(34, min(54, int(round(height * 0.024))))
     style = (
         f"Style: Watermark,{font_name},{font_size},&H{WATERMARK_TEXT_ASS_ALPHA:02X}FFFFFF,"

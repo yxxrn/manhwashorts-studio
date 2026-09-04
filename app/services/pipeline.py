@@ -3664,7 +3664,7 @@ def _timeline_stage_ready(db: Session, project_id: str) -> bool:
 def _render_output_identity(project: Project) -> dict[str, Any]:
     enabled = bool(getattr(project, "watermark_enabled", False))
     text = str(getattr(project, "watermark_text", "") or "").strip() if enabled else ""
-    return {"version": "render-watermark-v1", "watermark_enabled": enabled, "watermark_text": text}
+    return {"version": "render-watermark-v2", "watermark_enabled": enabled, "watermark_text": text}
 
 
 def _render_stage_ready(

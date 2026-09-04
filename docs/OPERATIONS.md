@@ -104,7 +104,7 @@ The accepted production baseline is approximately **18-20 minutes for a normal t
 
 ### Optional final-video watermark
 
-Projects expose `watermark_enabled` and `watermark_text`. The unattended runner mirrors them with `--watermark/--no-watermark` and `--watermark-text`. When enabled, the watermark is rendered lower-center at the final stage with translucent white text and subtle dark outline/shadow, using the existing ASS/libass overlay path in the same encode pass as subtitles. It is disabled for previews/review artifacts. Watermark settings are included in render identity, so changing the toggle or text forces a new final render instead of reusing a stale MP4.
+Projects expose `watermark_enabled` and `watermark_text`. The unattended runner mirrors them with `--watermark/--no-watermark` and `--watermark-text`. When enabled, the watermark is rendered lower-center at the final stage with translucent white text and subtle dark outline/shadow, using the dedicated safe DejaVu Sans watermark font (not the subtitle font) through the existing ASS/libass overlay path in the same encode pass as subtitles. It is disabled for previews/review artifacts. Watermark settings are included in render identity, so changing the toggle or text forces a new final render instead of reusing a stale MP4.
 
 Run 10 established the default performance baseline: keep the fused xfade/subtitle final encode and the stricter observation-response instruction. Further optimization is intentionally subject to diminishing-return discipline. Do not change quality settings, loosen evidence/lineage/coverage/reconciliation validation, weaken QC, increase unsafe provider pressure, or complicate the production path merely to save marginal time.
 

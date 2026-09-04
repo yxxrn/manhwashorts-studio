@@ -13,7 +13,7 @@ def test_render_output_identity_normalizes_visible_watermark():
         watermark_enabled = True
         watermark_text = "  @rurushortss  "
     assert pl._render_output_identity(Project()) == {
-        "version": "render-watermark-v1",
+        "version": "render-watermark-v2",
         "watermark_enabled": True,
         "watermark_text": "@rurushortss",
     }

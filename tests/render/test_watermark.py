@@ -12,6 +12,7 @@ def test_watermark_ass_is_lower_center_and_translucent(tmp_path):
     base = render.build_ass([], 320, 568, settings.subtitle_font_name)
     ass = render._append_watermark_ass(base, "@rurushortss", 320, 568, 0.1)
     assert "Style: Watermark" in ass
+    assert "Style: Watermark,DejaVu Sans" in ass
     assert "&H8FFFFFFF" in ass
     assert "\\an2\\pos(160,506)" in ass
     assert "@rurushortss" in ass
@@ -42,7 +43,8 @@ def test_watermark_ass_rejects_empty_text():
 def test_watermark_manifest_matches_visible_contract():
     manifest = render._watermark_manifest(" @rurushortss ", 1080, 1920, enabled=True)
     assert manifest == {
-        "contract_version": "render-watermark-v1",
+        "contract_version": "render-watermark-v2",
+        "font_name": "DejaVu Sans",
         "enabled": True,
         "text": "@rurushortss",
         "placement": "lower_center",
