@@ -15,6 +15,16 @@ Keep the service behind an authenticated tunnel/SSH forward rather than exposing
 raw development server publicly. A standalone render worker is available with
 `.venv/bin/python scripts/worker.py`.
 
+## Unattended production runner
+
+For a fresh source-to-final run that must be safe to leave unattended, use the blessed launcher rather than an ad-hoc Python script:
+
+```bash
+scripts/manhwashorts production-run --run-id <id> --title "<title>" --chapter-from <n> --chapter-to <n> --source-id <suwayomi-source-id> --language en
+```
+
+The launcher requires `ms_env.sh`, takes an exclusive per-run lock, runs production-environment/machine/disk/source/vision/TTS preflight **before** creating or importing a project, and checkpoints every completed stage under `data/production-runs/<run-id>.json`. Re-running the same command resumes the same corpus and reuses validated source, analysis/provider caches, approved script, render identity, and final artifacts. Provider/transport retries are bounded; evidence, lineage, QC, and deterministic capability failures remain fail-closed. A PASS run is an idempotent no-op on later invocations.
+
 ## Production workflow
 
 1. Ingest ordered source material manually or through the optional Suwayomi sidecar; preserve source provenance and rights metadata.

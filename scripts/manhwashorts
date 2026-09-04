@@ -8,7 +8,17 @@ case "${1:-help}" in
   doctor) shift; exec "$PY" scripts/doctor.py "$@" ;;
   migrate) shift; exec "$ROOT/.venv/bin/alembic" upgrade head "$@" ;;
   serve) shift; exec "$PY" scripts/serve.py "$@" ;;
+  production-run)
+    shift
+    RUNTIME_ENV="${MS_RUNTIME_ENV_FILE:-$ROOT/ms_env.sh}"
+    [[ -f "$RUNTIME_ENV" ]] || { echo "Missing runtime env: $RUNTIME_ENV" >&2; exit 2; }
+    set -a
+    # shellcheck disable=SC1090
+    source "$RUNTIME_ENV"
+    set +a
+    exec "$PY" scripts/production_run.py "$@"
+    ;;
   youtube-account) shift; exec "$PY" scripts/youtube_browser_account.py "$@" ;;
   suwayomi-setup) shift; exec "$PY" scripts/setup_suwayomi.py "$@" ;;
-  *) echo "Usage: scripts/manhwashorts {doctor|migrate|serve|youtube-account|suwayomi-setup}" >&2; exit 2 ;;
+  *) echo "Usage: scripts/manhwashorts {doctor|migrate|serve|production-run|youtube-account|suwayomi-setup}" >&2; exit 2 ;;
 esac
