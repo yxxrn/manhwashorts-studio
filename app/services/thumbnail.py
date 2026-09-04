@@ -303,7 +303,17 @@ def _headline_pronouns_are_grounded(text: str, story: str, language: str) -> boo
 def generate_headlines(script: object, headline_history: Sequence[str] = ()) -> tuple[list[HeadlineCandidate], dict[str, str], str]:
     sections, story = _script_sections(script)
     language = _language(story)
-    rows = _llm_headlines(sections, language, headline_history) + _fallback_headlines(sections, language)
+    llm_rows = _llm_headlines(sections, language, headline_history)
+    fallback_rows = _fallback_headlines(sections, language)
+    # When the provider produced grounded story-specific options, keep only
+    # deterministic fallbacks that are tied to concrete story anchors. Generic
+    # emergency clickbait remains available when the headline provider fails,
+    # but it cannot outrank fresh story-specific production copy.
+    rows = llm_rows + (
+        [row for row in fallback_rows if row.anchor_terms]
+        if llm_rows
+        else fallback_rows
+    )
     unique: list[HeadlineCandidate] = []
     seen: set[str] = set()
     for row in rows:

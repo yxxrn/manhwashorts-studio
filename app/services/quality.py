@@ -1365,7 +1365,11 @@ def run_all(
         if adaptive_reference_contract is not None or standard_reference_cadence
         else profile,
     )
-    results += check_subtitles(cues)
+    sentence_karaoke_active = profile is not None and (
+        caption_groups is not None or subtitle_timing_error is not None
+    )
+    if not sentence_karaoke_active:
+        results += check_subtitles(cues)
 
     effective_duration = duration if duration is not None else (job.duration if job else 0.0)
     if effective_duration or job:

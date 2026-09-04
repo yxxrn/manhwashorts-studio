@@ -629,16 +629,39 @@ def _mask_crop_fraction(
 ) -> float:
     left, top, right, bottom = crop_box
     crop_area = max(1, (right - left) * (bottom - top))
+
+    # Only cells intersecting the crop can contribute.  The previous version
+    # scanned the entire grid for every ROI, even for tight detail crops.
+    # Keep the same integer overlap arithmetic while bounding the scan.
+    x0 = max(0, int(left * border_mask.grid_width / border_mask.source_width) - 1)
+    x1 = min(
+        border_mask.grid_width,
+        int(math.ceil(right * border_mask.grid_width / border_mask.source_width)) + 1,
+    )
+    y0 = max(0, int(top * border_mask.grid_height / border_mask.source_height) - 1)
+    y1 = min(
+        border_mask.grid_height,
+        int(math.ceil(bottom * border_mask.grid_height / border_mask.source_height)) + 1,
+    )
+    x_overlaps: list[tuple[int, int]] = []
+    for x in range(x0, x1):
+        cell_x0, cell_x1 = _source_cell_bounds(
+            x, border_mask.grid_width, border_mask.source_width
+        )
+        overlap = max(0, min(right, cell_x1) - max(left, cell_x0))
+        if overlap:
+            x_overlaps.append((x, overlap))
+
     total = 0
-    for y, row in enumerate(border_mask.edge_connected_mask):
-        cell_y0, cell_y1 = _source_cell_bounds(y, border_mask.grid_height, border_mask.source_height)
-        for x, enabled in enumerate(row):
-            if not enabled:
-                continue
-            cell_x0, cell_x1 = _source_cell_bounds(x, border_mask.grid_width, border_mask.source_width)
-            total += max(0, min(right, cell_x1) - max(left, cell_x0)) * max(
-                0, min(bottom, cell_y1) - max(top, cell_y0)
-            )
+    for y in range(y0, y1):
+        cell_y0, cell_y1 = _source_cell_bounds(
+            y, border_mask.grid_height, border_mask.source_height
+        )
+        y_overlap = max(0, min(bottom, cell_y1) - max(top, cell_y0))
+        if not y_overlap:
+            continue
+        row = border_mask.edge_connected_mask[y]
+        total += sum(width * y_overlap for x, width in x_overlaps if row[x])
     return _rounded_fraction(total, crop_area)
 
 

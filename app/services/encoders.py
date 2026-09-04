@@ -390,6 +390,7 @@ def select(requested: str | None = None) -> Selection:
 
 def video_args(
     selection: Selection, *, preview: bool = False, final: bool = False,
+    x264_threads: int | None = None,
 ) -> list[str]:
     """Output flags for the chosen encoder.
 
@@ -422,6 +423,14 @@ def video_args(
             args = ["-c:v", "h264_vaapi", "-qp", "20"]
         elif spec.key == VIDEOTOOLBOX.key:
             args = ["-c:v", "h264_videotoolbox", "-q:v", "50", "-profile:v", "high"]
+
+    if spec.key == CPU.key and x264_threads is not None:
+        try:
+            threads = int(x264_threads)
+        except (TypeError, ValueError):
+            threads = 0
+        if threads > 0:
+            args += ["-threads", str(threads)]
 
     # VAAPI keeps frames in GPU memory, so -pix_fmt would fight the hwupload.
     if not spec.filter_suffix:

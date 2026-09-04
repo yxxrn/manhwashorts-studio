@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
 from random import Random
@@ -1039,6 +1040,7 @@ def _render_subpixel_review_scene_clip(
     encoder: encoders.Selection,
     preview: bool,
     profile: ReferenceProfileConfig | None,
+    x264_threads: int | None = None,
 ) -> Path:
     """Render review motion with floating-point affine sampling per output frame.
 
@@ -1105,7 +1107,9 @@ def _render_subpixel_review_scene_clip(
         str(fps),
         "-frames:v",
         str(frames),
-        *encoders.video_args(encoder, preview=preview, final=not preview),
+        *encoders.video_args(
+            encoder, preview=preview, final=not preview, x264_threads=x264_threads
+        ),
         str(dest),
     ]
     try:
@@ -1209,6 +1213,7 @@ def render_scene_clip(
     preview: bool = False,
     profile: ReferenceProfileConfig | None = None,
     stabilized_review_motion: bool = False,
+    x264_threads: int | None = None,
 ) -> Path:
     """Render one silent scene clip.
 
@@ -1220,6 +1225,7 @@ def render_scene_clip(
         return _render_subpixel_review_scene_clip(
             scene, prepared_image, dest, width, height, fps,
             encoder=selection, preview=preview, profile=profile,
+            x264_threads=x264_threads,
         )
     duration = scene.duration
     frames = max(2, int(round(duration * fps)))
@@ -1255,7 +1261,9 @@ def render_scene_clip(
             "-vf", vf,
             "-r", str(fps),
             "-frames:v", str(frames),
-            *encoders.video_args(selection, preview=preview, final=not preview),
+            *encoders.video_args(
+                selection, preview=preview, final=not preview, x264_threads=x264_threads
+            ),
             str(dest),
         ],
         timeout=600,
@@ -1269,6 +1277,7 @@ def join_scene_clips(
     encoder: encoders.Selection | None = None, preview: bool = False,
     *,
     require_transitions: bool = False,
+    x264_threads: int | None = None,
 ) -> Path:
     """Join clips without moving persisted scene boundaries.
 
@@ -1375,7 +1384,9 @@ def join_scene_clips(
         cmd += ["-i", str(clip)]
     cmd += [
         "-filter_complex", filter_graph, "-map", "[joined_exact]", "-an",
-        *encoders.video_args(selection, preview=preview, final=not preview), str(dest),
+        *encoders.video_args(
+            selection, preview=preview, final=not preview, x264_threads=x264_threads
+        ), str(dest),
     ]
     try:
         _run(cmd, timeout=900, step="concat")
@@ -2774,6 +2785,23 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     stabilized_reference_motion = bool(
         request.silent_reference_review or request.stabilized_reference_motion
     )
+    scene_workers = max(
+        1,
+        min(int(getattr(settings, "render_workers", 1) or 1), len(request.scenes)),
+    )
+    total_x264_threads = max(
+        0, int(getattr(settings, "render_x264_threads", 0) or 0)
+    )
+    scene_x264_threads = (
+        max(1, total_x264_threads // scene_workers)
+        if total_x264_threads > 0 and selection.spec.key == encoders.CPU.key
+        else None
+    )
+    serial_x264_threads = (
+        total_x264_threads
+        if total_x264_threads > 0 and selection.spec.key == encoders.CPU.key
+        else None
+    )
 
     from app.services import storage
 
@@ -2785,6 +2813,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
 
     report(5, "preparing images")
     clips: list[Path] = []
+    encode_tasks: list[tuple[int, SceneInput, Path, Path]] = []
     prepared_cache: dict[tuple, Path] = {}
     for i, scene in enumerate(request.scenes):
         prepared = work / f"img{i:03d}.jpg"
@@ -2936,13 +2965,56 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 )
 
         clip = work / f"clip{i:03d}.mp4"
-        render_scene_clip(
-            scene, prepared, clip, width, height, fps,
-            encoder=selection, preview=request.preview, profile=request.profile,
-            stabilized_review_motion=stabilized_reference_motion,
-        )
-        clips.append(clip)
-        report(5 + int(45 * (i + 1) / len(request.scenes)), f"scene {i + 1}/{len(request.scenes)}")
+        if scene_workers == 1:
+            render_scene_clip(
+                scene, prepared, clip, width, height, fps,
+                encoder=selection, preview=request.preview, profile=request.profile,
+                stabilized_review_motion=stabilized_reference_motion,
+                x264_threads=scene_x264_threads,
+            )
+            clips.append(clip)
+            report(
+                5 + int(45 * (i + 1) / len(request.scenes)),
+                f"scene {i + 1}/{len(request.scenes)}",
+            )
+        else:
+            encode_tasks.append((i, scene, prepared, clip))
+            report(
+                5 + int(10 * (i + 1) / len(request.scenes)),
+                f"prepared {i + 1}/{len(request.scenes)}",
+            )
+
+    if scene_workers > 1:
+        encoded: dict[int, Path] = {}
+        with ThreadPoolExecutor(
+            max_workers=scene_workers, thread_name_prefix="scene-encode"
+        ) as executor:
+            future_map = {
+                executor.submit(
+                    render_scene_clip,
+                    scene,
+                    prepared,
+                    clip,
+                    width,
+                    height,
+                    fps,
+                    encoder=selection,
+                    preview=request.preview,
+                    profile=request.profile,
+                    stabilized_review_motion=stabilized_reference_motion,
+                    x264_threads=scene_x264_threads,
+                ): (index, clip)
+                for index, scene, prepared, clip in encode_tasks
+            }
+            for completed, future in enumerate(as_completed(future_map), start=1):
+                index, clip = future_map[future]
+                future.result()
+                encoded[index] = clip
+                report(
+                    15 + int(35 * completed / len(request.scenes)),
+                    f"scene {completed}/{len(request.scenes)}",
+                )
+        clips = [encoded[index] for index in range(len(request.scenes))]
 
     report(55, "joining scenes")
     silent = work / "silent.mp4"
@@ -2954,6 +3026,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         selection,
         request.preview,
         require_transitions=stabilized_reference_motion,
+        x264_threads=serial_x264_threads,
     )
 
     report(65, "burning subtitles")
@@ -3014,7 +3087,10 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 *encoders.input_args(selection),
                 "-i", str(silent),
                 "-vf", burn_vf,
-                *encoders.video_args(selection, preview=request.preview, final=not request.preview),
+                *encoders.video_args(
+                    selection, preview=request.preview, final=not request.preview,
+                    x264_threads=serial_x264_threads,
+                ),
                 str(burned),
             ],
             timeout=900,

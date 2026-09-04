@@ -137,6 +137,10 @@ class Settings(BaseSettings):
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
     render_workers: int = 1
+    # Total CPU thread budget shared by concurrent libx264 scene encoders.
+    # Zero preserves x264 automatic thread selection; deployments may pin a
+    # measured host-specific budget through MS_RENDER_X264_THREADS.
+    render_x264_threads: int = 0
     # Which encoder to use: auto | cpu | nvenc | qsv | vaapi | videotoolbox.
     # "auto" prefers a working GPU and falls back to CPU. An unavailable GPU
     # never fails a render; it falls back and records why.

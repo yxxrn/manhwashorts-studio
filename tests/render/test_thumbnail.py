@@ -163,3 +163,20 @@ def test_thumbnail_accent_color_is_from_closed_palette():
     name, rgba = thumbnail._accent_color(frame, "middle")
     assert name in {"yellow", "red", "blue", "green"}
     assert rgba == thumbnail._THUMBNAIL_ACCENT_COLORS[name]
+
+
+def test_story_specific_llm_headlines_exclude_unanchored_generic_fallbacks(monkeypatch):
+    story_specific = thumbnail.HeadlineCandidate(
+        "WHY DID THE MANA CORE CRACK?!", "hook", "llm_clickbait", (), 2.25
+    )
+    monkeypatch.setattr(thumbnail, "_llm_headlines", lambda *_a, **_k: [story_specific])
+    monkeypatch.setattr(settings, "llm_provider", "rules")
+
+    headlines, _sections, _language = thumbnail.generate_headlines(_script())
+
+    assert any(row.text == story_specific.text for row in headlines)
+    assert all(
+        row.anchor_terms or row.style != "clickbait_v2"
+        for row in headlines
+    )
+    assert all(row.text != "WHAT ACTUALLY HAPPENED HERE?!" for row in headlines)

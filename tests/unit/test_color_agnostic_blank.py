@@ -243,3 +243,35 @@ def test_cache_identity_isolated_from_legacy_key_and_covers_each_detector_field(
         key(**common, profile=profile, border_mask=mask, evidence=protected),
     )
     assert all(candidate != profile_key for candidate in variants)
+
+def test_mask_crop_fraction_bounded_scan_matches_full_grid_reference():
+    module = _framing_analysis()
+    mask = _detector(_gradient_gutter())
+
+    def full_grid(crop_box):
+        left, top, right, bottom = crop_box
+        crop_area = max(1, (right - left) * (bottom - top))
+        total = 0
+        for y, row in enumerate(mask.edge_connected_mask):
+            cell_y0, cell_y1 = module._source_cell_bounds(
+                y, mask.grid_height, mask.source_height
+            )
+            for x, enabled in enumerate(row):
+                if not enabled:
+                    continue
+                cell_x0, cell_x1 = module._source_cell_bounds(
+                    x, mask.grid_width, mask.source_width
+                )
+                total += max(0, min(right, cell_x1) - max(left, cell_x0)) * max(
+                    0, min(bottom, cell_y1) - max(top, cell_y0)
+                )
+        return module._rounded_fraction(total, crop_area)
+
+    boxes = (
+        (0, 0, mask.source_width, mask.source_height),
+        (13, 17, mask.source_width - 11, mask.source_height - 19),
+        (40, 70, 120, 180),
+        (75, 5, 95, 235),
+    )
+    for box in boxes:
+        assert module._mask_crop_fraction(mask, box) == full_grid(box)

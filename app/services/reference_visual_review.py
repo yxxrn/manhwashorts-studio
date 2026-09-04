@@ -91,6 +91,7 @@ def enumerate_reference_roi_alternatives(
     *,
     image: Image.Image | None = None,
     border_mask: framing_analysis.BorderMaskResult | None = None,
+    measure_edge_blank: bool = True,
 ) -> tuple[editorial_visual_planner.ReferenceROIAlternative, ...]:
     """Build deduplicated panel-local ROI phases using render's box geometry."""
     from app.services import render
@@ -129,7 +130,7 @@ def enumerate_reference_roi_alternatives(
             end_y,
         )
         edge_blank_fraction = None
-        if image is not None:
+        if image is not None and measure_edge_blank:
             final_view = image.crop(crop_box).resize(
                 target_size, Image.Resampling.LANCZOS
             )
@@ -632,6 +633,7 @@ def panel_reference_roi_safety(
         )
         rois = enumerate_reference_roi_alternatives(
             crop.size, candidate, profile, image=crop, border_mask=mask,
+            measure_edge_blank=False,
         )
         sections = tuple(dict.fromkeys(str(value) for value in editorial_sections if str(value)))
         safe_sections: set[str] = set()

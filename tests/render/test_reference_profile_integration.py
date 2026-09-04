@@ -1807,3 +1807,26 @@ def test_task6_qc_allows_verified_conservative_full_panel_only_in_adaptive_mode(
         adaptive_reference=True,
     )
     assert [item.code for item in approved] == ["visual.reference_framing"]
+
+def test_reference_sentence_karaoke_skips_legacy_one_word_speed_qc(monkeypatch):
+    def legacy_subtitles(_cues):
+        pytest.fail("legacy one-word subtitle QC must not run for sentence karaoke")
+
+    captured = {}
+
+    def sentence_karaoke(groups, **kwargs):
+        captured["groups"] = groups
+        captured["duration"] = kwargs["duration"]
+        return []
+
+    monkeypatch.setattr(quality, "check_subtitles", legacy_subtitles)
+    monkeypatch.setattr(quality, "check_sentence_karaoke", sentence_karaoke)
+    project = SimpleNamespace(
+        template="reference_matched_shorts_v2", target_duration=55, language="en"
+    )
+    groups = (SimpleNamespace(words=()),)
+    quality.run_all(
+        project, [], None, [], [], [], duration=1.0, caption_groups=groups,
+        subtitle_contract={"contract_version": "sentence_chunked_word_karaoke_v2"},
+    )
+    assert captured == {"groups": groups, "duration": 1.0}

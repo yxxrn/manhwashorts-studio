@@ -383,3 +383,11 @@ def test_enqueue_rejects_an_unknown_encoder(db):
 
     with pytest.raises(pl.PipelineError, match="unknown encoder"):
         pl.enqueue_render(db, project.id, "final", user.id, encoder="nvnec")
+
+def test_cpu_final_thread_budget_is_explicit_without_changing_quality_flags():
+    args = enc.video_args(enc.select("cpu"), final=True, x264_threads=10)
+    assert args[:8] == [
+        "-c:v", "libx264", "-preset", "slow", "-crf", "18", "-profile:v", "high",
+    ]
+    assert args[args.index("-threads") + 1] == "10"
+    assert args[args.index("-pix_fmt") + 1] == "yuv420p"

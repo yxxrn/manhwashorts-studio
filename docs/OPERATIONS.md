@@ -80,3 +80,9 @@ patches, logs, or documentation.
 If the execution host lacks GitHub credentials, create a Git bundle for the source
 commits and push it from the authenticated bridge. Do not install/copy a personal
 token into the execution host just to make a push succeed.
+
+## Oracle measured render budget
+
+The current Oracle host has 20 logical CPUs. Run 7 measured the full-equivalent final render at worker/thread budgets 1/10, 2/5, and 3/3; one scene worker with 10 x264 threads was fastest. Keep the repository default at automatic (`0`) for portability, and set `MS_RENDER_WORKERS=1` plus `MS_RENDER_X264_THREADS=10` in the Oracle runtime environment. Preserve libx264 preset slow, CRF 18, High profile, 1080x1920, and 60 FPS.
+
+When launching production scripts outside the installed service wrapper, source the runtime environment first. A missing provider environment must fail closed as `vision_capability_missing`; do not bypass that gate or repeat source ingest merely to recover the launcher.
