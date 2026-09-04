@@ -41,6 +41,7 @@ New projects default to `orion`. The maintained variation shortlist is `orion`, 
 6. Queue or resume final render rather than duplicating a valid successful job.
 7. Verify final media integrity and post-render QC.
 8. Verify the automatic thumbnail package and thumbnail QC.
+   Thumbnail contract v5 keeps the main headline white and applies one contrast-selected accent color only to 1-2 hook words. Full-headline accent coloring is invalid production output.
 9. Upload/publish only through the supported explicit operator/API boundary using an authenticated persistent Chrome account. Omitted visibility is Private; explicit Unlisted/Public is honored and Studio result/visibility must be verified.
 
 A sub-50-second `coherent_capacity_adaptive_v1` result is a review/diagnostic artifact, not a final-production exception. Increase grounded visual/story capacity rather than stretching a few panels or silently accepting a short final.

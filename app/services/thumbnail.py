@@ -25,7 +25,7 @@ from app.config import settings
 from app.services import visual_scoring
 from app.services.file_integrity import sha256_file
 
-THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v4"
+THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v5"
 TARGET_SIZE = (1080, 1920)
 MAX_HEADLINE_WORDS = 7
 MAX_HEADLINE_CHARS = 38
@@ -40,6 +40,20 @@ _THUMBNAIL_ACCENT_COLORS = {
     "blue": (72, 164, 255, 255),
     "green": (72, 228, 120, 255),
 }
+_THUMBNAIL_MAIN_TEXT_COLOR = (255, 255, 255, 255)
+_ACCENT_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "at", "behind", "did", "do", "does", "for",
+    "from", "in", "is", "it", "of", "on", "that", "the", "these", "this",
+    "to", "was", "were", "what", "when", "where", "which", "who", "why",
+    "yang", "dan", "di", "ini", "itu", "apa", "siapa", "kenapa", "saat",
+})
+_ACCENT_HOOK_WORDS = frozenset({
+    "awaken", "awakened", "betrayed", "cursed", "danger", "dangerous", "demon",
+    "door", "forbidden", "heaven", "hell", "hidden", "hiding", "human", "late",
+    "lurks", "monster", "never", "power", "secret", "truth", "scam", "sword",
+    "bangkit", "dikhianati", "iblis", "kekuatan", "pedang", "rahasia",
+    "terkutuk", "terlambat", "tersembunyi", "bahaya", "manusia", "kebenaran",
+})
 
 def _headline_history_path() -> Path:
     return Path(settings.data_dir) / "thumbnail-headline-history.json"
@@ -130,6 +144,7 @@ class HeadlineCandidate:
     style: str = "clickbait"
     anchor_terms: tuple[str, ...] = ()
     strength: float = 1.0
+    accent_words: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -180,6 +195,67 @@ def _clean_headline(value: object) -> str:
     while words and len(" ".join(words)) > MAX_HEADLINE_CHARS:
         words.pop()
     return " ".join(words).upper().strip()
+
+
+def _normalized_word(value: object) -> str:
+    return "".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+
+def _clean_accent_words(value: object, headline: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    headline_words = headline.split()
+    normalized = [_normalized_word(word) for word in headline_words]
+    selected: list[str] = []
+    for item in value:
+        target = _normalized_word(item)
+        if not target or target not in normalized:
+            continue
+        source_word = headline_words[normalized.index(target)]
+        if source_word not in selected:
+            selected.append(source_word)
+        if len(selected) >= 2:
+            break
+    return tuple(selected)
+
+
+def _accent_word_indexes(headline: HeadlineCandidate) -> tuple[int, ...]:
+    words = headline.text.split()
+    if len(words) <= 1:
+        return ()
+    normalized = [_normalized_word(word) for word in words]
+    max_accent = 1 if len(words) <= 4 else 2
+    explicit = {_normalized_word(word) for word in headline.accent_words if _normalized_word(word)}
+    if explicit:
+        indexes = [index for index, token in enumerate(normalized) if token in explicit]
+        return tuple(indexes[:max_accent])
+    anchors = {_normalized_word(term) for term in headline.anchor_terms if _normalized_word(term)}
+    ranked: list[tuple[float, int]] = []
+    for index, (raw, token) in enumerate(zip(words, normalized, strict=True)):
+        if not token:
+            continue
+        score = 0.0
+        if token in _ACCENT_HOOK_WORDS:
+            score += 4.0
+        if any(anchor and (anchor in token or token in anchor) for anchor in anchors):
+            score += 5.0
+        if token not in _ACCENT_STOPWORDS and len(token) >= 5:
+            score += 0.8
+        if raw.endswith(("?", "!")):
+            score += 0.3
+        if token in _ACCENT_STOPWORDS:
+            score -= 2.0
+        ranked.append((score, index))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    chosen = [index for score, index in ranked if score > 0][:max_accent]
+    if not chosen:
+        content = [
+            (len(token), index) for index, token in enumerate(normalized)
+            if token and token not in _ACCENT_STOPWORDS
+        ]
+        if content:
+            chosen = [max(content)[1]]
+    return tuple(sorted(chosen))
 
 
 def _fallback_headlines(sections: Mapping[str, str], language: str) -> list[HeadlineCandidate]:
@@ -248,7 +324,7 @@ def _llm_headlines(sections: Mapping[str, str], language: str, avoid_headlines: 
         "Avoid generic cliches such as THIS CHANGED EVERYTHING, NO ONE SAW THIS COMING, or WHAT HAPPENED NEXT. "
         "Prefer WHY/WHAT/WHO questions, TOO LATE, hidden motives, forbidden-looking power, suspicious reactions, or dangerous discoveries. "
         "Each headline must be 3-7 words, at most 38 characters, visually punchy, and usable in two lines. "
-        "Return strict JSON: {\"headlines\":[{\"text\":str,\"section\":\"hook|setup|conflict|twist|cta\"}]}"
+        "Return strict JSON: {\"headlines\":[{\"text\":str,\"section\":\"hook|setup|conflict|twist|cta\",\"accent_words\":[str]}]}. accent_words must contain only 1-2 exact words copied from the headline that carry the strongest curiosity hook; never accent the whole headline."
     )
     user = (
         f"Language: {'Indonesian' if language == 'id' else 'English'}\n"
@@ -284,7 +360,7 @@ def _llm_headlines(sections: Mapping[str, str], language: str, avoid_headlines: 
         text = _clean_headline(item.get("text"))
         section = str(item.get("section") or "").lower()
         if text and section in {"hook", "setup", "conflict", "twist", "cta"}:
-            rows.append(HeadlineCandidate(text, section, "llm_clickbait", (), 2.25))
+            rows.append(HeadlineCandidate(text, section, "llm_clickbait", (), 2.25, _clean_accent_words(item.get("accent_words"), text)))
     return rows
 
 
@@ -717,29 +793,40 @@ def _render_variant(
     else:
         top_y = TARGET_SIZE[1] - block_h - 125
     accent_name, accent_fill = _accent_color(base, visual.placement)
+    headline_words = headline.text.split()
+    accent_indexes = set(_accent_word_indexes(headline))
+    accent_words = [headline_words[index] for index in sorted(accent_indexes)]
     y = top_y
+    word_cursor = 0
     line_rects: list[tuple[int, int, int, int]] = []
-    for _index, (line, width, height) in enumerate(
-        zip(lines, widths, heights, strict=True)
-    ):
+    for line, width, height in zip(lines, widths, heights, strict=True):
         x = int((TARGET_SIZE[0] - width) / 2)
-        fill = accent_fill
-        draw.text(
-            (x + shadow, y + shadow),
-            line,
-            font=font,
-            fill=(0, 0, 0, 185),
-            stroke_width=stroke + 3,
-            stroke_fill=(0, 0, 0, 205),
-        )
-        draw.text(
-            (x, y),
-            line,
-            font=font,
-            fill=fill,
-            stroke_width=stroke,
-            stroke_fill=(5, 5, 5, 255),
-        )
+        cursor_x = float(x)
+        line_words = line.split()
+        for local_index, word in enumerate(line_words):
+            global_index = word_cursor + local_index
+            fill = accent_fill if global_index in accent_indexes else _THUMBNAIL_MAIN_TEXT_COLOR
+            draw.text(
+                (int(cursor_x) + shadow, y + shadow),
+                word,
+                font=font,
+                fill=(0, 0, 0, 185),
+                stroke_width=stroke + 3,
+                stroke_fill=(0, 0, 0, 205),
+            )
+            draw.text(
+                (int(cursor_x), y),
+                word,
+                font=font,
+                fill=fill,
+                stroke_width=stroke,
+                stroke_fill=(5, 5, 5, 255),
+            )
+            advance = float(measure.textlength(word, font=font))
+            if local_index < len(line_words) - 1:
+                advance += float(measure.textlength(" ", font=font))
+            cursor_x += advance
+        word_cursor += len(line_words)
         pad = stroke + shadow + 3
         line_rects.append((x - pad, y - pad, x + width + pad, y + height + pad))
         y += height + line_gap
@@ -785,7 +872,11 @@ def _render_variant(
         "file_size": destination.stat().st_size if destination.is_file() else 0,
         "placement": visual.placement,
         "background_style": "outline_only",
-        "text_color": accent_name,
+        "text_color": "white",
+        "accent_color": accent_name,
+        "accent_words": accent_words,
+        "accent_word_count": len(accent_words),
+        "color_contract": "white_main_selective_accent_v1",
         "stroke_width": stroke,
         "shadow_offset": shadow,
     }
@@ -895,6 +986,8 @@ def generate_thumbnail_package(
                 "text_safe_score": visual.text_safe_score,
                 "placement": placement,
                 "text_color": qc.get("text_color", ""),
+                "accent_color": qc.get("accent_color", ""),
+                "accent_words": list(qc.get("accent_words", [])),
                 "qc": qc,
             }
         )

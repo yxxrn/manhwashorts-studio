@@ -72,6 +72,11 @@ def test_generate_thumbnail_package_is_upload_ready(tmp_path, monkeypatch):
         assert rendered.size == thumbnail.TARGET_SIZE
     assert all(row["qc"]["qc_pass"] for row in manifest["variants"])
     assert all(row["qc"]["background_style"] == "outline_only" for row in manifest["variants"])
+    assert all(row["qc"]["text_color"] == "white" for row in manifest["variants"])
+    assert all(row["qc"]["accent_color"] in thumbnail._THUMBNAIL_ACCENT_COLORS for row in manifest["variants"])
+    assert all(1 <= row["qc"]["accent_word_count"] <= 2 for row in manifest["variants"])
+    assert all(row["qc"]["accent_word_count"] < len(row["headline"].split()) for row in manifest["variants"])
+    assert all(row["qc"]["color_contract"] == "white_main_selective_accent_v1" for row in manifest["variants"])
     assert len(manifest["headline"].split()) <= thumbnail.MAX_HEADLINE_WORDS
 
     monkeypatch.setattr(
@@ -180,3 +185,43 @@ def test_story_specific_llm_headlines_exclude_unanchored_generic_fallbacks(monke
         for row in headlines
     )
     assert all(row.text != "WHAT ACTUALLY HAPPENED HERE?!" for row in headlines)
+
+
+def test_thumbnail_accent_words_are_selective_not_full_headline():
+    candidate = thumbnail.HeadlineCandidate(
+        "WHAT LURKS BEHIND HEAVEN'S DOOR?",
+        "hook",
+        "llm_clickbait",
+        (),
+        2.25,
+        ("LURKS", "DOOR?"),
+    )
+    indexes = thumbnail._accent_word_indexes(candidate)
+    words = candidate.text.split()
+    assert indexes == (1, 4)
+    assert [words[index] for index in indexes] == ["LURKS", "DOOR?"]
+    assert len(indexes) < len(words)
+
+
+def test_thumbnail_accent_fallback_prefers_story_anchor_and_keeps_white_majority():
+    candidate = thumbnail.HeadlineCandidate(
+        "WHAT LURKS BEHIND HEAVEN'S DOOR?",
+        "hook",
+        "clickbait_v2",
+        ("door",),
+        3.2,
+    )
+    indexes = thumbnail._accent_word_indexes(candidate)
+    words = candidate.text.split()
+    selected = {words[index] for index in indexes}
+    assert "DOOR?" in selected
+    assert 1 <= len(indexes) <= 2
+    assert len(indexes) < len(words)
+
+
+def test_llm_accent_words_only_accept_exact_headline_words():
+    headline = "WHAT POWER JUST AWAKENED?!"
+    assert thumbnail._clean_accent_words(["POWER", "made-up", "AWAKENED?!"], headline) == (
+        "POWER",
+        "AWAKENED?!",
+    )
