@@ -40,6 +40,7 @@ gates. Never use those files to override the current documents above.
 - Automatic thumbnails are part of successful production. Keep the upload-ready
   `thumbnail.jpg`, clean source, variants, metadata, and QC contract intact.
 - Duration has one current contract: project default target 55s; final production 50-60s. Adaptive sub-50s pacing is review-only and must never be promoted to final to compensate for insufficient grounded visual capacity.
+- Production performance has a global diminishing-return policy. The verified practical baseline for a normal three-chapter Oracle run is ~18-20 minutes source-to-final. Keep the Run 10 fused final render and stricter observation-response contract as the production baseline. Do not pursue further speed work merely to lower the number: a performance change may enter production only after an equivalent-input benchmark demonstrates material wall-time savings while preserving the same schema/evidence/lineage/coverage/reconciliation gates, render quality settings, media contract, and post-render QC. Small or ambiguous savings stay out of production. Quality and unattended durability take priority over marginal throughput.
 
 ## Runtime safety
 

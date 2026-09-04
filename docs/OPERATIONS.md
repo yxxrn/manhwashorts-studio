@@ -91,6 +91,14 @@ If the execution host lacks GitHub credentials, create a Git bundle for the sour
 commits and push it from the authenticated bridge. Do not install/copy a personal
 token into the execution host just to make a push succeed.
 
+## Global production performance policy
+
+The accepted production baseline is approximately **18-20 minutes for a normal three-chapter Oracle run from source import through final render, QC, thumbnail, and metadata**. This is a practical operating target, not an SLA or a gate: provider latency and corpus size can move an individual run above or below it.
+
+Run 10 established the default performance baseline: keep the fused xfade/subtitle final encode and the stricter observation-response instruction. Further optimization is intentionally subject to diminishing-return discipline. Do not change quality settings, loosen evidence/lineage/coverage/reconciliation validation, weaken QC, increase unsafe provider pressure, or complicate the production path merely to save marginal time.
+
+A new optimization may replace the baseline only when an **equivalent-input benchmark** shows a **material and repeatable wall-time improvement** and the same output/quality contracts still pass. Small, noisy, corpus-only, or ambiguous gains are rejected. Prefer unattended durability and consistent output quality over shaving additional minutes from an already acceptable run.
+
 ## Oracle measured render budget
 
 The current Oracle host has 20 logical CPUs. Run 7 measured the full-equivalent final render at worker/thread budgets 1/10, 2/5, and 3/3; one scene worker with 10 x264 threads was fastest. Keep the repository default at automatic (`0`) for portability, and set `MS_RENDER_WORKERS=1` plus `MS_RENDER_X264_THREADS=10` in the Oracle runtime environment. Preserve libx264 preset slow, CRF 18, High profile, 1080x1920, and 60 FPS.
