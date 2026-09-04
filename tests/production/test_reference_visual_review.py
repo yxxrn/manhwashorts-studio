@@ -2640,3 +2640,38 @@ def test_standard_preflight_promotes_first_safe_roi_when_primary_is_unsafe(monke
     assert len(result) == 1
     assert result[0].roi_alternatives[0].kind == "primary"
     assert result[0].roi_alternatives[0].roi_label != "panel_primary"
+
+
+def test_exact_pixel_preflight_cache_reuses_refinement(monkeypatch, tmp_path):
+    from app.config import settings
+    from app.services import editorial_visual_planner, reference_visual_review, render
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    regions, crops, candidates = _builder_inputs()
+    candidate = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions[:1],
+        panel_candidates_by_region_id={"region-a": candidates["region-a"]},
+        panel_crops_by_region_id={"region-a": crops["region-a"]},
+        section_evidence_panel_ids={"hook": ("panel-a",)},
+        section_citations={}, beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )[0]
+    roi = candidate.roi_alternatives[0]
+    monkeypatch.setattr(
+        editorial_visual_planner, "_review_framing_candidate_is_feasible",
+        lambda *_a, **_k: (True, {"fallback_reason": None}),
+    )
+    calls = {"count": 0}
+    def refine(*_a, **_k):
+        calls["count"] += 1
+        return roi.crop_box, {}, {}
+    monkeypatch.setattr(render, "_refine_review_pixel_blank_crop", refine)
+    kwargs = {
+        "image": crops["region-a"], "roi": roi, "evidence": candidate.visual_evidence,
+        "border_mask": candidate.border_mask, "panel_size": candidate.panel_size,
+        "profile": reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        "allow_conservative_full_panel": False,
+    }
+    assert reference_visual_review._roi_passes_exact_pixel_preflight(**kwargs) is True
+    assert reference_visual_review._roi_passes_exact_pixel_preflight(**kwargs) is True
+    assert calls["count"] == 1

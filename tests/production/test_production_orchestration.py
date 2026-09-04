@@ -68,7 +68,15 @@ def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp
     from app.constants import JobStatus
     from app.models import RenderJob, ScriptVersion
     from app.services import pipeline as pl
+    from app.services import youtube_metadata
     from tests.factories.evidence import _project
+
+    metadata_calls = {"count": 0}
+    original_build_metadata = youtube_metadata.build_metadata
+    def counted_build_metadata(*args, **kwargs):
+        metadata_calls["count"] += 1
+        return original_build_metadata(*args, **kwargs)
+    monkeypatch.setattr(youtube_metadata, "build_metadata", counted_build_metadata)
 
     project = _project(db)
     script = ScriptVersion(
@@ -148,6 +156,7 @@ def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp
 
     assert first.id == second.id
     assert calls == {"audio": 1, "timeline": 1, "enqueue": 1, "execute": 1}
+    assert metadata_calls["count"] == 1
     package = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
     assert package["contract_version"] == "manual-upload-package-v1"
     assert package["language"] == "en"

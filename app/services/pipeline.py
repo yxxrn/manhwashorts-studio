@@ -943,6 +943,50 @@ def _panel_transport(
 _PANEL_TRANSPORT_CONCURRENCY = 3
 
 
+def _panel_transport_from_decoded_source(
+    panel: PanelRegion,
+    source_input: segmentation.SourceAssetInput,
+    coverage: segmentation.CoverageMap,
+    source_rgb: Image.Image,
+) -> dict[str, Any]:
+    global_bounds = _panel_region_bounds(panel)
+    source_bounds = source_input.source_bounds
+    local_bounds = (
+        global_bounds[0] - source_bounds[0], global_bounds[1] - source_bounds[1],
+        global_bounds[2] - source_bounds[0], global_bounds[3] - source_bounds[1],
+    )
+    decoded_width = source_input.decoded_width or (source_bounds[2] - source_bounds[0])
+    decoded_height = source_input.decoded_height or (source_bounds[3] - source_bounds[1])
+    if source_rgb.size != (decoded_width, decoded_height) or (
+        local_bounds[0] < 0 or local_bounds[1] < 0
+        or local_bounds[2] > decoded_width or local_bounds[3] > decoded_height
+        or local_bounds[2] <= local_bounds[0] or local_bounds[3] <= local_bounds[1]
+    ):
+        raise _AnalysisBlocked("coverage_incomplete", stage="panel_crop")
+    cropped = source_rgb.crop(local_bounds)
+    expected_size = (global_bounds[2] - global_bounds[0], global_bounds[3] - global_bounds[1])
+    if cropped.size != expected_size:
+        raise _AnalysisBlocked("coverage_incomplete", stage="panel_crop")
+    output = io.BytesIO()
+    cropped.save(output, format="PNG")
+    canonical_payload = output.getvalue()
+    provider_payload, provider_mime = _vision_provider_payload(canonical_payload, "image/png")
+    transport = {
+        "panel_id": panel.panel_id, "source_asset_id": panel.source_asset_id,
+        "strip_region_id": panel.strip_region_id, "source_order": panel.source_order,
+        "region_bounds": {"x": global_bounds[0], "y": global_bounds[1],
+            "width": expected_size[0], "height": expected_size[1]},
+        "coverage_map_version": coverage.version, "coverage_map_hash": coverage.map_sha256,
+        "mime_type": provider_mime, "payload": provider_payload,
+    }
+    windows = _vision_analysis_windows(canonical_payload)
+    if windows:
+        transport["analysis_window_version"] = ANALYSIS_WINDOW_CONTRACT_VERSION
+        transport["analysis_window_source_size"] = list(expected_size)
+        transport["analysis_windows"] = windows
+    return transport
+
+
 def _build_panel_transports(
     panel_regions: Sequence[PanelRegion],
     input_by_asset: Mapping[str, segmentation.SourceAssetInput],
@@ -950,23 +994,52 @@ def _build_panel_transports(
     *,
     telemetry: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Materialize exact provider transports with bounded parallel CPU work."""
+    """Materialize provider transports with bounded source-group CPU work."""
     stage_started = time.perf_counter()
-    workers = min(_PANEL_TRANSPORT_CONCURRENCY, max(1, len(panel_regions)))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="panel-transport") as executor:
-        futures = [
-            executor.submit(_panel_transport, panel, input_by_asset[panel.source_asset_id], coverage)
-            for panel in panel_regions
-        ]
-        wait(futures)
-        ordered = [future.result() for future in futures]
+    optimized = all(
+        isinstance(getattr(input_by_asset.get(str(panel.source_asset_id)), "payload", None), (bytes, bytearray))
+        for panel in panel_regions
+    )
+    if not optimized:
+        workers = min(_PANEL_TRANSPORT_CONCURRENCY, max(1, len(panel_regions)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="panel-transport") as executor:
+            futures = [executor.submit(_panel_transport, panel, input_by_asset[panel.source_asset_id], coverage) for panel in panel_regions]
+            wait(futures)
+            ordered = [future.result() for future in futures]
+        source_group_count = len({str(panel.source_asset_id) for panel in panel_regions})
+        source_decode_count = len(panel_regions)
+    else:
+        groups: dict[str, list[tuple[int, PanelRegion]]] = {}
+        for index, panel in enumerate(panel_regions):
+            groups.setdefault(str(panel.source_asset_id), []).append((index, panel))
+        workers = min(_PANEL_TRANSPORT_CONCURRENCY, max(1, len(groups)))
+        def process_group(asset_id: str, rows: Sequence[tuple[int, PanelRegion]]) -> list[tuple[int, dict[str, Any]]]:
+            source_input = input_by_asset[asset_id]
+            try:
+                with Image.open(io.BytesIO(bytes(source_input.payload))) as opened:
+                    opened.load()
+                    source_rgb = opened.convert("RGB")
+            except (OSError, UnidentifiedImageError, ValueError):
+                raise _AnalysisBlocked("coverage_incomplete", stage="panel_decode") from None
+            return [(index, _panel_transport_from_decoded_source(panel, source_input, coverage, source_rgb)) for index, panel in rows]
+        ordered_slots: list[dict[str, Any] | None] = [None] * len(panel_regions)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="panel-source") as executor:
+            futures = [executor.submit(process_group, asset_id, rows) for asset_id, rows in groups.items()]
+            wait(futures)
+            for future in futures:
+                for index, transport in future.result():
+                    ordered_slots[index] = transport
+        if any(item is None for item in ordered_slots):
+            raise _AnalysisBlocked("coverage_incomplete", stage="panel_transport")
+        ordered = [item for item in ordered_slots if item is not None]
+        source_group_count = len(groups)
+        source_decode_count = len(groups)
     if telemetry is not None:
         telemetry.clear()
         telemetry.update({
-            "panel_count": len(panel_regions),
-            "configured_concurrency": _PANEL_TRANSPORT_CONCURRENCY,
-            "worker_count": workers,
-            "wall_s": round(time.perf_counter() - stage_started, 6),
+            "panel_count": len(panel_regions), "configured_concurrency": _PANEL_TRANSPORT_CONCURRENCY,
+            "worker_count": workers, "source_group_count": source_group_count,
+            "source_decode_count": source_decode_count, "wall_s": round(time.perf_counter() - stage_started, 6),
         })
     return {panel.panel_id: transport for panel, transport in zip(panel_regions, ordered, strict=True)}
 
@@ -1363,60 +1436,123 @@ def _observe_chunks(
         provider_calls: list[dict[str, Any]] = []
         cache_hit = rows is not None
         if rows is None:
-            response = None
-            for attempt in range(1, _VISION_OBSERVATION_MAX_ATTEMPTS + 1):
-                call_started = time.perf_counter()
-                outcome = "ok"
-                try:
-                    response = provider.observe(request)
-                    break
-                except VisionResponseInvalid:
-                    outcome = "invalid"
-                    if attempt >= _VISION_OBSERVATION_MAX_ATTEMPTS:
+            def call_with_retries(
+                child_request: VisionObservationRequest,
+                child_panel_ids: tuple[str, ...],
+                *,
+                repair_part: str = "",
+            ) -> list[dict[str, Any]]:
+                response = None
+                for attempt in range(1, _VISION_OBSERVATION_MAX_ATTEMPTS + 1):
+                    call_started = time.perf_counter()
+                    outcome = "ok"
+                    try:
+                        response = provider.observe(child_request)
+                        validated = _validate_observation_rows(
+                            response,
+                            child_panel_ids,
+                            expected_panels={
+                                panel_id: panel_transports[panel_id]
+                                for panel_id in child_panel_ids
+                            },
+                            require_visual_evidence=require_visual_evidence,
+                        )
+                        return validated
+                    except VisionResponseInvalid:
+                        outcome = "invalid"
+                        if attempt >= _VISION_OBSERVATION_MAX_ATTEMPTS:
+                            raise
+                        time.sleep(min(0.25 * attempt, 1.0))
+                    except VisionProviderRequestFailed as exc:
+                        outcome = "provider_retry" if exc.retryable else "provider_permanent"
+                        if not exc.retryable or attempt >= _VISION_OBSERVATION_MAX_ATTEMPTS:
+                            raise _AnalysisBlocked(
+                                "vision_provider_request_failed",
+                                stage="observation_provider",
+                                chunk_index=chunk_index,
+                                attempts=attempt,
+                            ) from None
+                        delay = exc.retry_after_s if isinstance(exc.retry_after_s, (int, float)) else min(2 ** (attempt - 1), 4)
+                        time.sleep(max(0.05, min(float(delay), 10.0)))
+                    except _AnalysisBlocked:
+                        outcome = "local_validation"
+                        raise
+                    except VisionCapabilityError:
+                        outcome = "capability_error"
+                        raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index) from None
+                    except Exception:
+                        outcome = "provider_permanent"
+                        raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index) from None
+                    finally:
+                        call_finished = time.perf_counter()
+                        provider_calls.append(
+                            {
+                                "chunk_index": chunk_index,
+                                "attempt": attempt,
+                                "started_s": round(call_started - stage_started, 6),
+                                "finished_s": round(call_finished - stage_started, 6),
+                                "duration_s": round(call_finished - call_started, 6),
+                                "outcome": outcome,
+                                "request_panel_count": len(child_panel_ids),
+                                "repair_part": repair_part,
+                            }
+                        )
+                raise VisionResponseInvalid()
+
+            try:
+                rows = call_with_retries(request, panel_ids)
+            except VisionResponseInvalid:
+                if len(panel_ids) < 4:
+                    raise _AnalysisBlocked(
+                        "vision_response_invalid",
+                        stage="observation_provider",
+                        chunk_index=chunk_index,
+                        attempts=_VISION_OBSERVATION_MAX_ATTEMPTS,
+                    ) from None
+                split_at = len(panel_ids) // 2
+                child_rows: list[dict[str, Any]] = []
+                for repair_part, child_panel_ids in (
+                    ("a", panel_ids[:split_at]),
+                    ("b", panel_ids[split_at:]),
+                ):
+                    child_request = VisionObservationRequest(
+                        analysis_run_id=analysis_run_id,
+                        instruction_version=instruction_version,
+                        instruction_sha256=instruction_sha256,
+                        chunk_index=chunk_index,
+                        panels=tuple(panel_transports[panel_id] for panel_id in child_panel_ids),
+                        visual_instruction_version=visual_instruction_version,
+                        visual_instruction_sha256=visual_instruction_sha256,
+                    )
+                    child_cache_key = _vision_observation_cache_key(provider, child_request)
+                    child_cached = _load_cached_observation_rows(
+                        child_cache_key,
+                        child_panel_ids,
+                        panel_transports,
+                        require_visual_evidence=require_visual_evidence,
+                    )
+                    if child_cached is not None:
+                        child_rows.extend(child_cached)
+                        continue
+                    try:
+                        validated_child = call_with_retries(
+                            child_request, child_panel_ids, repair_part=repair_part
+                        )
+                    except VisionResponseInvalid:
                         raise _AnalysisBlocked(
                             "vision_response_invalid",
                             stage="observation_provider",
                             chunk_index=chunk_index,
-                            attempts=attempt,
+                            attempts=_VISION_OBSERVATION_MAX_ATTEMPTS,
                         ) from None
-                    time.sleep(min(0.25 * attempt, 1.0))
-                except VisionProviderRequestFailed as exc:
-                    outcome = "provider_retry" if exc.retryable else "provider_permanent"
-                    if not exc.retryable or attempt >= _VISION_OBSERVATION_MAX_ATTEMPTS:
-                        raise _AnalysisBlocked(
-                            "vision_provider_request_failed",
-                            stage="observation_provider",
-                            chunk_index=chunk_index,
-                            attempts=attempt,
-                        ) from None
-                    delay = exc.retry_after_s if isinstance(exc.retry_after_s, (int, float)) else min(2 ** (attempt - 1), 4)
-                    time.sleep(max(0.05, min(float(delay), 10.0)))
-                except VisionCapabilityError:
-                    outcome = "capability_error"
-                    raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index) from None
-                except Exception:
-                    outcome = "provider_permanent"
-                    raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index) from None
-                finally:
-                    call_finished = time.perf_counter()
-                    provider_calls.append(
-                        {
-                            "chunk_index": chunk_index,
-                            "attempt": attempt,
-                            "started_s": round(call_started - stage_started, 6),
-                            "finished_s": round(call_finished - stage_started, 6),
-                            "duration_s": round(call_finished - call_started, 6),
-                            "outcome": outcome,
-                        }
-                    )
-            if response is None:
-                raise _AnalysisBlocked("vision_provider_request_failed", stage="observation_provider", chunk_index=chunk_index)
-            rows = _validate_observation_rows(
-                response,
-                panel_ids,
-                expected_panels={panel_id: panel_transports[panel_id] for panel_id in panel_ids},
-                require_visual_evidence=require_visual_evidence,
-            )
+                    _store_cached_observation_rows(child_cache_key, validated_child)
+                    child_rows.extend(validated_child)
+                rows = _validate_observation_rows(
+                    child_rows,
+                    panel_ids,
+                    expected_panels={panel_id: panel_transports[panel_id] for panel_id in panel_ids},
+                    require_visual_evidence=require_visual_evidence,
+                )
             _store_cached_observation_rows(cache_key, rows)
         return {
             "chunk_index": chunk_index,

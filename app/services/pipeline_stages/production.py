@@ -5,6 +5,7 @@ Public callers should continue importing app.services.pipeline.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -24,6 +25,40 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
     attributions = sorted(
         {str(asset.attribution).strip() for asset in assets if str(asset.attribution or "").strip()}
     )
+    output_dir = Path(job.output_key).parent
+    thumbnail_path = str((thumbnail_manifest or {}).get("thumbnail_path", "") or "")
+    subtitle_path = str(getattr(job, "subtitle_key", "") or "")
+    identity_payload = {
+        "contract_version": "manual-upload-package-v1",
+        "project_title": str(project.title or ""),
+        "manhwa_title": str(project.manhwa_title or ""),
+        "chapter": str(project.chapter or ""),
+        "script_text": str(script.plain_text or ""),
+        "attribution": "; ".join(attributions),
+        "language": str(project.language or "en"),
+        "video_checksum": str(getattr(job, "checksum", "") or ""),
+        "thumbnail": Path(thumbnail_path).name if thumbnail_path else "",
+        "subtitles": Path(subtitle_path).name if subtitle_path else "",
+    }
+    identity = hashlib.sha256(
+        json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    target = output_dir / "metadata.json"
+    identity_path = output_dir / "metadata.identity.json"
+    try:
+        if target.is_file() and identity_path.is_file():
+            cached_identity = json.loads(identity_path.read_text(encoding="utf-8"))
+            cached_payload = json.loads(target.read_text(encoding="utf-8"))
+            if (
+                isinstance(cached_identity, dict)
+                and cached_identity.get("identity") == identity
+                and isinstance(cached_payload, dict)
+                and cached_payload.get("contract_version") == "manual-upload-package-v1"
+                and cached_payload.get("project_id") == str(project.id)
+            ):
+                return target, cached_payload
+    except (OSError, json.JSONDecodeError):
+        pass
     generated = build_metadata(
         project_title=project.title,
         manhwa_title=project.manhwa_title,
@@ -32,11 +67,8 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
         attribution="; ".join(attributions),
         language=project.language,
     )
-    output_dir = Path(job.output_key).parent
-    thumbnail_path = str((thumbnail_manifest or {}).get("thumbnail_path", "") or "")
     if not thumbnail_path and getattr(job, "thumbnail_key", ""):
         thumbnail_path = str(job.thumbnail_key)
-    subtitle_path = str(getattr(job, "subtitle_key", "") or "")
     payload = {
         "contract_version": "manual-upload-package-v1",
         "project_id": str(project.id),
@@ -48,16 +80,21 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
         "thumbnail": Path(thumbnail_path).name if thumbnail_path else "",
         "subtitles": Path(subtitle_path).name if subtitle_path else "",
     }
-    target = output_dir / "metadata.json"
     temporary = output_dir / ".metadata.json.tmp"
+    identity_tmp = output_dir / ".metadata.identity.json.tmp"
     try:
         temporary.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
         temporary.replace(target)
+        identity_tmp.write_text(
+            json.dumps({"identity": identity}, indent=2) + "\n", encoding="utf-8"
+        )
+        identity_tmp.replace(identity_path)
     except OSError as exc:
         temporary.unlink(missing_ok=True)
+        identity_tmp.unlink(missing_ok=True)
         raise api.PipelineError(f"manual upload metadata could not be written: {exc}") from exc
     return target, payload
 

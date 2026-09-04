@@ -135,3 +135,31 @@ def test_generate_thumbnail_requires_clean_visual_candidate(tmp_path, monkeypatc
         assert "no_visual_candidate" in str(exc)
     else:
         raise AssertionError("missing source panel did not block thumbnail generation")
+
+
+def test_thumbnail_history_rejects_exact_prior_headline(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "output_dir", tmp_path / "output")
+    monkeypatch.setattr(settings, "llm_provider", "rules")
+    prior = "WHAT POWER JUST AWAKENED?!"
+    thumbnail._record_headline_history(prior, story_hash="a" * 64, video_checksum="b" * 64)
+    history = thumbnail._load_headline_history()
+    headlines, _sections, _language = thumbnail.generate_headlines(_script(), history)
+    assert history == [prior]
+    assert headlines
+    assert all(row.text != prior for row in headlines)
+    assert all(thumbnail._headline_is_novel(row.text, history) for row in headlines)
+
+
+def test_thumbnail_placement_pool_includes_middle_when_safe():
+    frame = Image.new("RGB", thumbnail.TARGET_SIZE, (100, 110, 120))
+    placements = thumbnail._safe_text_placements(frame, (), 0.12)
+    names = {row[0] for row in placements}
+    assert names == {"top", "middle", "bottom"}
+
+
+def test_thumbnail_accent_color_is_from_closed_palette():
+    frame = Image.new("RGB", thumbnail.TARGET_SIZE, (235, 235, 235))
+    name, rgba = thumbnail._accent_color(frame, "middle")
+    assert name in {"yellow", "red", "blue", "green"}
+    assert rgba == thumbnail._THUMBNAIL_ACCENT_COLORS[name]

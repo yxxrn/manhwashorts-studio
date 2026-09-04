@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
 from math import isfinite
+from pathlib import Path
 from typing import Any
 
 from PIL import Image
 
+from app.config import settings
 from app.services import (
     editorial_visual_planner,
     framing_analysis,
@@ -17,6 +20,46 @@ from app.services import (
     visual_scoring,
 )
 
+_PIXEL_PREFLIGHT_CACHE_VERSION = "reference-pixel-preflight-v1"
+
+def _pixel_preflight_cache_key(
+    image: Image.Image, roi: editorial_visual_planner.ReferenceROIAlternative,
+    evidence: visual_scoring.PanelVisualEvidence, border_mask: framing_analysis.BorderMaskResult,
+    panel_size: tuple[int, int], profile: object, allow_conservative_full_panel: bool,
+) -> str:
+    pixels = hashlib.sha256(image.convert("RGB").tobytes()).hexdigest()
+    payload = {
+        "version": _PIXEL_PREFLIGHT_CACHE_VERSION, "pixels": pixels,
+        "image_size": list(image.size), "panel_size": list(panel_size),
+        "roi": asdict(roi), "evidence_hash": visual_scoring.visual_evidence_hash(evidence),
+        "mask": asdict(border_mask), "profile_id": str(getattr(profile, "profile_id", "")),
+        "profile_version": str(getattr(profile, "profile_version", getattr(profile, "version", ""))),
+        "framing_contract_version": str(getattr(profile, "framing_contract_version", "")),
+        "target": [int(profile.final_width), int(profile.final_height)],
+        "allow_conservative_full_panel": bool(allow_conservative_full_panel),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def _pixel_preflight_cache_path(key: str) -> Path:
+    return Path(settings.data_dir) / "reference-pixel-preflight-cache" / f"{key}.json"
+
+def _load_pixel_preflight_cache(key: str) -> bool | None:
+    path = _pixel_preflight_cache_path(key)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, Mapping) and data.get("version") == _PIXEL_PREFLIGHT_CACHE_VERSION and isinstance(data.get("safe"), bool):
+        return bool(data["safe"])
+    return None
+
+def _store_pixel_preflight_cache(key: str, safe: bool) -> None:
+    path = _pixel_preflight_cache_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"version": _PIXEL_PREFLIGHT_CACHE_VERSION, "safe": bool(safe)}, sort_keys=True), encoding="utf-8")
+    temporary.replace(path)
 
 class ReferenceReviewError(ValueError):
     """Safe validation error for exact panel review boundaries."""
@@ -304,6 +347,12 @@ def _roi_passes_exact_pixel_preflight(
     )
     if not feasible:
         return False
+    cache_key = _pixel_preflight_cache_key(
+        image, roi, evidence, border_mask, panel_size, profile, allow_conservative_full_panel
+    )
+    cached = _load_pixel_preflight_cache(cache_key)
+    if cached is not None:
+        return cached
     fallback_reason = (
         telemetry.get("fallback_reason")
         if isinstance(telemetry, Mapping)
@@ -329,8 +378,10 @@ def _roi_passes_exact_pixel_preflight(
         )
     except render.RenderError as exc:
         if exc.code == "visual.blank_infeasible":
+            _store_pixel_preflight_cache(cache_key, False)
             return False
         raise ReferenceReviewError(str(exc), exc.code) from exc
+    _store_pixel_preflight_cache(cache_key, True)
     return True
 
 

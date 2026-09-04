@@ -14,7 +14,8 @@ import json
 import re
 import shutil
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +25,98 @@ from app.config import settings
 from app.services import visual_scoring
 from app.services.file_integrity import sha256_file
 
-THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v3"
+THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v4"
 TARGET_SIZE = (1080, 1920)
 MAX_HEADLINE_WORDS = 7
 MAX_HEADLINE_CHARS = 38
+
+
+
+_HEADLINE_HISTORY_VERSION = "thumbnail-headline-history-v1"
+_HEADLINE_NEAR_DUPLICATE_THRESHOLD = 0.72
+_THUMBNAIL_ACCENT_COLORS = {
+    "yellow": (255, 224, 48, 255),
+    "red": (255, 72, 72, 255),
+    "blue": (72, 164, 255, 255),
+    "green": (72, 228, 120, 255),
+}
+
+def _headline_history_path() -> Path:
+    return Path(settings.data_dir) / "thumbnail-headline-history.json"
+
+def _normalized_headline(value: object) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+def _headline_similarity(left: str, right: str) -> float:
+    a = _normalized_headline(left)
+    b = _normalized_headline(right)
+    if not a or not b:
+        return 0.0
+    seq = SequenceMatcher(None, a, b).ratio()
+    ta, tb = set(a.split()), set(b.split())
+    jac = len(ta & tb) / max(1, len(ta | tb))
+    return max(seq, jac)
+
+def _headline_is_novel(value: str, history: Sequence[str]) -> bool:
+    norm = _normalized_headline(value)
+    if not norm:
+        return False
+    return all(
+        norm != _normalized_headline(old)
+        and _headline_similarity(value, old) < _HEADLINE_NEAR_DUPLICATE_THRESHOLD
+        for old in history
+    )
+
+def _load_headline_history() -> list[str]:
+    history: list[str] = []
+    path = _headline_history_path()
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, Mapping) and data.get("version") == _HEADLINE_HISTORY_VERSION:
+                history.extend(
+                    str(row.get("headline"))
+                    for row in data.get("entries", ())
+                    if isinstance(row, Mapping) and str(row.get("headline") or "").strip()
+                )
+        except (OSError, json.JSONDecodeError):
+            pass
+    output_root = Path(settings.output_dir)
+    if output_root.is_dir():
+        for meta_path in sorted(output_root.glob("*/thumbnail_meta.json")):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            headline = str(meta.get("headline") or "").strip() if isinstance(meta, Mapping) else ""
+            if headline:
+                history.append(headline)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for headline in history:
+        key = _normalized_headline(headline)
+        if key and key not in seen:
+            unique.append(headline)
+            seen.add(key)
+    return unique
+
+def _record_headline_history(headline: str, *, story_hash: str, video_checksum: str) -> None:
+    path = _headline_history_path()
+    entries: list[dict[str, str]] = []
+    if path.is_file():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(current, Mapping) and current.get("version") == _HEADLINE_HISTORY_VERSION:
+                entries = [dict(row) for row in current.get("entries", ()) if isinstance(row, Mapping)]
+        except (OSError, json.JSONDecodeError):
+            entries = []
+    entries = [row for row in entries if _normalized_headline(row.get("headline")) != _normalized_headline(headline)]
+    entries.append({"headline": headline, "story_hash": story_hash, "video_checksum": video_checksum})
+    payload = {"version": _HEADLINE_HISTORY_VERSION, "entries": entries[-500:]}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 class ThumbnailError(RuntimeError):
@@ -148,7 +237,7 @@ def _fallback_headlines(sections: Mapping[str, str], language: str) -> list[Head
     return unique
 
 
-def _llm_headlines(sections: Mapping[str, str], language: str) -> list[HeadlineCandidate]:
+def _llm_headlines(sections: Mapping[str, str], language: str, avoid_headlines: Sequence[str] = ()) -> list[HeadlineCandidate]:
     if settings.llm_provider != "openai_compatible" or not settings.llm_base_url or not settings.llm_api_key:
         return []
     story = json.dumps(dict(sections), ensure_ascii=False)
@@ -164,6 +253,7 @@ def _llm_headlines(sections: Mapping[str, str], language: str) -> list[HeadlineC
     user = (
         f"Language: {'Indonesian' if language == 'id' else 'English'}\n"
         "Generate eight distinct thumbnail headlines. Make every option feel impossible to ignore and specific to this story.\n"
+        f"Avoid prior production headlines and close paraphrases: {json.dumps(list(avoid_headlines)[-80:], ensure_ascii=False)[:4000]}\n"
         f"Story sections: {story[:5000]}"
     )
     try:
@@ -210,10 +300,10 @@ def _headline_pronouns_are_grounded(text: str, story: str, language: str) -> boo
     return True
 
 
-def generate_headlines(script: object) -> tuple[list[HeadlineCandidate], dict[str, str], str]:
+def generate_headlines(script: object, headline_history: Sequence[str] = ()) -> tuple[list[HeadlineCandidate], dict[str, str], str]:
     sections, story = _script_sections(script)
     language = _language(story)
-    rows = _llm_headlines(sections, language) + _fallback_headlines(sections, language)
+    rows = _llm_headlines(sections, language, headline_history) + _fallback_headlines(sections, language)
     unique: list[HeadlineCandidate] = []
     seen: set[str] = set()
     for row in rows:
@@ -221,12 +311,18 @@ def generate_headlines(script: object) -> tuple[list[HeadlineCandidate], dict[st
             row.text
             and _headline_pronouns_are_grounded(row.text, story, language)
             and row.text not in seen
+            and _headline_is_novel(row.text, headline_history)
         ):
             unique.append(row)
             seen.add(row.text)
     if not unique:
         fallback = "TERNYATA INI YANG TERJADI" if language == "id" else "THIS CHANGED EVERYTHING"
-        unique.append(HeadlineCandidate(fallback, "conflict", "fallback", (), 1.0))
+        if _headline_is_novel(fallback, headline_history):
+            unique.append(HeadlineCandidate(fallback, "conflict", "fallback", (), 1.0))
+        else:
+            words = [w.upper() for w in re.findall(r"[A-Za-zÀ-ÿ0-9]+", story) if len(w) >= 5][:5]
+            dynamic = _clean_headline(" ".join(words[:4]) + "?!") or fallback
+            unique.append(HeadlineCandidate(dynamic, "conflict", "story_fallback", (), 1.0))
     return unique[:10], sections, language
 
 
@@ -319,22 +415,55 @@ def _box_overlap_y(box: tuple[float, float, float, float], top: float, bottom: f
     return min(1.0, (y2 - y1) / max(1e-6, box[3] - box[1]))
 
 
-def _safe_text_placement(
+def _safe_text_placements(
     image: Image.Image,
     face_boxes: Sequence[tuple[float, float, float, float]],
     focus_y: float,
-) -> tuple[str, float, float]:
-    regions = {"top": (0.05, 0.34), "bottom": (0.66, 0.95)}
-    ranked: list[tuple[float, str, float]] = []
+) -> list[tuple[str, float, float]]:
+    regions = {"top": (0.05, 0.32), "middle": (0.35, 0.65), "bottom": (0.68, 0.95)}
+    ranked: list[tuple[str, float, float]] = []
     for name, (top, bottom) in regions.items():
         overlap = max((_box_overlap_y(box, top, bottom) for box in face_boxes), default=0.0)
         edge = _edge_energy(image, top, bottom)
         focus_penalty = 0.45 if top <= focus_y <= bottom else 0.0
         score = 1.5 * (1.0 - overlap) + 0.65 * (1.0 - edge) - focus_penalty
-        ranked.append((score, name, overlap))
-    ranked.sort(reverse=True)
-    best = ranked[0]
-    return best[1], round(best[0], 4), round(best[2], 4)
+        if overlap <= 0.22:
+            ranked.append((name, round(score, 4), round(overlap, 4)))
+    ranked.sort(key=lambda row: row[1], reverse=True)
+    return ranked
+
+def _safe_text_placement(
+    image: Image.Image,
+    face_boxes: Sequence[tuple[float, float, float, float]],
+    focus_y: float,
+) -> tuple[str, float, float]:
+    ranked = _safe_text_placements(image, face_boxes, focus_y)
+    if not ranked:
+        return "top", 0.0, 1.0
+    return ranked[0]
+
+def _pair_placement(visual: VisualCandidate, headline: HeadlineCandidate, story_hash: str) -> str:
+    with Image.open(io.BytesIO(visual.image_jpeg)) as decoded:
+        ranked = _safe_text_placements(decoded.convert("RGB"), visual.face_boxes, visual.focus_y)
+    if not ranked:
+        return visual.placement
+    pool = [row[0] for row in ranked]
+    seed = hashlib.sha256(f"{story_hash}|{visual.scene_index}|{headline.text}".encode()).digest()
+    return pool[int.from_bytes(seed[:4], "big") % len(pool)]
+
+def _accent_color(image: Image.Image, placement: str) -> tuple[str, tuple[int, int, int, int]]:
+    regions = {"top": (0.05, 0.32), "middle": (0.35, 0.65), "bottom": (0.68, 0.95)}
+    top, bottom = regions.get(placement, regions["top"])
+    sample = image.crop((0, int(image.height * top), image.width, int(image.height * bottom))).resize((32, 32))
+    mean = ImageStat.Stat(sample.convert("RGB")).mean
+    bg = tuple(float(value) for value in mean[:3])
+    def score(rgb: tuple[int, int, int, int]) -> float:
+        fg = rgb[:3]
+        distance = sum((float(fg[i]) - bg[i]) ** 2 for i in range(3)) ** 0.5 / 441.7
+        fg_luma = (0.2126 * fg[0] + 0.7152 * fg[1] + 0.0722 * fg[2]) / 255.0
+        bg_luma = (0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2]) / 255.0
+        return abs(fg_luma - bg_luma) + 0.55 * distance
+    return max(_THUMBNAIL_ACCENT_COLORS.items(), key=lambda item: score(item[1]))
 
 
 def _largest_face_area(face_boxes: Sequence[tuple[float, float, float, float]]) -> float:
@@ -571,14 +700,20 @@ def _render_variant(
     widths = [box[2] - box[0] for box in boxes]
     heights = [box[3] - box[1] for box in boxes]
     block_h = sum(heights) + line_gap * max(0, len(lines) - 1)
-    top_y = 92 if visual.placement == "top" else TARGET_SIZE[1] - block_h - 125
+    if visual.placement == "top":
+        top_y = 92
+    elif visual.placement == "middle":
+        top_y = int((TARGET_SIZE[1] - block_h) / 2)
+    else:
+        top_y = TARGET_SIZE[1] - block_h - 125
+    accent_name, accent_fill = _accent_color(base, visual.placement)
     y = top_y
     line_rects: list[tuple[int, int, int, int]] = []
-    for index, (line, width, height) in enumerate(
+    for _index, (line, width, height) in enumerate(
         zip(lines, widths, heights, strict=True)
     ):
         x = int((TARGET_SIZE[0] - width) / 2)
-        fill = (255, 255, 255, 255) if index == 0 else (255, 218, 38, 255)
+        fill = accent_fill
         draw.text(
             (x + shadow, y + shadow),
             line,
@@ -640,6 +775,7 @@ def _render_variant(
         "file_size": destination.stat().st_size if destination.is_file() else 0,
         "placement": visual.placement,
         "background_style": "outline_only",
+        "text_color": accent_name,
         "stroke_width": stroke,
         "shadow_offset": shadow,
     }
@@ -699,7 +835,8 @@ def generate_thumbnail_package(
         if existing is not None:
             return existing
 
-    headlines, _sections, language = generate_headlines(script)
+    headline_history = _load_headline_history()
+    headlines, _sections, language = generate_headlines(script, headline_history)
     visuals = build_visual_candidates(scenes, resolve_asset_path)
     if not visuals:
         raise ThumbnailError("thumbnail.no_visual_candidate: no clean source panel could be rebuilt")
@@ -723,7 +860,9 @@ def generate_thumbnail_package(
             continue
         variant_index = len(rendered) + 1
         destination = output_dir / f"thumbnail_v{variant_index}.jpg"
-        qc = _render_variant(visual, headline, destination)
+        placement = _pair_placement(visual, headline, story_hash)
+        rendered_visual = replace(visual, placement=placement)
+        qc = _render_variant(rendered_visual, headline, destination)
         if not qc["qc_pass"]:
             destination.unlink(missing_ok=True)
             continue
@@ -744,6 +883,8 @@ def generate_thumbnail_package(
                 "pair_score": pair_score,
                 "alignment_score": visual.alignment_score,
                 "text_safe_score": visual.text_safe_score,
+                "placement": placement,
+                "text_color": qc.get("text_color", ""),
                 "qc": qc,
             }
         )
@@ -791,5 +932,8 @@ def generate_thumbnail_package(
     )
     (output_dir / "thumbnail_meta.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    _record_headline_history(
+        str(rendered[0]["headline"]), story_hash=story_hash, video_checksum=video_checksum
     )
     return manifest

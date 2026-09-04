@@ -1203,6 +1203,77 @@ class _AlwaysInvalidObservationSpy(_RetryablePersistentObservationSpy):
         raise VisionResponseInvalid(validation_subtype="structured_json")
 
 
+class _SplitRepairObservationSpy(_RetryablePersistentObservationSpy):
+    def __init__(self, *, fail_panel_id: str = "") -> None:
+        super().__init__()
+        self.request_panel_ids: list[tuple[str, ...]] = []
+        self.fail_panel_id = fail_panel_id
+
+    def observe(self, request):
+        from app.services.vision_adapter import VisionResponseInvalid
+
+        panel_ids = tuple(str(panel["panel_id"]) for panel in request.panels)
+        self.attempted_chunks.append(request.chunk_index)
+        self.request_panel_ids.append(panel_ids)
+        if len(panel_ids) > 6 or (self.fail_panel_id and self.fail_panel_id in panel_ids):
+            raise VisionResponseInvalid(validation_subtype="structured_json")
+        return [_visual_row(panel) for panel in request.panels]
+
+
+def test_observe_chunks_repairs_persistent_large_invalid_by_validated_split_and_caches_original(tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(12)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"split-repair-image-" + panel.panel_id.encode(),
+        }
+        for panel in panels
+    }
+    first = _SplitRepairObservationSpy()
+    semantic, ledger, first_chunk = _run_visual_observation(
+        module, first, panels, transports, version, digest
+    )
+    assert list(semantic) == [panel.panel_id for panel in panels]
+    assert [len(panel_ids) for panel_ids in first.request_panel_ids] == [12, 12, 12, 6, 6]
+    assert [row["chunk_id"] for row in ledger] == ["chunk-0"]
+    assert set(first_chunk.values()) == {0}
+
+    second = _SplitRepairObservationSpy()
+    reused, _, _ = _run_visual_observation(
+        module, second, panels, transports, version, digest
+    )
+    assert second.request_panel_ids == []
+    assert reused == semantic
+
+
+def test_observe_chunks_split_repair_still_fails_closed_when_child_is_invalid(tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    _, (version, digest, _) = _visual_loader()
+    panels = _panel_regions(12)
+    transports = {
+        panel.panel_id: {
+            "panel_id": panel.panel_id,
+            "source_asset_id": panel.source_asset_id,
+            "source_order": panel.source_order,
+            "mime_type": "image/png",
+            "payload": b"split-fail-image-" + panel.panel_id.encode(),
+        }
+        for panel in panels
+    }
+    provider = _SplitRepairObservationSpy(fail_panel_id=panels[2].panel_id)
+    with pytest.raises(Exception) as caught:
+        _run_visual_observation(module, provider, panels, transports, version, digest)
+    assert getattr(caught.value, "code", None) == "vision_response_invalid"
+    assert [len(panel_ids) for panel_ids in provider.request_panel_ids] == [12, 12, 12, 6, 6, 6]
+
+
 def test_observe_chunks_persistent_invalid_response_still_fails_closed(tmp_path, monkeypatch):
     module = _pipeline_module()
     monkeypatch.setattr(module.settings, "data_dir", tmp_path)
@@ -1824,3 +1895,27 @@ def test_frameability_cold_misses_parallelize_across_sources_and_keep_order(monk
     assert max_active == 3
     assert metrics["cache_hits"] == 0
     assert metrics["cache_misses"] == 3
+
+
+def test_panel_transport_reuses_one_source_decode_for_group():
+    module = _pipeline_module()
+    raw = io.BytesIO()
+    Image.new("RGB", (100, 200), (20, 40, 60)).save(raw, format="PNG")
+    source = SimpleNamespace(
+        payload=raw.getvalue(), source_bounds=(0, 0, 100, 200),
+        decoded_width=100, decoded_height=200,
+    )
+    panels = (
+        SimpleNamespace(panel_id="p-a", source_asset_id="asset", strip_region_id="s-a", source_order=1,
+                        bounds_json={"x": 0, "y": 0, "width": 100, "height": 100}),
+        SimpleNamespace(panel_id="p-b", source_asset_id="asset", strip_region_id="s-b", source_order=2,
+                        bounds_json={"x": 0, "y": 100, "width": 100, "height": 100}),
+    )
+    coverage = SimpleNamespace(version="v", map_sha256="c" * 64)
+    metrics = {}
+    result = module._build_panel_transports(panels, {"asset": source}, coverage, telemetry=metrics)
+    assert tuple(result) == ("p-a", "p-b")
+    assert metrics["source_group_count"] == 1
+    assert metrics["source_decode_count"] == 1
+    assert metrics["panel_count"] == 2
+    assert all(result[panel_id]["payload"] for panel_id in result)
