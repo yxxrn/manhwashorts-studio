@@ -446,9 +446,11 @@ def test_http_sections_synthesis_honors_grok_protocol(tmp_path, monkeypatch):
 def test_grok_voice_profiles_resolve_real_provider_voice_ids():
     from app.services import tts as tts_svc
 
+    assert tts_svc.GROK_TTS_DEFAULT_VOICE_ID == "orion"
+    assert tts_svc.resolve_grok_voice_id("") == "orion"
     assert tts_svc.resolve_grok_voice_id("the-explainer-american") == "ara"
     assert tts_svc.resolve_grok_voice_id("ORION") == "orion"
-    assert "perseus" in tts_svc.GROK_NARRATOR_PROFILES
+    assert tts_svc.GROK_NARRATOR_PROFILES == ("orion", "luna", "ara", "lux", "altair")
     with pytest.raises(tts_svc.TTSError, match="unknown Grok voice_id"):
         tts_svc.resolve_grok_voice_id("made-up-voice")
 

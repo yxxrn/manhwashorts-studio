@@ -718,6 +718,6 @@ def test_grok_voices_endpoint_exposes_real_provider_profiles(client, monkeypatch
     monkeypatch.setattr(settings, "tts_http_language", "en")
     body = client.get("/api/voices").json()
     assert body["model"] == "grok-voice-latest"
-    assert body["default_voice_id"] == "ara"
-    assert body["profiles"] == ["ara", "orion", "perseus", "rex", "zagan", "helix"]
+    assert body["default_voice_id"] == "orion"
+    assert body["profiles"] == ["orion", "luna", "ara", "lux", "altair"]
     assert {row["id"] for row in body["voices"]} >= {"ara", "orion", "rex", "zagan"}

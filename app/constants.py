@@ -143,7 +143,7 @@ class ScriptSection(StrEnum):
 DEFAULT_PROJECT_LANGUAGE = "en"
 
 # Production Grok narrator default. Provider language remains English; voice_id controls timbre/accent.
-DEFAULT_ENGLISH_VOICE_ID = "ara"
+DEFAULT_ENGLISH_VOICE_ID = "orion"
 DEFAULT_ENGLISH_SPEED = 0.90
 
 

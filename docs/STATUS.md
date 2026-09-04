@@ -265,7 +265,7 @@ standalone plans remain visibly marked HISTORICAL. See `docs/history/README.md` 
 
 ### Grok TTS voice profiles - 2026-09-04
 - Production HTTP TTS remains pinned to `grok-voice-latest`; the provider request now sends real `voice_id`, `language`, `output_format`, and `speed` fields from the documented `/v1/tts` contract.
-- New English projects default to real provider voice `ara`; legacy `the-explainer-american` maps to `ara` so old projects remain resumable.
+- New English projects default to real provider voice `orion`; legacy `the-explainer-american` remains mapped to `ara` so old projects remain narrator-stable and resumable.
 - Variation shortlist: `ara`, `orion`, `perseus`, `rex`, `zagan`, `helix`; all 28 documented built-in voice IDs are exposed by `/api/voices`.
 - Live smoke generated six distinct valid audio samples under `data/voice-auditions/grok-latest-en/`; all used model `grok-voice-latest` and provider language `en`.
 - Unattended production now accepts `--voice-id`, checkpoints it for new runs, validates it during TTS preflight, and persists the actual provider voice/model identity in every audio segment.

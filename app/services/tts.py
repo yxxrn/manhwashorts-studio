@@ -60,7 +60,7 @@ VOICE_CATALOG: dict[str, dict[str, str]] = {
 }
 
 GROK_TTS_DEFAULT_MODEL = "grok-voice-latest"
-GROK_TTS_DEFAULT_VOICE_ID = "ara"
+GROK_TTS_DEFAULT_VOICE_ID = "orion"
 GROK_VOICE_IDS: tuple[str, ...] = (
     "altair", "ara", "atlas", "aurora", "carina", "castor", "celeste",
     "cosmo", "eve", "helios", "helix", "iris", "kepler", "leo", "liora",
@@ -68,14 +68,16 @@ GROK_VOICE_IDS: tuple[str, ...] = (
     "sal", "sirius", "ursa", "zagan", "zenith",
 )
 GROK_NARRATOR_PROFILES: tuple[str, ...] = (
-    "ara", "orion", "perseus", "rex", "zagan", "helix",
+    "orion", "luna", "ara", "lux", "altair",
 )
 
 
 def resolve_grok_voice_id(voice_id: str) -> str:
     """Resolve one provider voice; legacy English aliases map to the new default."""
     value = (voice_id or "").strip().lower()
-    if value in {"", "en", "en-us", "the-explainer-american"}:
+    if value == "the-explainer-american":
+        return "ara"
+    if value in {"", "en", "en-us"}:
         return GROK_TTS_DEFAULT_VOICE_ID
     if value not in GROK_VOICE_IDS:
         raise TTSError(f"unknown Grok voice_id: {voice_id}")

@@ -27,9 +27,9 @@ The launcher requires `ms_env.sh`, takes an exclusive per-run lock, runs product
 
 ## Production TTS baseline
 
-The production HTTP TTS model is `grok-voice-latest`. The Grok `/v1/tts` request must include the actual provider `voice_id`; the old descriptive value `the-explainer-american` is a compatibility alias only and resolves to `ara`. The provider language parameter is `en` for English; narrator accent/timbre is selected by the voice, not by pretending the provider language field is a voice selector.
+The production HTTP TTS model is `grok-voice-latest`. The Grok `/v1/tts` request must include the actual provider `voice_id`; the old descriptive value `the-explainer-american` is a compatibility alias only and remains pinned to `ara` for old-project compatibility. The provider language parameter is `en` for English; narrator accent/timbre is selected by the voice, not by pretending the provider language field is a voice selector.
 
-New projects default to `ara`. The maintained variation shortlist is `ara`, `orion`, `perseus`, `rex`, `zagan`, and `helix`; the `/api/voices` surface also exposes the complete built-in list confirmed by the active provider documentation. Unattended runs can select one explicitly with `--voice-id <id>`. Keep one voice/model identity for every section in a render; provider failure remains fail-closed with no silent narrator fallback.
+New projects default to `orion`. The maintained variation shortlist is `orion`, `luna`, `ara`, `lux`, and `altair`; the `/api/voices` surface also exposes the complete built-in list confirmed by the active provider documentation. Unattended runs can select one explicitly with `--voice-id <id>`. Keep one voice/model identity for every section in a render; provider failure remains fail-closed with no silent narrator fallback.
 
 ## Production workflow
 
