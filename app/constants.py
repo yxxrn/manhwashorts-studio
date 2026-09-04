@@ -142,8 +142,8 @@ class ScriptSection(StrEnum):
 # Product defaults: English text, American English narration.
 DEFAULT_PROJECT_LANGUAGE = "en"
 
-# Production narrator profile selected by the user: The Explainer no. 4.
-DEFAULT_ENGLISH_VOICE_ID = "the-explainer-american"
+# Production Grok narrator default. Provider language remains English; voice_id controls timbre/accent.
+DEFAULT_ENGLISH_VOICE_ID = "ara"
 DEFAULT_ENGLISH_SPEED = 0.90
 
 

@@ -174,8 +174,21 @@ def list_encoders() -> dict:
 @app.get("/api/voices", tags=["system"])
 def list_voices() -> dict:
     """Available narration voices (FR-05)."""
+    provider = tts_svc.get_provider().name
+    if provider == "http" and settings.tts_http_protocol == "grok":
+        return {
+            "provider": provider,
+            "model": settings.tts_http_model or tts_svc.GROK_TTS_DEFAULT_MODEL,
+            "language": settings.tts_http_language,
+            "default_voice_id": tts_svc.GROK_TTS_DEFAULT_VOICE_ID,
+            "profiles": list(tts_svc.GROK_NARRATOR_PROFILES),
+            "voices": [
+                {"id": voice_id, "label": voice_id.title()}
+                for voice_id in tts_svc.GROK_VOICE_IDS
+            ],
+        }
     return {
-        "provider": tts_svc.get_provider().name,
+        "provider": provider,
         "voices": [
             {"id": key, "label": value["label"]}
             for key, value in tts_svc.VOICE_CATALOG.items()

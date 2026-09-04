@@ -426,11 +426,13 @@ def test_http_sections_synthesis_honors_grok_protocol(tmp_path, monkeypatch):
         assert payload["model"] == "grok-voice-latest"
         assert isinstance(payload["text"], str) and payload["text"].strip()
         assert payload["language"] == "en"
+        assert payload["voice_id"] == "ara"
+        assert payload["speed"] == 1.15
+        assert payload["output_format"] == {"codec": "wav"}
         for openai_only_key in (
             "input",
             "voice",
             "response_format",
-            "speed",
             "instruct",
             "num_step",
             "guidance_scale",
@@ -439,6 +441,16 @@ def test_http_sections_synthesis_honors_grok_protocol(tmp_path, monkeypatch):
             assert openai_only_key not in payload
     assert payloads[0]["text"] == "first section text"
     assert payloads[1]["text"] == "second section text"
+
+
+def test_grok_voice_profiles_resolve_real_provider_voice_ids():
+    from app.services import tts as tts_svc
+
+    assert tts_svc.resolve_grok_voice_id("the-explainer-american") == "ara"
+    assert tts_svc.resolve_grok_voice_id("ORION") == "orion"
+    assert "perseus" in tts_svc.GROK_NARRATOR_PROFILES
+    with pytest.raises(tts_svc.TTSError, match="unknown Grok voice_id"):
+        tts_svc.resolve_grok_voice_id("made-up-voice")
 
 
 def test_indonesian_remains_explicit_opt_in():

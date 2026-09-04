@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 from sqlalchemy import func, select
 
 from app.config import settings
+from app.constants import DEFAULT_ENGLISH_VOICE_ID
 from app.db import SessionLocal
 from app.models import Publication
 from app.routers import projects as project_router
@@ -90,6 +91,7 @@ def _load_state(path: Path, args: argparse.Namespace) -> dict[str, Any]:
             "chapter_to": args.chapter_to,
             "source_id": args.source_id,
             "language": args.language,
+            "voice_id": getattr(args, "voice_id", DEFAULT_ENGLISH_VOICE_ID),
             "status": "STARTING",
             "stages": {},
             "events": [],
@@ -99,6 +101,8 @@ def _load_state(path: Path, args: argparse.Namespace) -> dict[str, Any]:
     expected = (args.title, args.chapter_from, args.chapter_to, args.source_id)
     if identity != expected:
         raise RuntimeError("run state identity does not match requested corpus")
+    if "voice_id" in payload and payload["voice_id"] != getattr(args, "voice_id", DEFAULT_ENGLISH_VOICE_ID):
+        raise RuntimeError("run state identity does not match requested voice profile")
     return payload
 def _event(state: dict[str, Any], path: Path, name: str, **detail: Any) -> None:
     stamp = time.time()
@@ -151,7 +155,7 @@ def _preflight(db: Any, args: argparse.Namespace, state: dict[str, Any], state_p
         raise RuntimeError(f"TTS provider unavailable: {tts_resolution.provider}")
     tts_probe = Path(settings.tmp_dir) / f"{args.run_id}-tts-preflight.wav"
     try:
-        clip = tts_provider.synthesize("Production preflight ready.", tts_probe, voice_id="en", speed=1.0)
+        clip = tts_provider.synthesize("Production preflight ready.", tts_probe, voice_id=args.voice_id, speed=1.0)
         if float(clip.duration) <= 0.0:
             raise RuntimeError("TTS preflight returned zero duration")
     finally:
@@ -194,6 +198,7 @@ def _ensure_project(db: Any, args: argparse.Namespace, state: dict[str, Any], st
             chapter=f"{_chapter_key(args.chapter_from)}-{_chapter_key(args.chapter_to)}",
             template="reference_matched_shorts_v2",
             target_duration=55,
+            voice_id=args.voice_id,
         ),
         db,
         workspace,
@@ -442,6 +447,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--chapter-to", required=True, type=float)
     parser.add_argument("--source-id", required=True)
     parser.add_argument("--language", default="en")
+    parser.add_argument("--voice-id", default=DEFAULT_ENGLISH_VOICE_ID)
     parser.add_argument("--max-analysis-attempts", type=int, default=2)
     parser.add_argument("--max-production-attempts", type=int, default=2)
     parser.add_argument("--retry-delay-s", type=float, default=15.0)

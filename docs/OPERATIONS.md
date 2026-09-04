@@ -25,6 +25,12 @@ scripts/manhwashorts production-run --run-id <id> --title "<title>" --chapter-fr
 
 The launcher requires `ms_env.sh`, takes an exclusive per-run lock, runs production-environment/machine/disk/source/vision/TTS preflight **before** creating or importing a project, and checkpoints every completed stage under `data/production-runs/<run-id>.json`. Re-running the same command resumes the same corpus and reuses validated source, analysis/provider caches, approved script, render identity, and final artifacts. Provider/transport retries are bounded; evidence, lineage, QC, and deterministic capability failures remain fail-closed. A PASS run is an idempotent no-op on later invocations.
 
+## Production TTS baseline
+
+The production HTTP TTS model is `grok-voice-latest`. The Grok `/v1/tts` request must include the actual provider `voice_id`; the old descriptive value `the-explainer-american` is a compatibility alias only and resolves to `ara`. The provider language parameter is `en` for English; narrator accent/timbre is selected by the voice, not by pretending the provider language field is a voice selector.
+
+New projects default to `ara`. The maintained variation shortlist is `ara`, `orion`, `perseus`, `rex`, `zagan`, and `helix`; the `/api/voices` surface also exposes the complete built-in list confirmed by the active provider documentation. Unattended runs can select one explicitly with `--voice-id <id>`. Keep one voice/model identity for every section in a render; provider failure remains fail-closed with no silent narrator fallback.
+
 ## Production workflow
 
 1. Ingest ordered source material manually or through the optional Suwayomi sidecar; preserve source provenance and rights metadata.

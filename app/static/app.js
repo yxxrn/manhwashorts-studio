@@ -163,6 +163,9 @@ async function loadVoices() {
       option.value = voice.id;
       select.appendChild(option);
     });
+    if (data.default_voice_id && data.voices.some((voice) => voice.id === data.default_voice_id)) {
+      select.value = data.default_voice_id;
+    }
   } catch (_) { /* voices are non-critical */ }
 }
 

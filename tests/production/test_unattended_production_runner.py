@@ -26,6 +26,13 @@ def test_production_launcher_sources_runtime_env_before_runner():
     assert "Missing runtime env" in block
 
 
+def test_unattended_runner_accepts_explicit_voice_profile():
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    assert 'parser.add_argument("--voice-id", default=DEFAULT_ENGLISH_VOICE_ID)' in source
+    assert 'voice_id=args.voice_id' in source
+    assert 'voice_id=args.voice_id, speed=1.0' in source
+
+
 def test_analysis_stage_retry_is_narrow_and_fail_closed():
     runner = _runner_module()
     assert {

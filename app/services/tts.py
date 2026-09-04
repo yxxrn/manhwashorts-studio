@@ -59,6 +59,28 @@ VOICE_CATALOG: dict[str, dict[str, str]] = {
     "ko": {"label": "Korean (espeak)", "espeak": "ko"},
 }
 
+GROK_TTS_DEFAULT_MODEL = "grok-voice-latest"
+GROK_TTS_DEFAULT_VOICE_ID = "ara"
+GROK_VOICE_IDS: tuple[str, ...] = (
+    "altair", "ara", "atlas", "aurora", "carina", "castor", "celeste",
+    "cosmo", "eve", "helios", "helix", "iris", "kepler", "leo", "liora",
+    "lumen", "luna", "lux", "naksh", "orion", "perseus", "rex", "rigel",
+    "sal", "sirius", "ursa", "zagan", "zenith",
+)
+GROK_NARRATOR_PROFILES: tuple[str, ...] = (
+    "ara", "orion", "perseus", "rex", "zagan", "helix",
+)
+
+
+def resolve_grok_voice_id(voice_id: str) -> str:
+    """Resolve one provider voice; legacy English aliases map to the new default."""
+    value = (voice_id or "").strip().lower()
+    if value in {"", "en", "en-us", "the-explainer-american"}:
+        return GROK_TTS_DEFAULT_VOICE_ID
+    if value not in GROK_VOICE_IDS:
+        raise TTSError(f"unknown Grok voice_id: {voice_id}")
+    return value
+
 
 def voice_profile_for(provider: str, voice_id: str, *, language: str = "en-US", model: str = "", speed: float = 1.0, sample_rate: int = 48000, channels: int = 2, **extra) -> dict:
     """Canonical immutable identity for every clip in a render job."""
@@ -398,10 +420,14 @@ class HttpProvider:
             headers["Authorization"] = f"Bearer {settings.tts_http_key.get_secret_value()}"
 
         if settings.tts_http_protocol == "grok":
+            resolved_voice_id = resolve_grok_voice_id(voice_id)
             payload = {
-                "model": settings.tts_http_model,
+                "model": settings.tts_http_model or GROK_TTS_DEFAULT_MODEL,
                 "text": text,
+                "voice_id": resolved_voice_id,
                 "language": "id" if voice_id.startswith("id") else settings.tts_http_language,
+                "output_format": {"codec": settings.tts_http_response_format},
+                "speed": max(0.25, min(4.0, speed)),
             }
         elif settings.tts_http_protocol == "openai":
             payload = {
@@ -439,10 +465,10 @@ class HttpProvider:
             path=out_path,
             text=text,
             duration=duration,
-            voice_id=voice_id,
+            voice_id=resolved_voice_id if settings.tts_http_protocol == "grok" else voice_id,
             provider=self.name,
             word_timings=estimate_word_timings(text, duration),
-            voice_profile=voice_profile_for(self.name, voice_id, language=("id" if voice_id.startswith("id") else "en-US"), speed=speed, sample_rate=24000, channels=1),
+            voice_profile=voice_profile_for(self.name, resolved_voice_id if settings.tts_http_protocol == "grok" else voice_id, language=("id" if voice_id.startswith("id") else settings.tts_http_language), model=settings.tts_http_model if settings.tts_http_protocol == "grok" else "", speed=speed, sample_rate=24000, channels=1),
         )
 
     def synthesize_sections(
@@ -458,14 +484,16 @@ class HttpProvider:
         if settings.tts_http_key:
             headers["Authorization"] = f"Bearer {settings.tts_http_key.get_secret_value()}"
         if settings.tts_http_protocol == "grok":
-            # Grok-protocol endpoints reject OpenAI-shaped payloads (they
-            # require "text"/"language" and have no voice/instruct fields),
-            # so mirror the single-clip grok contract for every section.
+            # Provider-native /v1/tts contract: model + text + voice_id + language.
             text_key = "text"
+            resolved_voice_id = resolve_grok_voice_id(voice_id)
             base_payload = {
-                "model": settings.tts_http_model,
+                "model": settings.tts_http_model or GROK_TTS_DEFAULT_MODEL,
                 "text": texts[0],
+                "voice_id": resolved_voice_id,
                 "language": language,
+                "output_format": {"codec": settings.tts_http_response_format},
+                "speed": max(0.25, min(4.0, speed)),
             }
         else:
             text_key = "input"
@@ -523,7 +551,8 @@ class HttpProvider:
                     path.write_bytes(result.content)
                     self._polish(path)
                 duration = probe_duration(path)
-                clips.append(SpeechClip(path, text, duration, voice_id, self.name, estimate_word_timings(text, duration), voice_profile_for(self.name, voice_id, language=language, model=settings.tts_http_model, speed=speed, sample_rate=24000, channels=1, instruct=settings.tts_http_instruct, seed=settings.tts_http_seed)))
+                actual_voice_id = resolved_voice_id if settings.tts_http_protocol == "grok" else voice_id
+                clips.append(SpeechClip(path, text, duration, actual_voice_id, self.name, estimate_word_timings(text, duration), voice_profile_for(self.name, actual_voice_id, language=language, model=settings.tts_http_model, speed=speed, sample_rate=24000, channels=1, instruct=settings.tts_http_instruct if settings.tts_http_protocol != "grok" else "", seed=settings.tts_http_seed if settings.tts_http_protocol != "grok" else None)))
             return clips
         except Exception as exc:
             raise TTSError(f"shared-reference TTS failed: {type(exc).__name__}: {exc}") from exc

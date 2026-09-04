@@ -262,3 +262,10 @@ standalone plans remain visibly marked HISTORICAL. See `docs/history/README.md` 
 - Fused xfade+subtitle final encode accepted after identical-input benchmark: 198.010s -> 150.560s (~24% faster), same media contract and reference-output validator PASS.
 - Observation prompt hardening reduced invalid retries 4 -> 2 on this run; benefit is useful but modest, with all fail-closed validators unchanged.
 - Final video 50.650s, 1080x1920/60 FPS H.264 High + AAC; final QC PASS; headline `WHAT LURKS BEHIND HEAVEN'S DOOR?` at bottom.
+
+### Grok TTS voice profiles - 2026-09-04
+- Production HTTP TTS remains pinned to `grok-voice-latest`; the provider request now sends real `voice_id`, `language`, `output_format`, and `speed` fields from the documented `/v1/tts` contract.
+- New English projects default to real provider voice `ara`; legacy `the-explainer-american` maps to `ara` so old projects remain resumable.
+- Variation shortlist: `ara`, `orion`, `perseus`, `rex`, `zagan`, `helix`; all 28 documented built-in voice IDs are exposed by `/api/voices`.
+- Live smoke generated six distinct valid audio samples under `data/voice-auditions/grok-latest-en/`; all used model `grok-voice-latest` and provider language `en`.
+- Unattended production now accepts `--voice-id`, checkpoints it for new runs, validates it during TTS preflight, and persists the actual provider voice/model identity in every audio segment.
