@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from math import isfinite
 from typing import Any
 
@@ -275,6 +275,65 @@ def enumerate_conservative_full_panel_roi_alternatives(
     )
 
 
+def _roi_passes_exact_pixel_preflight(
+    *,
+    image: Image.Image,
+    roi: editorial_visual_planner.ReferenceROIAlternative,
+    evidence: visual_scoring.PanelVisualEvidence,
+    border_mask: framing_analysis.BorderMaskResult,
+    panel_size: tuple[int, int],
+    profile: object,
+    allow_conservative_full_panel: bool,
+) -> bool:
+    """Mirror render-time pixel blank refinement before standard production selection."""
+    from app.services import render
+
+    ready = visual_scoring.require_reference_ready_visual_evidence(
+        evidence,
+        allow_conservative_full_panel=allow_conservative_full_panel,
+    )
+    feasible, telemetry = editorial_visual_planner._review_framing_candidate_is_feasible(
+        roi.crop_box,
+        ready,
+        border_mask,
+        panel_size,
+        (int(profile.final_width), int(profile.final_height)),
+        review_aggressive_crop=True,
+        standard_blank_target=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+        allow_conservative_full_panel=allow_conservative_full_panel,
+    )
+    if not feasible:
+        return False
+    fallback_reason = (
+        telemetry.get("fallback_reason")
+        if isinstance(telemetry, Mapping)
+        else getattr(telemetry, "fallback_reason", None)
+    )
+    blank_threshold = (
+        reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION
+        if fallback_reason == reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+        else reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
+    )
+    try:
+        render._refine_review_pixel_blank_crop(
+            image,
+            roi.crop_box,
+            evidence=evidence,
+            mask=border_mask,
+            panel_size=panel_size,
+            target_size=(int(profile.final_width), int(profile.final_height)),
+            profile=profile,
+            feasibility_kwargs={"review_aggressive_crop": True},
+            initial_telemetry=telemetry,
+            blank_threshold=float(blank_threshold),
+        )
+    except render.RenderError as exc:
+        if exc.code == "visual.blank_infeasible":
+            return False
+        raise ReferenceReviewError(str(exc), exc.code) from exc
+    return True
+
+
 def build_reference_panel_fallback_candidates(
     *,
     panel_regions: Sequence[object],
@@ -287,6 +346,7 @@ def build_reference_panel_fallback_candidates(
     source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
     allow_missing_explicit: bool = False,
     allow_conservative_full_panel: bool = False,
+    pixel_refinement_preflight: bool = False,
 ) -> tuple[editorial_visual_planner.ReferencePanelFallbackCandidate, ...]:
     """Build exact panel candidates without database or asset-level fallback."""
     ordered_regions = tuple(
@@ -365,6 +425,36 @@ def build_reference_panel_fallback_candidates(
                 grid_long_edge=int(profile.framing_mask_grid_long_edge),
                 allow_conservative_full_panel=allow_conservative_full_panel,
             )
+            roi_alternatives = (
+                enumerate_conservative_full_panel_roi_alternatives(expected_size)
+                if visual_scoring.is_conservative_full_panel_visual_evidence(evidence)
+                else enumerate_reference_roi_alternatives(
+                    expected_size,
+                    candidate,
+                    profile,
+                    image=crop,
+                    border_mask=mask,
+                )
+            )
+            if pixel_refinement_preflight:
+                roi_alternatives = tuple(
+                    roi
+                    for roi in roi_alternatives
+                    if _roi_passes_exact_pixel_preflight(
+                        image=crop,
+                        roi=roi,
+                        evidence=evidence,
+                        border_mask=mask,
+                        panel_size=expected_size,
+                        profile=profile,
+                        allow_conservative_full_panel=allow_conservative_full_panel,
+                    )
+                )
+                if not roi_alternatives:
+                    continue
+                if not any(roi.kind == "primary" for roi in roi_alternatives):
+                    promoted = replace(roi_alternatives[0], kind="primary")
+                    roi_alternatives = (promoted, *roi_alternatives[1:])
             built.append(
                 editorial_visual_planner.ReferencePanelFallbackCandidate(
                     source_asset_id=str(region.source_asset_id),
@@ -379,17 +469,7 @@ def build_reference_panel_fallback_candidates(
                     evidence_hash=evidence_hash,
                     eligible_sections=tuple(sorted(eligible_by_region[region_id])),
                     eligible_beats=tuple(sorted(beats_by_region[region_id])),
-                    roi_alternatives=(
-                        enumerate_conservative_full_panel_roi_alternatives(expected_size)
-                        if visual_scoring.is_conservative_full_panel_visual_evidence(evidence)
-                        else enumerate_reference_roi_alternatives(
-                            expected_size,
-                            candidate,
-                            profile,
-                            image=crop,
-                            border_mask=mask,
-                        )
-                    ),
+                    roi_alternatives=roi_alternatives,
                     panel_candidate=candidate,
                     source_upscale_manifest=(
                         dict((source_upscale_manifests_by_region_id or {}).get(region_id, {}))

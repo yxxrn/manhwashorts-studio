@@ -74,6 +74,11 @@ def test_generate_thumbnail_package_is_upload_ready(tmp_path, monkeypatch):
     assert all(row["qc"]["background_style"] == "outline_only" for row in manifest["variants"])
     assert len(manifest["headline"].split()) <= thumbnail.MAX_HEADLINE_WORDS
 
+    monkeypatch.setattr(
+        thumbnail,
+        "generate_headlines",
+        lambda _script: (_ for _ in ()).throw(AssertionError("warm thumbnail reuse called headline provider")),
+    )
     reused = thumbnail.generate_thumbnail_package(
         video_path=video,
         output_dir=tmp_path,

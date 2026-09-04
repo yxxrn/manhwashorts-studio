@@ -704,11 +704,15 @@ def _visual_signature(image: Image.Image) -> str:
     return "".join("1" if pixel >= average else "0" for pixel in pixels)
 
 
-def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0, source_family: str = "") -> PanelCandidate:
-    """Extract content features from one image and calculate its visual score."""
-    with Image.open(io.BytesIO(data)) as source:
-        image = source.convert("RGB")
-        image.thumbnail((640, 640), Image.Resampling.LANCZOS)
+def analyze_image(
+    source: Image.Image,
+    asset_id: str = "",
+    order_index: int = 0,
+    source_family: str = "",
+) -> PanelCandidate:
+    """Extract the exact visual score from an already-decoded image."""
+    image = source.convert("RGB")
+    image.thumbnail((640, 640), Image.Resampling.LANCZOS)
     width, height = image.size
     gray = image.convert("L")
     mean = ImageStat.Stat(gray).mean[0] / 255.0
@@ -769,6 +773,13 @@ def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0, source_
     )
     family = source_family or f"legacy-strip-{max(0, order_index) // 8}"
     return PanelCandidate(asset_id, order_index, features, round(max(0.0, positive - penalty), 3), source_family=family)
+
+
+def analyze_panel(data: bytes, asset_id: str = "", order_index: int = 0, source_family: str = "") -> PanelCandidate:
+    """Extract content features from encoded image bytes."""
+    with Image.open(io.BytesIO(data)) as source:
+        source.load()
+        return analyze_image(source, asset_id, order_index, source_family)
 
 
 def analyze_assets(assets: Iterable[object], read: Callable[[str], bytes]) -> list[PanelCandidate]:

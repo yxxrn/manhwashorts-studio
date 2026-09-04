@@ -7,6 +7,7 @@ from app.services.shot_director import plan_shots
 from app.services.visual_scoring import (
     PanelCandidate,
     VisualFeatures,
+    analyze_image,
     analyze_panel,
     camera_effect,
     narration_tags,
@@ -38,6 +39,20 @@ def test_content_analysis_returns_features_not_geometry_only():
     candidate = analyze_panel(buf.getvalue(), "action-panel", 3)
     assert candidate.features.object_density > 0
     assert candidate.features.focal_points
+
+
+def test_decoded_image_analysis_matches_encoded_panel_analysis():
+    import io
+
+    image = Image.new("RGB", (320, 480), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((25, 25, 295, 455), fill="black")
+    draw.ellipse((85, 80, 235, 230), fill="white")
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    encoded = analyze_panel(buf.getvalue(), "same-panel", 7, "same-family")
+    decoded = analyze_image(image, "same-panel", 7, "same-family")
+    assert decoded == encoded
 
 
 def test_selection_prefers_stronger_nearby_panel_over_order():

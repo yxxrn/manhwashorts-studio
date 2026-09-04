@@ -50,6 +50,7 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
     _AnalysisBlocked = api._AnalysisBlocked
     _VISION_BLOCKING_CODES = api._VISION_BLOCKING_CODES
     _build_source_inputs = api._build_source_inputs
+    _build_panel_transports = api._build_panel_transports
     _classify_synthesis_output = api._classify_synthesis_output
     _coverage_manifest = api._coverage_manifest
     _coverage_overviews = api._coverage_overviews
@@ -148,7 +149,10 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
         row.provider_type = capability.provider_type
         row.provider_name = capability.provider_name
         row.model_name = capability.model
-        panel_transports = {panel.panel_id: _panel_transport(panel, input_by_asset[panel.source_asset_id], coverage) for panel in panel_regions}
+        panel_transport_telemetry = {}
+        panel_transports = _build_panel_transports(
+            panel_regions, input_by_asset, coverage, telemetry=panel_transport_telemetry
+        )
         estimated_bytes = {
             panel_id: _vision_transport_estimated_bytes(transport)
             for panel_id, transport in panel_transports.items()
@@ -234,7 +238,7 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
         row.evidence_graph_json = dict(synthesis_output['evidence_graph'])
         row.evidence_graph_json['script_passages'] = list(synthesis_output['script_passages'])
         row.story_spine_json = dict(synthesis_output['narrative_outline']['story_spine'])
-        row.reconciliation_json = {'coverage_map_hash': coverage.map_sha256, 'coverage_map_version': coverage.version, 'canonical_panel_count': coverage.panel_count, 'processed_panel_count': len(enriched), 'duplicate_overlap_observations': duplicate_observations, 'chain_reconciled': True, 'chain_errors': list(chain_errors), 'narrative_screening_warning_codes': [], 'performance': {'observation': observation_telemetry, 'frameability': frameability_telemetry}}
+        row.reconciliation_json = {'coverage_map_hash': coverage.map_sha256, 'coverage_map_version': coverage.version, 'canonical_panel_count': coverage.panel_count, 'processed_panel_count': len(enriched), 'duplicate_overlap_observations': duplicate_observations, 'chain_reconciled': True, 'chain_errors': list(chain_errors), 'narrative_screening_warning_codes': [], 'performance': {'panel_transport': panel_transport_telemetry, 'observation': observation_telemetry, 'frameability': frameability_telemetry}}
         if selected_profile is not None:
             row.reconciliation_json['narrative_identity'] = {'profile_id': selected_profile.profile_id, 'version': selected_profile.profile_version, 'sha256': selected_profile.contract_sha256}
             row.reconciliation_json['narrative_ending_kind'] = synthesis_output['narrative_outline']['ending_kind']

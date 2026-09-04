@@ -689,7 +689,7 @@ def generate_thumbnail_package(
     if not video_path.is_file():
         raise ThumbnailError("thumbnail.video_missing: final video is unavailable")
     output_dir.mkdir(parents=True, exist_ok=True)
-    headlines, sections, language = generate_headlines(script)
+    sections, _story = _script_sections(script)
     story_hash = _story_hash(sections)
     video_checksum = sha256_file(video_path)
     if not force:
@@ -699,6 +699,7 @@ def generate_thumbnail_package(
         if existing is not None:
             return existing
 
+    headlines, _sections, language = generate_headlines(script)
     visuals = build_visual_candidates(scenes, resolve_asset_path)
     if not visuals:
         raise ThumbnailError("thumbnail.no_visual_candidate: no clean source panel could be rebuilt")

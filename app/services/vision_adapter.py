@@ -746,6 +746,8 @@ class OpenAICompatibleVisionProvider:
                     passage_word_counts=counts,
                     retry_passages=_retry_passages_from_candidate(validated_result),
                 )
+        if request.retry_visual_selection:
+            validated_result = _complete_retry_visual_selection(validated_result, request)
         try:
             validate_synthesis_visual_selection(validated_result, request)
         except VisionResponseInvalid as exc:
@@ -2008,6 +2010,133 @@ def _project_provider_synthesis_output(
         "narrative_outline": projected_outline,
         "script_passages": projected_passages,
     }
+
+
+_VISUAL_SUPPORT_STOPWORDS = frozenset({
+    "the", "and", "for", "that", "this", "with", "from", "into", "onto", "then",
+    "when", "while", "where", "what", "who", "why", "how", "his", "her", "their",
+    "they", "them", "was", "were", "are", "has", "have", "had", "but", "not", "only",
+})
+
+_VISUAL_ROLE_SECTIONS = {
+    "hook": "hook",
+    "setup": "setup",
+    "escalation": "conflict",
+    "editorial_insight": "twist",
+    "payoff_open_loop": "cta",
+}
+
+def _visual_support_tokens(value: object) -> set[str]:
+    text = str(value or "").casefold().translate(str.maketrans(dict.fromkeys(string.punctuation, " ")))
+    return {token for token in text.split() if len(token) >= 3 and token not in _VISUAL_SUPPORT_STOPWORDS}
+
+def _complete_retry_visual_selection(
+    output: Mapping[str, Any], request: VisionChapterSynthesisRequest
+) -> Mapping[str, Any]:
+    """Deterministically complete corrective visual support without changing semantic claims.
+
+    Added panels must already be exact section-safe preferred panels and must either
+    share visible/dialogue tokens with the locked passage/claims or sit immediately
+    beside existing grounded evidence in the ordered panel ledger. If that is not
+    sufficient, the normal fail-closed validator still rejects the response.
+    """
+    if not request.retry_visual_selection or not request.preferred_visual_panel_ids:
+        return output
+    passages = output.get("script_passages") if isinstance(output, Mapping) else None
+    graph = output.get("evidence_graph") if isinstance(output, Mapping) else None
+    claims = graph.get("claims") if isinstance(graph, Mapping) else None
+    if not isinstance(passages, list) or not isinstance(claims, list):
+        return output
+    claim_by_id = {str(item.get("claim_id")): item for item in claims if isinstance(item, Mapping)}
+    observation_by_id = {
+        str(item.get("panel_id")): item
+        for item in request.ordered_observations
+        if isinstance(item, Mapping) and item.get("panel_id")
+    }
+    positions = {panel_id: index for index, panel_id in enumerate(observation_by_id)}
+    preferred = set(request.preferred_visual_panel_ids)
+    preferred_by_section = request.preferred_visual_panel_ids_by_section or {}
+    cloned = dict(output)
+    cloned_passages = [dict(item) if isinstance(item, Mapping) else item for item in passages]
+    cloned["script_passages"] = cloned_passages
+
+    global_used = {
+        str(panel_id)
+        for passage in cloned_passages
+        if isinstance(passage, Mapping)
+        for panel_id in (passage.get("evidence_panel_ids") or ())
+        if str(panel_id) in preferred
+    }
+
+    def ranked_candidates(passage: Mapping[str, Any], section: str) -> list[str]:
+        evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
+        evidence_set = set(evidence)
+        anchors = _visual_support_tokens(passage.get("text"))
+        for claim_id in passage.get("claim_ids") or ():
+            claim = claim_by_id.get(str(claim_id))
+            if claim is not None:
+                anchors.update(_visual_support_tokens(claim.get("text")))
+                anchors.update(_visual_support_tokens(claim.get("qualification")))
+        grounded_positions = [positions[value] for value in evidence if value in positions]
+        rows: list[tuple[tuple[int, int, int, int], str]] = []
+        for allow_index, panel_id in enumerate(preferred_by_section.get(section, ())):
+            panel_id = str(panel_id)
+            if panel_id in evidence_set:
+                continue
+            observation = observation_by_id.get(panel_id)
+            if observation is None:
+                continue
+            support_text = " ".join(
+                str(value)
+                for key in ("visible_facts", "dialogue_or_ocr")
+                for value in (observation.get(key) or ())
+            )
+            overlap = len(anchors & _visual_support_tokens(support_text))
+            distance = min((abs(positions[panel_id] - value) for value in grounded_positions), default=10**9)
+            if overlap <= 0 and distance > 2:
+                continue
+            rows.append(((0 if panel_id not in global_used else 1, -overlap, distance, allow_index), panel_id))
+        rows.sort(key=lambda item: item[0])
+        return [panel_id for _score, panel_id in rows]
+
+    for passage in cloned_passages:
+        if not isinstance(passage, dict):
+            continue
+        section = _VISUAL_ROLE_SECTIONS.get(str(passage.get("editorial_role", "")), "")
+        if not section:
+            continue
+        evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
+        section_safe = set(preferred_by_section.get(section, ()))
+        selected = {value for value in evidence if value in section_safe}
+        for candidate in ranked_candidates(passage, section):
+            if len(selected) >= min(4, len(section_safe)):
+                break
+            if candidate not in evidence:
+                evidence.append(candidate)
+            selected.add(candidate)
+            global_used.add(candidate)
+        passage["evidence_panel_ids"] = evidence
+
+    unique_min = min(18, len(preferred))
+    if len(global_used) < unique_min:
+        for passage in cloned_passages:
+            if not isinstance(passage, dict):
+                continue
+            section = _VISUAL_ROLE_SECTIONS.get(str(passage.get("editorial_role", "")), "")
+            if not section:
+                continue
+            evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
+            for candidate in ranked_candidates(passage, section):
+                if len(global_used) >= unique_min:
+                    break
+                if candidate in global_used:
+                    continue
+                evidence.append(candidate)
+                global_used.add(candidate)
+            passage["evidence_panel_ids"] = evidence
+            if len(global_used) >= unique_min:
+                break
+    return cloned
 
 
 def validate_synthesis_visual_selection(

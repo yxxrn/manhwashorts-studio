@@ -2544,3 +2544,99 @@ def test_standard_cadence_capacity_keeps_best_panel_capacity_across_sections(mon
             allow_standard_cadence_adaptation=True, allow_review_duration=True,
         )
     assert captured["capacity"] == 2
+
+
+def test_standard_production_builder_filters_pixel_unrefinable_roi(monkeypatch):
+    from app.services import editorial_visual_planner, render
+
+    region = _region(
+        "panel-pixel", "region-pixel", "asset-pixel", 10,
+        (0, 0, 100, 200), "asset-pixel-checksum",
+    )
+    monkeypatch.setattr(
+        editorial_visual_planner,
+        "_review_framing_candidate_is_feasible",
+        lambda *_args, **_kwargs: (True, {"fallback_reason": None}),
+    )
+    monkeypatch.setattr(
+        render,
+        "_refine_review_pixel_blank_crop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            render.RenderError("pixel blank", code="visual.blank_infeasible")
+        ),
+    )
+    result = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=(region,),
+        panel_candidates_by_region_id={
+            "region-pixel": _candidate("asset-pixel", 10, "pixel")
+        },
+        panel_crops_by_region_id={
+            "region-pixel": _crop((40, 60, 100), True)
+        },
+        section_evidence_panel_ids={"hook": ("panel-pixel",)},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        pixel_refinement_preflight=True,
+    )
+    assert result == ()
+
+
+def test_review_builder_does_not_apply_standard_pixel_preflight(monkeypatch):
+    from app.services import render
+
+    region = _region(
+        "panel-review", "region-review", "asset-review", 10,
+        (0, 0, 100, 200), "asset-review-checksum",
+    )
+    monkeypatch.setattr(
+        render,
+        "_refine_review_pixel_blank_crop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+    )
+    result = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=(region,),
+        panel_candidates_by_region_id={
+            "region-review": _candidate("asset-review", 10, "review")
+        },
+        panel_crops_by_region_id={
+            "region-review": _crop((40, 60, 100), True)
+        },
+        section_evidence_panel_ids={"hook": ("panel-review",)},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    assert len(result) == 1
+    assert result[0].roi_alternatives
+
+
+def test_standard_preflight_promotes_first_safe_roi_when_primary_is_unsafe(monkeypatch):
+    from app.services import reference_visual_review
+
+    region = _region(
+        "panel-promote", "region-promote", "asset-promote", 10,
+        (0, 0, 100, 200), "asset-promote-checksum",
+    )
+    monkeypatch.setattr(
+        reference_visual_review,
+        "_roi_passes_exact_pixel_preflight",
+        lambda **kwargs: kwargs["roi"].kind != "primary",
+    )
+    result = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=(region,),
+        panel_candidates_by_region_id={
+            "region-promote": _candidate("asset-promote", 10, "promote")
+        },
+        panel_crops_by_region_id={
+            "region-promote": _crop((40, 60, 100), True)
+        },
+        section_evidence_panel_ids={"hook": ("panel-promote",)},
+        section_citations={},
+        beats_by_section={"hook": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        pixel_refinement_preflight=True,
+    )
+    assert len(result) == 1
+    assert result[0].roi_alternatives[0].kind == "primary"
+    assert result[0].roi_alternatives[0].roi_label != "panel_primary"

@@ -939,6 +939,38 @@ def _panel_transport(
         transport["analysis_windows"] = windows
     return transport
 
+
+_PANEL_TRANSPORT_CONCURRENCY = 3
+
+
+def _build_panel_transports(
+    panel_regions: Sequence[PanelRegion],
+    input_by_asset: Mapping[str, segmentation.SourceAssetInput],
+    coverage: segmentation.CoverageMap,
+    *,
+    telemetry: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Materialize exact provider transports with bounded parallel CPU work."""
+    stage_started = time.perf_counter()
+    workers = min(_PANEL_TRANSPORT_CONCURRENCY, max(1, len(panel_regions)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="panel-transport") as executor:
+        futures = [
+            executor.submit(_panel_transport, panel, input_by_asset[panel.source_asset_id], coverage)
+            for panel in panel_regions
+        ]
+        wait(futures)
+        ordered = [future.result() for future in futures]
+    if telemetry is not None:
+        telemetry.clear()
+        telemetry.update({
+            "panel_count": len(panel_regions),
+            "configured_concurrency": _PANEL_TRANSPORT_CONCURRENCY,
+            "worker_count": workers,
+            "wall_s": round(time.perf_counter() - stage_started, 6),
+        })
+    return {panel.panel_id: transport for panel, transport in zip(panel_regions, ordered, strict=True)}
+
+
 def _validate_observation_rows(
     value: Any,
     expected_panel_ids: Sequence[str],
@@ -1660,7 +1692,7 @@ def _frameable_preferred_visual_panel_selection(
     *,
     telemetry: dict[str, Any] | None = None,
 ) -> tuple[tuple[str, ...], Mapping[str, tuple[str, ...]]]:
-    """Compute generic and section-safe preferred panels with exact persistent ROI caching."""
+    """Compute exact section safety with cache-first bounded source-group parallelism."""
     stage_started = time.perf_counter()
     if profile is None:
         generic = _preferred_visual_panel_ids(panel_regions)
@@ -1669,94 +1701,120 @@ def _frameable_preferred_visual_panel_selection(
             telemetry.update({"cache_hits": 0, "cache_misses": 0, "wall_s": round(time.perf_counter() - stage_started, 6)})
         return generic, dict.fromkeys(_PRODUCTION_VISUAL_SECTIONS, generic)
     preferred = set(_preferred_visual_panel_ids(panel_regions))
-    section_rows: dict[str, list[str]] = {section: [] for section in _PRODUCTION_VISUAL_SECTIONS}
     if not preferred:
         if telemetry is not None:
             telemetry.clear()
             telemetry.update({"cache_hits": 0, "cache_misses": 0, "wall_s": round(time.perf_counter() - stage_started, 6)})
         return (), dict.fromkeys(_PRODUCTION_VISUAL_SECTIONS, ())
-    decoded: dict[str, Image.Image] = {}
+
     source_hashes: dict[str, str] = {}
-    generic_rows: list[str] = []
+    resolved: dict[int, tuple[str, bool, tuple[str, ...]]] = {}
+    pending_by_source: dict[str, list[tuple[int, PanelRegion, object, str | None]]] = {}
     cache_hits = 0
     cache_misses = 0
-    try:
-        for panel in panel_regions:
-            panel_id = str(panel.panel_id)
-            if panel_id not in preferred:
-                continue
-            source_asset_id = str(panel.source_asset_id)
-            source_input = source_inputs.get(source_asset_id)
-            payload = getattr(source_input, "payload", None)
-            if not isinstance(payload, (bytes, bytearray)):
-                continue
-            source_payload_sha256 = source_hashes.get(source_asset_id)
-            if source_payload_sha256 is None:
-                source_payload_sha256 = hashlib.sha256(bytes(payload)).hexdigest()
-                source_hashes[source_asset_id] = source_payload_sha256
-            cache_key = _frameability_cache_key(
-                panel, source_input, profile, source_payload_sha256=source_payload_sha256
-            )
-            cached = _load_cached_frameability(cache_key)
-            if cached is not None:
-                cache_hits += 1
-                generic_safe, safe_sections = cached
-                if generic_safe:
-                    generic_rows.append(panel_id)
-                for section in safe_sections:
-                    section_rows[section].append(panel_id)
-                continue
-            cache_misses += 1
-            source = decoded.get(source_asset_id)
-            if source is None:
-                with Image.open(io.BytesIO(bytes(payload))) as opened:
-                    source = opened.convert("RGB")
-                    source.load()
-                decoded[source_asset_id] = source
-            bounds = _panel_region_bounds(panel)
-            source_bounds = getattr(source_input, "source_bounds", None)
-            if (
-                not isinstance(source_bounds, (tuple, list))
-                or len(source_bounds) != 4
-                or any(isinstance(value, bool) or not isinstance(value, int) for value in source_bounds)
-            ):
-                continue
-            sx0, sy0, sx1, sy1 = tuple(int(value) for value in source_bounds)
+
+    for panel_index, panel in enumerate(panel_regions):
+        panel_id = str(panel.panel_id)
+        if panel_id not in preferred:
+            continue
+        source_asset_id = str(panel.source_asset_id)
+        source_input = source_inputs.get(source_asset_id)
+        payload = getattr(source_input, "payload", None)
+        if not isinstance(payload, (bytes, bytearray)):
+            continue
+        source_payload_sha256 = source_hashes.get(source_asset_id)
+        if source_payload_sha256 is None:
+            source_payload_sha256 = hashlib.sha256(payload).hexdigest()
+            source_hashes[source_asset_id] = source_payload_sha256
+        cache_key = _frameability_cache_key(
+            panel, source_input, profile, source_payload_sha256=source_payload_sha256
+        )
+        cached = _load_cached_frameability(cache_key)
+        if cached is not None:
+            cache_hits += 1
+            generic_safe, safe_sections = cached
+            resolved[panel_index] = (panel_id, generic_safe, safe_sections)
+            continue
+        cache_misses += 1
+        pending_by_source.setdefault(source_asset_id, []).append(
+            (panel_index, panel, source_input, cache_key)
+        )
+
+    def evaluate_source_group(
+        rows: Sequence[tuple[int, PanelRegion, object, str | None]],
+    ) -> list[tuple[int, str, bool, tuple[str, ...]]]:
+        first_source = rows[0][2]
+        payload = getattr(first_source, "payload", None)
+        if not isinstance(payload, (bytes, bytearray)):
+            return []
+        source_bounds = getattr(first_source, "source_bounds", None)
+        if (
+            not isinstance(source_bounds, (tuple, list))
+            or len(source_bounds) != 4
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in source_bounds)
+        ):
+            return []
+        sx0, sy0, sx1, sy1 = tuple(int(value) for value in source_bounds)
+        with Image.open(io.BytesIO(bytes(payload))) as opened:
+            source = opened.convert("RGB")
+            source.load()
+        try:
             if (source.width, source.height) != (sx1 - sx0, sy1 - sy0):
-                continue
-            if not (sx0 <= bounds[0] < bounds[2] <= sx1 and sy0 <= bounds[1] < bounds[3] <= sy1):
-                continue
-            local_bounds = (bounds[0] - sx0, bounds[1] - sy0, bounds[2] - sx0, bounds[3] - sy0)
-            crop = source.crop(local_bounds)
-            try:
-                encoded = io.BytesIO()
-                crop.save(encoded, format="PNG")
-                candidate = visual_scoring.analyze_panel(
-                    encoded.getvalue(),
-                    asset_id=source_asset_id,
-                    order_index=int(panel.source_order),
-                    source_family=str(getattr(source_input, "source_family", "") or ""),
+                return []
+            group_results: list[tuple[int, str, bool, tuple[str, ...]]] = []
+            for panel_index, panel, source_input, cache_key in rows:
+                bounds = _panel_region_bounds(panel)
+                if not (
+                    sx0 <= bounds[0] < bounds[2] <= sx1
+                    and sy0 <= bounds[1] < bounds[3] <= sy1
+                ):
+                    continue
+                local_bounds = (
+                    bounds[0] - sx0,
+                    bounds[1] - sy0,
+                    bounds[2] - sx0,
+                    bounds[3] - sy0,
                 )
-                generic_safe, safe_sections = reference_visual_review.panel_reference_roi_safety(
-                    panel,
-                    crop,
-                    candidate,
-                    profile,
-                    editorial_sections=_PRODUCTION_VISUAL_SECTIONS,
-                    allow_conservative_full_panel=True,
-                )
-                _store_cached_frameability(cache_key, generic_safe, safe_sections)
-                if generic_safe:
-                    generic_rows.append(panel_id)
-                for section in safe_sections:
-                    section_rows[section].append(panel_id)
-            finally:
-                crop.close()
+                crop = source.crop(local_bounds)
+                try:
+                    candidate = visual_scoring.analyze_image(
+                        crop,
+                        asset_id=str(panel.source_asset_id),
+                        order_index=int(panel.source_order),
+                        source_family=str(getattr(source_input, "source_family", "") or ""),
+                    )
+                    generic_safe, safe_sections = reference_visual_review.panel_reference_roi_safety(
+                        panel,
+                        crop,
+                        candidate,
+                        profile,
+                        editorial_sections=_PRODUCTION_VISUAL_SECTIONS,
+                        allow_conservative_full_panel=True,
+                    )
+                    safe_tuple = tuple(safe_sections)
+                    _store_cached_frameability(cache_key, generic_safe, safe_tuple)
+                    group_results.append(
+                        (panel_index, str(panel.panel_id), generic_safe, safe_tuple)
+                    )
+                finally:
+                    crop.close()
+            return group_results
+        finally:
+            source.close()
+
+    try:
+        groups = list(pending_by_source.values())
+        if groups:
+            workers = min(3, len(groups))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="frameability") as executor:
+                futures = [executor.submit(evaluate_source_group, group) for group in groups]
+                wait(futures)
+                for future in futures:
+                    for panel_index, panel_id, generic_safe, safe_sections in future.result():
+                        resolved[panel_index] = (panel_id, generic_safe, safe_sections)
     except (OSError, UnidentifiedImageError, ValueError):
         return (), dict.fromkeys(_PRODUCTION_VISUAL_SECTIONS, ())
     finally:
-        for image in decoded.values():
-            image.close()
         if telemetry is not None:
             telemetry.clear()
             telemetry.update(
@@ -1766,7 +1824,19 @@ def _frameable_preferred_visual_panel_selection(
                     "wall_s": round(time.perf_counter() - stage_started, 6),
                 }
             )
-    return tuple(generic_rows), {section: tuple(section_rows[section]) for section in _PRODUCTION_VISUAL_SECTIONS}
+
+    generic_rows: list[str] = []
+    section_rows: dict[str, list[str]] = {section: [] for section in _PRODUCTION_VISUAL_SECTIONS}
+    for panel_index in sorted(resolved):
+        panel_id, generic_safe, safe_sections = resolved[panel_index]
+        if generic_safe:
+            generic_rows.append(panel_id)
+        for section in safe_sections:
+            if section in section_rows:
+                section_rows[section].append(panel_id)
+    return tuple(generic_rows), {
+        section: tuple(section_rows[section]) for section in _PRODUCTION_VISUAL_SECTIONS
+    }
 
 
 def _frameable_preferred_visual_panel_ids(
@@ -2488,6 +2558,7 @@ def _build_reference_panel_fallback_candidates(
     source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
     allow_missing_explicit: bool = False,
     allow_conservative_full_panel: bool = False,
+    pixel_refinement_preflight: bool = False,
 ) -> tuple[object, ...]:
     """Compatibility wrapper for the exact panel-keyed review builder."""
     try:
@@ -2502,6 +2573,7 @@ def _build_reference_panel_fallback_candidates(
             profile=profile,
             source_upscale_manifests_by_region_id=source_upscale_manifests_by_region_id,
             allow_conservative_full_panel=allow_conservative_full_panel,
+            pixel_refinement_preflight=pixel_refinement_preflight,
         )
     except reference_visual_review.ReferenceReviewError as exc:
         raise PipelineError(f"{exc.code}: {exc}") from exc
@@ -2521,6 +2593,7 @@ def _load_reference_panel_fallback_candidates(
     review_source_root: Path | None = None,
     allow_persisted_panel_crop_fallback: bool = False,
     allow_conservative_full_panel: bool = False,
+    pixel_refinement_preflight: bool = False,
 ) -> tuple[object, ...]:
     """Read each exact persisted panel crop before planner selection."""
     analysis = latest_analysis(db, project_id)
@@ -2680,16 +2753,8 @@ def _load_reference_panel_fallback_candidates(
                     review_source_upscale.transform_panel_bounds(bounds, manifest)
                 )
                 source_upscale_manifests[str(region.id)] = manifest
-            encoded = io.BytesIO()
-            prepared_crop.save(encoded, format="PNG")
             panel_crops[str(region.id)] = prepared_crop.copy()
             panel_regions_for_builder.append(builder_region)
-            panel_candidates[str(region.id)] = visual_scoring.analyze_panel(
-                encoded.getvalue(),
-                asset_id=str(asset.id),
-                order_index=int(region.source_order),
-                source_family=str(asset.source_family or ""),
-            )
             crop.close()
             if prepared_crop is not crop:
                 prepared_crop.close()
@@ -2705,6 +2770,24 @@ def _load_reference_panel_fallback_candidates(
             # boundary, which raises visual.panel_lineage_unavailable. This keeps
             # pre-Task7 callers from receiving a source-path traceback.
             return ()
+    def analyze_reference_crop(region: PanelRegion) -> tuple[str, object]:
+        asset = assets[region.source_asset_id]
+        candidate = visual_scoring.analyze_image(
+            panel_crops[str(region.id)],
+            asset_id=str(asset.id),
+            order_index=int(region.source_order),
+            source_family=str(asset.source_family or ""),
+        )
+        return str(region.id), candidate
+
+    workers = min(3, max(1, len(panel_regions_for_builder)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="reference-score") as executor:
+        futures = [executor.submit(analyze_reference_crop, region) for region in panel_regions_for_builder]
+        wait(futures)
+        for future in futures:
+            region_id, candidate = future.result()
+            panel_candidates[region_id] = candidate
+
     return _build_reference_panel_fallback_candidates(
         panel_regions=panel_regions_for_builder,
         panel_candidates_by_region_id=panel_candidates,
@@ -2722,6 +2805,7 @@ def _load_reference_panel_fallback_candidates(
             or bool(skipped_panel_ids & cited_panel_ids)
         ),
         allow_conservative_full_panel=allow_conservative_full_panel,
+        pixel_refinement_preflight=pixel_refinement_preflight,
     )
 
 

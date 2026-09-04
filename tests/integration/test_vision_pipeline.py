@@ -1746,3 +1746,81 @@ def test_frameability_cache_reuses_exact_result_and_invalidates_identity(monkeyp
     latest.write_text("{corrupt", encoding="utf-8")
     module._frameable_preferred_visual_panel_selection((panel,), {"asset-cache": source}, profile)
     assert calls["count"] == 6
+
+
+def test_panel_transport_preparation_is_bounded_parallel_and_ordered(monkeypatch):
+    module = _pipeline_module()
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fake_transport(panel, _source, _coverage):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.04)
+        with lock:
+            active -= 1
+        return {"panel_id": panel.panel_id}
+
+    monkeypatch.setattr(module, "_panel_transport", fake_transport)
+    panels = tuple(SimpleNamespace(panel_id=f"p-{i}", source_asset_id=f"asset-{i}") for i in range(6))
+    inputs = {panel.source_asset_id: object() for panel in panels}
+    metrics = {}
+    result = module._build_panel_transports(panels, inputs, object(), telemetry=metrics)
+    assert tuple(result) == tuple(panel.panel_id for panel in panels)
+    assert max_active == 3
+    assert metrics["worker_count"] == 3
+    assert metrics["panel_count"] == 6
+
+
+def test_frameability_cold_misses_parallelize_across_sources_and_keep_order(monkeypatch, tmp_path):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def png(rgb):
+        raw = io.BytesIO()
+        Image.new("RGB", (120, 120), rgb).save(raw, format="PNG")
+        return raw.getvalue()
+
+    panels = []
+    sources = {}
+    for index in range(3):
+        asset_id = f"asset-par-{index}"
+        panel_id = f"panel-par-{index}"
+        panels.append(SimpleNamespace(
+            panel_id=panel_id, source_asset_id=asset_id, source_asset_checksum=f"sum-{index}",
+            source_order=index + 1, bounds_json={"x": 0, "y": 0, "width": 120, "height": 120},
+            observation_json={"visual_evidence": {"balloon_mask_status": "known_empty", "protected_regions": [{"kind": "subject"}], "evidence_hash": f"{index + 1:064x}"}},
+        ))
+        sources[asset_id] = SimpleNamespace(payload=png((40 + index, 80, 120)), source_bounds=(0, 0, 120, 120), source_family="fam", original_checksum=f"sum-{index}")
+    def analyze(_image, asset_id="", order_index=0, source_family=""):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return SimpleNamespace(asset_id=asset_id, order_index=order_index, source_family=source_family)
+
+    monkeypatch.setattr(module.visual_scoring, "analyze_image", analyze)
+    monkeypatch.setattr(
+        module.reference_visual_review,
+        "panel_reference_roi_safety",
+        lambda panel, _crop, _candidate, _profile, **_kwargs: (True, ("hook",) if panel.source_order != 2 else ("setup",)),
+    )
+    metrics = {}
+    generic, by_section = module._frameable_preferred_visual_panel_selection(
+        tuple(panels), sources, SimpleNamespace(profile_id="p", version="1", framing_contract_version="f"), telemetry=metrics
+    )
+    assert generic == tuple(panel.panel_id for panel in panels)
+    assert by_section["hook"] == ("panel-par-0", "panel-par-2")
+    assert by_section["setup"] == ("panel-par-1",)
+    assert max_active == 3
+    assert metrics["cache_hits"] == 0
+    assert metrics["cache_misses"] == 3
