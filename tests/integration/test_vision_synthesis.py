@@ -970,3 +970,44 @@ def test_preferred_visual_panel_ids_are_sent_as_input_only_hints(mock_provider_u
     assert "preferred_visual_panel_ids" in body_json
     assert all(panel_id in body_json for panel_id in PANEL_IDS)
     assert result == _valid_output()
+
+
+def test_corrective_visual_completion_separates_generic_and_section_constraints():
+    module = _vision_module()
+    generic = tuple(f"generic-{index:02d}" for index in range(19))
+    section_only = tuple(f"section-{index:02d}" for index in range(20))
+    panel_ids = generic + section_only
+    sections = ("hook", "setup", "conflict", "twist", "cta")
+    roles = ("hook", "setup", "escalation", "editorial_insight", "payoff_open_loop")
+    by_section = {section: section_only[index * 4:(index + 1) * 4] for index, section in enumerate(sections)}
+    observations = tuple({
+        "panel_id": panel_id, "source_asset_id": f"asset-{panel_id}", "strip_region_id": f"region-{panel_id}",
+        "source_index": index, "region_bounds": {"x": 0, "y": index * 10, "width": 100, "height": 100},
+        "coverage_map_version": "coverage-v1", "coverage_map_hash": "coverage-hash-v1",
+        "visible_facts": ["Mage shield crystal remains visible during the confrontation."], "dialogue_or_ocr": [],
+        "inferences": [], "uncertainties": [], "evidence_refs": [panel_id],
+    } for index, panel_id in enumerate(panel_ids))
+    request_type = _request_type(module)
+    version, digest, text = _instruction_contract()
+    request = request_type(
+        analysis_run_id="run-split-support", instruction_version=version, instruction_sha256=digest,
+        instruction_text=text, expected_panel_ids=panel_ids, coverage_manifest={"panel_ids": list(panel_ids)},
+        ordered_observations=observations, chunks=(), target_word_count_min=115, target_word_count_max=125,
+        preferred_visual_panel_ids=generic, preferred_visual_panel_ids_by_section=by_section, retry_visual_selection=True,
+    )
+    claims = []
+    passages = []
+    for index, role in enumerate(roles):
+        first = by_section[sections[index]][0]
+        claim_id = f"claim-split-{index}"
+        claims.append({"claim_id": claim_id, "text": "The mage shield crystal remains visible.", "qualification": "Visible panel evidence.", "evidence_panel_ids": [first]})
+        passages.append({"passage_id": f"passage-split-{index}", "editorial_role": role, "text": "The mage shield crystal remains visible during the confrontation.", "claim_ids": [claim_id], "evidence_panel_ids": [first]})
+    completed = module._complete_retry_visual_selection({"evidence_graph": {"claims": claims}, "script_passages": passages}, request)
+    module.validate_synthesis_visual_selection(completed, request)
+    used_generic = set()
+    for index, passage in enumerate(completed["script_passages"]):
+        evidence = set(passage["evidence_panel_ids"])
+        assert len(evidence & set(by_section[sections[index]])) >= 4
+        assert len(evidence & set(generic)) >= 4
+        used_generic.update(evidence & set(generic))
+    assert len(used_generic) >= 18

@@ -6,11 +6,14 @@ default, or production gate.
 
 ## Project language rule
 
-Every new render defaults to **English text** and **American English voice-over**.
-The default voice profile is `the-explainer-american`; offline TTS uses `en-us`.
-Indonesian remains an explicit per-project opt-in (`language: "id"`), never an
-inferred or global default. Paid TTS must receive `en-US` plus the locked project
-voice/settings.
+Every new production render defaults to **English text** with the Grok provider
+voice `orion`; the provider model is `grok-voice-latest` and its English language
+parameter is `en`. The legacy project value `the-explainer-american` remains a
+compatibility alias mapped to `ara` so old projects do not change narrator on
+resume. Offline espeak uses `en-us`. Indonesian remains an explicit per-project
+opt-in (`language: "id"`), never an inferred or global default. Production TTS
+must receive the locked project voice/settings and preserve one narrator identity
+across all sections.
 
 ## Recommendation
 

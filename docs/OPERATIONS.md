@@ -31,6 +31,8 @@ The production HTTP TTS model is `grok-voice-latest`. The Grok `/v1/tts` request
 
 New projects default to `orion`. The maintained variation shortlist is `orion`, `luna`, `ara`, `lux`, and `altair`; the `/api/voices` surface also exposes the complete built-in list confirmed by the active provider documentation. Unattended runs can select one explicitly with `--voice-id <id>`. Keep one voice/model identity for every section in a render; provider failure remains fail-closed with no silent narrator fallback.
 
+Final-production narration keeps the post-synthesis tempo safety gate at `0.80-1.25`. The normal HTTP request still starts at native speed `1.15`; if and only if measured narration is too short and satisfying the 50-60s production window would require a tempo below `0.80`, the pipeline may resynthesize the same text once with the same provider/model/voice at native speed `1.0`, then re-run the unchanged tempo gate. The recovery is bounded to one native-speed retry, is recorded in the voice timing audit, and remains fail-closed if the recovered audio still cannot satisfy the existing duration/tempo contract.
+
 ## Production workflow
 
 1. Ingest ordered source material manually or through the optional Suwayomi sidecar; preserve source provenance and rights metadata.

@@ -381,7 +381,7 @@ def _persist_blocked_analysis(
         [code if code in _VISION_BLOCKING_CODES else "analysis_incomplete" for code in codes]
     )
     safe_findings = [
-        {str(key): value for key, value in finding.items() if key in {"code", "stage", "count", "error_count", "panel_count", "chunk_index", "coverage_map_hash", "provider_type", "provider_name", "model", "status_code", "retryable", "timeout", "transport_subtype", "validation_subtype", "passage_word_counts"}}
+        {str(key): value for key, value in finding.items() if key in {"code", "stage", "count", "error_count", "panel_count", "chunk_index", "coverage_map_hash", "provider_type", "provider_name", "model", "status_code", "retryable", "timeout", "transport_subtype", "validation_subtype", "passage_word_counts", "selection_diagnostics"}}
         for finding in findings
         if isinstance(finding, Mapping)
     ]

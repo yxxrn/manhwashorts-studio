@@ -5,6 +5,39 @@ Public callers should continue importing app.services.pipeline.
 
 from __future__ import annotations
 
+_NATIVE_SPEED_RECOVERY = 1.0
+
+
+def _normalize_http_duration_with_native_speed_recovery(
+    tts_svc, provider, texts, work, voice_id, requested_speed, clips, *, duration_min_s, duration_max_s, gap_s
+):
+    """Retry short HTTP narration once at native speed 1.0 without relaxing tempo gates."""
+    try:
+        adjusted, policy = tts_svc.normalize_speech_clips_to_duration_window(
+            clips, duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=gap_s
+        )
+        return adjusted, policy
+    except tts_svc.TTSError as exc:
+        timeline_before = sum(float(clip.duration) for clip in clips) + max(0, len(clips) - 1) * gap_s
+        recoverable = (
+            "audio tempo correction exceeds safe production range" in str(exc)
+            and timeline_before < float(duration_min_s)
+            and float(requested_speed) > _NATIVE_SPEED_RECOVERY
+        )
+        if not recoverable:
+            raise
+        recovered = provider.synthesize_sections(texts, work, voice_id, _NATIVE_SPEED_RECOVERY)
+        adjusted, policy = tts_svc.normalize_speech_clips_to_duration_window(
+            recovered, duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=gap_s
+        )
+        return adjusted, {
+            **dict(policy or {}),
+            "native_speed_recovery": True,
+            "requested_speed": round(float(requested_speed), 4),
+            "effective_speed": _NATIVE_SPEED_RECOVERY,
+            "pre_recovery_duration_s": round(float(timeline_before), 3),
+        }
+
 
 def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, duration_bounds_s=None):
     """Synthesise one clip per script section, replacing any previous audio."""
@@ -55,12 +88,26 @@ def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, d
     if duration_bounds_s is not None:
         try:
             duration_min_s, duration_max_s = (float(duration_bounds_s[0]), float(duration_bounds_s[1]))
-            clips, timing_policy = tts_svc.normalize_speech_clips_to_duration_window(
-                clips,
-                duration_min_s=duration_min_s,
-                duration_max_s=duration_max_s,
-                gap_s=gap,
-            )
+            if isinstance(provider, tts_svc.HttpProvider):
+                clips, timing_policy = _normalize_http_duration_with_native_speed_recovery(
+                    tts_svc,
+                    provider,
+                    [spoken for _, _, spoken in prepared],
+                    work,
+                    requested_voice_id,
+                    speed,
+                    clips,
+                    duration_min_s=duration_min_s,
+                    duration_max_s=duration_max_s,
+                    gap_s=gap,
+                )
+            else:
+                clips, timing_policy = tts_svc.normalize_speech_clips_to_duration_window(
+                    clips,
+                    duration_min_s=duration_min_s,
+                    duration_max_s=duration_max_s,
+                    gap_s=gap,
+                )
         except (IndexError, TypeError, ValueError, tts_svc.TTSError) as exc:
             raise PipelineError(f'voice-over duration normalization failed: {exc}') from exc
     created: list[AudioSegment] = []

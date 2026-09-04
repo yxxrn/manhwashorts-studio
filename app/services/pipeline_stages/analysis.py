@@ -199,6 +199,7 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
                 stage='synthesis_response',
                 validation_subtype=str(getattr(exc, 'validation_subtype', '') or ''),
                 passage_word_counts=list(getattr(exc, 'passage_word_counts', ()) or ()),
+                selection_diagnostics=dict(getattr(exc, 'selection_diagnostics', {}) or {}),
             ) from None
         except VisionProviderRequestFailed as exc:
             raise _AnalysisBlocked(

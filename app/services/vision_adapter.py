@@ -6,7 +6,7 @@ import importlib
 import json
 import string
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -309,6 +309,7 @@ class VisionResponseInvalid(VisionCapabilityError):
         validation_subtype: str | None = None,
         passage_word_counts: tuple[int, ...] | None = None,
         retry_passages: tuple[Mapping[str, Any], ...] | None = None,
+        selection_diagnostics: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = False
@@ -317,6 +318,7 @@ class VisionResponseInvalid(VisionCapabilityError):
         self.validation_subtype = validation_subtype
         self.passage_word_counts = passage_word_counts
         self.retry_passages = retry_passages
+        self.selection_diagnostics = dict(selection_diagnostics or {})
 
 
 class VisionProviderRequestFailed(VisionCapabilityError):
@@ -755,6 +757,7 @@ class OpenAICompatibleVisionProvider:
                 validation_subtype=exc.validation_subtype,
                 passage_word_counts=exc.passage_word_counts,
                 retry_passages=_retry_passages_from_candidate(validated_result),
+                selection_diagnostics=getattr(exc, "selection_diagnostics", None),
             ) from None
         return validated_result
 
@@ -2037,12 +2040,11 @@ def _visual_support_tokens(value: object) -> set[str]:
 def _complete_retry_visual_selection(
     output: Mapping[str, Any], request: VisionChapterSynthesisRequest
 ) -> Mapping[str, Any]:
-    """Deterministically complete corrective visual support without changing semantic claims.
+    """Deterministically complete corrective visual support without weakening gates.
 
-    Added panels must already be exact section-safe preferred panels and must either
-    share visible/dialogue tokens with the locked passage/claims or sit immediately
-    beside existing grounded evidence in the ordered panel ledger. If that is not
-    sufficient, the normal fail-closed validator still rejects the response.
+    Section-safe and generic-safe requirements are independent validator constraints.
+    Corrective completion therefore fills both independently, and global uniqueness
+    counts only generic preferred panels exactly as the validator does.
     """
     if not request.retry_visual_selection or not request.preferred_visual_panel_ids:
         return output
@@ -2058,8 +2060,12 @@ def _complete_retry_visual_selection(
         if isinstance(item, Mapping) and item.get("panel_id")
     }
     positions = {panel_id: index for index, panel_id in enumerate(observation_by_id)}
-    preferred = set(request.preferred_visual_panel_ids)
-    preferred_by_section = request.preferred_visual_panel_ids_by_section or {}
+    preferred_order = tuple(str(value) for value in request.preferred_visual_panel_ids)
+    preferred = set(preferred_order)
+    preferred_by_section = {
+        str(section): tuple(str(value) for value in panel_ids)
+        for section, panel_ids in (request.preferred_visual_panel_ids_by_section or {}).items()
+    }
     cloned = dict(output)
     cloned_passages = [dict(item) if isinstance(item, Mapping) else item for item in passages]
     cloned["script_passages"] = cloned_passages
@@ -2072,7 +2078,7 @@ def _complete_retry_visual_selection(
         if str(panel_id) in preferred
     }
 
-    def ranked_candidates(passage: Mapping[str, Any], section: str) -> list[str]:
+    def ranked_candidates(passage: Mapping[str, Any], candidate_ids: Sequence[str]) -> list[str]:
         evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
         evidence_set = set(evidence)
         anchors = _visual_support_tokens(passage.get("text"))
@@ -2083,7 +2089,7 @@ def _complete_retry_visual_selection(
                 anchors.update(_visual_support_tokens(claim.get("qualification")))
         grounded_positions = [positions[value] for value in evidence if value in positions]
         rows: list[tuple[tuple[int, int, int, int], str]] = []
-        for allow_index, panel_id in enumerate(preferred_by_section.get(section, ())):
+        for allow_index, panel_id in enumerate(candidate_ids):
             panel_id = str(panel_id)
             if panel_id in evidence_set:
                 continue
@@ -2110,14 +2116,29 @@ def _complete_retry_visual_selection(
         if not section:
             continue
         evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
-        section_safe = set(preferred_by_section.get(section, ()))
-        selected = {value for value in evidence if value in section_safe}
-        for candidate in ranked_candidates(passage, section):
-            if len(selected) >= min(4, len(section_safe)):
+        section_order = preferred_by_section.get(section, ())
+        section_safe = set(section_order)
+        selected_section = {value for value in evidence if value in section_safe}
+        for candidate in ranked_candidates(passage, section_order):
+            if len(selected_section) >= min(4, len(section_safe)):
                 break
             if candidate not in evidence:
                 evidence.append(candidate)
-            selected.add(candidate)
+            selected_section.add(candidate)
+            if candidate in preferred:
+                global_used.add(candidate)
+        passage["evidence_panel_ids"] = evidence
+
+        selected_generic = {value for value in evidence if value in preferred}
+        generic_order = tuple(value for value in preferred_order if value in section_safe) + tuple(
+            value for value in preferred_order if value not in section_safe
+        )
+        for candidate in ranked_candidates(passage, generic_order):
+            if len(selected_generic) >= min(4, len(preferred)):
+                break
+            if candidate not in evidence:
+                evidence.append(candidate)
+            selected_generic.add(candidate)
             global_used.add(candidate)
         passage["evidence_panel_ids"] = evidence
 
@@ -2127,15 +2148,18 @@ def _complete_retry_visual_selection(
             if not isinstance(passage, dict):
                 continue
             section = _VISUAL_ROLE_SECTIONS.get(str(passage.get("editorial_role", "")), "")
-            if not section:
-                continue
+            section_safe = set(preferred_by_section.get(section, ()))
+            generic_order = tuple(value for value in preferred_order if value in section_safe) + tuple(
+                value for value in preferred_order if value not in section_safe
+            )
             evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
-            for candidate in ranked_candidates(passage, section):
+            for candidate in ranked_candidates(passage, generic_order):
                 if len(global_used) >= unique_min:
                     break
                 if candidate in global_used:
                     continue
-                evidence.append(candidate)
+                if candidate not in evidence:
+                    evidence.append(candidate)
                 global_used.add(candidate)
             passage["evidence_panel_ids"] = evidence
             if len(global_used) >= unique_min:
@@ -2165,6 +2189,23 @@ def validate_synthesis_visual_selection(
     per_passage_min = min(4, len(preferred_set))
     unique_min = min(18, len(preferred_set))
     used_preferred: set[str] = set()
+
+    def selection_diagnostics() -> dict[str, Any]:
+        rows = []
+        all_used: set[str] = set()
+        for item in passages:
+            if not isinstance(item, Mapping):
+                continue
+            role = str(item.get("editorial_role", ""))
+            section = role_sections.get(role, "")
+            evidence = item.get("evidence_panel_ids") if isinstance(item.get("evidence_panel_ids"), list) else []
+            section_safe = set(preferred_by_section.get(section, ()))
+            selected_section = {str(v) for v in evidence if str(v) in section_safe}
+            selected_preferred = {str(v) for v in evidence if str(v) in preferred_set}
+            all_used.update(selected_preferred)
+            rows.append({"role": role, "section": section, "section_capacity": len(section_safe), "selected_section": len(selected_section), "selected_preferred": len(selected_preferred), "evidence_count": len(evidence)})
+        return {"preferred_total": len(preferred_set), "unique_min": min(18, len(preferred_set)), "used_preferred": len(all_used), "section_capacities": {str(k): len(v) for k, v in preferred_by_section.items()}, "passages": rows}
+
     for passage in passages:
         if not isinstance(passage, Mapping):
             raise VisionResponseInvalid()
@@ -2184,18 +2225,21 @@ def validate_synthesis_visual_selection(
                 raise VisionResponseInvalid(
                     validation_subtype="production_visual_selection_insufficient",
                     retry_passages=locked_passages,
+                    selection_diagnostics=selection_diagnostics(),
                 )
         selected = {panel_id for panel_id in evidence if panel_id in preferred_set}
         if len(selected) < per_passage_min:
             raise VisionResponseInvalid(
                 validation_subtype="production_visual_selection_insufficient",
                 retry_passages=locked_passages,
+                selection_diagnostics=selection_diagnostics(),
             )
         used_preferred.update(selected)
     if len(used_preferred) < unique_min:
         raise VisionResponseInvalid(
             validation_subtype="production_visual_selection_insufficient",
             retry_passages=locked_passages,
+            selection_diagnostics=selection_diagnostics(),
         )
 
 
