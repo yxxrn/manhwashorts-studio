@@ -16,6 +16,7 @@ artifact where the publish step could pick it up.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import math
 import re
@@ -2631,8 +2632,10 @@ def _reference_review_sidecar(request: RenderRequest, info: Mapping[str, Any]) -
     })
 
 
-WATERMARK_CONTRACT_VERSION = "render-watermark-v2"
-WATERMARK_FONT_NAME = "DejaVu Sans"
+WATERMARK_CONTRACT_VERSION = "render-watermark-v3"
+WATERMARK_FONT_NAME = "Caacupe One"
+WATERMARK_FONT_FILE = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "CaacupeOne-Regular.ttf"
+WATERMARK_SYNTHETIC_BOLD = True
 WATERMARK_X_FRACTION = 0.50
 WATERMARK_Y_FRACTION = 0.89
 WATERMARK_TEXT_ASS_ALPHA = 0x8F
@@ -2649,9 +2652,28 @@ def _watermark_manifest(text: str, width: int, height: int, *, enabled: bool) ->
         "placement": "lower_center",
         "anchor": [WATERMARK_X_FRACTION, WATERMARK_Y_FRACTION],
         "font_name": WATERMARK_FONT_NAME if enabled else "",
+        "font_file": WATERMARK_FONT_FILE.name if enabled else "",
+        "synthetic_bold": bool(WATERMARK_SYNTHETIC_BOLD and enabled),
+        "font_sha256": hashlib.sha256(WATERMARK_FONT_FILE.read_bytes()).hexdigest() if enabled and WATERMARK_FONT_FILE.is_file() else "",
         "font_size_px": max(34, min(54, int(round(height * 0.024)))) if enabled else 0,
         "text_opacity": round(1.0 - WATERMARK_TEXT_ASS_ALPHA / 255.0, 3) if enabled else 0.0,
     }
+
+
+def _write_watermark_sidecar(output: Path, manifest: Mapping[str, Any], checksum: str, *, preview: bool) -> Path | None:
+    path = output.parent / "watermark.json"
+    if preview or not bool(manifest.get("enabled")):
+        path.unlink(missing_ok=True)
+        return None
+    payload = dict(manifest)
+    payload.update({
+        "video": output.name,
+        "video_checksum": checksum,
+        "applies_to": "final_video",
+        "preview_applied": False,
+    })
+    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def _append_watermark_ass(ass_text: str, text: str, width: int, height: int, duration: float) -> str:
@@ -2661,12 +2683,15 @@ def _append_watermark_ass(ass_text: str, text: str, width: int, height: int, dur
         raise RenderError("watermark is enabled but text is empty", code="watermark_text_missing")
     if duration <= 0:
         raise RenderError("watermark duration is invalid", code="watermark_duration_invalid")
+    if not WATERMARK_FONT_FILE.is_file():
+        raise RenderError("watermark font asset is missing", code="watermark_font_missing")
     font_name = WATERMARK_FONT_NAME
     font_size = max(34, min(54, int(round(height * 0.024))))
+    bold = -1 if WATERMARK_SYNTHETIC_BOLD else 0
     style = (
         f"Style: Watermark,{font_name},{font_size},&H{WATERMARK_TEXT_ASS_ALPHA:02X}FFFFFF,"
         f"&H{WATERMARK_TEXT_ASS_ALPHA:02X}FFFFFF,&H{WATERMARK_OUTLINE_ASS_ALPHA:02X}000000,"
-        f"&H{WATERMARK_SHADOW_ASS_ALPHA:02X}000000,0,0,0,0,100,100,0,0,1,1,1,2,0,0,0,1"
+        f"&H{WATERMARK_SHADOW_ASS_ALPHA:02X}000000,{bold},0,0,0,100,100,0,0,1,1,1,2,0,0,0,1"
     )
     marker = "\n[Events]\n"
     if marker not in ass_text:
@@ -3122,7 +3147,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         ass_path = work / "captions.ass"
         ass_path.write_text(ass_text, encoding="utf-8")
         subtitle_filter = f"subtitles='{_escape_filter_path(ass_path)}'"
-        font_path = Path(settings.subtitle_font)
+        font_path = WATERMARK_FONT_FILE if watermark_active else Path(settings.subtitle_font)
         if font_path.is_file():
             subtitle_filter += f":fontsdir='{_escape_filter_path(font_path.parent)}'"
         overlay_filters.append(subtitle_filter)
@@ -3243,6 +3268,10 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
     shutil.move(str(tmp_out), str(output))
 
     info = probe(output)
+    watermark_manifest = _watermark_manifest(
+        request.watermark_text, int(info.get("width") or 0), int(info.get("height") or 0),
+        enabled=bool(request.watermark_enabled and not request.preview),
+    )
     sidecar_path: Path | None = None
     manifest_path: Path | None = None
     if request.silent_reference_review:
@@ -3283,12 +3312,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             "subtitle_contract": request.subtitle_contract or {},
             "subtitle_contract_version": request.subtitle_contract_version,
             "subtitle_timing_source": request.subtitle_timing_source,
-            "watermark": _watermark_manifest(
-                request.watermark_text,
-                int(info.get("width") or 0),
-                int(info.get("height") or 0),
-                enabled=bool(request.watermark_enabled),
-            ),
+            "watermark": watermark_manifest,
             "subtitle_evidence": _subtitle_manifest_evidence(
                 request.sentence_groups,
                 profile=request.profile,
@@ -3362,6 +3386,7 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         srt_path.write_text(to_srt(request.cues), encoding="utf-8")
 
     checksum = sha256_file(output)
+    _write_watermark_sidecar(output, watermark_manifest, checksum, preview=request.preview)
     report(100, "done")
 
     scratch_bytes = sum(path.stat().st_size for path in work.rglob("*") if path.is_file())

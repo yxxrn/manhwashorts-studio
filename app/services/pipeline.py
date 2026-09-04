@@ -3664,7 +3664,17 @@ def _timeline_stage_ready(db: Session, project_id: str) -> bool:
 def _render_output_identity(project: Project) -> dict[str, Any]:
     enabled = bool(getattr(project, "watermark_enabled", False))
     text = str(getattr(project, "watermark_text", "") or "").strip() if enabled else ""
-    return {"version": "render-watermark-v2", "watermark_enabled": enabled, "watermark_text": text}
+    identity = {"version": "render-watermark-v3", "watermark_enabled": enabled, "watermark_text": text}
+    if enabled:
+        from app.services import render as render_svc
+
+        font_path = render_svc.WATERMARK_FONT_FILE
+        identity.update({
+            "watermark_font_name": render_svc.WATERMARK_FONT_NAME,
+            "watermark_font_sha256": hashlib.sha256(font_path.read_bytes()).hexdigest() if font_path.is_file() else "missing",
+            "watermark_synthetic_bold": render_svc.WATERMARK_SYNTHETIC_BOLD,
+        })
+    return identity
 
 
 def _render_stage_ready(

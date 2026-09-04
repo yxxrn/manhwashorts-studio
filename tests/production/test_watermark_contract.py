@@ -11,11 +11,14 @@ from tests.factories.evidence import _project
 def test_render_output_identity_normalizes_visible_watermark():
     class Project:
         watermark_enabled = True
-        watermark_text = "  @rurushortss  "
+        watermark_text = "  @Rurushortss  "
     assert pl._render_output_identity(Project()) == {
-        "version": "render-watermark-v2",
+        "version": "render-watermark-v3",
         "watermark_enabled": True,
-        "watermark_text": "@rurushortss",
+        "watermark_text": "@Rurushortss",
+        "watermark_font_name": "Caacupe One",
+        "watermark_font_sha256": "2f95e76b7df7f29c722c9bafb248cffd3970d92a19dd6b3f545e6934b64998cd",
+        "watermark_synthetic_bold": True,
     }
     Project.watermark_enabled = False
     assert pl._render_output_identity(Project())["watermark_text"] == ""
@@ -37,7 +40,7 @@ def test_render_reuse_invalidates_when_watermark_changes(db, tmp_path):
     project.watermark_text = ""
     assert pl._render_stage_ready(db, project.id, script_hash) is job
     project.watermark_enabled = True
-    project.watermark_text = "@rurushortss"
+    project.watermark_text = "@Rurushortss"
     assert pl._render_stage_ready(db, project.id, script_hash) is None
     script.editorial_metadata = {"production": {"script_hash": script_hash, "render_job_id": job.id, "render_output_identity": pl._render_output_identity(project)}}
     assert pl._render_stage_ready(db, project.id, script_hash) is job
