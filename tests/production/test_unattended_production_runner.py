@@ -161,3 +161,35 @@ def test_successful_state_does_not_keep_stale_failure(tmp_path, monkeypatch):
     saved = __import__("json").loads(state_path.read_text(encoding="utf-8"))
     assert saved["status"] == "PASS"
     assert "failure" not in saved
+
+
+def test_production_profiler_records_and_restores_wrapped_boundaries(monkeypatch):
+    runner = _runner_module()
+
+    replacements = {
+        (runner.pl, "generate_voiceover"): lambda *a, **k: "tts-ok",
+        (runner.pl, "build_timeline"): lambda *a, **k: "timeline-ok",
+        (runner.pl, "run_quality_checks"): lambda *a, **k: [],
+        (runner.pl, "enqueue_render"): lambda *a, **k: "enqueue-ok",
+        (runner.pl, "execute_render"): lambda *a, **k: "render-ok",
+        (runner.pl, "_ensure_final_thumbnail"): lambda *a, **k: "thumb-ok",
+        (runner.production_stage, "_write_manual_upload_metadata"): lambda *a, **k: "meta-ok",
+    }
+    for (owner, name), replacement in replacements.items():
+        monkeypatch.setattr(owner, name, replacement)
+
+    telemetry, originals = runner._install_production_profiler()
+    try:
+        assert runner.pl.generate_voiceover() == "tts-ok"
+        assert runner.pl.run_quality_checks(job=None) == []
+        assert runner.pl.run_quality_checks(job=object()) == []
+        assert runner.production_stage._write_manual_upload_metadata() == "meta-ok"
+    finally:
+        runner._restore_production_profiler(originals)
+
+    assert telemetry["tts"]["calls"] == 1
+    assert telemetry["pre_render_qc"]["calls"] == 1
+    assert telemetry["post_render_qc"]["calls"] == 1
+    assert telemetry["metadata"]["calls"] == 1
+    for (owner, name), replacement in replacements.items():
+        assert getattr(owner, name) is replacement

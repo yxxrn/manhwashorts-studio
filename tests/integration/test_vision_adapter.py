@@ -989,3 +989,23 @@ def test_dialogue_or_ocr_structured_items_are_projected_to_canonical_strings():
     ):
         with pytest.raises(module.VisionResponseInvalid):
             module.normalize_dialogue_or_ocr_items(invalid)
+
+
+def test_observation_prompt_requires_exact_count_and_order():
+    from app.services import vision_adapter
+
+    request = vision_adapter.VisionObservationRequest(
+        analysis_run_id="run",
+        instruction_version="v1",
+        instruction_sha256="a" * 64,
+        chunk_index=0,
+        panels=(
+            {"panel_id": "p1", "source_asset_id": "a1", "source_order": 0, "mime_type": "image/png", "payload": b"x"},
+            {"panel_id": "p2", "source_asset_id": "a2", "source_order": 1, "mime_type": "image/png", "payload": b"y"},
+        ),
+    )
+    panels = vision_adapter._validate_request(request)
+    payload = vision_adapter._build_payload(request, panels, "model")
+    prompt = payload["messages"][0]["content"][0]["text"]
+    assert "Return exactly 2 observations in the same order" in prompt
+    assert "no omitted, renamed, or extra observation keys" in prompt

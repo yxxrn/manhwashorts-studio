@@ -759,3 +759,31 @@ def test_youtube_metadata_is_hook_first_not_series_first():
     assert "22-25" not in meta["title"]
     assert "Ch." not in meta["title"]
     assert any(word in meta["title"].casefold() for word in {"arin", "sword", "guardian"})
+
+
+def test_join_scene_clips_can_filter_joined_stream_without_second_encode(tmp_path, monkeypatch):
+    from app.services import encoders, render
+
+    clips = [tmp_path / "a.mp4", tmp_path / "b.mp4"]
+    scenes = [
+        render.SceneInput(None, 0.0, 1.0, transition="none"),
+        render.SceneInput(None, 1.0, 2.0, transition="fade"),
+    ]
+    commands = []
+    monkeypatch.setattr(render, "_run", lambda cmd, **_kwargs: commands.append(cmd) or "")
+
+    render.join_scene_clips(
+        clips,
+        scenes,
+        tmp_path / "joined.mp4",
+        30,
+        encoders.select("cpu"),
+        require_transitions=True,
+        output_filter="hflip,format=yuv420p",
+    )
+
+    assert len(commands) == 1
+    command = commands[0]
+    graph = command[command.index("-filter_complex") + 1]
+    assert "[joined_exact]hflip,format=yuv420p[joined_filtered]" in graph
+    assert command[command.index("-map") + 1] == "[joined_filtered]"

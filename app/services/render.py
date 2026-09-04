@@ -1278,6 +1278,7 @@ def join_scene_clips(
     *,
     require_transitions: bool = False,
     x264_threads: int | None = None,
+    output_filter: str = "",
 ) -> Path:
     """Join clips without moving persisted scene boundaries.
 
@@ -1378,12 +1379,17 @@ def join_scene_clips(
         graph.append(
             f"[{joined}]trim=start_frame=0:end_frame={total_frames}[joined_exact]"
         )
+    output_label = "joined_exact"
+    if output_filter:
+        filtered_label = "joined_filtered"
+        graph.append(f"[{output_label}]{output_filter}[{filtered_label}]")
+        output_label = filtered_label
     filter_graph = encoders.apply_filter_suffix(selection, ";".join(graph))
     cmd = [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error"]
     for clip in clips:
         cmd += ["-i", str(clip)]
     cmd += [
-        "-filter_complex", filter_graph, "-map", "[joined_exact]", "-an",
+        "-filter_complex", filter_graph, "-map", f"[{output_label}]", "-an",
         *encoders.video_args(
             selection, preview=preview, final=not preview, x264_threads=x264_threads
         ), str(dest),
@@ -3016,21 +3022,8 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
                 )
         clips = [encoded[index] for index in range(len(request.scenes))]
 
-    report(55, "joining scenes")
-    silent = work / "silent.mp4"
-    join_scene_clips(
-        clips,
-        request.scenes,
-        silent,
-        fps,
-        selection,
-        request.preview,
-        require_transitions=stabilized_reference_motion,
-        x264_threads=serial_x264_threads,
-    )
-
-    report(65, "burning subtitles")
-    video_stage = silent
+    ass_path: Path | None = None
+    has_subtitles = bool(request.cues or request.sentence_groups)
     if request.sentence_groups:
         failures = subtitle_karaoke.validate_sentence_groups(
             request.sentence_groups,
@@ -3065,12 +3058,11 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             settings.subtitle_font_name,
             profile=request.profile,
         )
-    if request.cues or request.sentence_groups:
+
+    burn_vf = ""
+    if has_subtitles:
         ass_path = work / "captions.ass"
         ass_path.write_text(ass_text, encoding="utf-8")
-        burned = work / "burned.mp4"
-        # libass draws on CPU frames, so the hardware upload (if any) has to come
-        # after the subtitles filter rather than before it.
         subtitle_filter = f"subtitles='{_escape_filter_path(ass_path)}'"
         font_path = Path(settings.subtitle_font)
         if font_path.is_file():
@@ -3081,22 +3073,61 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             request.profile,
             preview=request.preview,
         )
-        _run(
-            [
-                settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
-                *encoders.input_args(selection),
-                "-i", str(silent),
-                "-vf", burn_vf,
-                *encoders.video_args(
-                    selection, preview=request.preview, final=not request.preview,
-                    x264_threads=serial_x264_threads,
-                ),
-                str(burned),
-            ],
-            timeout=900,
-            step="subtitle_burn",
+
+    combine_join_subtitles = bool(
+        has_subtitles
+        and stabilized_reference_motion
+        and not request.preview
+        and selection.spec.key == encoders.CPU.key
+    )
+    report(55, "joining scenes")
+    silent = work / "silent.mp4"
+    video_stage = silent
+    if combine_join_subtitles:
+        report(60, "joining scenes + burning subtitles")
+        burned = work / "burned.mp4"
+        join_scene_clips(
+            clips,
+            request.scenes,
+            burned,
+            fps,
+            selection,
+            request.preview,
+            require_transitions=stabilized_reference_motion,
+            x264_threads=serial_x264_threads,
+            output_filter=burn_vf,
         )
         video_stage = burned
+    else:
+        join_scene_clips(
+            clips,
+            request.scenes,
+            silent,
+            fps,
+            selection,
+            request.preview,
+            require_transitions=stabilized_reference_motion,
+            x264_threads=serial_x264_threads,
+        )
+        report(65, "burning subtitles")
+        if has_subtitles:
+            burned = work / "burned.mp4"
+            _run(
+                [
+                    settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+                    *encoders.input_args(selection),
+                    "-i", str(silent),
+                    "-vf", burn_vf,
+                    *encoders.video_args(
+                        selection, preview=request.preview, final=not request.preview,
+                        x264_threads=serial_x264_threads,
+                    ),
+                    str(burned),
+                ],
+                timeout=900,
+                step="subtitle_burn",
+            )
+            video_stage = burned
 
     report(80, "mixing audio")
     output = request.output_path or storage.output_path(

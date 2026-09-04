@@ -1197,6 +1197,8 @@ def _build_payload(
             "Return one JSON object with exactly one top-level key named observations. Its observations value must be an array containing the exact legacy observation fields "
             f"{legacy_fields} plus exactly one visual_evidence object per panel. "
             "Every legacy field is mandatory; return no markdown fences or commentary. "
+            f"Return exactly {len(panels)} observations in the same order as Request metadata panels. Do not add, omit, or rename observation keys. "
+            "Before returning, verify every list-typed legacy field is a JSON array, evidence_refs is non-empty and contains that observation panel_id, and visual_evidence panel/source identities exactly match Request metadata. "
             "visible_facts must contain at least one concise, objective fact for every panel; never return an empty visible_facts list. If there is no action or dialogue, describe only the clearly visible subject, object, expression, setting, or composition without guessing. "
             "Visual sidecar keys exactly: balloon_mask_status, balloon_regions, "
             "protected_regions, mask_confidence, evidence_source, mask_reason, "
@@ -1214,7 +1216,9 @@ def _build_payload(
     else:
         instruction = (
             "Observe every supplied image panel in the ordered manifest. Return only "
-            "a structured JSON object with exactly one top-level key named observations; its observations value must be a list. Each observation must contain panel_id, "
+            "a structured JSON object with exactly one top-level key named observations; its observations value must be a list. "
+            f"Return exactly {len(panels)} observations in the same order as Request metadata panels, with no omitted, renamed, or extra observation keys. "
+            "Before returning, verify every list-typed field is a JSON array and evidence_refs is non-empty and contains that observation panel_id. Each observation must contain panel_id, "
             "visible_facts, dialogue_or_ocr, inferences, uncertainties, entities, "
             "state_changes, causal_links, and evidence_refs. visible_facts must contain at least one concise objective fact per panel and must never be empty. Do not write a recap "
             "or use file labels or list positions as evidence; never infer missing "

@@ -246,3 +246,19 @@ standalone plans remain visibly marked HISTORICAL. See `docs/history/README.md` 
 - Final artifact `data/output/795370f604ad49e399673dadd386955b/final.mp4` is 50.667s, 1080x1920, 60 FPS, H.264 High/yuv420p + AAC, SHA-256 `5b93d576b52f98441460e32351f5e7aa13431b0c11edf7089c2a7b229e567225`. Final QC has zero failures, full playback is verified, black-frame duration is zero, A/V drift is 0.0003s, thumbnail QC passes, and manual-upload metadata passes.
 - Selected thumbnail headline is `DANGEROUS LIGHT SPELL IN DEBRIS?`, placement `middle`; publication count remains zero.
 - Durability conclusion: the core pipeline and caches can now recover a real interrupted/blocked run without repeating source or expensive vision work, and the blessed launcher prevents the Run 7 missing-env class before import. Run 8 itself required two launcher-code fixes discovered by this test, so it is evidence of hardened recovery rather than proof that unknown future software bugs are impossible. The fixed launcher is the required path for future unattended production validation.
+
+## 2026-09-04 Run 9 unattended production checkpoint
+
+- Fresh unattended project `5a5a9cc33c9a49a69b11b6d5a822a16a`: Infinite Mage chapters 153-155, 40 pages, 179 assets, 298 reconciled panels. `scripts/manhwashorts production-run` completed from preflight through final validation with no operator rescue and zero publications.
+- Clean wall was 1188.820s (~19m49s): source import 78.510s, analysis 782.616s, script/approval 0.106s, production 320.227s. Vision observation was 566.487s for 30 chunks / 34 calls, including four bounded invalid-response retries; effective provider concurrency was 2.977/3. Panel transport was 23.045s and cold frameability 53.123s.
+- Observer-only production profiling measured TTS 19.700s, timeline 38.712s, pre-render QC 1.047s, enqueue 0.540s, final render 243.370s, post-render QC 0.495s, thumbnail 34.219s, and metadata 16.702s. Profiling restores all wrapped functions and does not alter pipeline ordering or gates.
+- Final `data/output/5a5a9cc33c9a49a69b11b6d5a822a16a/final.mp4`: 50.650s, 1080x1920, 60 FPS, H.264 High/yuv420p + AAC, SHA-256 `b59de6093e5a45cfe528f299ebf4ee6a165e68667b3966063fb13a4df263cc50`. Final QC has zero failures, zero black-frame duration, 0.0s A/V drift, max two subtitle lines, and full playback verified.
+- Thumbnail QC passed with selected headline `THAT THING ISN'T EVEN HUMAN?!`, placement `top`. Manual-upload metadata contract passed; publication count remains zero.
+- Run 10 priorities are documented in `docs/RUN10_PLAN.md`: reduce invalid-response whole-chunk retry cost without weakening validation, benchmark fewer lossless-equivalent render passes while keeping slow/CRF18 and exact media/QC contracts, profile timeline/preflight duplication, hide headline/metadata latency behind render, and add synthesis/source-import substage telemetry before changing those algorithms.
+
+### Run 10 - Infinite Mage ch.150-152
+- Project `320bfe65c68546dab6faa14add439b60`; clean unattended PASS, 1077.260s (~17m57s), publication count 0.
+- 40 pages / 185 assets / 306 analyzed panels; analysis 707.882s, production 283.677s.
+- Fused xfade+subtitle final encode accepted after identical-input benchmark: 198.010s -> 150.560s (~24% faster), same media contract and reference-output validator PASS.
+- Observation prompt hardening reduced invalid retries 4 -> 2 on this run; benefit is useful but modest, with all fail-closed validators unchanged.
+- Final video 50.650s, 1080x1920/60 FPS H.264 High + AAC; final QC PASS; headline `WHAT LURKS BEHIND HEAVEN'S DOOR?` at bottom.

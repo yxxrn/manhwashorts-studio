@@ -31,6 +31,7 @@ from app.routers import sources as source_router
 from app.schemas import ProjectCreate, SuwayomiImportRequest
 from app.services import operator_cli, resolver
 from app.services import pipeline as pl
+from app.services.pipeline_stages import production as production_stage
 
 TRANSIENT_ANALYSIS_CODES = frozenset({
     "vision_provider_request_failed",
@@ -241,9 +242,23 @@ def _ensure_analysis(db: Any, args: argparse.Namespace, state: dict[str, Any], s
     if current is not None and str(current.state) in {"RECONCILED", "SCRIPT_DRAFT", "SCRIPT_APPROVED"}:
         return current
     started = time.perf_counter()
+    synthesis_durations: list[float] = []
+    real_synthesize = pl._synthesize_with_cache
+
+    def timed_synthesize(*call_args: Any, **call_kwargs: Any):
+        call_started = time.perf_counter()
+        try:
+            return real_synthesize(*call_args, **call_kwargs)
+        finally:
+            synthesis_durations.append(time.perf_counter() - call_started)
+
     for attempt in range(1, args.max_analysis_attempts + 1):
         attempt_started = time.perf_counter()
-        analysis = pl.run_analysis(db, project.id, user.id)
+        pl._synthesize_with_cache = timed_synthesize
+        try:
+            analysis = pl.run_analysis(db, project.id, user.id)
+        finally:
+            pl._synthesize_with_cache = real_synthesize
         db.commit()
         codes = _analysis_codes(analysis)
         _event(
@@ -269,6 +284,9 @@ def _ensure_analysis(db: Any, args: argparse.Namespace, state: dict[str, Any], s
                 observation_wall_s=float(observation.get("wall_s", 0.0)),
                 provider_calls=int(observation.get("provider_call_count", 0)),
                 frameability_wall_s=float(frameability.get("wall_s", 0.0)),
+                synthesis_calls=len(synthesis_durations),
+                synthesis_wall_s=round(sum(synthesis_durations), 6),
+                synthesis_call_durations_s=[round(value, 6) for value in synthesis_durations],
             )
             return analysis
         if codes and codes.issubset(TRANSIENT_ANALYSIS_CODES) and attempt < args.max_analysis_attempts:
@@ -307,12 +325,53 @@ def _ensure_script(db: Any, state: dict[str, Any], state_path: Path, user: Any, 
     return script
 
 
+def _install_production_profiler() -> tuple[dict[str, dict[str, float | int]], dict[tuple[object, str], object]]:
+    telemetry: dict[str, dict[str, float | int]] = {}
+    originals: dict[tuple[object, str], object] = {}
+
+    def install(owner: object, name: str, label: str, classifier=None) -> None:
+        original = getattr(owner, name)
+        originals[(owner, name)] = original
+
+        def wrapped(*args, **kwargs):
+            key = classifier(args, kwargs) if classifier is not None else label
+            started = time.perf_counter()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                row = telemetry.setdefault(key, {"calls": 0, "wall_s": 0.0})
+                row["calls"] = int(row["calls"]) + 1
+                row["wall_s"] = round(float(row["wall_s"]) + time.perf_counter() - started, 6)
+
+        setattr(owner, name, wrapped)
+
+    install(pl, "generate_voiceover", "tts")
+    install(pl, "build_timeline", "timeline")
+    install(
+        pl,
+        "run_quality_checks",
+        "quality",
+        lambda args, kwargs: "post_render_qc" if kwargs.get("job") is not None else "pre_render_qc",
+    )
+    install(pl, "enqueue_render", "enqueue_render")
+    install(pl, "execute_render", "render")
+    install(pl, "_ensure_final_thumbnail", "thumbnail")
+    install(production_stage, "_write_manual_upload_metadata", "metadata")
+    return telemetry, originals
+
+
+def _restore_production_profiler(originals: dict[tuple[object, str], object]) -> None:
+    for (owner, name), original in originals.items():
+        setattr(owner, name, original)
+
+
 def _ensure_production(db: Any, args: argparse.Namespace, state: dict[str, Any], state_path: Path, user: Any, project: Any, script: Any) -> Any:
     started = time.perf_counter()
     script_hash = pl._script_content_hash(script)
     last_exc: BaseException | None = None
     for attempt in range(1, args.max_production_attempts + 1):
         attempt_started = time.perf_counter()
+        telemetry, originals = _install_production_profiler()
         try:
             job = pl.run_production(
                 db,
@@ -326,8 +385,8 @@ def _ensure_production(db: Any, args: argparse.Namespace, state: dict[str, Any],
                 profile=args.profile,
             )
             db.commit()
-            _event(state, state_path, "production.attempt", attempt=attempt, status=str(job.status), duration_s=round(time.perf_counter() - attempt_started, 6))
-            _stage(state, state_path, "production", started, attempts=attempt, job_id=job.id, status=str(job.status))
+            _event(state, state_path, "production.attempt", attempt=attempt, status=str(job.status), duration_s=round(time.perf_counter() - attempt_started, 6), telemetry=telemetry)
+            _stage(state, state_path, "production", started, attempts=attempt, job_id=job.id, status=str(job.status), telemetry=telemetry)
             return job
         except Exception as exc:  # noqa: BLE001 - stage boundary records safe exception class/text only
             db.rollback()
@@ -337,6 +396,8 @@ def _ensure_production(db: Any, args: argparse.Namespace, state: dict[str, Any],
             if not transient or attempt >= args.max_production_attempts:
                 raise
             time.sleep(args.retry_delay_s)
+        finally:
+            _restore_production_profiler(originals)
     assert last_exc is not None
     raise last_exc
 def _validate_final(db: Any, state: dict[str, Any], state_path: Path, project: Any, job: Any) -> dict[str, Any]:
