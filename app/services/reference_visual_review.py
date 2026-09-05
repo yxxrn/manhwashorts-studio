@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
 from math import isfinite
@@ -284,23 +285,100 @@ def _panel_bounds(region: object) -> tuple[int, int, int, int]:
     return x, y, x + width, y + height
 
 
+def _narrative_profile_id(script: object) -> str:
+    metadata = getattr(script, "editorial_metadata", None)
+    if not isinstance(metadata, Mapping):
+        return ""
+    identity = metadata.get("narrative_identity")
+    return str(identity.get("profile_id", "")) if isinstance(identity, Mapping) else ""
+
+
 def section_evidence_maps(script: object) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[int, ...]], dict[str, tuple[str, ...]]]:
-    """Extract immutable panel-keyed evidence maps from a persisted script."""
+    """Extract immutable panel evidence while preserving repeated canonical sections."""
     sections = tuple(getattr(script, "sections", ()) or ())
-    evidence = {
-        str(section.get("section", "")): tuple(
-            str(panel_id) for panel_id in (section.get("evidence_panel_ids") or ())
-        )
-        for section in sections
-    }
-    citations = {
-        str(section.get("section", "")): tuple(
-            citation for citation in (section.get("citations") or ())
-        )
-        for section in sections
-    }
+    evidence_rows: dict[str, list[str]] = {}
+    citation_rows: dict[str, list[int]] = {}
+    for section in sections:
+        if not isinstance(section, Mapping):
+            continue
+        name = str(section.get("section", ""))
+        if not name:
+            continue
+        evidence_rows.setdefault(name, [])
+        citation_rows.setdefault(name, [])
+        for panel_id in section.get("evidence_panel_ids") or ():
+            value = str(panel_id)
+            if value and value not in evidence_rows[name]:
+                evidence_rows[name].append(value)
+        for citation in section.get("citations") or ():
+            if isinstance(citation, int) and not isinstance(citation, bool) and citation not in citation_rows[name]:
+                citation_rows[name].append(citation)
+    evidence = {name: tuple(values) for name, values in evidence_rows.items()}
+    citations = {name: tuple(values) for name, values in citation_rows.items()}
     beats = dict.fromkeys(set(evidence) | set(citations), ())
     return evidence, citations, beats
+
+
+def section_direct_claim_evidence_map(script: object) -> dict[str, tuple[str, ...]]:
+    """Return claim-native evidence separately from broadened passage visuals."""
+    if _narrative_profile_id(script) != "retention_story_v1":
+        return {}
+    rows: dict[str, list[str]] = {}
+    for section in tuple(getattr(script, "sections", ()) or ()):
+        if not isinstance(section, Mapping):
+            continue
+        name = str(section.get("section", ""))
+        if not name:
+            continue
+        rows.setdefault(name, [])
+        for claim in section.get("evidence") or ():
+            if not isinstance(claim, Mapping):
+                continue
+            for panel_id in claim.get("panel_ids") or ():
+                value = str(panel_id)
+                if value and value not in rows[name]:
+                    rows[name].append(value)
+    return {name: tuple(values) for name, values in rows.items()}
+
+
+def section_claim_text_map(
+    script: object, evidence_graph: Mapping[str, object] | None
+) -> dict[str, tuple[str, ...]]:
+    """Resolve claim text per retention section without broadening claim lineage."""
+    if _narrative_profile_id(script) != "retention_story_v1" or not isinstance(evidence_graph, Mapping):
+        return {}
+    claims: dict[str, str] = {}
+    for claim in evidence_graph.get("claims") or ():
+        if not isinstance(claim, Mapping):
+            continue
+        claim_id = str(claim.get("claim_id", ""))
+        text = str(claim.get("text", "")).strip()
+        if claim_id and text:
+            claims[claim_id] = text
+    rows: dict[str, tuple[str, ...]] = {}
+    for section in tuple(getattr(script, "sections", ()) or ()):
+        if not isinstance(section, Mapping):
+            continue
+        name = str(section.get("section", ""))
+        texts = tuple(claims[str(cid)] for cid in section.get("claim_ids") or () if str(cid) in claims)
+        if name and texts:
+            rows[name] = texts
+    return rows
+
+
+def section_story_text_map(script: object) -> dict[str, tuple[str, ...]]:
+    """Expose spoken beat text only for the opt-in retention narrative profile."""
+    if _narrative_profile_id(script) != "retention_story_v1":
+        return {}
+    rows: dict[str, list[str]] = {}
+    for section in tuple(getattr(script, "sections", ()) or ()):
+        if not isinstance(section, Mapping):
+            continue
+        name = str(section.get("section", ""))
+        text = str(section.get("text", "")).strip()
+        if name and text:
+            rows.setdefault(name, []).append(text)
+    return {name: tuple(values) for name, values in rows.items()}
 
 
 def enumerate_conservative_full_panel_roi_alternatives(
@@ -386,6 +464,119 @@ def _roi_passes_exact_pixel_preflight(
     return True
 
 
+_RETENTION_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "at", "for", "from",
+    "with", "his", "her", "their", "this", "that", "these", "those", "is", "are", "was", "were",
+    "be", "been", "being", "he", "she", "they", "it", "as", "by", "into", "while", "when", "after",
+    "before", "now", "then", "just", "still", "only", "all", "can", "could", "would", "will",
+})
+
+
+def _retention_tokens(value: object) -> set[str]:
+    text = str(value or "").casefold()
+    result: set[str] = set()
+    for raw in re.findall(r"[^\W_]+", text, flags=re.UNICODE):
+        token = raw
+        if token.endswith("ies") and len(token) >= 6:
+            token = f"{token[:-3]}y"
+        elif token.endswith("s") and len(token) >= 5 and not token.endswith("ss"):
+            token = token[:-1]
+        if len(token) >= 3 and token not in _RETENTION_STOPWORDS:
+            result.add(token)
+    return result
+
+
+def _retention_story_relevance(
+    region: object,
+    sections: Sequence[str],
+    story_text_by_section: Mapping[str, Sequence[str]],
+    direct_evidence_by_section: Mapping[str, Sequence[str]] | None = None,
+    claim_text_by_section: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, float]:
+    raw = getattr(region, "observation_json", None)
+    if not isinstance(raw, Mapping) or not story_text_by_section:
+        return {}
+    panel_id = str(getattr(region, "panel_id", ""))
+    direct_evidence_by_section = direct_evidence_by_section or {}
+    claim_text_by_section = claim_text_by_section or {}
+    evidence_parts: list[str] = []
+    for key in ("visible_facts", "dialogue_or_ocr", "inferences"):
+        values = raw.get(key)
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+            evidence_parts.extend(str(value) for value in values if str(value).strip())
+    evidence_tokens = _retention_tokens(" ".join(evidence_parts))
+    if not evidence_tokens:
+        return {}
+    result: dict[str, float] = {}
+    for section in sections:
+        beat_text = " ".join(str(value) for value in story_text_by_section.get(section, ()) if str(value).strip())
+        story_tokens = _retention_tokens(beat_text)
+        if not story_tokens:
+            continue
+        other_story_tokens: set[str] = set()
+        for other_section, values in story_text_by_section.items():
+            if str(other_section) == str(section):
+                continue
+            other_story_tokens.update(
+                _retention_tokens(" ".join(str(value) for value in values if str(value).strip()))
+            )
+        section_specific_tokens = story_tokens - other_story_tokens
+        if section_specific_tokens:
+            story_tokens = section_specific_tokens
+        overlap = len(story_tokens & evidence_tokens)
+        claim_text = " ".join(
+            str(value) for value in claim_text_by_section.get(str(section), ()) if str(value).strip()
+        )
+        claim_tokens = _retention_tokens(claim_text)
+        claim_overlap = len(claim_tokens & evidence_tokens)
+        # Passage text is primary. Claim text is a secondary bridge for
+        # equivalent story facts whose concrete names do not repeat in every
+        # passage (for example Snow Plum Pill vs. spiritual elixir).
+        score = overlap / max(1.0, len(story_tokens) ** 0.5)
+        score += 0.5 * claim_overlap / max(1.0, len(claim_tokens) ** 0.5)
+        if panel_id and panel_id in set(direct_evidence_by_section.get(str(section), ())):
+            score += 4.0
+        result[str(section)] = round(float(score), 6)
+    return result
+
+
+def expand_retention_section_evidence(
+    script: object,
+    regions: Sequence[object],
+    existing: Mapping[str, Sequence[str]],
+    *,
+    max_semantic_per_section: int = 16,
+    claim_text_by_section: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Add top grounded full-ledger matches without bypassing visual gates."""
+    if _narrative_profile_id(script) != "retention_story_v1":
+        return {str(k): tuple(v) for k, v in existing.items()}
+    story = section_story_text_map(script)
+    direct = section_direct_claim_evidence_map(script)
+    output = {str(k): list(dict.fromkeys(str(x) for x in v if str(x))) for k, v in existing.items()}
+    for section in story:
+        output.setdefault(section, [])
+        ranked: list[tuple[float, int, str]] = []
+        for region in regions:
+            panel_id = str(getattr(region, "panel_id", ""))
+            source_order = int(getattr(region, "source_order", -1))
+            if not panel_id or source_order <= 0:
+                continue
+            score = _retention_story_relevance(
+                region, (section,), story, direct, claim_text_by_section
+            ).get(section, 0.0)
+            if score > 0.0:
+                ranked.append((float(score), source_order, panel_id))
+        for _score, _order, panel_id in sorted(
+            ranked, key=lambda row: (-row[0], row[1], row[2])
+        )[: max(1, int(max_semantic_per_section))]:
+            if panel_id not in output[section]:
+                output[section].append(panel_id)
+    return {name: tuple(values) for name, values in output.items()}
+
+
+
+
 def build_reference_panel_fallback_candidates(
     *,
     panel_regions: Sequence[object],
@@ -395,6 +586,9 @@ def build_reference_panel_fallback_candidates(
     section_citations: Mapping[str, Sequence[int]],
     beats_by_section: Mapping[str, Sequence[str]],
     profile: object,
+    story_text_by_section: Mapping[str, Sequence[str]] | None = None,
+    direct_evidence_by_section: Mapping[str, Sequence[str]] | None = None,
+    claim_text_by_section: Mapping[str, Sequence[str]] | None = None,
     source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
     allow_missing_explicit: bool = False,
     allow_conservative_full_panel: bool = False,
@@ -523,6 +717,13 @@ def build_reference_panel_fallback_candidates(
                     eligible_beats=tuple(sorted(beats_by_region[region_id])),
                     roi_alternatives=roi_alternatives,
                     panel_candidate=candidate,
+                    story_relevance_by_section=_retention_story_relevance(
+                        region,
+                        tuple(sorted(eligible_by_region[region_id])),
+                        story_text_by_section or {},
+                        direct_evidence_by_section,
+                        claim_text_by_section,
+                    ),
                     source_upscale_manifest=(
                         dict((source_upscale_manifests_by_region_id or {}).get(region_id, {}))
                         or None

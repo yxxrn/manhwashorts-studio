@@ -47,6 +47,7 @@ _REFERENCE_ROI_KIND_ORDER = {
     "aggressive_crop": 3,
 }
 _REFERENCE_ROI_KINDS = frozenset(_REFERENCE_ROI_KIND_ORDER)
+_RETENTION_SEMANTIC_RELEVANCE_FLOOR = 0.5
 
 
 def _review_visual_shot_target(total_duration: float, available_visuals: int) -> int:
@@ -75,6 +76,31 @@ def _review_effective_section_capacity(
     if unique_capacity >= minimum_required:
         return unique_capacity
     return sum(capacities)
+
+
+def _story_relevance(candidate: object, section: str) -> float:
+    relevance = getattr(candidate, "story_relevance_by_section", None)
+    if not isinstance(relevance, Mapping):
+        return 0.0
+    return max(0.0, float(relevance.get(section, 0.0) or 0.0))
+
+
+def _retention_semantic_section_capacity(
+    section_duration_s: float,
+    candidates: Sequence[object],
+    roi_capacities: Sequence[int],
+    section: str,
+) -> int:
+    """Cap optional density at grounded visuals; preserve the 4s hard floor."""
+    base = _review_effective_section_capacity(section_duration_s, roi_capacities)
+    if not any(isinstance(getattr(c, "story_relevance_by_section", None), Mapping) and bool(getattr(c, "story_relevance_by_section", None)) for c in candidates):
+        return base
+    minimum = max(1, math.ceil(section_duration_s / reference_profile.REVIEW_MAX_SHOT_SECONDS - 1e-9))
+    positive = sum(
+        1 for c, cap in zip(candidates, roi_capacities, strict=True)
+        if int(cap) > 0 and _story_relevance(c, section) >= _RETENTION_SEMANTIC_RELEVANCE_FLOOR
+    )
+    return min(base, max(minimum, positive))
 
 
 def _review_transition_family(rank: int) -> str:
@@ -145,8 +171,15 @@ def _review_candidate_priority_key(
     """Prefer unused, beat-readable grounded panels with deterministic ties."""
 
     panel_id = str(getattr(candidate, "panel_id", ""))
+    relevance_map = getattr(candidate, "story_relevance_by_section", None)
+    relevance = (
+        float(relevance_map.get(section, 0.0))
+        if isinstance(relevance_map, Mapping)
+        else 0.0
+    )
     return (
         1 if usage_counts.get(panel_id, 0) > 0 else 0,
+        -relevance,
         -_review_candidate_visual_fit_score(candidate, section, beat),
         *_review_candidate_order_key(candidate),
     )
@@ -1044,6 +1077,7 @@ class ReferencePanelFallbackCandidate:
     eligible_beats: tuple[str, ...]
     roi_alternatives: tuple[ReferenceROIAlternative, ...]
     panel_candidate: visual_scoring.PanelCandidate
+    story_relevance_by_section: Mapping[str, float] | None = None
     source_upscale_manifest: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
@@ -1603,6 +1637,7 @@ def _plan_reference_panel_candidates(
     allow_review_duration: bool = False,
     review_duration_bounds_s: tuple[float, float] | None = None,
     allow_conservative_full_panel: bool = False,
+    _standard_cadence_target_override: int | None = None,
 ) -> list[dict]:
     if not panel_candidates:
         raise ReferencePlanningError(
@@ -1739,8 +1774,8 @@ def _plan_reference_panel_candidates(
         # but they must not inflate the preferred shot target when unique panels
         # already satisfy the four-second ceiling. This prevents avoidable panel
         # repetition while preserving a safe fallback for genuinely sparse evidence.
-        section_capacity[section] = _review_effective_section_capacity(
-            section_duration, capacities
+        section_capacity[section] = _retention_semantic_section_capacity(
+            section_duration, eligible_for_section, capacities, section
         )
     if cadence_adapted and any(
         capacity < 1 for capacity in section_capacity.values()
@@ -1761,6 +1796,15 @@ def _plan_reference_panel_candidates(
             total_duration,
             [review_capacity_by_panel.get(candidate.panel_id, 0) for candidate in ordered],
         )
+        if any(isinstance(getattr(candidate, "story_relevance_by_section", None), Mapping) and bool(getattr(candidate, "story_relevance_by_section", None)) for candidate in ordered):
+            cadence_capacity_override = min(
+                cadence_capacity_override, sum(section_capacity.values())
+            )
+        if _standard_cadence_target_override is not None:
+            cadence_capacity_override = min(
+                cadence_capacity_override,
+                max(0, int(_standard_cadence_target_override)),
+            )
     base_shots = _plan_reference(
         spans,
         timing_candidates,
@@ -1867,16 +1911,38 @@ def _plan_reference_panel_candidates(
                     and last_order >= 0
                     and order < last_order
                 )
+                base_priority = _review_candidate_priority_key(
+                    candidate, usage_map, section_name, beat_name
+                )
+                relevance_map = getattr(candidate, "story_relevance_by_section", None)
+                if isinstance(relevance_map, Mapping) and relevance_map:
+                    current_relevance = _story_relevance(candidate, section_name)
+                    future_relevance = 0.0
+                    for future_section, _future_beat, future_options in shot_options[
+                        shot_index + 1 : shot_index + 1 + reuse_window
+                    ]:
+                        if future_section == section_name:
+                            continue
+                        if any(option.panel_id == candidate.panel_id for option, _cap in future_options):
+                            future_relevance = max(
+                                future_relevance, _story_relevance(candidate, future_section)
+                            )
+                    opportunity_cost = max(0.0, future_relevance - current_relevance)
+                    adjusted_relevance = current_relevance - opportunity_cost
+                    return (
+                        1 if candidate.panel_id in recent_ids else 0,
+                        -adjusted_relevance,
+                        base_priority[0],
+                        base_priority[2],
+                        1 if boundary_relaxation else 0,
+                        -order if boundary_relaxation else 0,
+                        *base_priority[3:],
+                    )
                 return (
                     1 if boundary_relaxation else 0,
                     -order if boundary_relaxation else 0,
                     1 if candidate.panel_id in recent_ids else 0,
-                    *_review_candidate_priority_key(
-                        candidate,
-                        usage_map,
-                        section_name,
-                        beat_name,
-                    ),
+                    *base_priority,
                 )
 
             for candidate, beat_capacity in sorted(
@@ -1922,10 +1988,126 @@ def _plan_reference_panel_candidates(
             -1,
         )
         if resolved_assignment is None:
+            current_target = len(base_shots)
+            next_target = current_target - 1
+            if _standard_cadence_target_override is not None:
+                next_target = min(next_target, int(_standard_cadence_target_override) - 1)
+            if next_target > 0:
+                reduced = _plan_reference_panel_candidates(
+                    spans,
+                    profile,
+                    panel_candidates,
+                    allow_source_resolution_warning=allow_source_resolution_warning,
+                    allow_review_cadence_adaptation=allow_review_cadence_adaptation,
+                    allow_standard_cadence_adaptation=allow_standard_cadence_adaptation,
+                    allow_review_duration=allow_review_duration,
+                    review_duration_bounds_s=review_duration_bounds_s,
+                    allow_conservative_full_panel=allow_conservative_full_panel,
+                    _standard_cadence_target_override=next_target,
+                )
+                reduced_target = len(reduced)
+                for shot in reduced:
+                    previous_nominal = int(
+                        shot.get("global_assignment_nominal_shots", current_target)
+                        or current_target
+                    )
+                    shot["global_assignment_nominal_shots"] = max(
+                        current_target, previous_nominal
+                    )
+                    shot["global_assignment_planned_shots"] = reduced_target
+                    warnings = list(shot.get("visual_review_warnings") or [])
+                    warnings.append("visual.cadence_reduced_for_global_assignment")
+                    shot["visual_review_warnings"] = sorted(set(warnings))
+                    reasons = list(shot.get("alignment_reasons") or [])
+                    reasons.append("visual.cadence_reduced_for_global_assignment")
+                    shot["alignment_reasons"] = sorted(set(reasons))
+                return reduced
             raise ReferencePlanningError(
                 "standard cadence has no globally feasible panel assignment",
                 "visual.capacity_insufficient",
             )
+        retention_assignment = any(
+            isinstance(getattr(candidate, "story_relevance_by_section", None), Mapping)
+            and bool(getattr(candidate, "story_relevance_by_section", None))
+            for candidate in ordered
+        )
+        if retention_assignment:
+            optimization_cache: dict[tuple[object, ...], tuple[tuple[float, ...], tuple[str, ...]] | None] = {}
+            optimization_nodes = 0
+            optimization_overflow = False
+
+            def _best_retention_assignment(
+                shot_index: int, use_counts: tuple[int, ...], recent_ids: tuple[str, ...],
+                last_section: str, last_order: int,
+            ) -> tuple[tuple[float, ...], tuple[str, ...]] | None:
+                nonlocal optimization_nodes, optimization_overflow
+                if shot_index >= len(shot_options):
+                    return ((0.0, 0.0, 0.0, 0.0, 0.0), ())
+                state = (shot_index, use_counts, recent_ids, last_section, last_order)
+                if state in optimization_cache:
+                    return optimization_cache[state]
+                optimization_nodes += 1
+                if optimization_nodes > 500_000:
+                    optimization_overflow = True
+                    return None
+                section_name, beat_name, options = shot_options[shot_index]
+                usage_map = {
+                    candidate.panel_id: use_counts[index]
+                    for index, candidate in enumerate(ordered) if use_counts[index]
+                }
+                best: tuple[tuple[float, ...], tuple[str, ...]] | None = None
+                ranked = sorted(
+                    options,
+                    key=lambda item: _review_candidate_priority_key(
+                        item[0], usage_map, section_name, beat_name
+                    ),
+                )
+                for candidate, beat_capacity in ranked:
+                    panel_id = candidate.panel_id
+                    index = candidate_index[panel_id]
+                    if recent_ids and panel_id == recent_ids[-1]:
+                        continue
+                    if use_counts[index] >= review_capacity_by_panel.get(panel_id, 0):
+                        continue
+                    if use_counts[index] >= beat_capacity:
+                        continue
+                    order = int(candidate.source_order)
+                    if section_name != "hook" and section_name == last_section and last_order >= 0 and order < last_order:
+                        continue
+                    next_counts = list(use_counts)
+                    next_counts[index] += 1
+                    next_recent = (*recent_ids, panel_id)[-reuse_window:]
+                    next_order = last_order if section_name == "hook" else order
+                    tail = _best_retention_assignment(
+                        shot_index + 1, tuple(next_counts), next_recent, section_name, next_order
+                    )
+                    if tail is None:
+                        continue
+                    boundary = bool(
+                        section_name != "hook" and section_name != last_section
+                        and last_order >= 0 and order < last_order
+                    )
+                    backward = float(max(0, last_order - order)) if boundary else 0.0
+                    increment = (
+                        _story_relevance(candidate, section_name),
+                        -float(1 if use_counts[index] > 0 else 0),
+                        float(_review_candidate_visual_fit_score(candidate, section_name, beat_name)),
+                        -float(1 if boundary else 0),
+                        -backward,
+                    )
+                    score = tuple(a + b for a, b in zip(increment, tail[0], strict=True))
+                    assignment = (panel_id, *tail[1])
+                    candidate_result = (score, assignment)
+                    if best is None or score > best[0]:
+                        best = candidate_result
+                optimization_cache[state] = best
+                return best
+
+            optimized = _best_retention_assignment(
+                0, tuple(0 for _ in ordered), (), "", -1
+            )
+            if optimized is not None and not optimization_overflow:
+                resolved_assignment = optimized[1]
         standard_panel_assignment = resolved_assignment
 
     section_shots_done: dict[str, int] = {}
@@ -2483,6 +2665,9 @@ def _plan_reference_panel_candidates(
                 f"source_order:{candidate.source_order}",
             )
         )
+        relevance_map = getattr(candidate, "story_relevance_by_section", None)
+        if isinstance(relevance_map, Mapping) and section in relevance_map:
+            reasons.append(f"story_relevance:{float(relevance_map[section]):.6f}")
         if candidate.panel_id != candidate.source_asset_id:
             reasons.append("panel_keyed_candidate")
         if uses[candidate.panel_id] > 1:

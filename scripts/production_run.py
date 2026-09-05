@@ -30,7 +30,7 @@ from app.models import Publication
 from app.routers import projects as project_router
 from app.routers import sources as source_router
 from app.schemas import ProjectCreate, SuwayomiImportRequest
-from app.services import operator_cli, resolver
+from app.services import narrative_identity, operator_cli, resolver
 from app.services import pipeline as pl
 from app.services.pipeline_stages import production as production_stage
 
@@ -92,6 +92,7 @@ def _load_state(path: Path, args: argparse.Namespace) -> dict[str, Any]:
             "source_id": args.source_id,
             "language": args.language,
             "voice_id": getattr(args, "voice_id", DEFAULT_ENGLISH_VOICE_ID),
+            "narrative_profile_id": str(getattr(args, "narrative_profile_id", "") or ""),
             "watermark_enabled": bool(getattr(args, "watermark", False)),
             "watermark_text": str(getattr(args, "watermark_text", "") or ""),
             "status": "STARTING",
@@ -105,6 +106,8 @@ def _load_state(path: Path, args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("run state identity does not match requested corpus")
     if "voice_id" in payload and payload["voice_id"] != getattr(args, "voice_id", DEFAULT_ENGLISH_VOICE_ID):
         raise RuntimeError("run state identity does not match requested voice profile")
+    if str(payload.get("narrative_profile_id", "")) != str(getattr(args, "narrative_profile_id", "") or ""):
+        raise RuntimeError("run state identity does not match requested narrative profile")
     if bool(payload.get("watermark_enabled", False)) != bool(getattr(args, "watermark", False)):
         raise RuntimeError("run state identity does not match requested watermark toggle")
     if str(payload.get("watermark_text", "")) != str(getattr(args, "watermark_text", "") or ""):
@@ -148,6 +151,11 @@ def _preflight(db: Any, args: argparse.Namespace, state: dict[str, Any], state_p
     doctor_failed = _required_doctor_checks()
     if doctor_failed:
         raise RuntimeError("machine doctor failed: " + ", ".join(doctor_failed))
+    if getattr(args, "narrative_profile_id", ""):
+        try:
+            narrative_identity.load_narrative_instruction(getattr(args, "narrative_profile_id", ""))
+        except narrative_identity.NarrativeIdentityError:
+            raise RuntimeError("narrative profile preflight failed") from None
     free_bytes = shutil.disk_usage(Path(settings.data_dir)).free
     if free_bytes < int(args.min_free_gb * 1024**3):
         raise RuntimeError(f"insufficient free disk: {free_bytes / 1024**3:.2f} GiB")
@@ -161,9 +169,29 @@ def _preflight(db: Any, args: argparse.Namespace, state: dict[str, Any], state_p
         raise RuntimeError(f"TTS provider unavailable: {tts_resolution.provider}")
     tts_probe = Path(settings.tmp_dir) / f"{args.run_id}-tts-preflight.wav"
     try:
-        clip = tts_provider.synthesize("Production preflight ready.", tts_probe, voice_id=args.voice_id, speed=1.0)
-        if float(clip.duration) <= 0.0:
-            raise RuntimeError("TTS preflight returned zero duration")
+        for tts_attempt in range(1, 4):
+            try:
+                clip = tts_provider.synthesize(
+                    "Production preflight ready.",
+                    tts_probe,
+                    voice_id=args.voice_id,
+                    speed=1.0,
+                )
+                if float(clip.duration) <= 0.0:
+                    raise RuntimeError("TTS preflight returned zero duration")
+                break
+            except Exception as exc:  # noqa: BLE001 - only classified transient provider failures are retried
+                if not _transient_exception(exc) or tts_attempt >= 3:
+                    raise
+                _event(
+                    state,
+                    state_path,
+                    "preflight.tts_retry",
+                    attempt=tts_attempt,
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:300],
+                )
+                time.sleep(max(0.05, min(float(args.retry_delay_s), 10.0)))
     finally:
         tts_probe.unlink(missing_ok=True)
 
@@ -269,7 +297,7 @@ def _ensure_analysis(db: Any, args: argparse.Namespace, state: dict[str, Any], s
         attempt_started = time.perf_counter()
         pl._synthesize_with_cache = timed_synthesize
         try:
-            analysis = pl.run_analysis(db, project.id, user.id)
+            analysis = pl.run_analysis(db, project.id, user.id, narrative_profile_id=(getattr(args, "narrative_profile_id", "") or None))
         finally:
             pl._synthesize_with_cache = real_synthesize
         db.commit()
@@ -307,12 +335,19 @@ def _ensure_analysis(db: Any, args: argparse.Namespace, state: dict[str, Any], s
             continue
         raise RuntimeError(f"analysis blocked: state={analysis.state} codes={sorted(codes)}")
     raise RuntimeError("analysis attempts exhausted")
-def _ensure_script(db: Any, state: dict[str, Any], state_path: Path, user: Any, project: Any) -> Any:
+def _ensure_script(db: Any, args: argparse.Namespace, state: dict[str, Any], state_path: Path, user: Any, project: Any) -> Any:
     started = time.perf_counter()
+    analysis = pl.latest_analysis(db, project.id)
     script = pl.latest_script_row(db, project.id)
     generated = False
-    if script is None:
-        script = pl.generate_script(db, project.id, actor_id=user.id)
+    script_metadata = script.editorial_metadata if script is not None and isinstance(script.editorial_metadata, dict) else {}
+    if script is None or analysis is None or script_metadata.get("analysis_id") != analysis.id:
+        if analysis is None:
+            raise RuntimeError("script generation requires a current analysis")
+        script = pl.generate_script(
+            db, project.id, analysis_id=analysis.id, actor_id=user.id,
+            narrative_profile_id=(getattr(args, "narrative_profile_id", "") or None),
+        )
         db.commit()
         generated = True
     if script.approved_at is None:
@@ -456,6 +491,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--source-id", required=True)
     parser.add_argument("--language", default="en")
     parser.add_argument("--voice-id", default=DEFAULT_ENGLISH_VOICE_ID)
+    parser.add_argument("--narrative-profile-id", default="")
     parser.add_argument("--watermark", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--watermark-text", default="")
     parser.add_argument("--max-analysis-attempts", type=int, default=2)
@@ -473,6 +509,7 @@ def _parse_args() -> argparse.Namespace:
         parser.error("production-run currently requires whole-number chapter bounds")
     if args.max_analysis_attempts < 1 or args.max_production_attempts < 1:
         parser.error("attempt counts must be >= 1")
+    args.narrative_profile_id = str(args.narrative_profile_id or "").strip()
     args.watermark_text = str(args.watermark_text or "").strip() if args.watermark else ""
     if args.watermark and not args.watermark_text:
         parser.error("--watermark requires nonempty --watermark-text")
@@ -509,7 +546,7 @@ def main() -> int:
         project = _ensure_project(db, args, state, state_path, user, workspace)
         _ensure_source(db, args, state, state_path, user, project)
         _ensure_analysis(db, args, state, state_path, user, project)
-        script = _ensure_script(db, state, state_path, user, project)
+        script = _ensure_script(db, args, state, state_path, user, project)
         job = _ensure_production(db, args, state, state_path, user, project, script)
         result = _validate_final(db, state, state_path, project, job)
         state["status"] = "PASS"

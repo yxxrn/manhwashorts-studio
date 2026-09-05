@@ -62,6 +62,23 @@ def _sharp_identity_contract():
     )
 
 
+def _retention_identity_contract():
+    contract = importlib.import_module("app.services.analyzer_contract")
+    version, digest, text = contract.load_analyzer_instruction(
+        narrative_profile_id="retention_story_v1"
+    )
+    profile_module = importlib.import_module("app.services.narrative_identity")
+    profile = profile_module.get_narrative_identity("retention_story_v1")
+    return (
+        version,
+        digest,
+        text,
+        profile.profile_id,
+        profile.profile_version,
+        profile.contract_sha256,
+    )
+
+
 def _request_type(module):
     request_type = getattr(module, "VisionChapterSynthesisRequest", None)
     assert isinstance(
@@ -154,6 +171,11 @@ def _request(
     if narrative_profile_id is None:
         committed_version, committed_digest, committed_text = _instruction_contract()
     else:
+        identity_contract = (
+            _retention_identity_contract()
+            if narrative_profile_id == "retention_story_v1"
+            else _sharp_identity_contract()
+        )
         (
             committed_version,
             committed_digest,
@@ -161,7 +183,7 @@ def _request(
             _profile_id,
             profile_version,
             profile_sha256,
-        ) = _sharp_identity_contract()
+        ) = identity_contract
         narrative_profile_version = (
             profile_version
             if narrative_profile_version is None
@@ -1011,3 +1033,161 @@ def test_corrective_visual_completion_separates_generic_and_section_constraints(
         assert len(evidence & set(generic)) >= 4
         used_generic.update(evidence & set(generic))
     assert len(used_generic) >= 18
+
+
+def test_retention_retry_request_accepts_four_locked_passages():
+    from dataclasses import replace
+
+    module = _vision_module()
+    locked = tuple(
+        {
+            "passage_id": f"p{index}",
+            "editorial_role": role,
+            "text": f"Grounded retry passage number {index} stays concise and factual.",
+            "claim_ids": ["claim-panel-sequence"],
+            "evidence_panel_ids": ["panel-a"],
+        }
+        for index, role in enumerate(
+            ("hook", "pressure", "decision", "consequence"), start=1
+        )
+    )
+    request = _request(module, narrative_profile_id="retention_story_v1")
+    request = replace(request, retry_passages=locked)
+
+    expected_panel_ids, profile = module._validate_synthesis_request(request)
+
+    assert expected_panel_ids == PANEL_IDS
+    assert profile.profile_id == "retention_story_v1"
+    assert profile.passage_min == 4
+
+
+
+def test_synthesis_projection_accepts_only_exact_single_wrapper():
+    module = _vision_module()
+    request = _request(module)
+    output = _valid_output()
+    projected = module._project_provider_synthesis_output({"analysis": output}, request)
+    assert set(projected) == set(output)
+    assert projected["script_passages"] == output["script_passages"]
+    with pytest.raises(module.VisionResponseInvalid) as caught:
+        module._project_provider_synthesis_output(
+            {"analysis": output, "metadata": {"note": "extra sibling"}}, request
+        )
+    assert caught.value.validation_subtype == "synthesis_projection_top_level_invalid"
+
+
+def test_synthesis_wire_forbids_provider_wrapper_objects():
+    module = _vision_module()
+    request = _request(module, narrative_profile_id="retention_story_v1")
+    expected_panel_ids, profile = module._validate_synthesis_request(request)
+    payload = module._build_synthesis_payload(request, expected_panel_ids, "mock-large", profile)
+    user_text = payload["messages"][1]["content"]
+    assert "directly at the JSON root" in user_text
+    assert "do not wrap them under analysis, result, output, data" in user_text
+
+
+
+def test_synthesis_projection_diagnostics_expose_structure_not_content(mock_provider_url, monkeypatch):
+    module = _vision_module()
+    request = _request(module)
+    provider = _provider(module, mock_provider_url)
+    bad = _valid_output()
+    bad["metadata"] = {"note": "secret-note"}
+    _install_response(monkeypatch, module, bad)
+    with pytest.raises(module.VisionResponseInvalid) as caught:
+        provider.synthesize(request)
+    assert caught.value.validation_subtype == "synthesis_projection_top_level_invalid"
+    diagnostics = caught.value.selection_diagnostics
+    assert diagnostics["top_level_key_count"] == 7
+    assert "metadata" in diagnostics["top_level_keys"]
+    encoded = json.dumps(diagnostics)
+    assert "secret-note" not in encoded
+
+
+
+def test_synthesis_projection_accepts_only_identical_redundant_continuity_arrays():
+    module = _vision_module()
+    request = _request(module)
+    output = _valid_output()
+    redundant = copy.deepcopy(output)
+    continuity = redundant["continuity_ledger"]
+    for key in ("entities", "motives", "state_changes", "causal_links"):
+        redundant[key] = copy.deepcopy(continuity[key])
+    projected = module._project_provider_synthesis_output(redundant, request)
+    assert set(projected) == set(output)
+
+    mismatched = copy.deepcopy(redundant)
+    mismatched["motives"] = [{"entity_id": "foreign", "text": "mismatch", "evidence_panel_ids": ["panel-a"]}]
+    with pytest.raises(module.VisionResponseInvalid) as caught:
+        module._project_provider_synthesis_output(mismatched, request)
+    assert caught.value.validation_subtype == "synthesis_projection_top_level_invalid"
+
+
+def test_synthesis_wire_keeps_continuity_arrays_out_of_root():
+    module = _vision_module()
+    request = _request(module, narrative_profile_id="retention_story_v1")
+    expected_panel_ids, profile = module._validate_synthesis_request(request)
+    payload = module._build_synthesis_payload(request, expected_panel_ids, "mock-large", profile)
+    user_text = payload["messages"][1]["content"]
+    assert "only inside continuity_ledger" in user_text
+    assert "never duplicate those arrays at the JSON root" in user_text
+
+
+
+def test_retention_dynamic_roles_use_positional_visual_sections():
+    module = _vision_module()
+    panel_ids = tuple(f"retention-{index:02d}" for index in range(20))
+    section_names = ("hook", "setup", "conflict", "twist", "cta")
+    by_section = {
+        section: panel_ids[index * 4:(index + 1) * 4]
+        for index, section in enumerate(section_names)
+    }
+    request = module.VisionChapterSynthesisRequest(
+        analysis_run_id="retention-visual-sections",
+        instruction_version="test",
+        instruction_sha256="0" * 64,
+        instruction_text="test",
+        expected_panel_ids=panel_ids,
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+        narrative_profile_id="retention_story_v1",
+        target_word_count_min=115,
+        target_word_count_max=125,
+        preferred_visual_panel_ids=panel_ids,
+        preferred_visual_panel_ids_by_section=by_section,
+    )
+    roles = ("hook", "pressure", "twist", "escalation", "consequence")
+    passages = [
+        {
+            "passage_id": f"p{index}",
+            "editorial_role": role,
+            "text": "Grounded beat text.",
+            "claim_ids": ["claim"],
+            "evidence_panel_ids": list(by_section[section_names[index]]),
+        }
+        for index, role in enumerate(roles)
+    ]
+    output = {"script_passages": passages}
+    module.validate_synthesis_visual_selection(output, request)
+    mapped = [
+        module._visual_section_for_passage(item, index, len(passages), request)
+        for index, item in enumerate(passages)
+    ]
+    assert mapped == list(section_names)
+
+
+def test_synthesis_projection_accepts_matching_analysis_run_id_echo_only():
+    module = _vision_module()
+    request = _request(module)
+    output = _valid_output()
+    echoed = copy.deepcopy(output)
+    echoed["analysis_run_id"] = request.analysis_run_id
+    projected = module._project_provider_synthesis_output(echoed, request)
+    assert set(projected) == set(output)
+
+    mismatched = copy.deepcopy(output)
+    mismatched["analysis_run_id"] = "foreign-run"
+    with pytest.raises(module.VisionResponseInvalid) as caught:
+        module._project_provider_synthesis_output(mismatched, request)
+    assert caught.value.validation_subtype == "synthesis_projection_top_level_invalid"

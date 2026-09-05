@@ -1839,6 +1839,53 @@ def test_review_planner_preserves_unique_path_before_roi_reuse(monkeypatch):
     assert [shot["source_order"] for shot in result] == [30, 33, 34, 37, 51]
 
 
+def test_standard_cadence_reduces_preferred_target_to_highest_feasible(monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from app.services import editorial_visual_planner
+
+    items=(("a",10),("b",10))
+    regions=tuple(_region(f"panel-{key}",f"region-{key}",f"asset-{key}",order,(0,0,100,200),f"asset-{key}-checksum") for key,order in items)
+    candidates=pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id={f"region-{key}":_candidate(f"asset-{key}",order,key) for key,order in items},
+        panel_crops_by_region_id={f"region-{key}":_crop((40,60,100),True) for key,_order in items},
+        section_evidence_panel_ids={"conflict":tuple(f"panel-{key}" for key,_order in items)},
+        section_citations={}, beats_by_section={"conflict":()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    rois=(
+        editorial_visual_planner.ReferenceROIAlternative(kind="primary",roi_label="primary",crop_box=(0,0,100,200),focus=(0.25,0.5,0.25,0.5)),
+        editorial_visual_planner.ReferenceROIAlternative(kind="alternate_roi",roi_label="alternate",crop_box=(0,0,100,200),focus=(0.75,0.5,0.75,0.5)),
+    )
+    candidates=tuple(replace(c,roi_alternatives=rois,eligible_sections=("conflict",)) for c in candidates)
+    capacities={"panel-a":3,"panel-b":1}
+    monkeypatch.setattr(editorial_visual_planner,"_candidate_is_eligible",lambda _candidate,section,_beat: section=="conflict")
+    monkeypatch.setattr(editorial_visual_planner,"_feasible_roi_capacity",lambda candidate,*_a,**_k: capacities[candidate.panel_id])
+    monkeypatch.setattr(editorial_visual_planner,"_review_crop_editorial_metrics",lambda *_a,**_k:{"subject_completeness_score":1.0})
+    def fake_attempt(candidate,roi,**_kwargs):
+        return True,{"rejection_code":None},{
+            "accepted":True,"panel_region_id":candidate.panel_region_id,
+            "panel_id":candidate.panel_id,"source_asset_id":candidate.source_asset_id,
+            "source_order":candidate.source_order,"source_asset_checksum":candidate.source_asset_checksum,
+            "panel_size":list(candidate.panel_size),"evidence_hash":candidate.evidence_hash,
+            "roi_label":roi.roi_label,"crop_box":list(roi.crop_box),"roi_kind":roi.kind,"telemetry":{},
+        }
+    monkeypatch.setattr(editorial_visual_planner,"_reference_panel_attempt",fake_attempt)
+    result=editorial_visual_planner._plan_reference_panel_candidates(
+        [SimpleNamespace(section="conflict",start_time=0.0,end_time=12.0,text="A grounded conflict unfolds.",word_timings=[])],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1,candidates,
+        allow_standard_cadence_adaptation=True,allow_review_duration=True,
+        review_duration_bounds_s=(12.0,12.0),
+    )
+    assert len(result)==3
+    assert [shot["panel_id"] for shot in result]==["panel-a","panel-b","panel-a"]
+    assert all((shot["end_time"]-shot["start_time"])<=4.0+1e-9 for shot in result)
+    assert all(shot["global_assignment_nominal_shots"]==4 for shot in result)
+    assert all(shot["global_assignment_planned_shots"]==3 for shot in result)
+    assert all("visual.cadence_reduced_for_global_assignment" in shot["visual_review_warnings"] for shot in result)
+
 def test_review_planner_uses_distinct_roi_capacity_before_long_holds(monkeypatch):
     from dataclasses import replace
     from types import SimpleNamespace
@@ -2675,3 +2722,90 @@ def test_exact_pixel_preflight_cache_reuses_refinement(monkeypatch, tmp_path):
     assert reference_visual_review._roi_passes_exact_pixel_preflight(**kwargs) is True
     assert reference_visual_review._roi_passes_exact_pixel_preflight(**kwargs) is True
     assert calls["count"] == 1
+
+
+def test_retention_boundary_relaxation_prefers_story_relevance_over_smaller_backtrack(monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from app.services import editorial_visual_planner
+    orders=(90,99,100)
+    regions=tuple(_region(f"panel-{o}",f"region-{o}",f"asset-{o}",o,(0,0,100,200),f"asset-{o}-checksum") for o in orders)
+    candidates=pipeline._build_reference_panel_fallback_candidates(panel_regions=regions,panel_candidates_by_region_id={f"region-{o}":_candidate(f"asset-{o}",o,str(o)) for o in orders},panel_crops_by_region_id={f"region-{o}":_crop((40,60,100),True) for o in orders},section_evidence_panel_ids={"setup":("panel-100",),"twist":("panel-90","panel-99")},section_citations={},beats_by_section={"setup":(),"twist":()},profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1)
+    relevance={"panel-90":{"twist":4.0},"panel-99":{"twist":0.1},"panel-100":{"setup":4.0}}
+    candidates=tuple(replace(c,story_relevance_by_section=relevance[c.panel_id]) for c in candidates)
+    monkeypatch.setattr(editorial_visual_planner,"_feasible_roi_capacity",lambda *_a,**_k:1)
+    monkeypatch.setattr(editorial_visual_planner,"_review_crop_editorial_metrics",lambda *_a,**_k:{"subject_completeness_score":1.0})
+    def fake_attempt(candidate,roi,**_kwargs):
+        return True,{"rejection_code":None},{"accepted":True,"panel_region_id":candidate.panel_region_id,"panel_id":candidate.panel_id,"source_asset_id":candidate.source_asset_id,"source_order":candidate.source_order,"source_asset_checksum":candidate.source_asset_checksum,"panel_size":list(candidate.panel_size),"evidence_hash":candidate.evidence_hash,"roi_label":roi.roi_label,"crop_box":list(roi.crop_box),"roi_kind":roi.kind,"telemetry":{}}
+    monkeypatch.setattr(editorial_visual_planner,"_reference_panel_attempt",fake_attempt)
+    monkeypatch.setattr(editorial_visual_planner,"_plan_reference",lambda *_a,**_k:[{"order_index":0,"section":"setup","start_time":0.0,"end_time":3.0,"camera_intent":"neutral","effect":"static","asset_id":"unused","transition":"none","focus_x":0.5,"focus_y":0.5,"focus_end_x":0.5,"focus_end_y":0.5},{"order_index":1,"section":"twist","start_time":3.0,"end_time":6.0,"camera_intent":"reveal","effect":"static","asset_id":"unused","transition":"fade","focus_x":0.5,"focus_y":0.5,"focus_end_x":0.5,"focus_end_y":0.5}])
+    result=editorial_visual_planner._plan_reference_panel_candidates([SimpleNamespace(section="setup",start_time=0.0,end_time=3.0),SimpleNamespace(section="twist",start_time=3.0,end_time=6.0)],reference_profile.REFERENCE_MATCHED_SHORTS_V1,candidates,allow_standard_cadence_adaptation=True,allow_review_duration=True,review_duration_bounds_s=(6.0,6.0))
+    assert [shot["source_order"] for shot in result]==[100,90]
+
+
+def test_retention_semantic_capacity_uses_zero_relevance_only_for_hard_floor():
+    from types import SimpleNamespace
+
+    from app.services import editorial_visual_planner as planner
+
+    candidates = [
+        SimpleNamespace(story_relevance_by_section={"conflict": 0.8}),
+        SimpleNamespace(story_relevance_by_section={"conflict": 0.4}),
+        SimpleNamespace(story_relevance_by_section={"conflict": 0.0}),
+    ]
+    assert planner._retention_semantic_section_capacity(8.0, candidates, [1, 1, 1], "conflict") == 2
+    assert planner._retention_semantic_section_capacity(11.5, candidates, [1, 1, 1], "conflict") == 3
+
+
+def test_retention_assignment_reserves_shared_panel_for_higher_future_relevance(monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from app.services import editorial_visual_planner as planner
+
+    specs = ((100, "setup"), (110, "conflict"), (120, "conflict"), (130, "twist"))
+    regions = tuple(
+        _region(f"panel-{o}", f"region-{o}", f"asset-{o}", o, (0, 0, 100, 200), f"asset-{o}-checksum")
+        for o, _section in specs
+    )
+    built = pipeline._build_reference_panel_fallback_candidates(
+        panel_regions=regions,
+        panel_candidates_by_region_id={f"region-{o}": _candidate(f"asset-{o}", o, str(o)) for o, _section in specs},
+        panel_crops_by_region_id={f"region-{o}": _crop((40, 60, 100), True) for o, _section in specs},
+        section_evidence_panel_ids={
+            "setup": ("panel-100",), "conflict": ("panel-110", "panel-120"),
+            "twist": ("panel-120", "panel-130"),
+        },
+        section_citations={}, beats_by_section={"setup": (), "conflict": (), "twist": ()},
+        profile=reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+    )
+    relevance = {
+        "panel-100": {"setup": 4.0},
+        "panel-110": {"conflict": 0.6},
+        "panel-120": {"conflict": 0.5, "twist": 2.0},
+        "panel-130": {"twist": 0.1},
+    }
+    built = tuple(replace(candidate, story_relevance_by_section=relevance[candidate.panel_id]) for candidate in built)
+    monkeypatch.setattr(planner, "_feasible_roi_capacity", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(planner, "_review_crop_editorial_metrics", lambda *_args, **_kwargs: {"subject_completeness_score": 1.0})
+    def fake_attempt(candidate, roi, **_kwargs):
+        return True, {"rejection_code": None}, {
+            "accepted": True, "panel_region_id": candidate.panel_region_id, "panel_id": candidate.panel_id,
+            "source_asset_id": candidate.source_asset_id, "source_order": candidate.source_order,
+            "source_asset_checksum": candidate.source_asset_checksum, "panel_size": list(candidate.panel_size),
+            "evidence_hash": candidate.evidence_hash, "roi_label": roi.roi_label,
+            "crop_box": list(roi.crop_box), "roi_kind": roi.kind, "telemetry": {},
+        }
+    monkeypatch.setattr(planner, "_reference_panel_attempt", fake_attempt)
+    monkeypatch.setattr(planner, "_plan_reference", lambda *_args, **_kwargs: [
+        {"order_index": 0, "section": "setup", "start_time": 0.0, "end_time": 3.0, "camera_intent": "neutral", "effect": "static", "asset_id": "unused", "transition": "none", "focus_x": 0.5, "focus_y": 0.5, "focus_end_x": 0.5, "focus_end_y": 0.5},
+        {"order_index": 1, "section": "conflict", "start_time": 3.0, "end_time": 6.0, "camera_intent": "neutral", "effect": "static", "asset_id": "unused", "transition": "fade", "focus_x": 0.5, "focus_y": 0.5, "focus_end_x": 0.5, "focus_end_y": 0.5},
+        {"order_index": 2, "section": "twist", "start_time": 6.0, "end_time": 9.0, "camera_intent": "reveal", "effect": "static", "asset_id": "unused", "transition": "fade", "focus_x": 0.5, "focus_y": 0.5, "focus_end_x": 0.5, "focus_end_y": 0.5},
+    ])
+    result = planner._plan_reference_panel_candidates(
+        [SimpleNamespace(section="setup", start_time=0.0, end_time=3.0), SimpleNamespace(section="conflict", start_time=3.0, end_time=6.0), SimpleNamespace(section="twist", start_time=6.0, end_time=9.0)],
+        reference_profile.REFERENCE_MATCHED_SHORTS_V1, built, allow_standard_cadence_adaptation=True,
+        allow_review_duration=True, review_duration_bounds_s=(9.0, 9.0),
+    )
+    assert [shot["source_order"] for shot in result] == [100, 110, 120]

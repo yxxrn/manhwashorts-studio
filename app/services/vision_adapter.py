@@ -16,7 +16,7 @@ import httpx
 from app.services import visual_scoring
 
 VISION_REQUEST_TIMEOUT = 600.0
-SYNTHESIS_WIRE_CONTRACT_VERSION = "vision-synthesis-wire-v10"
+SYNTHESIS_WIRE_CONTRACT_VERSION = "vision-synthesis-wire-v11"
 ANALYSIS_WINDOW_CONTRACT_VERSION = "visual-analysis-windows-v1"
 ANALYSIS_WINDOW_MAX_COUNT = 12
 
@@ -265,6 +265,9 @@ class VisionChapterSynthesisRequest:
     retry_word_counts: tuple[int, ...] | None = None
     retry_visual_selection: bool = False
     retry_evidence_lineage: bool = False
+    retry_dialogue_paraphrase: bool = False
+    retry_claim_qualification: bool = False
+    retry_local_claim_grounding: bool = False
     retry_passages: tuple[Mapping[str, Any], ...] | None = None
 
 
@@ -674,11 +677,16 @@ class OpenAICompatibleVisionProvider:
             if not isinstance(content, str):
                 raise ValueError
             result = _decode_json_content(content)
-            result = _reconcile_synthesis_echo_fields(result, request)
-        except VisionResponseInvalid:
-            raise
         except Exception:
-            raise VisionResponseInvalid() from None
+            raise VisionResponseInvalid(
+                validation_subtype="synthesis_provider_json_invalid"
+            ) from None
+        try:
+            result = _reconcile_synthesis_echo_fields(result, request)
+        except VisionResponseInvalid as exc:
+            raise VisionResponseInvalid(
+                validation_subtype=exc.validation_subtype or "synthesis_echo_lineage_invalid"
+            ) from None
 
         validation_candidate = result
         try:
@@ -711,6 +719,12 @@ class OpenAICompatibleVisionProvider:
                         narrative_profile_id=profile.profile_id,
                     )
                 validated_result = projected
+        except VisionResponseInvalid as exc:
+            raise VisionResponseInvalid(
+                validation_subtype=exc.validation_subtype or "synthesis_projection_invalid",
+                retry_passages=_retry_passages_from_candidate(validation_candidate),
+                selection_diagnostics=getattr(exc, "selection_diagnostics", None),
+            ) from None
         except analyzer_contract.AnalyzerContractError as exc:
             counts: tuple[int, ...] | None = None
             passages = validation_candidate.get("script_passages") if isinstance(validation_candidate, Mapping) else None
@@ -723,15 +737,27 @@ class OpenAICompatibleVisionProvider:
                     values.append(len(passage["text"].split()))
                 if values:
                     counts = tuple(values)
+            validation_subtype = _safe_validation_subtype(str(exc))
+            diagnostics: Mapping[str, Any] | None = None
+            if validation_subtype == "script_passage_copies_source_dialogue":
+                diagnostics = analyzer_contract.source_dialogue_copy_diagnostics(
+                    request.ordered_observations,
+                    passages,
+                )
             raise VisionResponseInvalid(
-                validation_subtype=_safe_validation_subtype(str(exc)),
+                validation_subtype=validation_subtype,
                 passage_word_counts=counts,
                 retry_passages=_retry_passages_from_candidate(validation_candidate),
+                selection_diagnostics=diagnostics,
             ) from None
         except Exception:
-            raise VisionResponseInvalid() from None
+            raise VisionResponseInvalid(
+                validation_subtype="synthesis_validation_internal_error"
+            ) from None
         if not isinstance(validated_result, Mapping):
-            raise VisionResponseInvalid()
+            raise VisionResponseInvalid(
+                validation_subtype="synthesis_validated_result_invalid"
+            )
         passages = validated_result.get("script_passages")
         if request.target_word_count_min is not None and isinstance(passages, list):
             counts = tuple(
@@ -1807,7 +1833,15 @@ def _validate_synthesis_request(
     ):
         raise VisionRequestInvalid()
     if request.retry_passages is not None:
-        if not isinstance(request.retry_passages, tuple) or len(request.retry_passages) != 5:
+        if not isinstance(request.retry_passages, tuple):
+            raise VisionRequestInvalid()
+        if profile is None:
+            retry_passage_count_valid = len(request.retry_passages) == 5
+        else:
+            retry_passage_count_valid = (
+                profile.passage_min <= len(request.retry_passages) <= profile.passage_max
+            )
+        if not retry_passage_count_valid:
             raise VisionRequestInvalid()
         required_passage_keys = {"passage_id", "editorial_role", "text", "claim_ids", "evidence_panel_ids"}
         for passage in request.retry_passages:
@@ -1828,6 +1862,9 @@ def _validate_synthesis_request(
         or set(preferred_by_section) - {"hook", "setup", "conflict", "twist", "cta"}
         or not isinstance(request.retry_visual_selection, bool)
         or not isinstance(request.retry_evidence_lineage, bool)
+        or not isinstance(request.retry_dialogue_paraphrase, bool)
+        or not isinstance(request.retry_claim_qualification, bool)
+        or not isinstance(request.retry_local_claim_grounding, bool)
     ):
         raise VisionRequestInvalid()
     for _section, panel_ids in preferred_by_section.items():
@@ -1907,6 +1944,9 @@ _SYNTHESIS_TOP_KEYS = frozenset({
     "observations", "continuity_ledger", "evidence_graph",
     "coverage_manifest", "narrative_outline", "script_passages",
 })
+_SYNTHESIS_REDUNDANT_CONTINUITY_KEYS = frozenset({
+    "entities", "motives", "state_changes", "causal_links",
+})
 _SYNTHESIS_STORY_SPINE_FIELDS = frozenset({
     "who_wants_what", "obstacle", "decision", "consequence",
     "changed_stakes", "unresolved_question",
@@ -1918,45 +1958,91 @@ def _project_provider_synthesis_output(
     request: VisionChapterSynthesisRequest,
 ) -> Mapping[str, Any]:
     """Attach caller-owned deterministic lineage to provider semantic synthesis."""
-    if not isinstance(result, Mapping) or set(result) != _SYNTHESIS_TOP_KEYS:
-        raise VisionResponseInvalid()
+    def _top_level_error(value: Any) -> VisionResponseInvalid:
+        diagnostics: dict[str, Any] = {}
+        if isinstance(value, Mapping):
+            keys = [str(key) for key in value]
+            diagnostics = {
+                "top_level_key_count": len(keys),
+                "top_level_keys": sorted(keys)[:20],
+                "top_level_value_types": {
+                    str(key): type(item).__name__ for key, item in value.items()
+                },
+            }
+            if len(value) == 1:
+                nested = next(iter(value.values()))
+                if isinstance(nested, Mapping):
+                    nested_keys = [str(key) for key in nested]
+                    diagnostics["nested_key_count"] = len(nested_keys)
+                    diagnostics["nested_keys"] = sorted(nested_keys)[:20]
+        return VisionResponseInvalid(
+            validation_subtype="synthesis_projection_top_level_invalid",
+            selection_diagnostics=diagnostics,
+        )
+
+    if not isinstance(result, Mapping):
+        raise _top_level_error(result)
+    result = dict(result)
+    if "analysis_run_id" in result:
+        if result["analysis_run_id"] != request.analysis_run_id:
+            raise _top_level_error(result)
+        result.pop("analysis_run_id")
+    root_keys = set(result)
+    redundant_shape = _SYNTHESIS_TOP_KEYS | _SYNTHESIS_REDUNDANT_CONTINUITY_KEYS
+    if root_keys == redundant_shape:
+        continuity = result.get("continuity_ledger")
+        if not isinstance(continuity, Mapping) or any(
+            key not in continuity or result[key] != continuity[key]
+            for key in _SYNTHESIS_REDUNDANT_CONTINUITY_KEYS
+        ):
+            raise _top_level_error(result)
+        result = {key: result[key] for key in _SYNTHESIS_TOP_KEYS}
+    if set(result) != _SYNTHESIS_TOP_KEYS:
+        if len(result) == 1:
+            nested = next(iter(result.values()))
+            if isinstance(nested, Mapping) and set(nested) == _SYNTHESIS_TOP_KEYS:
+                result = nested
+            else:
+                raise _top_level_error(result)
+        else:
+            raise _top_level_error(result)
     if not isinstance(result.get("observations"), list):
-        raise VisionResponseInvalid()
+        raise VisionResponseInvalid(validation_subtype="synthesis_projection_observations_shape_invalid")
     if not isinstance(result.get("coverage_manifest"), Mapping):
-        raise VisionResponseInvalid()
+        raise VisionResponseInvalid(validation_subtype="synthesis_projection_coverage_shape_invalid")
 
     continuity = result.get("continuity_ledger")
     if not isinstance(continuity, Mapping):
-        raise VisionResponseInvalid()
+        raise VisionResponseInvalid(validation_subtype="synthesis_projection_continuity_shape_invalid")
     semantic_continuity_keys = ("entities", "motives", "state_changes", "causal_links")
     if any(not isinstance(continuity.get(key), list) for key in semantic_continuity_keys):
-        raise VisionResponseInvalid()
+        raise VisionResponseInvalid(validation_subtype="synthesis_projection_continuity_arrays_invalid")
     if not continuity.get("entities") or continuity.get("reconciled_after_final_chunk") is not True:
-        raise VisionResponseInvalid()
+        raise VisionResponseInvalid(validation_subtype="synthesis_projection_continuity_identity_invalid")
 
     graph = result.get("evidence_graph")
     claims = graph.get("claims") if isinstance(graph, Mapping) else None
     if not isinstance(claims, list) or not claims:
-        raise VisionResponseInvalid()
+        raise VisionResponseInvalid(validation_subtype="synthesis_projection_claims_shape_invalid")
 
     outline = result.get("narrative_outline")
     if not isinstance(outline, Mapping):
-        raise VisionResponseInvalid()
+        raise VisionResponseInvalid(validation_subtype="synthesis_projection_outline_shape_invalid")
     projected_outline = dict(outline)
     if request.narrative_profile_id is None and "story_spine" not in projected_outline:
         if set(projected_outline) != _SYNTHESIS_STORY_SPINE_FIELDS:
-            raise VisionResponseInvalid()
+            raise VisionResponseInvalid(validation_subtype="synthesis_projection_legacy_outline_shape_invalid")
         projected_outline = {"story_spine": projected_outline}
 
     passages = result.get("script_passages")
     if not isinstance(passages, list):
-        raise VisionResponseInvalid()
+        raise VisionResponseInvalid(validation_subtype="synthesis_projection_passages_shape_invalid")
 
     expected_set = set(request.expected_panel_ids)
     claim_evidence: dict[str, tuple[str, ...]] = {}
     for raw_claim in claims:
         if not isinstance(raw_claim, Mapping):
-            raise VisionResponseInvalid()
+            raise VisionResponseInvalid(validation_subtype="synthesis_projection_claim_shape_invalid")
         claim_id = raw_claim.get("claim_id")
         evidence = raw_claim.get("evidence_panel_ids")
         if (
@@ -1967,13 +2053,13 @@ def _project_provider_synthesis_output(
             or not evidence
             or any(not isinstance(panel_id, str) or panel_id not in expected_set for panel_id in evidence)
         ):
-            raise VisionResponseInvalid()
+            raise VisionResponseInvalid(validation_subtype="synthesis_projection_claim_evidence_invalid")
         claim_evidence[claim_id] = tuple(evidence)
 
     projected_passages: list[dict[str, Any]] = []
     for raw_passage in passages:
         if not isinstance(raw_passage, Mapping):
-            raise VisionResponseInvalid()
+            raise VisionResponseInvalid(validation_subtype="synthesis_projection_passage_shape_invalid")
         passage = dict(raw_passage)
         claim_ids = passage.get("claim_ids")
         current_evidence = passage.get("evidence_panel_ids", [])
@@ -1984,7 +2070,7 @@ def _project_provider_synthesis_output(
             or not isinstance(current_evidence, list)
             or any(not isinstance(panel_id, str) or panel_id not in expected_set for panel_id in current_evidence)
         ):
-            raise VisionResponseInvalid()
+            raise VisionResponseInvalid(validation_subtype="synthesis_projection_passage_evidence_invalid")
         needed = {panel_id for claim_id in claim_ids for panel_id in claim_evidence[claim_id]}
         if not needed.issubset(current_evidence):
             present = set(current_evidence)
@@ -1997,7 +2083,7 @@ def _project_provider_synthesis_output(
     projected_entities: list[dict[str, Any]] = []
     for raw_entity in continuity["entities"]:
         if not isinstance(raw_entity, Mapping):
-            raise VisionResponseInvalid()
+            raise VisionResponseInvalid(validation_subtype="synthesis_projection_entity_shape_invalid")
         entity = dict(raw_entity)
         entity.setdefault("aliases", [])
         projected_entities.append(entity)
@@ -2032,6 +2118,26 @@ _VISUAL_ROLE_SECTIONS = {
     "editorial_insight": "twist",
     "payoff_open_loop": "cta",
 }
+
+
+def _visual_section_for_passage(
+    passage: Mapping[str, Any],
+    index: int,
+    passage_count: int,
+    request: VisionChapterSynthesisRequest,
+) -> str:
+    if request.narrative_profile_id == "retention_story_v1":
+        if index == 0:
+            return "hook"
+        if index == 1:
+            return "setup"
+        if index == passage_count - 1:
+            return "cta"
+        if index == passage_count - 2 and passage_count >= 5:
+            return "twist"
+        return "conflict"
+    return _VISUAL_ROLE_SECTIONS.get(str(passage.get("editorial_role", "")), "")
+
 
 def _visual_support_tokens(value: object) -> set[str]:
     text = str(value or "").casefold().translate(str.maketrans(dict.fromkeys(string.punctuation, " ")))
@@ -2109,10 +2215,12 @@ def _complete_retry_visual_selection(
         rows.sort(key=lambda item: item[0])
         return [panel_id for _score, panel_id in rows]
 
-    for passage in cloned_passages:
+    for passage_index, passage in enumerate(cloned_passages):
         if not isinstance(passage, dict):
             continue
-        section = _VISUAL_ROLE_SECTIONS.get(str(passage.get("editorial_role", "")), "")
+        section = _visual_section_for_passage(
+            passage, passage_index, len(cloned_passages), request
+        )
         if not section:
             continue
         evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
@@ -2144,10 +2252,12 @@ def _complete_retry_visual_selection(
 
     unique_min = min(18, len(preferred))
     if len(global_used) < unique_min:
-        for passage in cloned_passages:
+        for passage_index, passage in enumerate(cloned_passages):
             if not isinstance(passage, dict):
                 continue
-            section = _VISUAL_ROLE_SECTIONS.get(str(passage.get("editorial_role", "")), "")
+            section = _visual_section_for_passage(
+                passage, passage_index, len(cloned_passages), request
+            )
             section_safe = set(preferred_by_section.get(section, ()))
             generic_order = tuple(value for value in preferred_order if value in section_safe) + tuple(
                 value for value in preferred_order if value not in section_safe
@@ -2179,13 +2289,6 @@ def validate_synthesis_visual_selection(
     preferred_set = set(preferred)
     locked_passages = tuple(dict(passage) for passage in passages if isinstance(passage, Mapping))
     preferred_by_section = request.preferred_visual_panel_ids_by_section or {}
-    role_sections = {
-        "hook": "hook",
-        "setup": "setup",
-        "escalation": "conflict",
-        "editorial_insight": "twist",
-        "payoff_open_loop": "cta",
-    }
     per_passage_min = min(4, len(preferred_set))
     unique_min = min(18, len(preferred_set))
     used_preferred: set[str] = set()
@@ -2193,11 +2296,13 @@ def validate_synthesis_visual_selection(
     def selection_diagnostics() -> dict[str, Any]:
         rows = []
         all_used: set[str] = set()
-        for item in passages:
+        for passage_index, item in enumerate(passages):
             if not isinstance(item, Mapping):
                 continue
             role = str(item.get("editorial_role", ""))
-            section = role_sections.get(role, "")
+            section = _visual_section_for_passage(
+                item, passage_index, len(passages), request
+            )
             evidence = item.get("evidence_panel_ids") if isinstance(item.get("evidence_panel_ids"), list) else []
             section_safe = set(preferred_by_section.get(section, ()))
             selected_section = {str(v) for v in evidence if str(v) in section_safe}
@@ -2206,14 +2311,15 @@ def validate_synthesis_visual_selection(
             rows.append({"role": role, "section": section, "section_capacity": len(section_safe), "selected_section": len(selected_section), "selected_preferred": len(selected_preferred), "evidence_count": len(evidence)})
         return {"preferred_total": len(preferred_set), "unique_min": min(18, len(preferred_set)), "used_preferred": len(all_used), "section_capacities": {str(k): len(v) for k, v in preferred_by_section.items()}, "passages": rows}
 
-    for passage in passages:
+    for passage_index, passage in enumerate(passages):
         if not isinstance(passage, Mapping):
             raise VisionResponseInvalid()
         evidence = passage.get("evidence_panel_ids")
         if not isinstance(evidence, list):
             raise VisionResponseInvalid()
-        editorial_role = str(passage.get("editorial_role", ""))
-        section = role_sections.get(editorial_role, "")
+        section = _visual_section_for_passage(
+            passage, passage_index, len(passages), request
+        )
         section_preferred = set(preferred_by_section.get(section, ()))
         if preferred_by_section and section:
             if len(section_preferred) < 4:
@@ -2268,28 +2374,47 @@ def _build_synthesis_payload(
     ledger_json = json.dumps(
         ledger, ensure_ascii=False, separators=(",", ":")
     )
+    retention_profile = bool(
+        profile is not None and getattr(profile, "profile_id", "") == "retention_story_v1"
+    )
     target_instruction = (
         f"For this production, total narration MUST be {request.target_word_count_min}-{request.target_word_count_max} words. "
         if request.target_word_count_min is not None
         else "Keep total narration within the committed analyzer word-count contract. "
     )
-    allocation_instruction = (
-        "Production passage ranges are mandatory: hook 16-18 words, setup 24-26, escalation 33-35, "
-        "editorial_insight 24-26, payoff_open_loop 18-20. These ranges sum to exactly 115-125 words. "
-        if request.target_word_count_min is not None
-        else "Distribute words naturally across roles without exceeding any hard role limit. "
-    )
+    if retention_profile:
+        allocation_instruction = (
+            "Use four to six passages. The first hook is exactly one sentence of 8-14 whitespace-counted words; "
+            "distribute the remaining words naturally around the dominant arc so the total production target is met. "
+            "Do not force legacy setup/escalation/editorial_insight/payoff role quotas. "
+        )
+    else:
+        allocation_instruction = (
+            "Production passage ranges are mandatory: hook 16-18 words, setup 24-26, escalation 33-35, "
+            "editorial_insight 24-26, payoff_open_loop 18-20. These ranges sum to exactly 115-125 words. "
+            if request.target_word_count_min is not None
+            else "Distribute words naturally across roles without exceeding any hard role limit. "
+        )
     visual_selection_instruction = ""
     if request.preferred_visual_panel_ids:
-        visual_selection_instruction = (
-            "For production visual coverage, evidence_panel_ids may include grounded visual-support panels beyond claim evidence. "
-            "Each passage MUST include at least four panel IDs from preferred_visual_panel_ids, and across all five passages "
-            "use at least eighteen distinct preferred_visual_panel_ids when that many are available. These preferred panels have "
-            "known balloon geometry, protected visual subjects, and at least one production-safe balloon-avoiding ROI; choose only panels whose ordered observation supports the "
-            "same passage meaning. When preferred_visual_panel_ids_by_section is present in the evidence ledger, each passage MUST include at least four IDs from its corresponding "
-            "section allowlist (hook, setup, conflict for escalation, twist for editorial_insight, cta for payoff_open_loop). Those allowlists are already validated against the exact "
-            "section-specific face, subject, balloon, blank-area, and crop-quality gates. Claim evidence must still be fully covered. "
-        )
+        if retention_profile:
+            visual_selection_instruction = (
+                "For production visual coverage, evidence_panel_ids may include grounded visual-support panels beyond claim evidence. "
+                "Each passage MUST include up to four semantically relevant panel IDs from preferred_visual_panel_ids (four whenever at least four are available), and across all passages "
+                "use at least eighteen distinct preferred_visual_panel_ids when that many are available. These preferred panels have "
+                "known balloon geometry, protected visual subjects, and at least one production-safe balloon-avoiding ROI. Select them for the exact narrated beat, not merely because they are visually attractive. "
+                "preferred_visual_panel_ids_by_section is framing metadata for downstream canonical sections; do not force legacy editorial role names merely to match those keys. Claim evidence must still be fully covered. "
+            )
+        else:
+            visual_selection_instruction = (
+                "For production visual coverage, evidence_panel_ids may include grounded visual-support panels beyond claim evidence. "
+                "Each passage MUST include at least four panel IDs from preferred_visual_panel_ids, and across all five passages "
+                "use at least eighteen distinct preferred_visual_panel_ids when that many are available. These preferred panels have "
+                "known balloon geometry, protected visual subjects, and at least one production-safe balloon-avoiding ROI; choose only panels whose ordered observation supports the "
+                "same passage meaning. When preferred_visual_panel_ids_by_section is present in the evidence ledger, each passage MUST include at least four IDs from its corresponding "
+                "section allowlist (hook, setup, conflict for escalation, twist for editorial_insight, cta for payoff_open_loop). Those allowlists are already validated against the exact "
+                "section-specific face, subject, balloon, blank-area, and crop-quality gates. Claim evidence must still be fully covered. "
+            )
         if request.retry_visual_selection:
             visual_selection_instruction += (
                 "Corrective retry: the prior response selected too few preferred visual panels. Keep narration, claims, passage IDs, "
@@ -2304,6 +2429,20 @@ def _build_synthesis_payload(
             "Do not invent, repair, substitute, or silently omit evidence; keep all claims and continuity grounded only "
             "in the supplied observations. "
         )
+    claim_qualification_retry_instruction = ""
+    if request.retry_claim_qualification:
+        claim_qualification_retry_instruction = (
+            "Corrective retry: every evidence_graph claim MUST contain qualification as a non-empty string. "
+            "For a fact, briefly state the direct visible/dialogue evidence basis; for an interpretation, state the grounded uncertainty or limiting condition. "
+            "Never leave qualification blank and never add facts beyond the supplied observations. "
+        )
+    local_claim_retry_instruction = ""
+    if request.retry_local_claim_grounding:
+        local_claim_retry_instruction = (
+            "Corrective retry: at least one passage referenced a claim without carrying any evidence panel from that claim. "
+            "Make claims granular to the beat. Every claim_id listed by a passage MUST have at least one of that claim's evidence_panel_ids also listed in the same passage. "
+            "Preserve narration meaning and chronology; revise evidence_graph claims, passage claim_ids, and passage evidence_panel_ids only as needed, without inventing facts or panel IDs. "
+        )
     locked_passage_instruction = ""
     if request.retry_passages is not None:
         locked_json = json.dumps([dict(item) for item in request.retry_passages], ensure_ascii=False, separators=(",", ":"))
@@ -2316,49 +2455,99 @@ def _build_synthesis_payload(
                 f"Previous locked script_passages: {locked_json}. "
             )
         else:
-            locked_passage_instruction = (
-                "The previous response passed semantic/evidence structure but failed a narration-length or subtitle-layout gate. "
-                "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, claim_ids, "
-                "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only passage text. Keep the exact production word ranges, prefer shorter ordinary words and balanced phrase lengths, and avoid long token combinations that cannot fit the fixed two-line subtitle layout. "
-                f"Previous locked script_passages: {locked_json}. "
-            )
+            if request.retry_local_claim_grounding:
+                locked_passage_instruction = (
+                    "The previous narration text passed its editorial shape but its claim links were not locally grounded. "
+                    "Use these previous script_passages as a LOCKED narration base. Preserve passage_id, editorial_role, text, ordering, and grounded meaning. "
+                    "You MAY revise claim_ids and evidence_panel_ids and MAY split or rewrite evidence_graph claims so each passage claim has local evidence. "
+                    f"Previous locked script_passages: {locked_json}. "
+                )
+            elif request.retry_dialogue_paraphrase:
+                locked_passage_instruction = (
+                    "The previous response passed semantic/evidence structure but copied or too closely mirrored source dialogue/OCR. "
+                    "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, claim_ids, "
+                    "evidence_panel_ids, ordering, claims, and grounded meaning exactly; rewrite only passage text in fresh spoken prose. "
+                    "Do not quote source dialogue and do not reuse any contiguous four-or-more-word source phrase. Add no facts. "
+                    f"Previous locked script_passages: {locked_json}. "
+                )
+            elif retention_profile:
+                locked_passage_instruction = (
+                    "The previous response passed semantic/evidence structure but failed a narration-length or subtitle-layout gate. "
+                    "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, claim_ids, "
+                    "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only passage text. Keep the first hook at 8-14 words in one sentence and keep the total narration within the production target. Prefer shorter ordinary words and balanced phrase lengths for the fixed two-line subtitle layout. "
+                    f"Previous locked script_passages: {locked_json}. "
+                )
+            else:
+                locked_passage_instruction = (
+                    "The previous response passed semantic/evidence structure but failed a narration-length or subtitle-layout gate. "
+                    "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, claim_ids, "
+                    "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only passage text. Keep the exact production word ranges, prefer shorter ordinary words and balanced phrase lengths, and avoid long token combinations that cannot fit the fixed two-line subtitle layout. "
+                    f"Previous locked script_passages: {locked_json}. "
+                )
     retry_instruction = ""
     if request.retry_word_counts is not None:
         previous_total = sum(request.retry_word_counts)
-        retry_instruction = (
-            f"Corrective retry: the previous five passage word counts were {list(request.retry_word_counts)} "
-            f"for a total of {previous_total}. Rewrite only the passage text lengths as needed so the total "
-            "matches this exact five-passage word-count target using whitespace-separated words: "
-            "hook=17, setup=25, escalation=34, editorial_insight=25, payoff_open_loop=19 (total=120). "
-            "Do not approximate these counts. Preserve the same claims, evidence references, passage IDs, roles, and grounded meaning. "
+        if retention_profile:
+            retry_instruction = (
+                f"Corrective retry: the previous passage word counts were {list(request.retry_word_counts)} for a total of {previous_total}. "
+                f"Rewrite only passage text lengths as needed so total narration is {request.target_word_count_min}-{request.target_word_count_max} whitespace-separated words. "
+                "Keep the same passage count, IDs, roles, claims, evidence references, ordering, and grounded meaning; keep the first hook one sentence at 8-14 words. "
+            )
+        else:
+            retry_instruction = (
+                f"Corrective retry: the previous five passage word counts were {list(request.retry_word_counts)} "
+                f"for a total of {previous_total}. Rewrite only the passage text lengths as needed so the total "
+                "matches this exact five-passage word-count target using whitespace-separated words: "
+                "hook=17, setup=25, escalation=34, editorial_insight=25, payoff_open_loop=19 (total=120). "
+                "Do not approximate these counts. Preserve the same claims, evidence references, passage IDs, roles, and grounded meaning. "
+            )
+    if retention_profile:
+        script_contract_instruction = (
+            "script_passages must contain four to six passages in chronological dominant-arc order; each passage exactly "
+            "{passage_id,editorial_role,text,claim_ids,evidence_panel_ids}. editorial_role is a meaningful semantic label, not a legacy fixed vocabulary. "
+            "The first passage is the hook and must be one sentence of 8-14 whitespace-counted words. "
+            "Every claim_id listed by a passage must be locally grounded: that passage evidence_panel_ids must include at least one panel from that claim's evidence_panel_ids. Use granular claims for distinct beats instead of attaching one broad claim everywhere. "
+            "narrative_outline.ending_kind must be cliffhanger or consequence, and the final passage must state a grounded consequence, reveal, reversal, threat, or unresolved concrete fact without ending in a question mark. "
+        )
+        final_role_instruction = ""
+    else:
+        script_contract_instruction = (
+            "script_passages must contain exactly five passages in order hook, setup, escalation, editorial_insight, payoff_open_loop; "
+            "each passage exactly {passage_id,editorial_role,text,claim_ids,evidence_panel_ids}. "
+            "Hard word limits: hook 8-18, setup 15-28, escalation 22-38, editorial_insight 15-30, payoff_open_loop 10-24. "
+        )
+        final_role_instruction = (
+            "Never exceed the hard limit for any role. "
+            "payoff_open_loop must end with an evidence-grounded question. "
         )
     ledger_instruction = (
         f"Synthesis wire contract: {SYNTHESIS_WIRE_CONTRACT_VERSION}. "
         "Synthesize the chapter from this complete ordered evidence ledger. "
         "Return exactly the six top-level analyzer structures required by the system contract. "
+        "Return those six structures directly at the JSON root; do not wrap them under analysis, result, output, data, or any other container. "
         "The caller already owns validated observations, coverage, and chunk lineage; return observations=[], "
         "coverage_manifest={}, and continuity_ledger.chunks=[]. "
         "continuity_ledger must also contain reconciled_after_final_chunk=true and semantic arrays with exact schemas. "
+        "Keep entities, motives, state_changes, and causal_links only inside continuity_ledger; never duplicate those arrays at the JSON root. "
         "entities: {entity_id:string,canonical_name:string,aliases:list[string],panel_ids:nonempty list[panel_id]}; "
         "motives: {entity_id:string,text:string,evidence_panel_ids:nonempty list[panel_id]}; "
         "state_changes: {entity_id:string,from:string,to:string,evidence_panel_ids:nonempty list[panel_id]}; "
         "causal_links: {from_panel_id:panel_id,to_panel_id:panel_id,reason:string,evidence_panel_ids:nonempty list[panel_id]}. "
         "Use aliases=[] when no alias is evidenced; never omit panel_ids or evidence_panel_ids. "
         "evidence_graph must be {claims:[...]} and every claim exactly "
-        "{claim_id:string,claim_type:'fact'|'interpretation',text:string,qualification:string,evidence_panel_ids:nonempty list[panel_id]}. "
+        "{claim_id:string,claim_type:'fact'|'interpretation',text:string,qualification:nonempty string,evidence_panel_ids:nonempty list[panel_id]}. "
         "narrative_outline.story_spine must contain exactly who_wants_what, obstacle, decision, consequence, changed_stakes, unresolved_question. "
-        "script_passages must contain exactly five passages in order hook, setup, escalation, editorial_insight, payoff_open_loop; "
-        "each passage exactly {passage_id,editorial_role,text,claim_ids,evidence_panel_ids}. "
-        "Hard word limits: hook 8-18, setup 15-28, escalation 22-38, editorial_insight 15-30, payoff_open_loop 10-24. "
+        + script_contract_instruction
         + target_instruction
         + allocation_instruction
         + locked_passage_instruction
         + retry_instruction
         + evidence_lineage_retry_instruction
+        + claim_qualification_retry_instruction
+        + local_claim_retry_instruction
         + visual_selection_instruction
-        + "Never exceed the hard limit for any role. "
-        "payoff_open_loop must end with an evidence-grounded question. "
-        "Every semantic evidence reference must use only panel IDs from expected_panel_ids, every claim_id referenced by a passage must exist, "
+        + final_role_instruction
+        + "Every semantic evidence reference must use only panel IDs from expected_panel_ids, every claim_id referenced by a passage must exist, "
         "and passage evidence must cover every referenced claim. Never invent, repair, or omit semantic evidence.\n"
         f"{ledger_json}"
     )

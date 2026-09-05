@@ -94,12 +94,15 @@ def _llm_hook_titles(project_title: str, manhwa_title: str, chapter: str, script
 def _compose_video_title(core: str, manhwa_title: str, chapter: str, project_title: str) -> str:
     series = (manhwa_title or project_title).strip()
     _ = chapter
-    suffix = f" | {series}" if series else ""
-    suffix += " #shorts"
-    max_core = max(24, 100 - len(suffix))
-    core = _clip_title_at_word_boundary(_clean_core_title(core), max_core)
-    title = f"{core}{suffix}" if core else f"{series} #shorts"
-    return title[:100].rstrip()
+    core = _clean_core_title(core)
+    shorts_suffix = " #shorts"
+    if core and series:
+        full = f"{core} | {series}{shorts_suffix}"
+        if len(full) <= 100:
+            return full
+    if core:
+        return f"{core}{shorts_suffix}"[:100].rstrip()
+    return f"{series}{shorts_suffix}"[:100].rstrip()
 
 def _story_excerpt(script_text: str, max_chars: int) -> str:
     text = " ".join(str(script_text or "").split()).strip()

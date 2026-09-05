@@ -42,3 +42,15 @@ def test_qc_report_matches_required_contract():
     assert required <= data.keys()
     assert data["duration"] == 75.0
     assert data["qc_pass"] is False
+
+
+def test_same_crop_four_second_ceiling_tolerates_float_noise():
+    from types import SimpleNamespace
+
+    base = {"asset_id": "panel", "focus_x": 0.5, "focus_y": 0.5, "focus_end_x": 0.5, "focus_end_y": 0.5}
+    at_limit = SimpleNamespace(**base, start_time=0.0, end_time=4.0 + 2e-15)
+    over_limit = SimpleNamespace(**base, start_time=0.0, end_time=4.0 + 1e-6)
+    ok = build_report(scenes=[at_limit], cues=[], duration=50.0)
+    bad = build_report(scenes=[over_limit], cues=[], duration=50.0)
+    assert "same_panel_same_crop_over_4.0s" not in ok.failures
+    assert "same_panel_same_crop_over_4.0s" in bad.failures

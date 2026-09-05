@@ -443,30 +443,37 @@ def _source_dialogue_ngrams(observations: Any) -> set[tuple[str, ...]]:
     return result
 
 
-def contains_source_dialogue_copy(observations: Any, passages: Any) -> bool:
-    """Detect substantial verbatim source dialogue while allowing faithful paraphrase."""
-
+def source_dialogue_copy_diagnostics(observations: Any, passages: Any) -> dict[str, Any]:
+    """Return one minimal verbatim-overlap diagnostic without exposing full source text."""
     try:
         signatures = _source_dialogue_ngrams(observations)
         if not signatures or not isinstance(passages, (list, tuple)):
-            return False
+            return {}
         by_size: dict[int, set[tuple[str, ...]]] = {}
         for signature in signatures:
             by_size.setdefault(len(signature), set()).add(signature)
-        for passage in passages:
+        for passage_index, passage in enumerate(passages):
             if not isinstance(passage, Mapping):
                 continue
             text = passage.get("text")
             if not isinstance(text, str):
                 continue
             words = _normalized_lexical_words(text)
-            for size, source_ngrams in by_size.items():
-                if len(words) >= size and _ngrams(words, size) & source_ngrams:
-                    return True
+            for size in sorted(by_size):
+                if len(words) < size:
+                    continue
+                matches = _ngrams(words, size) & by_size[size]
+                if matches:
+                    matched = min(matches)
+                    return {"passage_index": passage_index, "ngram_size": size, "matched_phrase": " ".join(matched)}
     except (KeyError, TypeError, ValueError):
-        return False
-    return False
+        return {}
+    return {}
 
+
+def contains_source_dialogue_copy(observations: Any, passages: Any) -> bool:
+    """Detect substantial verbatim source dialogue while allowing faithful paraphrase."""
+    return bool(source_dialogue_copy_diagnostics(observations, passages))
 
 def _contains_channel_cta(text: str) -> bool:
     lowered = text.casefold()
@@ -595,12 +602,22 @@ def _validate_script_passages_v3(
             _panel_refs(passage["evidence_panel_ids"], expected, "passage evidence")
         )
         for claim_id in claim_ids:
-            covered_claim_evidence[claim_id].update(evidence & claim_evidence[claim_id])
+            local_claim_evidence = evidence & claim_evidence[claim_id]
+            if not local_claim_evidence:
+                _fail("script passage claim lacks local evidence")
+            covered_claim_evidence[claim_id].update(local_claim_evidence)
     if any(
         covered_claim_evidence[claim_id] != required
         for claim_id, required in claim_evidence.items()
     ):
         _fail("script passage evidence does not cover its claims")
+    if getattr(profile, "profile_id", "") == "retention_story_v1":
+        hook_text = _nonempty_string(value[0]["text"], "retention hook text").strip()
+        hook_words = hook_text.split()
+        if not 8 <= len(hook_words) <= 14:
+            _fail("retention hook must contain 8-14 words")
+        if len(_normalized_sentences(hook_text)) != 1:
+            _fail("retention hook must be one sentence")
     final_text = _nonempty_string(value[-1]["text"], "final script passage text").rstrip()
     _validate_v3_ending(outline, final_text, profile)
 
@@ -614,8 +631,6 @@ def _validate_output(
 ) -> None:
     profile = None
     if narrative_profile_id is not None:
-        if narrative_profile_id != "sharp_friend_v1":
-            _fail("unknown narrative profile")
         try:
             from app.services import narrative_identity
 

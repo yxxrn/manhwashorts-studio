@@ -1007,6 +1007,7 @@ def test_task6_panel_keyed_types_are_frozen_and_exact():
         "eligible_beats",
         "roi_alternatives",
         "panel_candidate",
+        "story_relevance_by_section",
         "source_upscale_manifest",
     )
 

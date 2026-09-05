@@ -761,6 +761,20 @@ def test_youtube_metadata_title_never_truncates_mid_word():
     assert not core.endswith(" int")
 
 
+def test_youtube_metadata_keeps_complete_core_when_long_series_would_force_truncation():
+    from app.services.youtube_metadata import _compose_video_title
+
+    core = "Jin stands over the Human-Faced Spider's lair at night"
+    title = _compose_video_title(
+        core,
+        "The Martial Genius Who Remembers Everything",
+        "1-3",
+        "Recap",
+    )
+    assert title == f"{core} #shorts"
+    assert len(title) <= 100
+
+
 def test_youtube_metadata_is_hook_first_not_series_first():
     from app.services.youtube_metadata import build_metadata
 

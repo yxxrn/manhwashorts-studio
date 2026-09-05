@@ -1303,29 +1303,86 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
             retryable_subtypes = {
                 "script_passage_word_count_is_outside_its_role_guardrail",
                 "script_passage_narration_must_contain_90-125_words",
+                "script_passage_copies_source_dialogue",
+                "script_passage_claim_lacks_local_evidence",
+                "claim_qualification_must_be_a_non-empty_string",
                 "production_narration_word_count_out_of_range",
                 "production_visual_selection_insufficient",
                 "production_subtitle_overflow",
+                "synthesis_provider_json_invalid",
+                "synthesis_echo_lineage_invalid",
+                "synthesis_projection_invalid",
             }
             subtype = str(getattr(exc, "validation_subtype", "") or "")
             evidence_lineage_retryable = (
                 subtype.endswith("_contains_an_unknown_panel")
                 or subtype.endswith("_references_an_unknown_panel")
             )
-            if (subtype not in retryable_subtypes and not evidence_lineage_retryable) or attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS:
+            projection_retryable = subtype.startswith("synthesis_projection_")
+            if (
+                subtype not in retryable_subtypes
+                and not evidence_lineage_retryable
+                and not projection_retryable
+            ) or attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS:
                 raise
             if evidence_lineage_retryable:
                 active_request = replace(
                     active_request,
                     retry_evidence_lineage=True,
+                    retry_visual_selection=False,
+                    retry_dialogue_paraphrase=False,
+                    retry_claim_qualification=False,
+                    retry_local_claim_grounding=False,
                     retry_word_counts=None,
                     retry_passages=None,
                 )
             counts = tuple(getattr(exc, "passage_word_counts", ()) or ())
             retry_passages = getattr(exc, "retry_passages", None)
-            if counts and not evidence_lineage_retryable:
+            if subtype == "claim_qualification_must_be_a_non-empty_string":
                 active_request = replace(
                     active_request,
+                    retry_claim_qualification=True,
+                    retry_local_claim_grounding=False,
+                    retry_visual_selection=False,
+                    retry_dialogue_paraphrase=False,
+                    retry_evidence_lineage=False,
+                    retry_word_counts=None,
+                    retry_passages=None,
+                )
+            elif subtype == "script_passage_claim_lacks_local_evidence":
+                active_request = replace(
+                    active_request,
+                    retry_local_claim_grounding=True,
+                    retry_visual_selection=False,
+                    retry_dialogue_paraphrase=False,
+                    retry_claim_qualification=False,
+                    retry_evidence_lineage=False,
+                    retry_word_counts=None,
+                    retry_passages=(retry_passages if retry_passages is not None else active_request.retry_passages),
+                )
+            elif subtype == "script_passage_copies_source_dialogue":
+                active_request = replace(
+                    active_request,
+                    retry_dialogue_paraphrase=True,
+                    retry_local_claim_grounding=False,
+                    retry_visual_selection=False,
+                    retry_claim_qualification=False,
+                    retry_evidence_lineage=False,
+                    retry_word_counts=None,
+                    retry_passages=(
+                        retry_passages
+                        if retry_passages is not None
+                        else active_request.retry_passages
+                    ),
+                )
+            elif counts and not evidence_lineage_retryable:
+                active_request = replace(
+                    active_request,
+                    retry_visual_selection=False,
+                    retry_dialogue_paraphrase=False,
+                    retry_claim_qualification=False,
+                    retry_local_claim_grounding=False,
+                    retry_evidence_lineage=False,
                     retry_word_counts=counts,
                     retry_passages=retry_passages if retry_passages is not None else active_request.retry_passages,
                 )
@@ -1333,6 +1390,11 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 active_request = replace(
                     active_request,
                     retry_visual_selection=True,
+                    retry_dialogue_paraphrase=False,
+                    retry_claim_qualification=False,
+                    retry_local_claim_grounding=False,
+                    retry_evidence_lineage=False,
+                    retry_word_counts=None,
                     retry_passages=(
                         retry_passages
                         if retry_passages is not None
@@ -2691,6 +2753,9 @@ def _build_reference_panel_fallback_candidates(
     section_citations: Mapping[str, Sequence[int]],
     beats_by_section: Mapping[str, Sequence[str]],
     profile: object,
+    story_text_by_section: Mapping[str, Sequence[str]] | None = None,
+    direct_evidence_by_section: Mapping[str, Sequence[str]] | None = None,
+    claim_text_by_section: Mapping[str, Sequence[str]] | None = None,
     source_upscale_manifests_by_region_id: Mapping[str, Mapping[str, Any]] | None = None,
     allow_missing_explicit: bool = False,
     allow_conservative_full_panel: bool = False,
@@ -2707,6 +2772,9 @@ def _build_reference_panel_fallback_candidates(
             section_citations=section_citations,
             beats_by_section=beats_by_section,
             profile=profile,
+            story_text_by_section=story_text_by_section,
+            direct_evidence_by_section=direct_evidence_by_section,
+            claim_text_by_section=claim_text_by_section,
             source_upscale_manifests_by_region_id=source_upscale_manifests_by_region_id,
             allow_conservative_full_panel=allow_conservative_full_panel,
             pixel_refinement_preflight=pixel_refinement_preflight,
@@ -2751,7 +2819,17 @@ def _load_reference_panel_fallback_candidates(
     default_evidence, default_citations, default_beats = (
         reference_visual_review.section_evidence_maps(script)
     )
-    effective_evidence = section_evidence_panel_ids or default_evidence
+    story_text_by_section = reference_visual_review.section_story_text_map(script)
+    direct_evidence_by_section = reference_visual_review.section_direct_claim_evidence_map(script)
+    claim_text_by_section = reference_visual_review.section_claim_text_map(
+        script, getattr(analysis, "evidence_graph_json", None)
+    )
+    if section_evidence_panel_ids is None:
+        effective_evidence = reference_visual_review.expand_retention_section_evidence(
+            script, regions, default_evidence, claim_text_by_section=claim_text_by_section
+        )
+    else:
+        effective_evidence = section_evidence_panel_ids
     effective_citations = section_citations or default_citations
     cited_panel_ids = {
         str(value)
@@ -2932,6 +3010,9 @@ def _load_reference_panel_fallback_candidates(
         section_citations=effective_citations,
         beats_by_section=beats_by_section or default_beats,
         profile=profile,
+        story_text_by_section=story_text_by_section,
+        direct_evidence_by_section=direct_evidence_by_section,
+        claim_text_by_section=claim_text_by_section,
         source_upscale_manifests_by_region_id=source_upscale_manifests,
         # A cited panel the loader itself skipped as render-unready (degenerate
         # bounds, sliver crop) must fall back to the section's other evidence

@@ -33,7 +33,8 @@ def test_unattended_runner_accepts_explicit_voice_profile():
     assert 'watermark_enabled=bool(args.watermark)' in source
     assert 'watermark_text=args.watermark_text' in source
     assert 'action=argparse.BooleanOptionalAction' in source
-    assert 'voice_id=args.voice_id, speed=1.0' in source
+    assert 'Production preflight ready.' in source
+    assert 'speed=1.0' in source
 
 
 def test_analysis_stage_retry_is_narrow_and_fail_closed():
@@ -203,3 +204,23 @@ def test_production_profiler_records_and_restores_wrapped_boundaries(monkeypatch
     assert telemetry["metadata"]["calls"] == 1
     for (owner, name), replacement in replacements.items():
         assert getattr(owner, name) is replacement
+
+def test_preflight_tts_probe_retries_only_transient_failures():
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    start = source.index('tts_probe = Path(settings.tmp_dir)')
+    end = source.index('connector = source_router._ready_client()', start)
+    block = source[start:end]
+    assert 'for tts_attempt in range(1, 4):' in block
+    assert '_transient_exception(exc)' in block
+    assert 'tts_attempt >= 3' in block
+    assert '"preflight.tts_retry"' in block
+
+
+def test_script_resume_regenerates_when_latest_analysis_changes():
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    start = source.index('def _ensure_script(')
+    end = source.index('def _install_production_profiler', start)
+    block = source[start:end]
+    assert 'analysis = pl.latest_analysis(db, project.id)' in block
+    assert 'script_metadata.get("analysis_id") != analysis.id' in block
+    assert 'analysis_id=analysis.id' in block

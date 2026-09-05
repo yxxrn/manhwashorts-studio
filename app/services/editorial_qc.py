@@ -751,8 +751,8 @@ def build_report(
         report.failures.append("alternating_background_pattern")
     if static_duration / max(0.001, total) > 0.55 and len(set(signatures)) > 1:
         report.failures.append("static_ratio_over_55pct")
-    if longest_same > 4.0:
-        report.failures.append("same_panel_same_crop_over_2.5s")
+    if longest_same > reference_profile.REVIEW_MAX_SHOT_SECONDS + 1e-9:
+        report.failures.append("same_panel_same_crop_over_4.0s")
     if not preview:
         if adaptive_reference_contract is None and not standard_reference_cadence:
             if len(scenes) >= 4 and motion_diversity < 4:

@@ -1,0 +1,42 @@
+VISION-FIRST RETENTION STORY ANALYZER
+Contract ID: vision-first_editorial_story_engine.analyzer
+Version: vision-first-retention-story-v1
+Narrative profile: retention_story_v1
+
+This is an opt-in production experiment for short-form retention. All evidence, coverage, continuity, framing, and fail-closed rules from the standard vision-first analyzer still apply. Entertainment density may change; factual standards may not.
+
+1. Observe and reconcile EVERY ordered panel before prose. Preserve all panel/source lineage and never sample, skip, infer missing source material, or use a text-only fallback.
+
+2. Build the story from grounded events, decisions, reveals, consequences, contradictions, and unresolved pressure. Dialogue/OCR is evidence for comprehension, never text to copy. Preserve uncertainty and never invent motive, identity, relationship, chronology, or causality.
+
+3. Choose ONE DOMINANT STORY ARC from the supplied chapters: the throughline with the strongest concrete change and best grounded sequence of cause -> decision -> consequence. Do NOT attempt to summarize every event merely because it exists. Omit side material that does not increase understanding or pressure in the chosen arc.
+
+4. The dominant arc MUST still be truthful to the processed source. If a chapter contributes no unique beat needed by the selected arc, it may be visually absent; never manufacture a beat merely to balance chapter counts.
+
+5. narrative_outline contains exactly story_spine and ending_kind. story_spine contains exactly who_wants_what, obstacle, decision, consequence, changed_stakes, and unresolved_question. These are reasoning fields, not a fixed spoken template.
+
+6. Return four to six script_passages. Passage IDs are unique. editorial_role is a semantic label, not a fixed vocabulary or quota. Each passage must advance the same dominant arc and must carry nonempty grounded claim_ids and evidence_panel_ids.
+
+7. HOOK CONTRACT: the FIRST passage must be ONE sentence of 8-14 whitespace-counted words. Lead with the strongest grounded impossible event, contradiction, shocking decision, visible consequence, or immediate danger. Do not open with lore, faction history, rankings, geography, a list of names, or generic danger. Prefer at most one proper name in the hook.
+
+8. The first roughly eight seconds must stay concrete. Explain only the minimum context needed to understand the immediate problem. Introduce a named faction, technique, group, rank, or historical term only when removing it would make the current beat confusing.
+
+9. Prefer active verbs and direct cause/effect. Replace abstract summary phrases with concrete actions whenever evidence allows. "His knowledge becomes a weapon" is weaker than stating the grounded thing he now knows, does, avoids, steals, challenges, discovers, or changes.
+
+10. Every passage should create forward pressure: new information, a decision, a reversal, a consequence, or a reveal. Do not spend a passage merely interpreting themes, politics, pride, destiny, tension, or stakes when a concrete grounded event can carry that meaning.
+
+11. Spoken style is conversational American English. Use short impact sentences and medium explanatory sentences. Keep proper-noun density low. A viewer should understand the arc without already knowing the series.
+
+12. ENDING CONTRACT: ending_kind must be cliffhanger or consequence. The final passage MUST NOT be a rhetorical question and MUST NOT end with ?. End on an actual grounded reveal, consequence, reversal, newly arrived threat, or unresolved concrete fact that naturally makes the next beat desirable.
+
+13. Target 115-125 total whitespace-counted words for the standard 50-60 second production path. Do not pad with lore, moral summaries, generic stakes, or repeated context merely to reach the word count.
+
+14. Select evidence for story beats, not for visual prettiness. For every passage, prefer the smallest truthful set of panels that directly shows or supports the event being narrated. A panel being frameable is not a reason to cite it. Avoid using broad claim evidence as filler when more exact beat evidence exists.
+
+15. Preserve chronology inside the chosen arc unless a deliberate flashback/regression relation is itself required to understand the beat. Do not bounce backward merely to find a prettier panel.
+
+16. Do not write a panel inventory, fixed intro, title, cover line, forced catchphrase, channel CTA, generic hype, fake intensity, moral, or reporter-style recap. Do not use "what happens next", "everything changes", "the tension rises", or equivalent empty phrases.
+
+17. Every factual or interpretive statement must remain covered by claim IDs and exact evidence_panel_ids. Unsupported, foreign, incomplete, copied-dialogue, or ungrounded output is a provider failure. Never relax evidence or quality gates for retention.
+
+18. Do not generate display_text, subtitles, TTS settings, thumbnail text, or camera instructions. The human/trusted editor remains responsible for approval.

@@ -8,6 +8,24 @@ from __future__ import annotations
 from typing import Any
 
 
+def _profile_claim_coverage_error(sections, claim_map, panel_ids):
+    covered = {claim_id: set() for claim_id in claim_map}
+    for section in sections:
+        claim_ids = section.get('claim_ids')
+        evidence_panel_ids = section.get('evidence_panel_ids')
+        if not isinstance(claim_ids, list) or not claim_ids or not isinstance(evidence_panel_ids, list) or not evidence_panel_ids or not set(claim_ids) <= set(claim_map) or not set(evidence_panel_ids) <= panel_ids:
+            return 'script section evidence is incomplete'
+        evidence = set(evidence_panel_ids)
+        for claim_id in claim_ids:
+            local = evidence & set(claim_map[claim_id]['evidence_panel_ids'])
+            if not local:
+                return 'script section evidence does not ground its claim'
+            covered[claim_id].update(local)
+    if any(covered[claim_id] != set(claim['evidence_panel_ids']) for claim_id, claim in claim_map.items()):
+        return 'script section evidence does not cover its claims'
+    return None
+
+
 def generate_script(api, db, project_id, *, analysis_id, keep_locked, hook_count, seed, actor_id, narrative_profile_id):
     """Materialize provider passages from the latest reconciled evidence."""
     Mapping = api.Mapping
@@ -197,13 +215,9 @@ def approve_script(api, db, script_id, actor_id, *, editorial_review_confirmed, 
         for section in script.sections:
             if not isinstance(section, Mapping) or not str(section.get('editorial_role', '')).strip() or (not str(section.get('text', '')).strip()):
                 raise PipelineError('script section roles or text are invalid')
-            claim_ids = section.get('claim_ids')
-            evidence_panel_ids = section.get('evidence_panel_ids')
-            if not isinstance(claim_ids, list) or not claim_ids or (not isinstance(evidence_panel_ids, list)) or (not evidence_panel_ids) or (not set(claim_ids) <= set(claim_map)) or (not set(evidence_panel_ids) <= panel_ids):
-                raise PipelineError('script section evidence is incomplete')
-            required_evidence = set().union(*(set(claim_map[claim_id]['evidence_panel_ids']) for claim_id in claim_ids))
-            if not required_evidence <= set(evidence_panel_ids):
-                raise PipelineError('script section evidence does not cover its claims')
+        coverage_error = _profile_claim_coverage_error(script.sections, claim_map, panel_ids)
+        if coverage_error is not None:
+            raise PipelineError(coverage_error)
         current_passages = [{'text': section['text'], 'claim_ids': list(section['claim_ids']), 'evidence_panel_ids': list(section['evidence_panel_ids'])} for section in script.sections]
         report = editorial_qc.screen_narrative_naturalness(current_passages, claim_map, profile)
         refreshed_warnings = [{'code': check.code, 'severity': check.severity, 'message': check.message, 'detail': dict(check.detail)} for check in quality_svc.check_narrative_naturalness(report) if not check.passed]
