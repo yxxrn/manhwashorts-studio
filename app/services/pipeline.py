@@ -1234,12 +1234,20 @@ def _synthesis_retry_signature(subtype: str, exc: VisionResponseInvalid) -> str:
     diagnostics = getattr(exc, "selection_diagnostics", None)
     passages = getattr(exc, "retry_passages", None)
     counts = getattr(exc, "passage_word_counts", None)
-    payload = {
+    diagnostic_payload = dict(diagnostics) if isinstance(diagnostics, Mapping) else {}
+    payload: dict[str, Any] = {
         "subtype": subtype,
-        "diagnostics": dict(diagnostics) if isinstance(diagnostics, Mapping) else {},
-        "retry_passages": [dict(item) for item in passages] if passages is not None else None,
-        "passage_word_counts": list(counts) if counts is not None else None,
+        "diagnostics": diagnostic_payload,
     }
+    # Structured diagnostics identify the actual failing claim/passage and
+    # condition.  Retry prose may change while that condition remains
+    # identical; treating those wording changes as progress defeats the
+    # no-progress guard and can burn the full correction budget.
+    if not diagnostic_payload:
+        payload["retry_passages"] = (
+            [dict(item) for item in passages] if passages is not None else None
+        )
+        payload["passage_word_counts"] = list(counts) if counts is not None else None
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
