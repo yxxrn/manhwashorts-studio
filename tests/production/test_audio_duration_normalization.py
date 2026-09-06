@@ -126,7 +126,7 @@ def test_http_native_speed_recovery_retries_short_audio_once_without_relaxing_te
     assert policy["pre_recovery_duration_s"] == pytest.approx(39.936)
 
 
-def test_http_native_speed_recovery_does_not_retry_already_native_failures(tmp_path):
+def test_http_native_speed_recovery_tries_0_9_after_native_failure(tmp_path):
     from types import SimpleNamespace
 
     from app.services.pipeline_stages import media
@@ -151,4 +151,45 @@ def test_http_native_speed_recovery_does_not_retry_already_native_failures(tmp_p
             svc, Provider(), ["a"] * 5, tmp_path, "orion", 1.0, clips,
             duration_min_s=50.0, duration_max_s=60.0, gap_s=0.18,
         )
-    assert calls == []
+    assert calls == [(["a"] * 5, tmp_path, "orion", 0.9)]
+
+
+
+def test_http_native_speed_recovery_uses_0_9_when_1_0_is_still_too_short(tmp_path):
+    from types import SimpleNamespace
+
+    from app.services.pipeline_stages import media
+
+    class FakeTTSError(RuntimeError):
+        pass
+
+    calls = []
+
+    def clip(duration, speed):
+        return SimpleNamespace(duration=duration, voice_profile={"speed": speed})
+
+    initial = [clip(5.0, 1.15) for _ in range(6)]
+    native = [clip(6.348, 1.0) for _ in range(6)]
+    slower = [clip(7.053, 0.9) for _ in range(6)]
+
+    def normalize(clips, *, duration_min_s, duration_max_s, gap_s):
+        total = sum(item.duration for item in clips) + (len(clips) - 1) * gap_s
+        if clips is initial or clips is native:
+            raise FakeTTSError("audio tempo correction exceeds safe production range (0.80-1.25)")
+        assert total == pytest.approx(43.218)
+        return clips, {"version": "production-audio-timing-v1", "tempo": 0.85}
+
+    class Provider:
+        def synthesize_sections(self, texts, work, voice_id, speed):
+            calls.append(speed)
+            return native if speed == 1.0 else slower
+
+    svc = SimpleNamespace(TTSError=FakeTTSError, normalize_speech_clips_to_duration_window=normalize)
+    adjusted, policy = media._normalize_http_duration_with_native_speed_recovery(
+        svc, Provider(), ["a"] * 6, tmp_path, "orion", 1.15, initial,
+        duration_min_s=50.0, duration_max_s=60.0, gap_s=0.18,
+    )
+    assert adjusted is slower
+    assert calls == [1.0, 0.9]
+    assert policy["effective_speed"] == pytest.approx(0.9)
+    assert policy["recovery_speeds_attempted"] == [1.0, 0.9]

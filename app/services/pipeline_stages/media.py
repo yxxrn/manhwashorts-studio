@@ -5,13 +5,13 @@ Public callers should continue importing app.services.pipeline.
 
 from __future__ import annotations
 
-_NATIVE_SPEED_RECOVERY = 1.0
+_NATIVE_SPEED_RECOVERY_STEPS = (1.0, 0.9)
 
 
 def _normalize_http_duration_with_native_speed_recovery(
     tts_svc, provider, texts, work, voice_id, requested_speed, clips, *, duration_min_s, duration_max_s, gap_s
 ):
-    """Retry short HTTP narration once at native speed 1.0 without relaxing tempo gates."""
+    """Retry short HTTP narration at slower native speeds without relaxing tempo gates."""
     try:
         adjusted, policy = tts_svc.normalize_speech_clips_to_duration_window(
             clips, duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=gap_s
@@ -22,21 +22,40 @@ def _normalize_http_duration_with_native_speed_recovery(
         recoverable = (
             "audio tempo correction exceeds safe production range" in str(exc)
             and timeline_before < float(duration_min_s)
-            and float(requested_speed) > _NATIVE_SPEED_RECOVERY
         )
         if not recoverable:
             raise
-        recovered = provider.synthesize_sections(texts, work, voice_id, _NATIVE_SPEED_RECOVERY)
-        adjusted, policy = tts_svc.normalize_speech_clips_to_duration_window(
-            recovered, duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=gap_s
-        )
-        return adjusted, {
-            **dict(policy or {}),
-            "native_speed_recovery": True,
-            "requested_speed": round(float(requested_speed), 4),
-            "effective_speed": _NATIVE_SPEED_RECOVERY,
-            "pre_recovery_duration_s": round(float(timeline_before), 3),
-        }
+        last_exc = exc
+        attempted_speeds = []
+        for recovery_speed in _NATIVE_SPEED_RECOVERY_STEPS:
+            if float(recovery_speed) >= float(requested_speed):
+                continue
+            attempted_speeds.append(float(recovery_speed))
+            recovered = provider.synthesize_sections(texts, work, voice_id, recovery_speed)
+            try:
+                adjusted, policy = tts_svc.normalize_speech_clips_to_duration_window(
+                    recovered, duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=gap_s
+                )
+            except tts_svc.TTSError as recovery_exc:
+                recovered_timeline = sum(float(clip.duration) for clip in recovered) + max(0, len(recovered) - 1) * gap_s
+                if (
+                    "audio tempo correction exceeds safe production range" in str(recovery_exc)
+                    and recovered_timeline < float(duration_min_s)
+                ):
+                    last_exc = recovery_exc
+                    continue
+                raise
+            return adjusted, {
+                **dict(policy or {}),
+                "native_speed_recovery": True,
+                "requested_speed": round(float(requested_speed), 4),
+                "effective_speed": round(float(recovery_speed), 4),
+                "recovery_speeds_attempted": attempted_speeds,
+                "pre_recovery_duration_s": round(float(timeline_before), 3),
+            }
+        if last_exc is exc:
+            raise
+        raise last_exc from exc
 
 
 def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, duration_bounds_s=None):
