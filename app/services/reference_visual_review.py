@@ -164,18 +164,31 @@ def enumerate_reference_roi_alternatives(
     # lineage; the scan never admits a crop by itself.
     if image is not None and panel_size[1] > panel_size[0]:
         scan_x = (0.20, 0.50, 0.80)
-        scan_y = (0.14, 0.38, 0.62, 0.86)
-        for row, focus_y in enumerate(scan_y):
-            for column, focus_x in enumerate(scan_x):
-                travel_x = 0.04 if focus_x < 0.5 else -0.04
-                travel_y = 0.03 if focus_y < 0.5 else -0.03
-                add(
-                    "alternate_roi",
-                    f"content_scan_{row:02d}_{column:02d}",
-                    (focus_x, focus_y),
-                    1.0,
-                    travel=(travel_x, travel_y),
-                )
+        scan_y = (0.14, 0.38, 0.54, 0.62, 0.68, 0.74, 0.86)
+        scan_specs = [(1.0, scan_y, scan_x)]
+        if border_mask is not None:
+            scan_specs.extend((
+                (0.80, (0.68,), (0.20, 0.38)),
+                (0.70, (0.50, 0.58), (0.20, 0.38, 0.50, 0.62, 0.80)),
+                (0.60, (0.58,), (0.20, 0.38)),
+            ))
+        for scale_index, (scale, active_y, active_x) in enumerate(scan_specs):
+            for row, focus_y in enumerate(active_y):
+                for column, focus_x in enumerate(active_x):
+                    travel_x = 0.04 if focus_x < 0.5 else -0.04
+                    travel_y = 0.03 if focus_y < 0.5 else -0.03
+                    label = (
+                        f"content_scan_{row:02d}_{column:02d}"
+                        if scale_index == 0
+                        else f"content_scan_s{scale_index:02d}_{row:02d}_{column:02d}"
+                    )
+                    add(
+                        "alternate_roi",
+                        label,
+                        (focus_x, focus_y),
+                        scale,
+                        travel=(travel_x, travel_y),
+                    )
     hard_blank = reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
     # The expensive multi-focus rescue is triggered only when every normal ROI
     # still fails the authoritative source-local border-mask 8% hard gate. The
@@ -464,6 +477,8 @@ def _roi_passes_exact_pixel_preflight(
     return True
 
 
+_RETENTION_CONTEXT_NEIGHBOR_MAX_GAP = 3
+
 _RETENTION_STOPWORDS = frozenset({
     "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "at", "for", "from",
     "with", "his", "her", "their", "this", "that", "these", "those", "is", "are", "was", "were",
@@ -564,7 +579,7 @@ def expand_retention_section_evidence(
     max_semantic_per_section: int = 16,
     claim_text_by_section: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, tuple[str, ...]]:
-    """Add top grounded full-ledger matches without bypassing visual gates."""
+    """Add grounded semantic matches plus one bounded preceding context panel."""
     if _narrative_profile_id(script) != "retention_story_v1":
         return {str(k): tuple(v) for k, v in existing.items()}
     story = section_story_text_map(script)
@@ -575,6 +590,20 @@ def expand_retention_section_evidence(
         for region in regions
         if str(getattr(region, "panel_id", ""))
     }
+    ordered_context = sorted(
+        (
+            (int(getattr(region, "source_order", -1)), str(getattr(region, "panel_id", "")))
+            for region in regions
+            if int(getattr(region, "source_order", -1)) > 0
+            and str(getattr(region, "panel_id", ""))
+        ),
+        key=lambda row: (row[0], row[1]),
+    )
+    predecessor_by_panel: dict[str, tuple[int, str]] = {}
+    for previous, current in zip(ordered_context, ordered_context[1:], strict=False):
+        gap = current[0] - previous[0]
+        if 0 < gap <= _RETENTION_CONTEXT_NEIGHBOR_MAX_GAP:
+            predecessor_by_panel[current[1]] = previous
     semantic_radius = 12
     for section in story:
         output.setdefault(section, [])
@@ -585,6 +614,20 @@ def expand_retention_section_evidence(
             for panel_id in anchor_ids
             if source_order_by_panel.get(panel_id, -1) > 0
         )
+        neighbor_candidates: list[tuple[int, int, str]] = []
+        for direct_id in direct_ids:
+            direct_order = source_order_by_panel.get(direct_id, -1)
+            previous = predecessor_by_panel.get(direct_id)
+            if direct_order <= 0 or previous is None:
+                continue
+            previous_order, previous_id = previous
+            if previous_id in direct_ids:
+                continue
+            neighbor_candidates.append((direct_order - previous_order, direct_order, previous_id))
+        if neighbor_candidates:
+            _gap, _direct_order, previous_id = min(neighbor_candidates)
+            if previous_id not in output[section]:
+                output[section].append(previous_id)
         ranked: list[tuple[float, int, str]] = []
         for region in regions:
             panel_id = str(getattr(region, "panel_id", ""))

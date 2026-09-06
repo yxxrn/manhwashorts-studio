@@ -3886,6 +3886,52 @@ def test_retention_semantic_expansion_stays_local_to_section_evidence():
     assert "old-line" not in expanded["cta"]
 
 
+def test_retention_expansion_adds_one_bounded_preceding_context_panel():
+    from types import SimpleNamespace
+
+    from app.services import reference_visual_review as review
+
+    script = SimpleNamespace(
+        editorial_metadata={"narrative_identity": {"profile_id": "retention_story_v1"}},
+        sections=[{
+            "section": "cta",
+            "text": "Aaron faces the final.",
+            "evidence_panel_ids": ["direct"],
+            "evidence": [{"claim_id": "c1", "panel_ids": ["direct"]}],
+        }],
+    )
+    regions = [
+        SimpleNamespace(panel_id="distant", source_order=90, observation_json={"visible_facts": ["Quiet corridor."]}),
+        SimpleNamespace(panel_id="context", source_order=98, observation_json={"visible_facts": ["Blue energy crosses the arena."]}),
+        SimpleNamespace(panel_id="direct", source_order=100, observation_json={"visible_facts": ["Aaron stares forward."]}),
+    ]
+    expanded = review.expand_retention_section_evidence(script, regions, {"cta": ("direct",)})
+    assert "context" in expanded["cta"]
+    assert "distant" not in expanded["cta"]
+
+
+def test_retention_expansion_does_not_add_distant_predecessor():
+    from types import SimpleNamespace
+
+    from app.services import reference_visual_review as review
+
+    script = SimpleNamespace(
+        editorial_metadata={"narrative_identity": {"profile_id": "retention_story_v1"}},
+        sections=[{
+            "section": "cta",
+            "text": "Aaron faces the final.",
+            "evidence_panel_ids": ["direct"],
+            "evidence": [{"claim_id": "c1", "panel_ids": ["direct"]}],
+        }],
+    )
+    regions = [
+        SimpleNamespace(panel_id="old", source_order=96, observation_json={"visible_facts": ["Blue energy crosses the arena."]}),
+        SimpleNamespace(panel_id="direct", source_order=100, observation_json={"visible_facts": ["Aaron stares forward."]}),
+    ]
+    expanded = review.expand_retention_section_evidence(script, regions, {"cta": ("direct",)})
+    assert expanded["cta"] == ("direct",)
+
+
 def test_visual_section_capacity_retries_by_reselecting_visual_story(monkeypatch):
     from app.services import pipeline
     from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid

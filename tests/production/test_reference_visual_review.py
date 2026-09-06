@@ -211,6 +211,26 @@ def test_roi_enumeration_adds_deterministic_content_scan_alternatives():
     assert any(roi.roi_label.startswith("content_scan_") for roi in first)
 
 
+def test_roi_enumeration_adds_moderate_scale_scan_only_with_authoritative_mask():
+    from app.services import reference_visual_review
+
+    image = Image.new("RGB", (100, 800), (50, 80, 120))
+    candidate = _candidate("asset-a", 3, "moderate-scan")
+    profile = reference_profile.REFERENCE_MATCHED_SHORTS_V1
+    no_mask = reference_visual_review.enumerate_reference_roi_alternatives(
+        image.size, candidate, profile, image=image
+    )
+    with_mask = reference_visual_review.enumerate_reference_roi_alternatives(
+        image.size, candidate, profile, image=image,
+        border_mask=_synthetic_border_mask(*image.size, blank=False),
+    )
+
+    assert not any(roi.roi_label.startswith("content_scan_s") for roi in no_mask)
+    moderate = [roi for roi in with_mask if roi.roi_label.startswith("content_scan_s")]
+    assert moderate
+    assert len(with_mask) > len(no_mask)
+
+
 def _synthetic_border_mask(width: int, height: int, *, blank: bool):
     from app.services import framing_analysis
 
