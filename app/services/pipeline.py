@@ -1230,6 +1230,20 @@ _VISION_SYNTHESIS_TEXT_FINISH_ATTEMPTS = 4  # extra reserve only for structurall
 _VISION_SYNTHESIS_TOTAL_ATTEMPTS = _VISION_SYNTHESIS_MAX_ATTEMPTS + _VISION_SYNTHESIS_TEXT_FINISH_ATTEMPTS
 
 
+def _synthesis_retry_signature(subtype: str, exc: VisionResponseInvalid) -> str:
+    diagnostics = getattr(exc, "selection_diagnostics", None)
+    passages = getattr(exc, "retry_passages", None)
+    counts = getattr(exc, "passage_word_counts", None)
+    payload = {
+        "subtype": subtype,
+        "diagnostics": dict(diagnostics) if isinstance(diagnostics, Mapping) else {},
+        "retry_passages": [dict(item) for item in passages] if passages is not None else None,
+        "passage_word_counts": list(counts) if counts is not None else None,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _vision_synthesis_cache_key(provider: Any, request: VisionChapterSynthesisRequest) -> str | None:
     model = str(getattr(provider, "model_id", "") or "").strip()
     endpoint = str(getattr(provider, "endpoint", "") or "").strip()
@@ -1357,6 +1371,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
         return cached
     response: Any = None
     active_request = request
+    previous_retry_signature: str | None = None
     for attempt in range(1, _VISION_SYNTHESIS_TOTAL_ATTEMPTS + 1):
         try:
             response = provider.synthesize(active_request)
@@ -1372,22 +1387,33 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "claim_qualification_must_be_a_non-empty_string",
                 "claim_evidence_lacks_semantic_anchor",
                 "retention_passage_introduces_disconnected_claim",
+                "retention_causal_link_moves_backward_in_chronology",
                 "retention_visual_story_alignment_missing",
                 "production_narration_word_count_out_of_range",
                 "retention_hook_must_contain_8-14_words",
                 "retention_hook_must_be_one_sentence",
                 "production_visual_selection_insufficient",
+                "production_visual_section_capacity_insufficient",
                 "production_subtitle_overflow",
                 "synthesis_provider_json_invalid",
                 "synthesis_echo_lineage_invalid",
                 "synthesis_projection_invalid",
             }
             subtype = str(getattr(exc, "validation_subtype", "") or "")
+            retry_signature = _synthesis_retry_signature(subtype, exc)
             print(
                 f"VISION_SYNTHESIS_CORRECTION attempt={attempt} subtype={subtype or 'unknown'}",
                 file=sys.stderr,
                 flush=True,
             )
+            if retry_signature == previous_retry_signature:
+                print(
+                    f"VISION_SYNTHESIS_NO_PROGRESS attempt={attempt} subtype={subtype or 'unknown'}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise
+            previous_retry_signature = retry_signature
             diagnostics = getattr(exc, "selection_diagnostics", None)
             if isinstance(diagnostics, Mapping) and diagnostics:
                 encoded_diagnostics = json.dumps(
@@ -1488,7 +1514,54 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                         else None
                     ),
                 )
-            elif subtype == "retention_passage_introduces_disconnected_claim":
+            elif subtype == "production_visual_section_capacity_insufficient":
+                visual_diagnostics = dict(getattr(exc, "selection_diagnostics", {}) or {})
+                diagnostic_passages = visual_diagnostics.get("passages")
+                capacity_zero_rows = (
+                    [
+                        item
+                        for item in diagnostic_passages
+                        if isinstance(item, Mapping) and bool(item.get("capacity_zero"))
+                    ]
+                    if isinstance(diagnostic_passages, list)
+                    else []
+                )
+                capacity_zero_sections = {
+                    str(item.get("section", "")) for item in capacity_zero_rows
+                }
+                release_visual_anchor = bool({"hook", "setup"} & capacity_zero_sections)
+                active_request = replace(
+                    active_request,
+                    retry_visual_story_alignment=True,
+                    retry_visual_story_diagnostics=visual_diagnostics,
+                    retry_causal_arc=(
+                        False if release_visual_anchor else active_request.retry_causal_arc
+                    ),
+                    retry_claim_semantic_grounding=True,
+                    retry_claim_semantic_diagnostics=(
+                        None
+                        if release_visual_anchor
+                        else active_request.retry_claim_semantic_diagnostics
+                    ),
+                    retry_claim_qualification=active_request.retry_claim_qualification,
+                    retry_local_claim_grounding=active_request.retry_local_claim_grounding,
+                    retry_visual_selection=False,
+                    retry_dialogue_paraphrase=False,
+                    retry_evidence_lineage=False,
+                    retry_projection_contract=False,
+                    retry_word_counts=None,
+                    retry_passages=(
+                        None
+                        if release_visual_anchor
+                        else retry_passages
+                        if retry_passages is not None
+                        else active_request.retry_passages
+                    ),
+                )
+            elif subtype in {
+                "retention_passage_introduces_disconnected_claim",
+                "retention_causal_link_moves_backward_in_chronology",
+            }:
                 active_request = replace(
                     active_request,
                     retry_causal_arc=True, retry_claim_semantic_grounding=False,
@@ -1509,7 +1582,13 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                     retry_dialogue_paraphrase=False,
                     retry_evidence_lineage=False,
                     retry_word_counts=None,
-                    retry_passages=active_request.retry_passages if active_request.retry_causal_arc else None,
+                    retry_passages=(
+                        retry_passages
+                        if retry_passages is not None
+                        else active_request.retry_passages
+                        if active_request.retry_causal_arc
+                        else None
+                    ),
                 )
             elif subtype == "claim_qualification_must_be_a_non-empty_string":
                 active_request = replace(

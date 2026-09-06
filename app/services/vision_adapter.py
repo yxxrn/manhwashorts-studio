@@ -809,6 +809,12 @@ class OpenAICompatibleVisionProvider:
                     else None
                 )
                 if repaired is None and isinstance(validation_candidate, Mapping):
+                    repaired = _repair_semantic_claim_text_from_diagnostics(
+                        validation_candidate,
+                        getattr(current_exc, "diagnostics", None),
+                        expected_panel_ids,
+                    )
+                if repaired is None and isinstance(validation_candidate, Mapping):
                     repaired = _repair_unsupported_must_from_diagnostics(
                         validation_candidate,
                         getattr(current_exc, "diagnostics", None),
@@ -2307,6 +2313,62 @@ def _repair_semantic_claim_evidence_from_diagnostics(
     return cloned
 
 
+def _repair_semantic_claim_text_from_diagnostics(
+    output: Mapping[str, Any],
+    diagnostics: Mapping[str, Any] | None,
+    expected_panel_ids: Sequence[str],
+) -> Mapping[str, Any] | None:
+    """Shrink a non-critical claim to anchors already proven by its local evidence."""
+    if not isinstance(diagnostics, Mapping):
+        return None
+    claim_id = str(diagnostics.get("claim_id", ""))
+    matched_raw = diagnostics.get("matched_claim_anchors")
+    critical_raw = diagnostics.get("missing_critical_anchors")
+    claim_anchors_raw = diagnostics.get("claim_anchors")
+    if (
+        not claim_id
+        or not isinstance(matched_raw, list)
+        or not isinstance(claim_anchors_raw, list)
+        or (isinstance(critical_raw, list) and critical_raw)
+    ):
+        return None
+    claim_anchors = {str(value) for value in claim_anchors_raw if isinstance(value, str)}
+    matched = sorted(
+        {str(value) for value in matched_raw if isinstance(value, str)} & claim_anchors
+    )
+    if not matched:
+        return None
+
+    expected = {str(value) for value in expected_panel_ids}
+    cloned = json.loads(json.dumps(output))
+    graph = cloned.get("evidence_graph") if isinstance(cloned, dict) else None
+    claims = graph.get("claims") if isinstance(graph, dict) else None
+    passages = cloned.get("script_passages") if isinstance(cloned, dict) else None
+    if not isinstance(claims, list) or not isinstance(passages, list):
+        return None
+    target = next(
+        (
+            row
+            for row in claims
+            if isinstance(row, dict) and str(row.get("claim_id", "")) == claim_id
+        ),
+        None,
+    )
+    if target is None or not isinstance(target.get("evidence_panel_ids"), list):
+        return None
+    evidence = [str(value) for value in target["evidence_panel_ids"] if str(value) in expected]
+    if not evidence:
+        return None
+
+    original_text = str(target.get("text", "")).strip()
+    replacement = " ".join(matched).strip()
+    if not replacement or replacement.casefold() == original_text.casefold():
+        return None
+    target["text"] = replacement
+    target["qualification"] = "Atomic evidence key grounded in the cited local observation."
+    return cloned
+
+
 def _repair_unsupported_must_from_diagnostics(
     output: Mapping[str, Any],
     diagnostics: Mapping[str, Any] | None,
@@ -3232,28 +3294,109 @@ def validate_synthesis_visual_selection(
             if not isinstance(item, Mapping):
                 continue
             role = str(item.get("editorial_role", ""))
+            passage_id = str(item.get("passage_id", ""))
             section = _visual_section_for_passage(item, passage_index, len(passages), request)
             evidence = (
-                item.get("evidence_panel_ids")
+                [str(value) for value in item.get("evidence_panel_ids", ())]
                 if isinstance(item.get("evidence_panel_ids"), list)
                 else []
             )
-            section_safe = set(preferred_by_section.get(section, ()))
+            claim_ids = [str(value) for value in (item.get("claim_ids") or ())]
+            claim_rows: list[dict[str, Any]] = []
+            claim_evidence: set[str] = set()
+            for claim_id in claim_ids:
+                claim = claim_by_id.get(claim_id)
+                if not isinstance(claim, Mapping):
+                    continue
+                claim_panel_ids = [str(value) for value in (claim.get("evidence_panel_ids") or ())]
+                claim_evidence.update(claim_panel_ids)
+                claim_rows.append(
+                    {
+                        "claim_id": claim_id,
+                        "text": str(claim.get("text", ""))[:500],
+                        "qualification": str(claim.get("qualification", ""))[:300],
+                        "evidence_panel_ids": claim_panel_ids,
+                    }
+                )
+            section_safe_ordered = tuple(
+                str(value) for value in preferred_by_section.get(section, ())
+            )
+            section_safe = set(section_safe_ordered)
             relevant_section = set(relevant_section_by_index.get(passage_index, ()))
             relevant_generic = set(relevant_generic_by_index.get(passage_index, ()))
-            selected_section = {str(v) for v in evidence if str(v) in relevant_section}
-            selected_preferred = {str(v) for v in evidence if str(v) in relevant_generic}
+            selected_section = {value for value in evidence if value in relevant_section}
+            selected_preferred = {value for value in evidence if value in relevant_generic}
             all_used.update(selected_preferred)
+            reference_positions: list[int] = []
+            for panel_id in set(evidence) | claim_evidence:
+                observation = observation_by_id.get(panel_id)
+                if not isinstance(observation, Mapping):
+                    continue
+                raw_source_index = observation.get("source_index")
+                if isinstance(raw_source_index, int) and not isinstance(raw_source_index, bool):
+                    reference_positions.append(raw_source_index)
+            safe_pool = section_safe_ordered or tuple(str(value) for value in preferred)
+            candidate_panels: list[dict[str, Any]] = []
+            for panel_id in safe_pool:
+                observation = observation_by_id.get(panel_id)
+                if not isinstance(observation, Mapping):
+                    continue
+                raw_source_index = observation.get("source_index")
+                source_index = (
+                    raw_source_index
+                    if isinstance(raw_source_index, int) and not isinstance(raw_source_index, bool)
+                    else None
+                )
+                chronology_distance = (
+                    min(abs(source_index - value) for value in reference_positions)
+                    if source_index is not None and reference_positions
+                    else None
+                )
+                excerpt = " | ".join(
+                    str(value)
+                    for key in ("visible_facts", "dialogue_or_ocr", "inferences")
+                    for value in (observation.get(key) or ())
+                )[:500]
+                candidate_panels.append(
+                    {
+                        "panel_id": panel_id,
+                        "source_index": source_index,
+                        "chronology_distance": chronology_distance,
+                        "currently_relevant": (
+                            panel_id in relevant_section or panel_id in relevant_generic
+                        ),
+                        "excerpt": excerpt,
+                    }
+                )
+            candidate_panels.sort(
+                key=lambda row: (
+                    row["chronology_distance"]
+                    if row["chronology_distance"] is not None
+                    else 10**9,
+                    row["source_index"] if row["source_index"] is not None else 10**9,
+                    row["panel_id"],
+                )
+            )
+            capacity_zero = (
+                bool(preferred_by_section and section) and not relevant_section
+            ) or not relevant_generic
             rows.append(
                 {
+                    "passage_id": passage_id,
                     "role": role,
                     "section": section,
                     "section_capacity": len(section_safe),
                     "relevant_section_capacity": len(relevant_section),
+                    "relevant_generic_capacity": len(relevant_generic),
+                    "capacity_zero": capacity_zero,
                     "required_section": min(4, len(relevant_section)),
                     "selected_section": len(selected_section),
                     "selected_preferred": len(selected_preferred),
                     "evidence_count": len(evidence),
+                    "evidence_panel_ids": evidence,
+                    "claim_ids": claim_ids,
+                    "claims": claim_rows,
+                    "safe_candidate_panels": candidate_panels[:8],
                 }
             )
         return {
@@ -3276,7 +3419,9 @@ def validate_synthesis_visual_selection(
         if preferred_by_section and section:
             if not relevant_section:
                 raise VisionResponseInvalid(
-                    validation_subtype="production_visual_section_capacity_insufficient"
+                    validation_subtype="production_visual_section_capacity_insufficient",
+                    retry_passages=locked_passages,
+                    selection_diagnostics=selection_diagnostics(),
                 )
             required_section = min(4, len(relevant_section))
             selected_section = {panel_id for panel_id in evidence if panel_id in relevant_section}
@@ -3289,7 +3434,9 @@ def validate_synthesis_visual_selection(
         relevant_generic = set(relevant_generic_by_index.get(passage_index, ()))
         if not relevant_generic:
             raise VisionResponseInvalid(
-                validation_subtype="production_visual_section_capacity_insufficient"
+                validation_subtype="production_visual_section_capacity_insufficient",
+                retry_passages=locked_passages,
+                selection_diagnostics=selection_diagnostics(),
             )
         required_generic = min(4, len(relevant_generic))
         selected = {panel_id for panel_id in evidence if panel_id in relevant_generic}
@@ -3468,7 +3615,8 @@ def _build_synthesis_payload(
         claim_semantic_retry_instruction = (
             "Corrective retry: at least one evidence_graph claim cited panels whose supplied observations did not semantically support the claim. "
             "Rebuild the evidence_graph and script_passages from the same observation ledger. Every claim must be anchored by explicit words, visible facts, OCR/dialogue, or bounded inferences present in at least one cited evidence panel. "
-            "For the rejected claim specifically, either cite observation panels that explicitly support its missing semantic anchors or DROP/REWRITE the claim; never keep the claim while citing merely adjacent context panels. "
+            "Treat evidence_graph claim.text as an evidence key, not polished narration. On this semantic retry, rewrite each rejected claim to the SMALLEST atomic proposition whose content words are directly supported inside one permitted local evidence window. Prefer source-near predicates and nouns from candidate excerpts; remove unsupported subject labels, timing/location phrases, causal connectors, evaluative adjectives, inferred relationships, and other decorative detail. Do not substitute a stylistic synonym when the supplied evidence uses a clearer literal predicate. Natural paraphrase belongs in script_passages after the claim itself is grounded. "
+            "For the rejected claim specifically, either cite observation panels that explicitly support its missing semantic anchors or DROP/REWRITE the claim; never keep the claim while citing merely adjacent context panels. If the local evidence proves only the core event, state only that core event; do not append who/when/where/why unless the same local window supports those anchors. "
             "When the diagnostic includes candidate_panels, use those excerpts as the primary repair shortlist: if the claim is preserved, choose one or more candidates whose supplied excerpt directly supports the claim rather than ignoring the shortlist or reusing rejected evidence IDs. Respect candidate source_order and semantic_window_max_span: anchors used to justify one claim MUST come from one local chronology window no wider than that span. Never borrow a rare anchor from a distant scene merely to satisfy vocabulary coverage. "
             "The diagnostic may include matched_claim_anchors, required_anchor_matches, critical_claim_anchors, and missing_critical_anchors. Before returning the repaired claim, compute the UNION of overlap_anchors only across cited candidates inside one permitted local window. That local union MUST contain at least required_anchor_matches distinct claim anchors and every critical claim anchor. If no local candidate window can supply a missing critical anchor, DROP or REWRITE that concept instead of searching farther away. "
             "Preserve modality exactly. A source statement that someone WILL do something, plans to do it, or declares it will happen does NOT prove MUST, REQUIRED, FORCED, OBLIGATED, or HAS TO. Likewise CAN or MAY does not prove MUST. Never strengthen descriptive/future wording into obligation unless an evidence panel in the same local window explicitly supplies that obligation. "
@@ -3480,11 +3628,12 @@ def _build_synthesis_payload(
     causal_arc_retry_instruction = ""
     if request.retry_causal_arc:
         causal_arc_retry_instruction = (
-            "Corrective retry: the previous retention response introduced a new claim after the setup without a directed causal path from earlier claim evidence. "
+            "Corrective retry: the previous retention response failed the causal contract because a body claim was disconnected or a causal link moved backward in source chronology. "
             "Rebuild narrative_outline, evidence_graph, continuity_ledger semantic arrays, and script_passages from the same observations. "
             "Keep one forward causal story chain in the BODY. The first passage may be a later teaser and must never be used as a backward causal seed. The body begins at setup (passage two); from the next body passage onward, every newly introduced claim MUST be reachable through continuity_ledger.causal_links from evidence already used by an earlier BODY passage. "
             "Every continuity_ledger causal link MUST move forward in source chronology. If the hook teases a later consequence, the body must eventually reach that hook evidence; never create a hook-to-setup backward link. Preserve the grounded setup/body anchor unless evidence forces a correction, then repair downstream body passages rather than attaching a disconnected higher-stakes thread. "
             "Prefer an already-evidenced social, legal, romantic, comedic, logistical, reputational, treatment, or immediate consequence reachable from that anchor. "
+            "Each downstream passage should earn its place with concrete evidence-backed progression when available. The final passage should resolve on a grounded changed fact or concrete consequence rather than generic uncertainty, without inventing novelty solely to satisfy progression. "
             "Do not preserve a disconnected villain, remote threat, prophecy, side quest, or unrelated stakes merely because it is dramatic. Add no unsupported causal link just to satisfy this rule. "
         )
     visual_story_retry_instruction = ""
@@ -3505,6 +3654,7 @@ def _build_synthesis_payload(
             "Rebuild narrative_outline, evidence_graph, continuity_ledger semantic arrays, and script_passages from the same observations. "
             "Choose a different truthful causal arc when necessary. Every passage must have at least one semantically matching panel from its corresponding preferred_visual_panel_ids_by_section, or a near same-source scene of its direct claim evidence. "
             "After a visual-story failure, correction is safe-first: EVERY passage must attach at least one corresponding section-safe panel directly to evidence_graph evidence_panel_ids for a claim used by that passage. That same safe panel MUST itself semantically support the claim through its visible_facts, dialogue_or_ocr, or bounded inference; adding a safe panel as filler beside unrelated supporting evidence is invalid. Overlap-only, nearby-scene, or filler evidence is not enough on this retry. Build that granular claim from what the safe panel visibly shows, then use other grounded panels only for connected supporting detail. "
+            "If relevant visual capacity is zero, adding filler panels cannot repair the passage. Discard/rewrite the beat from production-safe evidence: choose a safe_candidate_panel first, make its supplied excerpt the central granular claim, then rebuild only the causal links needed around that replacement. "
             "If the diagnostic marks hook or setup as missing, the previous opening arc is not production-frameable: discard that opening and reselect the whole arc from grounded safe visual evidence rather than preserving its first two beats. "
             "When the diagnostic contains candidate_panels, treat those excerpts as the primary frameable shortlist for that passage: preserve the beat only if a candidate directly supports it; otherwise rewrite/drop the beat and choose a causal beat that one of the safe candidates actually shows. "
             "If replacement_required=true for a passage, the rejected passage text, claim_ids, and central claim are INVALID for this retry: do not paraphrase or restate them. Select a candidate_panel first, make the visible event in its excerpt the central beat, cite that panel in the passage evidence, and create only a granular claim directly supported by that observation. Then connect later passages through grounded causal links. "
@@ -3528,7 +3678,33 @@ def _build_synthesis_payload(
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        if request.retry_causal_arc:
+        visual_capacity_targets: list[Mapping[str, Any]] = []
+        if (
+            request.retry_visual_story_alignment
+            and isinstance(request.retry_visual_story_diagnostics, Mapping)
+        ):
+            diagnostic_passages = request.retry_visual_story_diagnostics.get("passages")
+            if isinstance(diagnostic_passages, list):
+                visual_capacity_targets = [
+                    item
+                    for item in diagnostic_passages
+                    if isinstance(item, Mapping) and bool(item.get("capacity_zero"))
+                ]
+        if visual_capacity_targets:
+            target_json = json.dumps(
+                [dict(item) for item in visual_capacity_targets],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            locked_passage_instruction = (
+                "Production-safe capacity retry: use the previous script_passages as a targeted correction base. "
+                "The diagnostic target passages have zero semantically relevant production-safe visual capacity, so adding more evidence IDs or filler panels cannot repair them. "
+                "Preserve every non-target passage_id, editorial_role, text, claim_ids, evidence_panel_ids, ordering, and grounded meaning unless a direct forward causal dependency becomes invalid; if that happens, rewrite only the minimum downstream passages needed. "
+                "For each target, discard its rejected central beat, choose one safe_candidate_panel first, build a granular replacement claim only from that panel's supplied excerpt, and update only the related evidence_graph claims and continuity links needed to keep chronology and causality valid. "
+                f"Capacity-zero targets: {target_json}. "
+                f"Previous correction-base script_passages: {locked_json}. "
+            )
+        elif request.retry_causal_arc:
             anchor_json = json.dumps(
                 [dict(item) for item in request.retry_passages[:2]],
                 ensure_ascii=False,
@@ -3538,6 +3714,21 @@ def _build_synthesis_payload(
                 "Causal-arc retry anchor: use the first two previous passages as the grounded opening chain. "
                 "Do not lock passages three onward; replace them with reachable consequences from the same chain. "
                 f"Previous first-two anchor passages: {anchor_json}. "
+            )
+        elif request.retry_claim_semantic_grounding:
+            semantic_claim_id = ""
+            if isinstance(request.retry_claim_semantic_diagnostics, Mapping):
+                semantic_claim_id = str(
+                    request.retry_claim_semantic_diagnostics.get("claim_id", "")
+                ).strip()
+            locked_passage_instruction = (
+                "Semantic-grounding retry: use the previous script_passages as a TARGETED correction base. "
+                "Preserve every passage that does not reference the rejected claim_id exactly: keep its passage_id, editorial_role, text, claim_ids, evidence_panel_ids, ordering, and grounded meaning unchanged. "
+                "For passages that reference the rejected claim_id, preserve passage_id, editorial_role, and ordering; rewrite only the minimum text, claim_ids, evidence_panel_ids, evidence_graph claim rows, and forward causal links needed to replace the unsupported claim with an atomic locally evidenced claim. "
+                "Do not rewrite healthy claims or unrelated passages just to make the story more dramatic. If candidate_panels are supplied in the semantic diagnostic, use one permitted local candidate window and its excerpt as the repair source; never join anchors from distant scenes. "
+                "If replacing the rejected claim invalidates a direct downstream causal dependency, rewrite only the minimum downstream passage needed; otherwise leave downstream passages untouched. "
+                f"Rejected claim_id: {semantic_claim_id or 'unknown'}. "
+                f"Previous correction-base script_passages: {locked_json}. "
             )
         elif request.retry_visual_selection:
             locked_passage_instruction = (
@@ -3600,6 +3791,8 @@ def _build_synthesis_payload(
             "{passage_id,editorial_role,text,claim_ids,evidence_panel_ids}. editorial_role is a meaningful semantic label, not a legacy fixed vocabulary. "
             "The first passage is the hook and must be one sentence of 8-14 whitespace-counted words. "
             "Every claim_id listed by a passage must be locally grounded: that passage evidence_panel_ids must include at least one panel from that claim's evidence_panel_ids. Use granular claims for distinct beats instead of attaching one broad claim everywhere. "
+            "From the third passage onward, prefer a factual delta when the evidence naturally advances the story. Do not invent a new claim merely to make passages differ; a grounded reused claim is acceptable when it is the truthful continuation or payoff. "
+            "The final passage should land on a concrete grounded consequence, reveal, reversal, threat, or changed fact. Prefer a fresh factual payoff when evidence supports one, but do not invent a new claim solely for novelty; avoid generic uncertainty such as the outcome is uncertain, danger keeps growing, or equivalent filler. "
             "narrative_outline.ending_kind must be cliffhanger or consequence, and the final passage must state a grounded consequence, reveal, reversal, threat, or unresolved concrete fact without ending in a question mark. "
         )
         final_role_instruction = ""

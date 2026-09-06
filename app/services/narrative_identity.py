@@ -46,13 +46,13 @@ SHARP_FRIEND_V1 = NarrativeIdentityProfile(
 
 RETENTION_STORY_V1 = NarrativeIdentityProfile(
     profile_id="retention_story_v1",
-    profile_version="1.5.2",
+    profile_version="1.5.3",
     language="en-US",
     identity="a concrete, fast-moving storyteller optimizing grounded curiosity and payoff",
     allowed_ending_kinds=("cliffhanger", "consequence"),
-    prompt_version="vision-first-retention-story-v2.5",
-    prompt_filename="vision_first_story_analyzer_retention_v2_5.txt",
-    contract_sha256="871b1f120a14ef5d0969bb64853abcd4f539a58cb41c179fb5590b6164eb826a",
+    prompt_version="vision-first-retention-story-v2.6",
+    prompt_filename="vision_first_story_analyzer_retention_v2_6.txt",
+    contract_sha256="e6abd9e1b01a608f6d8b1b6ed90cae941b72e235ddbf5ed2aa6adc1443e7de57",
 )
 
 _PROFILE_REGISTRY: dict[str, NarrativeIdentityProfile] = {

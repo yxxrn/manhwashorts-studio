@@ -1536,7 +1536,7 @@ def test_synthesis_persistent_unknown_panel_reference_still_fails_closed(db, tmp
     row = module.run_analysis(db, project_id)
 
     assert row.state == "BLOCKED"
-    assert provider.synthesis_attempts == module._VISION_SYNTHESIS_MAX_ATTEMPTS
+    assert provider.synthesis_attempts == 2  # identical retry signature fails fast
     assert provider.synthesis_requests[0].retry_evidence_lineage is False
     assert all(request.retry_evidence_lineage is True for request in provider.synthesis_requests[1:])
     blocking = row.blocking_reasons_json or {}

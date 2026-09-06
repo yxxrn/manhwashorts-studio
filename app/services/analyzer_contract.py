@@ -439,6 +439,9 @@ _RETENTION_SEMANTIC_MORPHOLOGY = {
     "required": "require",
     "requirement": "require",
     "requirements": "require",
+    "need": "require",
+    "needs": "require",
+    "needed": "require",
     "purify": "purify",
     "purifies": "purify",
     "purified": "purify",
@@ -605,7 +608,7 @@ def _validate_retention_claim_semantic_grounding(graph_value: Any, observations:
         claim = _mapping(raw_claim, "claim")
         anchors = _semantic_anchor_tokens(str(claim.get("text", "")))
         qualification_anchors = _semantic_anchor_tokens(str(claim.get("qualification", "")))
-        evidence_rows: list[tuple[int, set[str]]] = []
+        evidence_rows: list[tuple[int, set[str], bool]] = []
         observed: set[str] = set()
         for panel_id in claim.get("evidence_panel_ids", []) or []:
             pid = str(panel_id)
@@ -617,18 +620,34 @@ def _validate_retention_claim_semantic_grounding(graph_value: Any, observations:
                 for value in obs.get(field, []) or []:
                     panel_tokens |= _semantic_anchor_tokens(str(value))
             observed |= panel_tokens
-            evidence_rows.append((order_by_panel.get(pid, 10**9), panel_tokens))
+            has_dialogue = any(str(value).strip() for value in (obs.get("dialogue_or_ocr") or []))
+            evidence_rows.append((order_by_panel.get(pid, 10**9), panel_tokens, has_dialogue))
         required_overlap = min(5, max(1, (2 * len(anchors) + 2) // 3)) if anchors else 0
         best_local: set[str] = set()
+        best_local_has_dialogue = False
         rows = sorted(evidence_rows, key=lambda row: row[0])
         for left in range(len(rows)):
             local: set[str] = set()
+            local_has_dialogue = False
             for right in range(left, len(rows)):
                 if rows[right][0] - rows[left][0] > max_span:
                     break
                 local |= rows[right][1]
-                if len(anchors & local) > len(best_local):
-                    best_local = anchors & local
+                local_has_dialogue = local_has_dialogue or rows[right][2]
+                matched_local = anchors & local
+                if len(matched_local) > len(best_local):
+                    best_local = matched_local
+                    best_local_has_dialogue = local_has_dialogue
+                elif len(matched_local) == len(best_local) and local_has_dialogue:
+                    best_local_has_dialogue = True
+        if (
+            "declare" in anchors
+            and "declare" not in best_local
+            and best_local_has_dialogue
+            and len((anchors - {"declare"}) & best_local) >= 2
+        ):
+            best_local = set(best_local)
+            best_local.add("declare")
         dialogue_act_match = bool(best_local & {"affirmative", "negative"})
         critical = anchors & _RETENTION_REQUIRED_LOCAL_ANCHORS
         missing_critical = critical - best_local
@@ -966,7 +985,8 @@ def _validate_script_passages_v3(
             if not allow_dialogue_copy and contains_source_dialogue_copy(observations, (passage,)):
                 _fail("script passage copies source dialogue")
         claim_ids = _string_list(passage["claim_ids"], "passage claim_ids", allow_empty=False)
-        if not set(claim_ids) <= set(claim_evidence):
+        claim_id_set = set(claim_ids)
+        if not claim_id_set <= set(claim_evidence):
             _fail("script passage references an unknown claim")
         evidence = set(_panel_refs(passage["evidence_panel_ids"], expected, "passage evidence"))
         for claim_id in claim_ids:

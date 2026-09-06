@@ -9,9 +9,9 @@ def test_retention_profile_is_verified_and_non_question_ending():
     from app.services import narrative_identity as identity
 
     profile = identity.get_narrative_identity("retention_story_v1")
-    assert profile.profile_version == "1.5.2"
+    assert profile.profile_version == "1.5.3"
     assert profile.allowed_ending_kinds == ("cliffhanger", "consequence")
-    assert profile.prompt_version == "vision-first-retention-story-v2.5"
+    assert profile.prompt_version == "vision-first-retention-story-v2.6"
     version, digest, text = identity.load_narrative_instruction(profile.profile_id)
     assert version == profile.prompt_version
     assert len(digest) == 64
@@ -20,6 +20,9 @@ def test_retention_profile_is_verified_and_non_question_ending():
     assert "8-14" in lowered
     assert "must not be a rhetorical question" in lowered
     assert "arc selection itself must account for visual support" in lowered
+    assert "factual delta" in lowered
+    assert "fresh factual payoff" in lowered
+    assert "do not invent a new claim" in lowered
 
 
 def test_retention_contract_requires_short_single_sentence_hook():
@@ -39,21 +42,21 @@ def test_retention_contract_requires_short_single_sentence_hook():
             "passage_id": "p2",
             "editorial_role": "pressure",
             "text": "He sees the same bully threatening his sect again.",
-            "claim_ids": ["c1"],
+            "claim_ids": ["c2"],
             "evidence_panel_ids": ["panel-1"],
         },
         {
             "passage_id": "p3",
             "editorial_role": "decision",
             "text": "This time he steps forward instead of staying quiet.",
-            "claim_ids": ["c1"],
+            "claim_ids": ["c3"],
             "evidence_panel_ids": ["panel-1"],
         },
         {
             "passage_id": "p4",
             "editorial_role": "cliffhanger",
             "text": "Then the bracelet reveals one more thing it can rewind.",
-            "claim_ids": ["c1"],
+            "claim_ids": ["c4"],
             "evidence_panel_ids": ["panel-1"],
         },
     ]
@@ -62,7 +65,12 @@ def test_retention_contract_requires_short_single_sentence_hook():
         "story_spine": dict.fromkeys(contract._STORY_SPINE_FIELDS, "grounded"),
     }
     contract._validate_script_passages_v3(
-        passages, ("panel-1",), {"c1": {"panel-1"}}, [{"dialogue_or_ocr": []}], outline, profile
+        passages,
+        ("panel-1",),
+        {"c1": {"panel-1"}, "c2": {"panel-1"}, "c3": {"panel-1"}, "c4": {"panel-1"}},
+        [{"dialogue_or_ocr": []}],
+        outline,
+        profile,
     )
 
     passages[0] = {
@@ -71,8 +79,15 @@ def test_retention_contract_requires_short_single_sentence_hook():
     }
     with pytest.raises(contract.AnalyzerContractError, match="8-14 words"):
         contract._validate_script_passages_v3(
-            passages, ("panel-1",), {"c1": {"panel-1"}}, [{"dialogue_or_ocr": []}], outline, profile
+            passages,
+        ("panel-1",),
+        {"c1": {"panel-1"}, "c2": {"panel-1"}, "c3": {"panel-1"}, "c4": {"panel-1"}},
+        [{"dialogue_or_ocr": []}],
+        outline,
+        profile,
         )
+
+
 
 
 def test_retention_section_maps_merge_repeated_conflict_and_keep_story_text():
@@ -1016,6 +1031,140 @@ def test_retention_semantic_grounding_rejects_single_anchor_for_compound_claim()
     assert diag["required_anchor_matches"] >= 2
 
 
+def test_retention_semantic_reporting_declare_accepts_direct_dialogue_with_content_match():
+    from app.services import analyzer_contract
+
+    graph = {
+        "claims": [
+            {
+                "claim_id": "duel",
+                "claim_type": "fact",
+                "text": "One fighter declares the other barely good enough to fight him.",
+                "qualification": "Direct dialogue.",
+                "evidence_panel_ids": ["p"],
+            }
+        ]
+    }
+    observations = [
+        {
+            "panel_id": "p",
+            "source_index": 93,
+            "visible_facts": [],
+            "dialogue_or_ocr": ["YOU'RE ONLY BARELY GOOD ENOUGH TO FIGHT ME."],
+            "inferences": [],
+            "uncertainties": [],
+        }
+    ]
+    analyzer_contract._validate_retention_claim_semantic_grounding(graph, observations)
+
+
+def test_retention_semantic_reporting_declare_rejects_unrelated_dialogue():
+    import pytest
+
+    from app.services import analyzer_contract
+
+    graph = {
+        "claims": [
+            {
+                "claim_id": "war",
+                "claim_type": "fact",
+                "text": "The leader declares war on the rival clan.",
+                "qualification": "Direct dialogue.",
+                "evidence_panel_ids": ["p"],
+            }
+        ]
+    }
+    observations = [
+        {
+            "panel_id": "p",
+            "source_index": 10,
+            "visible_facts": [],
+            "dialogue_or_ocr": ["I WILL LEAVE NOW."],
+            "inferences": [],
+            "uncertainties": [],
+        }
+    ]
+    with pytest.raises(analyzer_contract.AnalyzerContractError, match="semantic anchor"):
+        analyzer_contract._validate_retention_claim_semantic_grounding(graph, observations)
+
+
+def test_retention_semantic_need_matches_required_choice_in_local_window():
+    from app.services import analyzer_contract
+
+    graph = {
+        "claims": [
+            {
+                "claim_id": "choice",
+                "claim_type": "fact",
+                "text": "They must choose a succession candidate.",
+                "qualification": "The local dialogue states both the need and the choice.",
+                "evidence_panel_ids": ["need", "choose"],
+            }
+        ]
+    }
+    observations = [
+        {
+            "panel_id": "need",
+            "source_index": 220,
+            "visible_facts": [],
+            "dialogue_or_ocr": [
+                "WE NEED ONE OF THE TWO OTHER SUCCESSOR CANDIDATES TO BECOME THE ASSOCIATION LEADER."
+            ],
+            "inferences": [],
+            "uncertainties": [],
+        },
+        {
+            "panel_id": "choose",
+            "source_index": 229,
+            "visible_facts": [],
+            "dialogue_or_ocr": [
+                "THE PERSON YOU CHOOSE TO SIDE WITH WILL HAVE THE HIGHER CHANCE."
+            ],
+            "inferences": [],
+            "uncertainties": [],
+        },
+    ]
+    analyzer_contract._validate_retention_claim_semantic_grounding(graph, observations)
+
+
+def test_retention_semantic_need_does_not_bridge_distant_choice():
+    import pytest
+
+    from app.services import analyzer_contract
+
+    graph = {
+        "claims": [
+            {
+                "claim_id": "choice",
+                "claim_type": "fact",
+                "text": "They must choose a succession candidate.",
+                "qualification": "The claim must remain local.",
+                "evidence_panel_ids": ["need", "choose"],
+            }
+        ]
+    }
+    observations = [
+        {
+            "panel_id": "need",
+            "source_index": 10,
+            "visible_facts": [],
+            "dialogue_or_ocr": ["WE NEED ONE OF THE TWO OTHER SUCCESSOR CANDIDATES."],
+            "inferences": [],
+            "uncertainties": [],
+        },
+        {
+            "panel_id": "choose",
+            "source_index": 40,
+            "visible_facts": [],
+            "dialogue_or_ocr": ["WHO WILL YOU CHOOSE THEN?"],
+            "inferences": [],
+            "uncertainties": [],
+        },
+    ]
+    with pytest.raises(analyzer_contract.AnalyzerContractError, match="semantic anchor"):
+        analyzer_contract._validate_retention_claim_semantic_grounding(graph, observations)
+
+
 def test_retention_semantic_grounding_accepts_compound_claim_from_combined_evidence():
     from app.services import analyzer_contract
 
@@ -1101,6 +1250,102 @@ def test_semantic_claim_failure_retries_full_synthesis(monkeypatch):
     assert retry.retry_word_counts is None
 
 
+def test_semantic_claim_retry_preserves_passage_correction_base(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    locked = tuple(
+        {
+            "passage_id": f"p{i}",
+            "editorial_role": "hook" if i == 1 else f"beat{i}",
+            "text": f"Grounded passage {i} stays stable.",
+            "claim_ids": ["bad" if i == 3 else f"c{i}"],
+            "evidence_panel_ids": ["a"],
+        }
+        for i in range(1, 5)
+    )
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="semantic-targeted-retry",
+        instruction_version="v",
+        instruction_sha256="e" * 64,
+        instruction_text="x",
+        expected_panel_ids=("a",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            if len(self.requests) == 1:
+                raise VisionResponseInvalid(
+                    validation_subtype="claim_evidence_lacks_semantic_anchor",
+                    retry_passages=locked,
+                    selection_diagnostics={"claim_id": "bad"},
+                )
+            return {"accepted": True}
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+    monkeypatch.setattr(
+        pipeline, "_validated_synthesis_cache_output", lambda output, _request: output
+    )
+    assert pipeline._synthesize_with_cache(provider, request) == {"accepted": True}
+    retry = provider.requests[1]
+    assert retry.retry_claim_semantic_grounding is True
+    assert retry.retry_claim_semantic_diagnostics == {"claim_id": "bad"}
+    assert retry.retry_passages == locked
+
+
+def test_semantic_retry_payload_targets_only_rejected_claim_passages():
+    from app.services import narrative_identity as identity
+    from app.services import vision_adapter as va
+
+    profile = identity.get_narrative_identity("retention_story_v1")
+    version, digest, instruction = identity.load_narrative_instruction(profile.profile_id)
+    locked = tuple(
+        {
+            "passage_id": f"p{i}",
+            "editorial_role": "hook" if i == 1 else f"beat{i}",
+            "text": f"Grounded passage {i} stays stable.",
+            "claim_ids": ["bad" if i == 3 else f"c{i}"],
+            "evidence_panel_ids": ["a"],
+        }
+        for i in range(1, 5)
+    )
+    request = va.VisionChapterSynthesisRequest(
+        analysis_run_id="semantic-target-wire",
+        instruction_version=version,
+        instruction_sha256=digest,
+        instruction_text=instruction,
+        expected_panel_ids=("a",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+        narrative_profile_id=profile.profile_id,
+        narrative_profile_version=profile.profile_version,
+        narrative_profile_sha256=profile.contract_sha256,
+        retry_claim_semantic_grounding=True,
+        retry_claim_semantic_diagnostics={"claim_id": "bad"},
+        retry_passages=locked,
+    )
+    payload = va._build_synthesis_payload(
+        request, request.expected_panel_ids, "mock", profile
+    )
+    content = payload["messages"][1]["content"]
+    assert "Semantic-grounding retry" in content
+    assert "Preserve every passage that does not reference the rejected claim_id exactly" in content
+    assert "Rejected claim_id: bad" in content
+    assert "rewrite only the minimum downstream passage needed" in content
+
+
 def test_deterministic_semantic_evidence_repair_adds_high_gain_candidate():
     from app.services import analyzer_contract, vision_adapter
 
@@ -1162,6 +1407,88 @@ def test_deterministic_semantic_evidence_repair_adds_high_gain_candidate():
         repaired["evidence_graph"], observations
     )
 
+
+
+def test_deterministic_semantic_claim_text_repair_shrinks_noncritical_claim():
+    from app.services import analyzer_contract, vision_adapter
+
+    output = {
+        "evidence_graph": {
+            "claims": [
+                {
+                    "claim_id": "c",
+                    "claim_type": "fact",
+                    "text": "The master says he is shaken by him.",
+                    "qualification": "Direct dialogue.",
+                    "evidence_panel_ids": ["p"],
+                }
+            ]
+        },
+        "script_passages": [
+            {
+                "passage_id": "p1",
+                "editorial_role": "setup",
+                "text": "His reaction changes the mood.",
+                "claim_ids": ["c"],
+                "evidence_panel_ids": ["p"],
+            }
+        ],
+    }
+    diagnostics = {
+        "claim_id": "c",
+        "claim_anchors": ["master", "says", "shaken"],
+        "matched_claim_anchors": ["shaken"],
+        "missing_critical_anchors": [],
+    }
+    repaired = vision_adapter._repair_semantic_claim_text_from_diagnostics(
+        output, diagnostics, ("p",)
+    )
+    assert repaired is not None
+    claim = repaired["evidence_graph"]["claims"][0]
+    assert claim["text"] == "shaken"
+    observations = [
+        {
+            "panel_id": "p",
+            "visible_facts": [],
+            "dialogue_or_ocr": ["I am shaken by him."],
+            "inferences": [],
+            "uncertainties": [],
+        }
+    ]
+    analyzer_contract._validate_retention_claim_semantic_grounding(
+        repaired["evidence_graph"], observations
+    )
+
+
+def test_deterministic_semantic_claim_text_repair_refuses_missing_critical_anchor():
+    from app.services import vision_adapter
+
+    output = {
+        "evidence_graph": {
+            "claims": [
+                {
+                    "claim_id": "c",
+                    "claim_type": "fact",
+                    "text": "He declares they are enemies.",
+                    "qualification": "Direct dialogue.",
+                    "evidence_panel_ids": ["p"],
+                }
+            ]
+        },
+        "script_passages": [],
+    }
+    diagnostics = {
+        "claim_id": "c",
+        "claim_anchors": ["declare", "enemy"],
+        "matched_claim_anchors": ["enemy"],
+        "missing_critical_anchors": ["declare"],
+    }
+    assert (
+        vision_adapter._repair_semantic_claim_text_from_diagnostics(
+            output, diagnostics, ("p",)
+        )
+        is None
+    )
 
 def test_deterministic_semantic_evidence_repair_refuses_insufficient_union():
     from app.services import vision_adapter
@@ -1226,7 +1553,7 @@ def test_retention_v25_is_self_contained_and_causally_exclusive():
     from app.services import narrative_identity as identity
 
     version, _digest, prompt = identity.load_narrative_instruction("retention_story_v1")
-    assert version == "vision-first-retention-story-v2.5"
+    assert version == "vision-first-retention-story-v2.6"
     assert "continuity_ledger" in prompt
     assert "entities MUST be nonempty" in prompt
     assert "Never drop or swap entity identity" in prompt
@@ -1545,6 +1872,49 @@ def test_disconnected_claim_retries_full_causal_arc(monkeypatch):
     assert retry.retry_word_counts is None
     assert retry.retry_visual_selection is False
     assert retry.retry_claim_semantic_grounding is False
+
+
+def test_backward_causal_link_retries_full_causal_arc(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="backward-causal-retry",
+        instruction_version="v",
+        instruction_sha256="f" * 64,
+        instruction_text="x",
+        expected_panel_ids=("a", "b"),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            if len(self.requests) == 1:
+                raise VisionResponseInvalid(
+                    validation_subtype="retention_causal_link_moves_backward_in_chronology"
+                )
+            return {"accepted": True}
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+    monkeypatch.setattr(
+        pipeline, "_validated_synthesis_cache_output", lambda output, _request: output
+    )
+    assert pipeline._synthesize_with_cache(provider, request) == {"accepted": True}
+    retry = provider.requests[1]
+    assert retry.retry_causal_arc is True
+    assert retry.retry_visual_selection is False
+    assert retry.retry_claim_semantic_grounding is False
+    assert retry.retry_word_counts is None
 
 
 def test_causal_retry_payload_anchors_only_first_two_passages():
@@ -2091,7 +2461,8 @@ def test_text_only_finishing_reserve_extends_attempt_twelve_only(monkeypatch):
             current = len(self.requests)
             if current <= pipeline._VISION_SYNTHESIS_MAX_ATTEMPTS - 1:
                 raise VisionResponseInvalid(
-                    validation_subtype="claim_evidence_lacks_semantic_anchor"
+                    validation_subtype="claim_evidence_lacks_semantic_anchor",
+                    selection_diagnostics={"claim_id": f"progress-{current}"},
                 )
             if current == pipeline._VISION_SYNTHESIS_MAX_ATTEMPTS:
                 raise VisionResponseInvalid(
@@ -2135,7 +2506,10 @@ def test_structural_failure_at_attempt_twelve_does_not_use_text_reserve(monkeypa
 
         def synthesize(self, active_request):
             self.requests.append(active_request)
-            raise VisionResponseInvalid(validation_subtype="claim_evidence_lacks_semantic_anchor")
+            raise VisionResponseInvalid(
+                validation_subtype="claim_evidence_lacks_semantic_anchor",
+                selection_diagnostics={"claim_id": f"progress-{len(self.requests)}"},
+            )
 
     provider = Provider()
     monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_: None)
@@ -3510,3 +3884,324 @@ def test_retention_semantic_expansion_stays_local_to_section_evidence():
     assert "wager" in expanded["cta"]
     assert "local-action" in expanded["cta"]
     assert "old-line" not in expanded["cta"]
+
+
+def test_visual_section_capacity_retries_by_reselecting_visual_story(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="visual-capacity-reselect-test",
+        instruction_version="test-v1",
+        instruction_sha256="d" * 64,
+        instruction_text="test",
+        expected_panel_ids=("panel-1",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+    locked = ({
+        "passage_id": "p1",
+        "editorial_role": "cta",
+        "text": "An unframeable old beat.",
+        "claim_ids": ["c1"],
+        "evidence_panel_ids": ["panel-1"],
+    },)
+    diagnostics = {
+        "passages": [{
+            "passage_id": "p1",
+            "role": "cliff",
+            "section": "cta",
+            "relevant_section_capacity": 0,
+            "relevant_generic_capacity": 0,
+            "capacity_zero": True,
+            "required_section": 0,
+            "safe_candidate_panels": [{
+                "panel_id": "panel-safe",
+                "source_index": 12,
+                "excerpt": "A frameable replacement beat.",
+            }],
+        }]
+    }
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            if len(self.requests) == 1:
+                raise VisionResponseInvalid(
+                    validation_subtype="production_visual_section_capacity_insufficient",
+                    retry_passages=locked,
+                    selection_diagnostics=diagnostics,
+                )
+            return {"accepted": True}
+
+    provider = Provider()
+    monkeypatch.setattr(
+        pipeline, "_validate_synthesis_subtitle_admission", lambda output, active_request: None
+    )
+    monkeypatch.setattr(
+        pipeline, "_validated_synthesis_cache_output", lambda output, active_request: output
+    )
+
+    assert pipeline._synthesize_with_cache(provider, request) == {"accepted": True}
+    retry_request = provider.requests[1]
+    assert retry_request.retry_visual_story_alignment is True
+    assert retry_request.retry_visual_story_diagnostics == diagnostics
+    assert retry_request.retry_visual_selection is False
+    assert retry_request.retry_causal_arc is False
+    assert retry_request.retry_claim_semantic_grounding is True
+    assert retry_request.retry_passages == locked
+
+
+def test_visual_capacity_zero_carries_passage_diagnostics():
+    import pytest
+
+    from app.services import vision_adapter as va
+
+    observations = (
+        {
+            "panel_id": "evidence",
+            "source_asset_id": "asset-evidence",
+            "source_index": 0,
+            "visible_facts": ["Queen treatment begins."],
+            "dialogue_or_ocr": [],
+            "inferences": [],
+        },
+        {
+            "panel_id": "safe",
+            "source_asset_id": "asset-safe",
+            "source_index": 100,
+            "visible_facts": ["Unrelated quiet landscape."],
+            "dialogue_or_ocr": [],
+            "inferences": [],
+        },
+    )
+    request = va.VisionChapterSynthesisRequest(
+        analysis_run_id="capacity-diagnostics-test",
+        instruction_version="test-v1",
+        instruction_sha256="e" * 64,
+        instruction_text="test",
+        expected_panel_ids=("evidence", "safe"),
+        coverage_manifest={},
+        ordered_observations=observations,
+        chunks=(),
+        target_word_count_min=115,
+        target_word_count_max=125,
+        preferred_visual_panel_ids=("safe",),
+        preferred_visual_panel_ids_by_section={"hook": ("safe",)},
+    )
+    output = {
+        "script_passages": [{
+            "passage_id": "p1",
+            "editorial_role": "hook",
+            "text": "Queen treatment begins.",
+            "claim_ids": ["c1"],
+            "evidence_panel_ids": ["evidence"],
+        }],
+        "evidence_graph": {"claims": [{
+            "claim_id": "c1",
+            "text": "Queen treatment begins.",
+            "qualification": "grounded",
+            "evidence_panel_ids": ["evidence"],
+        }]},
+    }
+
+    with pytest.raises(va.VisionResponseInvalid) as caught:
+        va.validate_synthesis_visual_selection(output, request)
+    assert caught.value.validation_subtype == "production_visual_section_capacity_insufficient"
+    diagnostics = caught.value.selection_diagnostics
+    assert diagnostics.get("passages")
+    row = diagnostics["passages"][0]
+    assert row["section"] == "hook"
+    assert row["relevant_section_capacity"] == 0
+    assert row["relevant_generic_capacity"] == 0
+    assert row["capacity_zero"] is True
+    assert row["claim_ids"] == ["c1"]
+    assert row["claims"][0]["text"] == "Queen treatment begins."
+    assert row["safe_candidate_panels"][0]["panel_id"] == "safe"
+    assert row["safe_candidate_panels"][0]["source_index"] == 100
+    assert "Unrelated quiet landscape" in row["safe_candidate_panels"][0]["excerpt"]
+    assert caught.value.retry_passages is not None
+
+def test_visual_capacity_zero_releases_opening_anchor(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    locked = (
+        {
+            "passage_id": "p1",
+            "editorial_role": "hook",
+            "text": "Unframeable opening beat.",
+            "claim_ids": ["c1"],
+            "evidence_panel_ids": ["panel-1"],
+        },
+        {
+            "passage_id": "p2",
+            "editorial_role": "setup",
+            "text": "Old setup tied to the rejected opening.",
+            "claim_ids": ["c2"],
+            "evidence_panel_ids": ["panel-2"],
+        },
+    )
+    diagnostics = {
+        "passages": [
+            {
+                "passage_id": "p1",
+                "role": "hook",
+                "section": "hook",
+                "relevant_section_capacity": 0,
+                "relevant_generic_capacity": 0,
+                "capacity_zero": True,
+                "safe_candidate_panels": [],
+            }
+        ]
+    }
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="visual-capacity-opening-release",
+        instruction_version="test-v1",
+        instruction_sha256="f" * 64,
+        instruction_text="test",
+        expected_panel_ids=("panel-1", "panel-2"),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+        retry_causal_arc=True,
+        retry_passages=locked,
+        retry_claim_semantic_grounding=True,
+        retry_claim_semantic_diagnostics={"claim_id": "old"},
+    )
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            if len(self.requests) == 1:
+                raise VisionResponseInvalid(
+                    validation_subtype="production_visual_section_capacity_insufficient",
+                    retry_passages=locked,
+                    selection_diagnostics=diagnostics,
+                )
+            return {"accepted": True}
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_: None)
+    monkeypatch.setattr(
+        pipeline, "_validated_synthesis_cache_output", lambda output, _request: output
+    )
+    assert pipeline._synthesize_with_cache(provider, request) == {"accepted": True}
+    retry = provider.requests[1]
+    assert retry.retry_visual_story_alignment is True
+    assert retry.retry_visual_story_diagnostics == diagnostics
+    assert retry.retry_causal_arc is False
+    assert retry.retry_passages is None
+    assert retry.retry_claim_semantic_grounding is True
+    assert retry.retry_claim_semantic_diagnostics is None
+    assert retry.retry_visual_selection is False
+
+
+def test_visual_capacity_retry_prompt_requires_safe_first_beat_replacement():
+    from app.services import narrative_identity as identity
+    from app.services import vision_adapter as va
+
+    profile = identity.get_narrative_identity("retention_story_v1")
+    version, digest, instruction = identity.load_narrative_instruction(profile.profile_id)
+    locked = (
+        {
+            "passage_id": "p1",
+            "editorial_role": "hook",
+            "text": "Grounded opening remains unchanged.",
+            "claim_ids": ["c1"],
+            "evidence_panel_ids": ["safe-hook"],
+        },
+        {
+            "passage_id": "p2",
+            "editorial_role": "pressure",
+            "text": "This downstream beat must be replaced.",
+            "claim_ids": ["c2"],
+            "evidence_panel_ids": ["unsafe"],
+        },
+    )
+    diagnostics = {
+        "passages": [
+            {
+                "passage_id": "p2",
+                "role": "pressure",
+                "section": "conflict",
+                "capacity_zero": True,
+                "relevant_section_capacity": 0,
+                "relevant_generic_capacity": 0,
+                "safe_candidate_panels": [
+                    {
+                        "panel_id": "safe-conflict",
+                        "source_index": 42,
+                        "excerpt": "Two fighters collide in a sword exchange.",
+                    }
+                ],
+            }
+        ]
+    }
+    request = va.VisionChapterSynthesisRequest(
+        analysis_run_id="capacity-prompt-test",
+        instruction_version=version,
+        instruction_sha256=digest,
+        instruction_text=instruction,
+        expected_panel_ids=("safe-hook", "unsafe", "safe-conflict"),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+        narrative_profile_id=profile.profile_id,
+        narrative_profile_version=profile.profile_version,
+        narrative_profile_sha256=profile.contract_sha256,
+        retry_visual_story_alignment=True,
+        retry_visual_story_diagnostics=diagnostics,
+        retry_claim_semantic_grounding=True,
+        retry_passages=locked,
+    )
+    payload = va._build_synthesis_payload(request, request.expected_panel_ids, "mock", profile)
+    content = payload["messages"][1]["content"]
+    assert "If relevant visual capacity is zero, adding filler panels cannot repair the passage." in content
+    assert "Discard/rewrite the beat from production-safe evidence" in content
+    assert "Production-safe capacity retry" in content
+    assert "Preserve every non-target passage_id" in content
+    assert "safe-conflict" in content
+    assert "Two fighters collide in a sword exchange." in content
+
+
+def test_semantic_retry_payload_requires_evidence_near_atomic_claims():
+    from app.services import narrative_identity
+    from app.services import vision_adapter as va
+
+    profile = narrative_identity.get_narrative_identity("retention_story_v1")
+    version, digest, instruction = narrative_identity.load_narrative_instruction(profile.profile_id)
+    request = va.VisionChapterSynthesisRequest(
+        analysis_run_id="semantic-convergence-wire",
+        instruction_version=version,
+        instruction_sha256=digest,
+        instruction_text=instruction,
+        expected_panel_ids=("safe",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+        narrative_profile_id=profile.profile_id,
+        narrative_profile_version=profile.profile_version,
+        narrative_profile_sha256=profile.contract_sha256,
+        retry_claim_semantic_grounding=True,
+        retry_claim_semantic_diagnostics={"claim_id": "c1"},
+    )
+    payload = va._build_synthesis_payload(request, request.expected_panel_ids, "mock", profile)
+    content = payload["messages"][1]["content"]
+    assert "claim.text as an evidence key, not polished narration" in content
+    assert "SMALLEST atomic proposition" in content
+    assert "Natural paraphrase belongs in script_passages" in content
+    assert "do not append who/when/where/why" in content

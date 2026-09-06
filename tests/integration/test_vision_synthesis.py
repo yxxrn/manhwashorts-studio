@@ -939,8 +939,21 @@ def test_production_visual_selection_requires_section_safe_panel_coverage():
         "twist": preferred[:4],
         "cta": preferred[:4],
     }
+    observations = tuple(
+        {
+            "panel_id": panel_id,
+            "source_asset_id": f"asset-{panel_id}",
+            "source_index": index,
+            "visible_facts": ["The lead follows the visible trail across the chapter."],
+            "dialogue_or_ocr": [],
+            "inferences": [],
+        }
+        for index, panel_id in enumerate(preferred)
+    )
     request = _request(
         module,
+        expected_panel_ids=preferred,
+        ordered_observations=observations,
         target_word_count_min=115,
         target_word_count_max=125,
         preferred_visual_panel_ids=preferred,
@@ -962,23 +975,40 @@ def test_production_visual_selection_requires_section_safe_panel_coverage():
     )
 
 
-def test_production_visual_selection_fails_closed_when_section_allowlist_is_too_small():
+def test_production_visual_selection_accepts_all_available_section_safe_panels_below_four():
     module = _vision_module()
     preferred = ("panel-a", "panel-b", "panel-c", "panel-d")
     by_section = {
-        "hook": preferred, "setup": preferred[:3], "conflict": preferred,
-        "twist": preferred, "cta": preferred,
+        "hook": preferred,
+        "setup": preferred[:3],
+        "conflict": preferred,
+        "twist": preferred,
+        "cta": preferred,
     }
+    observations = tuple(
+        {
+            "panel_id": panel_id,
+            "source_asset_id": f"asset-{panel_id}",
+            "source_index": index,
+            "visible_facts": ["The lead follows the visible trail across the chapter."],
+            "dialogue_or_ocr": [],
+            "inferences": [],
+        }
+        for index, panel_id in enumerate(preferred)
+    )
     request = _request(
-        module, target_word_count_min=115, target_word_count_max=125,
-        preferred_visual_panel_ids=preferred, preferred_visual_panel_ids_by_section=by_section,
+        module,
+        expected_panel_ids=preferred,
+        ordered_observations=observations,
+        target_word_count_min=115,
+        target_word_count_max=125,
+        preferred_visual_panel_ids=preferred,
+        preferred_visual_panel_ids_by_section=by_section,
     )
     output = _valid_output()
     for passage in output["script_passages"]:
         passage["evidence_panel_ids"] = list(preferred)
-    with pytest.raises(module.VisionResponseInvalid) as caught:
-        module.validate_synthesis_visual_selection(output, request)
-    assert caught.value.validation_subtype == "production_visual_section_capacity_insufficient"
+    module.validate_synthesis_visual_selection(output, request)
 
 
 def test_preferred_visual_panel_ids_are_sent_as_input_only_hints(mock_provider_url, monkeypatch):
@@ -1142,6 +1172,17 @@ def test_retention_dynamic_roles_use_positional_visual_sections():
         section: panel_ids[index * 4:(index + 1) * 4]
         for index, section in enumerate(section_names)
     }
+    observations = tuple(
+        {
+            "panel_id": panel_id,
+            "source_asset_id": f"asset-{panel_id}",
+            "source_index": index,
+            "visible_facts": ["Grounded beat text."],
+            "dialogue_or_ocr": [],
+            "inferences": [],
+        }
+        for index, panel_id in enumerate(panel_ids)
+    )
     request = module.VisionChapterSynthesisRequest(
         analysis_run_id="retention-visual-sections",
         instruction_version="test",
@@ -1149,7 +1190,7 @@ def test_retention_dynamic_roles_use_positional_visual_sections():
         instruction_text="test",
         expected_panel_ids=panel_ids,
         coverage_manifest={},
-        ordered_observations=(),
+        ordered_observations=observations,
         chunks=(),
         narrative_profile_id="retention_story_v1",
         target_word_count_min=115,
@@ -1168,7 +1209,19 @@ def test_retention_dynamic_roles_use_positional_visual_sections():
         }
         for index, role in enumerate(roles)
     ]
-    output = {"script_passages": passages}
+    output = {
+        "script_passages": passages,
+        "evidence_graph": {
+            "claims": [
+                {
+                    "claim_id": "claim",
+                    "text": "Grounded beat text.",
+                    "qualification": "Directly visible in the supplied panels.",
+                    "evidence_panel_ids": list(panel_ids),
+                }
+            ]
+        },
+    }
     module.validate_synthesis_visual_selection(output, request)
     mapped = [
         module._visual_section_for_passage(item, index, len(passages), request)
