@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 PROMPT_VERSION = "vision-first-story-analyzer-v2"
-PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / (
-    "vision_first_story_analyzer_v2.txt"
+PROMPT_PATH = (
+    Path(__file__).resolve().parents[1] / "prompts" / ("vision_first_story_analyzer_v2.txt")
 )
 
 _REQUIRED_OUTPUT_KEYS = frozenset(
@@ -89,8 +89,14 @@ class AnalyzerContractError(ValueError):
 
     code = "analyzer_contract_invalid"
 
-    def __init__(self, message: str = "analyzer contract validation failed") -> None:
+    def __init__(
+        self,
+        message: str = "analyzer contract validation failed",
+        *,
+        diagnostics: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
+        self.diagnostics = dict(diagnostics or {})
 
 
 def _load_v2_instruction() -> tuple[str, str, str]:
@@ -105,9 +111,7 @@ def _load_v2_instruction() -> tuple[str, str, str]:
         raise AnalyzerContractError("analyzer instruction cannot be loaded") from None
 
 
-def load_analyzer_instruction(
-    *, narrative_profile_id: str | None = None
-) -> tuple[str, str, str]:
+def load_analyzer_instruction(*, narrative_profile_id: str | None = None) -> tuple[str, str, str]:
     """Load v2 by default or an explicitly selected verified identity."""
 
     if narrative_profile_id is None:
@@ -120,8 +124,8 @@ def load_analyzer_instruction(
         raise AnalyzerContractError("unknown narrative profile") from None
 
 
-def _fail(message: str) -> None:
-    raise AnalyzerContractError(message)
+def _fail(message: str, *, diagnostics: Mapping[str, Any] | None = None) -> None:
+    raise AnalyzerContractError(message, diagnostics=diagnostics)
 
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -172,9 +176,7 @@ def _expected_panel_ids(value: Any) -> tuple[str, ...]:
     return expected
 
 
-def _validate_observations(
-    value: Any, expected: tuple[str, ...]
-) -> None:
+def _validate_observations(value: Any, expected: tuple[str, ...]) -> None:
     observations = value
     if not isinstance(observations, list) or len(observations) != len(expected):
         _fail("observations must contain every expected panel exactly once")
@@ -206,9 +208,7 @@ def _validate_observations(
         if bounds["width"] == 0 or bounds["height"] == 0:
             _fail("region_bounds must have positive dimensions")
 
-        _nonempty_string(
-            observation.get("coverage_map_version"), "coverage_map_version"
-        )
+        _nonempty_string(observation.get("coverage_map_version"), "coverage_map_version")
         _nonempty_string(observation.get("coverage_map_hash"), "coverage_map_hash")
         _string_list(observation.get("visible_facts"), "visible_facts", allow_empty=False)
         _string_list(observation.get("dialogue_or_ocr"), "dialogue_or_ocr")
@@ -284,9 +284,7 @@ def _validate_continuity(value: Any, expected: tuple[str, ...]) -> None:
         seen_panel_ids.update(panel_ids)
     if seen_panel_ids != set(expected):
         _fail("continuity chunks do not cover every panel")
-    for previous, current in zip(
-        chunk_panel_ids, chunk_panel_ids[1:], strict=False
-    ):
+    for previous, current in zip(chunk_panel_ids, chunk_panel_ids[1:], strict=False):
         if not set(previous).intersection(current):
             _fail("sequential chunks must overlap")
     if ledger["reconciled_after_final_chunk"] is not True:
@@ -298,7 +296,9 @@ def _validate_continuity(value: Any, expected: tuple[str, ...]) -> None:
     entity_ids: set[str] = set()
     for entity_value in entities:
         entity = _mapping(entity_value, "continuity entity")
-        _require_fields(entity, ("entity_id", "canonical_name", "aliases", "panel_ids"), "continuity entity")
+        _require_fields(
+            entity, ("entity_id", "canonical_name", "aliases", "panel_ids"), "continuity entity"
+        )
         entity_id = _nonempty_string(entity["entity_id"], "entity_id")
         if entity_id in entity_ids:
             _fail("continuity entity IDs must be unique")
@@ -376,6 +376,382 @@ def _validate_claims(value: Any, expected: tuple[str, ...]) -> dict[str, set[str
     return claim_evidence
 
 
+_RETENTION_SEMANTIC_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "against",
+    "being",
+    "because",
+    "before",
+    "could",
+    "every",
+    "from",
+    "have",
+    "into",
+    "itself",
+    "must",
+    "only",
+    "their",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "through",
+    "under",
+    "very",
+    "while",
+    "with",
+    "without",
+    "would",
+    "character",
+    "characters",
+    "panel",
+    "panels",
+    "scene",
+    "shown",
+    "visible",
+    "direct",
+    "directly",
+    "evidence",
+    "stated",
+    "implied",
+    "observed",
+    "fact",
+    "interpretation",
+    "context",
+    "supported",
+    "support",
+    "grounded",
+    "inference",
+    "qualification",
+    "activation",
+    "consequence",
+}
+_RETENTION_SEMANTIC_MORPHOLOGY = {
+    "marry": "marry",
+    "marries": "marry",
+    "married": "marry",
+    "marriage": "marry",
+    "require": "require",
+    "requires": "require",
+    "required": "require",
+    "requirement": "require",
+    "requirements": "require",
+    "purify": "purify",
+    "purifies": "purify",
+    "purified": "purify",
+    "purification": "purify",
+    "declare": "declare",
+    "declares": "declare",
+    "declared": "declare",
+    "declaration": "declare",
+    "heal": "heal",
+    "heals": "heal",
+    "healed": "heal",
+    "healing": "heal",
+    "exhaust": "exhaust",
+    "exhausted": "exhaust",
+    "exhaustion": "exhaust",
+    "accompany": "accompany",
+    "accompanies": "accompany",
+    "accompanied": "accompany",
+    "accompanying": "accompany",
+    "stay": "stay",
+    "stays": "stay",
+    "stayed": "stay",
+    "staying": "stay",
+    "continuous": "continuous",
+    "continuously": "continuous",
+    "constant": "continuous",
+    "constantly": "continuous",
+    "deteriorate": "deteriorate",
+    "deteriorates": "deteriorate",
+    "deteriorated": "deteriorate",
+    "deteriorating": "deteriorate",
+    "deterioration": "deteriorate",
+    "share": "share",
+    "shares": "share",
+    "shared": "share",
+    "sharing": "share",
+    "bedchamber": "chamber",
+    "bedchambers": "chamber",
+    "chambers": "chamber",
+    "force": "force",
+    "forces": "force",
+    "forced": "force",
+    "trust": "trust",
+    "trusts": "trust",
+    "trusted": "trust",
+    "love": "love",
+    "loves": "love",
+    "loved": "love",
+    "must": "require",
+    "curse": "curse",
+    "cursed": "curse",
+}
+
+_RETENTION_REQUIRED_LOCAL_ANCHORS = frozenset(
+    {
+        "law",
+        "require",
+        "marry",
+        "share",
+        "chamber",
+        "force",
+        "declare",
+        "treatment",
+        "heal",
+        "purify",
+        "curse",
+        "mana",
+        "trust",
+        "love",
+        "continuous",
+    }
+)
+
+
+def _semantic_anchor_tokens(text: str) -> set[str]:
+    result: set[str] = set()
+    for token in _normalized_lexical_words(text):
+        if token in {"yes", "yeah", "yep"} or token.startswith("affirmativ"):
+            result.add("affirmative")
+        elif token in {"no", "nope"} or token.startswith("negativ"):
+            result.add("negative")
+        token = _RETENTION_SEMANTIC_MORPHOLOGY.get(token, token)
+        if len(token) >= 5 and token.endswith("ies"):
+            token = token[:-3] + "y"
+        elif len(token) >= 5 and token.endswith("s") and not token.endswith("ss"):
+            token = token[:-1]
+        token = _RETENTION_SEMANTIC_MORPHOLOGY.get(token, token)
+        if (len(token) >= 4 or token in {"law"}) and token not in _RETENTION_SEMANTIC_STOPWORDS:
+            result.add(token)
+    return result
+
+
+def _retention_semantic_candidate_panels(
+    anchors: set[str], observation_by_panel: Mapping[str, Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    ranked: list[tuple[int, int, str, list[str], list[str]]] = []
+    for panel_id, obs in observation_by_panel.items():
+        observed: set[str] = set()
+        excerpts: list[str] = []
+        for field in ("visible_facts", "dialogue_or_ocr", "inferences", "uncertainties"):
+            for value in obs.get(field, []) or []:
+                text = str(value).strip()
+                observed |= _semantic_anchor_tokens(text)
+                if text and len(excerpts) < 4:
+                    excerpts.append(text[:240])
+        overlap = sorted(anchors & observed)
+        if not overlap:
+            continue
+        raw_order = obs.get("source_order")
+        if isinstance(raw_order, bool) or not isinstance(raw_order, int):
+            raw_order = obs.get("source_index", 10**9)
+        source_order = (
+            int(raw_order)
+            if isinstance(raw_order, int) and not isinstance(raw_order, bool)
+            else 10**9
+        )
+        ranked.append((len(overlap), source_order, panel_id, overlap, excerpts))
+    ranked.sort(key=lambda row: (-row[0], row[1], row[2]))
+    selected = list(ranked[:4])
+    frequencies: dict[str, int] = {}
+    for row in ranked:
+        for anchor in row[3]:
+            frequencies[anchor] = frequencies.get(anchor, 0) + 1
+    for anchor in sorted(frequencies, key=lambda value: (frequencies[value], value)):
+        if len(selected) >= 8:
+            break
+        candidate = next((row for row in ranked if anchor in row[3]), None)
+        if candidate is not None and candidate not in selected:
+            selected.append(candidate)
+    for row in ranked:
+        if len(selected) >= 8:
+            break
+        if row not in selected:
+            selected.append(row)
+    return [
+        {
+            "panel_id": panel_id,
+            "source_order": None if source_order == 10**9 else source_order,
+            "overlap_anchors": overlap,
+            "evidence_excerpt": excerpts,
+        }
+        for _count, source_order, panel_id, overlap, excerpts in selected
+    ]
+
+
+def _validate_retention_claim_semantic_grounding(graph_value: Any, observations: Any) -> None:
+    graph = _mapping(graph_value, "evidence_graph")
+    claims = graph.get("claims")
+    observation_by_panel: dict[str, Mapping[str, Any]] = {}
+    order_by_panel: dict[str, int] = {}
+    for fallback, raw in enumerate(observations):
+        obs = _mapping(raw, "observation")
+        panel_id = str(obs.get("panel_id", ""))
+        if panel_id:
+            observation_by_panel[panel_id] = obs
+            raw_index = obs.get("source_index")
+            order_by_panel[panel_id] = (
+                int(raw_index)
+                if isinstance(raw_index, int) and not isinstance(raw_index, bool)
+                else fallback
+            )
+    max_span = 12
+    for raw_claim in claims or []:
+        claim = _mapping(raw_claim, "claim")
+        anchors = _semantic_anchor_tokens(str(claim.get("text", "")))
+        qualification_anchors = _semantic_anchor_tokens(str(claim.get("qualification", "")))
+        evidence_rows: list[tuple[int, set[str]]] = []
+        observed: set[str] = set()
+        for panel_id in claim.get("evidence_panel_ids", []) or []:
+            pid = str(panel_id)
+            obs = observation_by_panel.get(pid)
+            if not obs:
+                continue
+            panel_tokens: set[str] = set()
+            for field in ("visible_facts", "dialogue_or_ocr", "inferences", "uncertainties"):
+                for value in obs.get(field, []) or []:
+                    panel_tokens |= _semantic_anchor_tokens(str(value))
+            observed |= panel_tokens
+            evidence_rows.append((order_by_panel.get(pid, 10**9), panel_tokens))
+        required_overlap = min(5, max(1, (2 * len(anchors) + 2) // 3)) if anchors else 0
+        best_local: set[str] = set()
+        rows = sorted(evidence_rows, key=lambda row: row[0])
+        for left in range(len(rows)):
+            local: set[str] = set()
+            for right in range(left, len(rows)):
+                if rows[right][0] - rows[left][0] > max_span:
+                    break
+                local |= rows[right][1]
+                if len(anchors & local) > len(best_local):
+                    best_local = anchors & local
+        dialogue_act_match = bool(best_local & {"affirmative", "negative"})
+        critical = anchors & _RETENTION_REQUIRED_LOCAL_ANCHORS
+        missing_critical = critical - best_local
+        required_for_retry = max(required_overlap, len(best_local) + len(missing_critical))
+        if (
+            anchors
+            and not dialogue_act_match
+            and (len(best_local) < required_overlap or missing_critical)
+        ):
+            _fail(
+                "claim evidence lacks semantic anchor",
+                diagnostics={
+                    "claim_id": str(claim.get("claim_id", "")),
+                    "claim_text": str(claim.get("text", ""))[:500],
+                    "qualification": str(claim.get("qualification", ""))[:500],
+                    "evidence_panel_ids": [
+                        str(v) for v in (claim.get("evidence_panel_ids", []) or [])
+                    ],
+                    "claim_anchors": sorted(anchors)[:80],
+                    "qualification_anchors": sorted(qualification_anchors)[:80],
+                    "observed_anchors": sorted(observed)[:160],
+                    "matched_claim_anchors": sorted(best_local)[:80],
+                    "required_anchor_matches": required_for_retry,
+                    "critical_claim_anchors": sorted(critical),
+                    "missing_critical_anchors": sorted(missing_critical),
+                    "semantic_window_max_span": max_span,
+                    "candidate_panels": _retention_semantic_candidate_panels(
+                        anchors, observation_by_panel
+                    ),
+                },
+            )
+
+
+def _validate_retention_causal_chain(
+    continuity_value: Any, graph_value: Any, passages_value: Any
+) -> None:
+    continuity = _mapping(continuity_value, "continuity_ledger")
+    graph = _mapping(graph_value, "evidence_graph")
+    claims = graph.get("claims")
+    if (
+        not isinstance(claims, list)
+        or not isinstance(passages_value, list)
+        or len(passages_value) < 4
+    ):
+        _fail("retention causal chain cannot be evaluated")
+    claim_by_id = {str(item.get("claim_id")): item for item in claims if isinstance(item, Mapping)}
+    panel_order: dict[str, int] = {}
+    cursor = 0
+    for raw_chunk in continuity.get("chunks", []) or []:
+        if not isinstance(raw_chunk, Mapping):
+            continue
+        for value in raw_chunk.get("panel_ids", []) or []:
+            pid = str(value)
+            if pid not in panel_order:
+                panel_order[pid] = cursor
+                cursor += 1
+    edges: dict[str, set[str]] = {}
+    for raw in continuity.get("causal_links", []) or []:
+        if not isinstance(raw, Mapping):
+            continue
+        source = str(raw.get("from_panel_id", ""))
+        target = str(raw.get("to_panel_id", ""))
+        if not source or not target:
+            continue
+        if panel_order and (
+            source not in panel_order
+            or target not in panel_order
+            or panel_order[target] <= panel_order[source]
+        ):
+            _fail("retention causal link moves backward in chronology")
+        edges.setdefault(source, set()).add(target)
+
+    def reachable(starts: set[str], targets: set[str]) -> bool:
+        if starts & targets:
+            return True
+        seen = set(starts)
+        frontier = list(starts)
+        while frontier:
+            current = frontier.pop()
+            for nxt in edges.get(current, ()):
+                if nxt in targets:
+                    return True
+                if nxt not in seen:
+                    seen.add(nxt)
+                    frontier.append(nxt)
+        return False
+
+    hook = _mapping(passages_value[0], "script passage")
+    hook_evidence = {
+        str(v)
+        for cid in _string_list(hook.get("claim_ids"), "passage claim_ids", allow_empty=False)
+        for v in (claim_by_id.get(cid, {}).get("evidence_panel_ids", []) or [])
+    }
+    body_seen: set[str] = set()
+    prior_evidence: set[str] = set()
+    setup_evidence: set[str] = set()
+    for body_index, raw_passage in enumerate(passages_value[1:]):
+        passage = _mapping(raw_passage, "script passage")
+        claim_ids = _string_list(passage.get("claim_ids"), "passage claim_ids", allow_empty=False)
+        current: set[str] = set()
+        for claim_id in claim_ids:
+            claim = claim_by_id.get(claim_id)
+            evidence = (
+                {str(v) for v in (claim.get("evidence_panel_ids", []) or [])} if claim else set()
+            )
+            current |= evidence
+            if (
+                body_index >= 1
+                and claim_id not in body_seen
+                and not reachable(prior_evidence, evidence)
+            ):
+                _fail("retention passage introduces disconnected claim")
+        if body_index == 0:
+            setup_evidence = set(current)
+        prior_evidence.update(current)
+        body_seen.update(claim_ids)
+    hook_orders = [panel_order[v] for v in hook_evidence if v in panel_order]
+    setup_orders = [panel_order[v] for v in setup_evidence if v in panel_order]
+    is_late_teaser = bool(hook_orders and setup_orders and min(hook_orders) > min(setup_orders))
+    if is_late_teaser and not reachable(setup_evidence, hook_evidence):
+        _fail("retention hook teaser is not reachable from body causal chain")
+
+
 def _validate_narrative_outline(value: Any) -> None:
     outline = _mapping(value, "narrative_outline")
     _require_fields(outline, ("story_spine",), "narrative_outline")
@@ -422,10 +798,7 @@ def _normalized_sentences(text: str) -> list[str]:
 
 
 def _ngrams(words: list[str], size: int) -> set[tuple[str, ...]]:
-    return {
-        tuple(words[index : index + size])
-        for index in range(max(0, len(words) - size + 1))
-    }
+    return {tuple(words[index : index + size]) for index in range(max(0, len(words) - size + 1))}
 
 
 def _source_dialogue_ngrams(observations: Any) -> set[tuple[str, ...]]:
@@ -465,7 +838,11 @@ def source_dialogue_copy_diagnostics(observations: Any, passages: Any) -> dict[s
                 matches = _ngrams(words, size) & by_size[size]
                 if matches:
                     matched = min(matches)
-                    return {"passage_index": passage_index, "ngram_size": size, "matched_phrase": " ".join(matched)}
+                    return {
+                        "passage_index": passage_index,
+                        "ngram_size": size,
+                        "matched_phrase": " ".join(matched),
+                    }
     except (KeyError, TypeError, ValueError):
         return {}
     return {}
@@ -474,6 +851,7 @@ def source_dialogue_copy_diagnostics(observations: Any, passages: Any) -> dict[s
 def contains_source_dialogue_copy(observations: Any, passages: Any) -> bool:
     """Detect substantial verbatim source dialogue while allowing faithful paraphrase."""
     return bool(source_dialogue_copy_diagnostics(observations, passages))
+
 
 def _contains_channel_cta(text: str) -> bool:
     lowered = text.casefold()
@@ -520,17 +898,13 @@ def _validate_script_passages(
             _fail("script passages must not repeat a sentence")
         repeated_sentences.update(passage_sentences)
 
-        claim_ids = _string_list(
-            passage["claim_ids"], "passage claim_ids", allow_empty=False
-        )
+        claim_ids = _string_list(passage["claim_ids"], "passage claim_ids", allow_empty=False)
         if not set(claim_ids) <= set(claim_evidence):
             _fail("script passage references an unknown claim")
         evidence_panel_ids = set(
             _panel_refs(passage["evidence_panel_ids"], expected, "passage evidence")
         )
-        required_evidence = set().union(
-            *(claim_evidence[claim_id] for claim_id in claim_ids)
-        )
+        required_evidence = set().union(*(claim_evidence[claim_id] for claim_id in claim_ids))
         if not required_evidence <= evidence_panel_ids:
             _fail("script passage evidence does not cover its claims")
 
@@ -567,13 +941,12 @@ def _validate_script_passages_v3(
     profile: Any,
     *,
     allow_dialogue_copy: bool = False,
+    validate_text_checks: bool = True,
 ) -> None:
     if not isinstance(value, list) or not profile.passage_min <= len(value) <= profile.passage_max:
         _fail("script_passages must contain four to six passages")
     passage_ids: set[str] = set()
-    covered_claim_evidence: dict[str, set[str]] = {
-        claim_id: set() for claim_id in claim_evidence
-    }
+    covered_claim_evidence: dict[str, set[str]] = {claim_id: set() for claim_id in claim_evidence}
     for passage_value in value:
         passage = _mapping(passage_value, "script passage")
         if set(passage) != _SCRIPT_PASSAGE_KEYS:
@@ -584,23 +957,18 @@ def _validate_script_passages_v3(
         passage_ids.add(passage_id)
         _nonempty_string(passage["editorial_role"], "editorial_role")
         text = _nonempty_string(passage["text"], "script passage text")
-        if _contains_channel_cta(text):
-            _fail("generic channel CTA language is not allowed")
-        normalized_text = " ".join(_normalized_lexical_words(text))
-        if any(marker in normalized_text for marker in _V3_GENERIC_HYPE):
-            _fail("generic hype language is not allowed")
-        if not allow_dialogue_copy and contains_source_dialogue_copy(
-            observations, (passage,)
-        ):
-            _fail("script passage copies source dialogue")
-        claim_ids = _string_list(
-            passage["claim_ids"], "passage claim_ids", allow_empty=False
-        )
+        if validate_text_checks:
+            if _contains_channel_cta(text):
+                _fail("generic channel CTA language is not allowed")
+            normalized_text = " ".join(_normalized_lexical_words(text))
+            if any(marker in normalized_text for marker in _V3_GENERIC_HYPE):
+                _fail("generic hype language is not allowed")
+            if not allow_dialogue_copy and contains_source_dialogue_copy(observations, (passage,)):
+                _fail("script passage copies source dialogue")
+        claim_ids = _string_list(passage["claim_ids"], "passage claim_ids", allow_empty=False)
         if not set(claim_ids) <= set(claim_evidence):
             _fail("script passage references an unknown claim")
-        evidence = set(
-            _panel_refs(passage["evidence_panel_ids"], expected, "passage evidence")
-        )
+        evidence = set(_panel_refs(passage["evidence_panel_ids"], expected, "passage evidence"))
         for claim_id in claim_ids:
             local_claim_evidence = evidence & claim_evidence[claim_id]
             if not local_claim_evidence:
@@ -611,15 +979,16 @@ def _validate_script_passages_v3(
         for claim_id, required in claim_evidence.items()
     ):
         _fail("script passage evidence does not cover its claims")
-    if getattr(profile, "profile_id", "") == "retention_story_v1":
-        hook_text = _nonempty_string(value[0]["text"], "retention hook text").strip()
-        hook_words = hook_text.split()
-        if not 8 <= len(hook_words) <= 14:
-            _fail("retention hook must contain 8-14 words")
-        if len(_normalized_sentences(hook_text)) != 1:
-            _fail("retention hook must be one sentence")
-    final_text = _nonempty_string(value[-1]["text"], "final script passage text").rstrip()
-    _validate_v3_ending(outline, final_text, profile)
+    if validate_text_checks:
+        if getattr(profile, "profile_id", "") == "retention_story_v1":
+            hook_text = _nonempty_string(value[0]["text"], "retention hook text").strip()
+            hook_words = hook_text.split()
+            if not 8 <= len(hook_words) <= 14:
+                _fail("retention hook must contain 8-14 words")
+            if len(_normalized_sentences(hook_text)) != 1:
+                _fail("retention hook must be one sentence")
+        final_text = _nonempty_string(value[-1]["text"], "final script passage text").rstrip()
+        _validate_v3_ending(outline, final_text, profile)
 
 
 def _validate_output(
@@ -628,6 +997,7 @@ def _validate_output(
     *,
     narrative_profile_id: str | None = None,
     allow_dialogue_copy: bool = False,
+    validate_text_checks: bool = True,
 ) -> None:
     profile = None
     if narrative_profile_id is not None:
@@ -644,6 +1014,14 @@ def _validate_output(
     _validate_coverage_manifest(document["coverage_manifest"], expected)
     _validate_continuity(document["continuity_ledger"], expected)
     claim_evidence = _validate_claims(document["evidence_graph"], expected)
+    if (
+        profile is not None
+        and getattr(profile, "profile_id", "") == "retention_story_v1"
+        and getattr(profile, "profile_version", "") >= "1.1.0"
+    ):
+        _validate_retention_claim_semantic_grounding(
+            document["evidence_graph"], document["observations"]
+        )
     if profile is None:
         _validate_narrative_outline(document["narrative_outline"])
         _validate_script_passages(document["script_passages"], expected, claim_evidence)
@@ -657,7 +1035,17 @@ def _validate_output(
             outline,
             profile,
             allow_dialogue_copy=allow_dialogue_copy,
+            validate_text_checks=validate_text_checks,
         )
+        if (
+            getattr(profile, "profile_id", "") == "retention_story_v1"
+            and getattr(profile, "profile_version", "") >= "1.5.0"
+        ):
+            _validate_retention_causal_chain(
+                document["continuity_ledger"],
+                document["evidence_graph"],
+                document["script_passages"],
+            )
 
 
 def validate_analyzer_output(
@@ -666,6 +1054,7 @@ def validate_analyzer_output(
     expected_panel_ids: Sequence[str],
     narrative_profile_id: str | None = None,
     allow_dialogue_copy: bool = False,
+    validate_text_checks: bool = True,
 ) -> None:
     """Validate complete analyzer output without mutating or repairing it.
 
@@ -681,6 +1070,7 @@ def validate_analyzer_output(
             expected,
             narrative_profile_id=narrative_profile_id,
             allow_dialogue_copy=allow_dialogue_copy,
+            validate_text_checks=validate_text_checks,
         )
     except AnalyzerContractError:
         raise

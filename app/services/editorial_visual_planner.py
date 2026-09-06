@@ -60,6 +60,25 @@ def _review_visual_shot_target(total_duration: float, available_visuals: int) ->
     )
 
 
+def _review_section_minimum_visuals(spans: Sequence[object]) -> int:
+    """Respect the four-second ceiling across non-crossable section boundaries."""
+    groups: list[tuple[str, float, float]] = []
+    for span in spans:
+        section = str(getattr(span, "section", "") or "")
+        start = float(getattr(span, "start_time", 0.0))
+        end = float(getattr(span, "end_time", start))
+        if groups and groups[-1][0] == section:
+            old_section, old_start, old_end = groups[-1]
+            groups[-1] = (old_section, min(old_start, start), max(old_end, end))
+        else:
+            groups.append((section, start, end))
+    return sum(
+        max(1, math.ceil(max(0.0, end - start) / reference_profile.REVIEW_MAX_SHOT_SECONDS - 1e-9))
+        for _section, start, end in groups
+        if end > start
+    )
+
+
 def _review_effective_section_capacity(
     section_duration_s: float,
     roi_capacities: Sequence[int],
@@ -2878,6 +2897,15 @@ def _plan_reference(
                 "visual.capacity_insufficient",
             )
         nominal_target = _review_visual_shot_target(total_duration, capacity)
+        if max_shots_by_section is not None:
+            boundary_minimum = _review_section_minimum_visuals(spans)
+            if capacity < boundary_minimum:
+                raise ReferencePlanningError(
+                    f"{profile.profile_id} has capacity for {capacity} review shots; "
+                    f"at least {boundary_minimum} are required by section-bounded four-second cadence",
+                    "visual.capacity_insufficient",
+                )
+            nominal_target = max(nominal_target, boundary_minimum)
     else:
         nominal_target = max(
             profile.shot_min,

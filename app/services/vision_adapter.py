@@ -4,6 +4,7 @@ import base64
 import hashlib
 import importlib
 import json
+import re
 import string
 import threading
 from collections.abc import Mapping, Sequence
@@ -16,7 +17,7 @@ import httpx
 from app.services import visual_scoring
 
 VISION_REQUEST_TIMEOUT = 600.0
-SYNTHESIS_WIRE_CONTRACT_VERSION = "vision-synthesis-wire-v11"
+SYNTHESIS_WIRE_CONTRACT_VERSION = "vision-synthesis-wire-v13"
 ANALYSIS_WINDOW_CONTRACT_VERSION = "visual-analysis-windows-v1"
 ANALYSIS_WINDOW_MAX_COUNT = 12
 
@@ -87,9 +88,7 @@ _PROTECTED_REGION_KEYS = frozenset(
         "minimum_coverage",
     }
 )
-_OCR_ONLY_EVIDENCE_SOURCES = frozenset(
-    {"ocr_text_only", "text_only_ocr", "ocr_only"}
-)
+_OCR_ONLY_EVIDENCE_SOURCES = frozenset({"ocr_text_only", "text_only_ocr", "ocr_only"})
 _BALLOON_KIND_ALIASES = frozenset(
     {
         "caption",
@@ -170,8 +169,7 @@ def _normalize_provider_visual_evidence(observation: Any) -> Any:
         normalized_kind = (
             "speech_balloon"
             if isinstance(kind, str)
-            and kind.strip().lower().replace("-", "_").replace(" ", "_")
-            in _BALLOON_KIND_ALIASES
+            and kind.strip().lower().replace("-", "_").replace(" ", "_") in _BALLOON_KIND_ALIASES
             else kind
         )
         normalized_mask_status = (
@@ -267,23 +265,23 @@ class VisionChapterSynthesisRequest:
     retry_evidence_lineage: bool = False
     retry_dialogue_paraphrase: bool = False
     retry_claim_qualification: bool = False
+    retry_claim_semantic_grounding: bool = False
+    retry_claim_semantic_diagnostics: Mapping[str, Any] | None = None
+    retry_causal_arc: bool = False
+    retry_visual_story_alignment: bool = False
+    retry_visual_story_diagnostics: Mapping[str, Any] | None = None
+    retry_projection_contract: bool = False
     retry_local_claim_grounding: bool = False
     retry_passages: tuple[Mapping[str, Any], ...] | None = None
+    retry_text_only_locked_output: Mapping[str, Any] | None = None
 
 
 class VisionObservationProvider(Protocol):
-    def capability(self) -> VisionCapabilityReport:
-        ...
+    def capability(self) -> VisionCapabilityReport: ...
 
-    def observe(
-        self, request: VisionObservationRequest
-    ) -> list[Mapping[str, Any]]:
-        ...
+    def observe(self, request: VisionObservationRequest) -> list[Mapping[str, Any]]: ...
 
-    def synthesize(
-        self, request: VisionChapterSynthesisRequest
-    ) -> Mapping[str, Any]:
-        ...
+    def synthesize(self, request: VisionChapterSynthesisRequest) -> Mapping[str, Any]: ...
 
 
 class VisionCapabilityError(RuntimeError):
@@ -313,6 +311,7 @@ class VisionResponseInvalid(VisionCapabilityError):
         passage_word_counts: tuple[int, ...] | None = None,
         retry_passages: tuple[Mapping[str, Any], ...] | None = None,
         selection_diagnostics: Mapping[str, Any] | None = None,
+        retry_locked_output: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = False
@@ -322,6 +321,9 @@ class VisionResponseInvalid(VisionCapabilityError):
         self.passage_word_counts = passage_word_counts
         self.retry_passages = retry_passages
         self.selection_diagnostics = dict(selection_diagnostics or {})
+        self.retry_locked_output = (
+            dict(retry_locked_output) if isinstance(retry_locked_output, Mapping) else None
+        )
 
 
 class VisionProviderRequestFailed(VisionCapabilityError):
@@ -347,9 +349,78 @@ class VisionProviderRequestFailed(VisionCapabilityError):
 
 def _retry_passages_from_candidate(value: Any) -> tuple[Mapping[str, Any], ...] | None:
     passages = value.get("script_passages") if isinstance(value, Mapping) else None
-    if not isinstance(passages, list) or len(passages) != 5 or any(not isinstance(item, Mapping) for item in passages):
+    if (
+        not isinstance(passages, list)
+        or not 4 <= len(passages) <= 6
+        or any(not isinstance(item, Mapping) for item in passages)
+    ):
         return None
     return tuple(dict(item) for item in passages)
+
+
+TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES = frozenset(
+    {
+        "script_passage_word_count_is_outside_its_role_guardrail",
+        "script_passage_narration_must_contain_90-125_words",
+        "script_passage_copies_source_dialogue",
+        "production_narration_word_count_out_of_range",
+        "retention_hook_must_contain_8-14_words",
+        "retention_hook_must_be_one_sentence",
+        "production_subtitle_overflow",
+    }
+)
+
+
+def _apply_text_only_retry_lock(
+    result: Mapping[str, Any], request: VisionChapterSynthesisRequest
+) -> Mapping[str, Any]:
+    locked = request.retry_text_only_locked_output
+    if locked is None:
+        return result
+
+    locked_passages = locked.get("script_passages") if isinstance(locked, Mapping) else None
+    new_passages = result.get("script_passages") if isinstance(result, Mapping) else None
+    if (
+        not isinstance(locked_passages, list)
+        or not isinstance(new_passages, list)
+        or len(locked_passages) != len(new_passages)
+    ):
+        raise VisionResponseInvalid(validation_subtype="synthesis_text_only_lock_invalid")
+
+    text_by_id: dict[str, str] = {}
+    for passage in new_passages:
+        if not isinstance(passage, Mapping):
+            raise VisionResponseInvalid(validation_subtype="synthesis_text_only_lock_invalid")
+        passage_id = passage.get("passage_id")
+        text = passage.get("text")
+        if (
+            not isinstance(passage_id, str)
+            or not passage_id
+            or not isinstance(text, str)
+            or not text.strip()
+            or passage_id in text_by_id
+        ):
+            raise VisionResponseInvalid(validation_subtype="synthesis_text_only_lock_invalid")
+        text_by_id[passage_id] = text
+
+    rebuilt_passages: list[dict[str, Any]] = []
+    locked_ids: set[str] = set()
+    for passage in locked_passages:
+        if not isinstance(passage, Mapping):
+            raise VisionResponseInvalid(validation_subtype="synthesis_text_only_lock_invalid")
+        passage_id = str(passage.get("passage_id", ""))
+        if not passage_id or passage_id not in text_by_id or passage_id in locked_ids:
+            raise VisionResponseInvalid(validation_subtype="synthesis_text_only_lock_invalid")
+        locked_ids.add(passage_id)
+        rebuilt = dict(passage)
+        rebuilt["text"] = text_by_id[passage_id]
+        rebuilt_passages.append(rebuilt)
+
+    if set(text_by_id) != locked_ids:
+        raise VisionResponseInvalid(validation_subtype="synthesis_text_only_lock_invalid")
+    rebuilt_output = dict(locked)
+    rebuilt_output["script_passages"] = rebuilt_passages
+    return rebuilt_output
 
 
 def _safe_validation_subtype(value: Any) -> str | None:
@@ -497,7 +568,9 @@ def _reconcile_synthesis_echo_fields(
         for chunk in provider_chunks:
             if not isinstance(chunk, Mapping):
                 raise VisionResponseInvalid()
-            normalized_provider.append({"chunk_id": chunk.get("chunk_id"), "panel_ids": chunk.get("panel_ids")})
+            normalized_provider.append(
+                {"chunk_id": chunk.get("chunk_id"), "panel_ids": chunk.get("panel_ids")}
+            )
         if normalized_provider != canonical_identity:
             raise VisionResponseInvalid()
     reconciled["continuity_ledger"] = ledger
@@ -561,14 +634,10 @@ class OpenAICompatibleVisionProvider:
             image_input=available,
             structured_json=available,
             available=available,
-            blocking_reason=None
-            if available
-            else VisionCapabilityError.code,
+            blocking_reason=None if available else VisionCapabilityError.code,
         )
 
-    def observe(
-        self, request: VisionObservationRequest
-    ) -> list[Mapping[str, Any]]:
+    def observe(self, request: VisionObservationRequest) -> list[Mapping[str, Any]]:
         report = self.capability()
         if not report.available:
             raise VisionCapabilityError()
@@ -598,9 +667,7 @@ class OpenAICompatibleVisionProvider:
                 timeout=True, retryable=True, transport_subtype="timeout"
             ) from None
         except httpx.TransportError:
-            raise VisionProviderRequestFailed(
-                retryable=True, transport_subtype="connect"
-            ) from None
+            raise VisionProviderRequestFailed(retryable=True, transport_subtype="connect") from None
         except Exception:
             raise VisionProviderRequestFailed(retryable=False) from None
 
@@ -620,19 +687,18 @@ class OpenAICompatibleVisionProvider:
                 raise VisionResponseInvalid()
             observations = observations.get("observations")
         if request.visual_instruction_version is not None:
-            observations = [
-                _normalize_provider_visual_evidence(item)
-                for item in observations
-            ] if isinstance(observations, list) else observations
+            observations = (
+                [_normalize_provider_visual_evidence(item) for item in observations]
+                if isinstance(observations, list)
+                else observations
+            )
         return _validate_observations(
             observations,
             panels,
             require_visual_evidence=request.visual_instruction_version is not None,
         )
 
-    def synthesize(
-        self, request: VisionChapterSynthesisRequest
-    ) -> Mapping[str, Any]:
+    def synthesize(self, request: VisionChapterSynthesisRequest) -> Mapping[str, Any]:
         try:
             expected_panel_ids, profile = _validate_synthesis_request(request)
         except VisionRequestInvalid:
@@ -644,9 +710,7 @@ class OpenAICompatibleVisionProvider:
         if not report.available:
             raise VisionCapabilityError()
 
-        payload = _build_synthesis_payload(
-            request, expected_panel_ids, self._model, profile
-        )
+        payload = _build_synthesis_payload(request, expected_panel_ids, self._model, profile)
         try:
             response = httpx.post(
                 f"{self._base_url.rstrip('/')}/chat/completions",
@@ -665,9 +729,7 @@ class OpenAICompatibleVisionProvider:
                 timeout=True, retryable=True, transport_subtype="timeout"
             ) from None
         except httpx.TransportError:
-            raise VisionProviderRequestFailed(
-                retryable=True, transport_subtype="connect"
-            ) from None
+            raise VisionProviderRequestFailed(retryable=True, transport_subtype="connect") from None
         except Exception:
             raise VisionProviderRequestFailed(retryable=False) from None
 
@@ -682,7 +744,10 @@ class OpenAICompatibleVisionProvider:
                 validation_subtype="synthesis_provider_json_invalid"
             ) from None
         try:
-            result = _reconcile_synthesis_echo_fields(result, request)
+            if request.retry_text_only_locked_output is not None:
+                result = _apply_text_only_retry_lock(result, request)
+            else:
+                result = _reconcile_synthesis_echo_fields(result, request)
         except VisionResponseInvalid as exc:
             raise VisionResponseInvalid(
                 validation_subtype=exc.validation_subtype or "synthesis_echo_lineage_invalid"
@@ -690,9 +755,7 @@ class OpenAICompatibleVisionProvider:
 
         validation_candidate = result
         try:
-            analyzer_contract = importlib.import_module(
-                "app.services.analyzer_contract"
-            )
+            analyzer_contract = importlib.import_module("app.services.analyzer_contract")
             try:
                 if profile is None:
                     analyzer_contract.validate_analyzer_output(
@@ -703,6 +766,7 @@ class OpenAICompatibleVisionProvider:
                         result,
                         expected_panel_ids=expected_panel_ids,
                         narrative_profile_id=profile.profile_id,
+                        validate_text_checks=False,
                     )
                 validated_result = result
             except analyzer_contract.AnalyzerContractError:
@@ -717,6 +781,7 @@ class OpenAICompatibleVisionProvider:
                         projected,
                         expected_panel_ids=expected_panel_ids,
                         narrative_profile_id=profile.profile_id,
+                        validate_text_checks=False,
                     )
                 validated_result = projected
         except VisionResponseInvalid as exc:
@@ -726,54 +791,89 @@ class OpenAICompatibleVisionProvider:
                 selection_diagnostics=getattr(exc, "selection_diagnostics", None),
             ) from None
         except analyzer_contract.AnalyzerContractError as exc:
-            counts: tuple[int, ...] | None = None
-            passages = validation_candidate.get("script_passages") if isinstance(validation_candidate, Mapping) else None
-            if isinstance(passages, list):
-                values: list[int] = []
-                for passage in passages:
-                    if not isinstance(passage, Mapping) or not isinstance(passage.get("text"), str):
-                        values = []
-                        break
-                    values.append(len(passage["text"].split()))
-                if values:
-                    counts = tuple(values)
-            validation_subtype = _safe_validation_subtype(str(exc))
-            diagnostics: Mapping[str, Any] | None = None
-            if validation_subtype == "script_passage_copies_source_dialogue":
-                diagnostics = analyzer_contract.source_dialogue_copy_diagnostics(
-                    request.ordered_observations,
-                    passages,
+            current_exc: Any = exc
+            repair_attempts = 0
+            while (
+                current_exc is not None
+                and _safe_validation_subtype(str(current_exc))
+                == "claim_evidence_lacks_semantic_anchor"
+                and repair_attempts < 8
+            ):
+                repaired = (
+                    _repair_semantic_claim_evidence_from_diagnostics(
+                        validation_candidate,
+                        getattr(current_exc, "diagnostics", None),
+                        expected_panel_ids,
+                    )
+                    if isinstance(validation_candidate, Mapping)
+                    else None
                 )
-            raise VisionResponseInvalid(
-                validation_subtype=validation_subtype,
-                passage_word_counts=counts,
-                retry_passages=_retry_passages_from_candidate(validation_candidate),
-                selection_diagnostics=diagnostics,
-            ) from None
+                if repaired is None and isinstance(validation_candidate, Mapping):
+                    repaired = _repair_unsupported_must_from_diagnostics(
+                        validation_candidate,
+                        getattr(current_exc, "diagnostics", None),
+                        expected_panel_ids,
+                    )
+                if repaired is None:
+                    break
+                validation_candidate = repaired
+                repair_attempts += 1
+                try:
+                    if profile is None:
+                        analyzer_contract.validate_analyzer_output(
+                            repaired, expected_panel_ids=expected_panel_ids
+                        )
+                    else:
+                        analyzer_contract.validate_analyzer_output(
+                            repaired,
+                            expected_panel_ids=expected_panel_ids,
+                            narrative_profile_id=profile.profile_id,
+                            validate_text_checks=False,
+                        )
+                except analyzer_contract.AnalyzerContractError as repaired_exc:
+                    current_exc = repaired_exc
+                    continue
+                validated_result = repaired
+                current_exc = None
+            if current_exc is not None:
+                exc = current_exc
+                counts: tuple[int, ...] | None = None
+                passages = (
+                    validation_candidate.get("script_passages")
+                    if isinstance(validation_candidate, Mapping)
+                    else None
+                )
+                if isinstance(passages, list):
+                    values = [
+                        len(p["text"].split())
+                        for p in passages
+                        if isinstance(p, Mapping) and isinstance(p.get("text"), str)
+                    ]
+                    counts = tuple(values) if len(values) == len(passages) else None
+                validation_subtype = _safe_validation_subtype(str(exc))
+                diagnostics: Mapping[str, Any] | None = getattr(exc, "diagnostics", None)
+                if validation_subtype == "script_passage_copies_source_dialogue":
+                    diagnostics = analyzer_contract.source_dialogue_copy_diagnostics(
+                        request.ordered_observations, passages
+                    )
+                raise VisionResponseInvalid(
+                    validation_subtype=validation_subtype,
+                    passage_word_counts=counts,
+                    retry_passages=_retry_passages_from_candidate(validation_candidate),
+                    selection_diagnostics=diagnostics,
+                    retry_locked_output=(
+                        validation_candidate
+                        if validation_subtype in TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES
+                        and isinstance(validation_candidate, Mapping)
+                        else None
+                    ),
+                ) from None
         except Exception:
             raise VisionResponseInvalid(
                 validation_subtype="synthesis_validation_internal_error"
             ) from None
         if not isinstance(validated_result, Mapping):
-            raise VisionResponseInvalid(
-                validation_subtype="synthesis_validated_result_invalid"
-            )
-        passages = validated_result.get("script_passages")
-        if request.target_word_count_min is not None and isinstance(passages, list):
-            counts = tuple(
-                len(passage["text"].split())
-                for passage in passages
-                if isinstance(passage, Mapping) and isinstance(passage.get("text"), str)
-            )
-            if len(counts) != len(passages):
-                raise VisionResponseInvalid()
-            total = sum(counts)
-            if not request.target_word_count_min <= total <= int(request.target_word_count_max or 0):
-                raise VisionResponseInvalid(
-                    validation_subtype="production_narration_word_count_out_of_range",
-                    passage_word_counts=counts,
-                    retry_passages=_retry_passages_from_candidate(validated_result),
-                )
+            raise VisionResponseInvalid(validation_subtype="synthesis_validated_result_invalid")
         if request.retry_visual_selection:
             validated_result = _complete_retry_visual_selection(validated_result, request)
         try:
@@ -785,6 +885,73 @@ class OpenAICompatibleVisionProvider:
                 retry_passages=_retry_passages_from_candidate(validated_result),
                 selection_diagnostics=getattr(exc, "selection_diagnostics", None),
             ) from None
+
+        if profile is not None:
+            try:
+                analyzer_contract.validate_analyzer_output(
+                    validated_result,
+                    expected_panel_ids=expected_panel_ids,
+                    narrative_profile_id=profile.profile_id,
+                )
+            except analyzer_contract.AnalyzerContractError as exc:
+                passages = (
+                    validated_result.get("script_passages")
+                    if isinstance(validated_result, Mapping)
+                    else None
+                )
+                counts: tuple[int, ...] | None = None
+                if isinstance(passages, list):
+                    values: list[int] = []
+                    for passage in passages:
+                        if not isinstance(passage, Mapping) or not isinstance(
+                            passage.get("text"), str
+                        ):
+                            values = []
+                            break
+                        values.append(len(passage["text"].split()))
+                    if values:
+                        counts = tuple(values)
+                validation_subtype = _safe_validation_subtype(str(exc))
+                diagnostics: Mapping[str, Any] | None = getattr(exc, "diagnostics", None)
+                if validation_subtype == "script_passage_copies_source_dialogue":
+                    diagnostics = analyzer_contract.source_dialogue_copy_diagnostics(
+                        request.ordered_observations,
+                        passages,
+                    )
+                raise VisionResponseInvalid(
+                    validation_subtype=validation_subtype,
+                    passage_word_counts=counts,
+                    retry_passages=_retry_passages_from_candidate(validated_result),
+                    selection_diagnostics=diagnostics,
+                    retry_locked_output=(
+                        validated_result
+                        if validation_subtype in TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES
+                        and isinstance(validated_result, Mapping)
+                        else None
+                    ),
+                ) from None
+
+        passages = validated_result.get("script_passages")
+        if request.target_word_count_min is not None and isinstance(passages, list):
+            counts = tuple(
+                len(passage["text"].split())
+                for passage in passages
+                if isinstance(passage, Mapping) and isinstance(passage.get("text"), str)
+            )
+            if len(counts) != len(passages):
+                raise VisionResponseInvalid()
+            total = sum(counts)
+            if (
+                not request.target_word_count_min
+                <= total
+                <= int(request.target_word_count_max or 0)
+            ):
+                raise VisionResponseInvalid(
+                    validation_subtype="production_narration_word_count_out_of_range",
+                    passage_word_counts=counts,
+                    retry_passages=_retry_passages_from_candidate(validated_result),
+                    retry_locked_output=validated_result,
+                )
         return validated_result
 
     def complete_json(
@@ -803,7 +970,15 @@ class OpenAICompatibleVisionProvider:
         OpenAI-compatible wire format and never returns provider error text.
         """
 
-        if not isinstance(stage, str) or not stage.strip() or not isinstance(prompt_version, str) or not prompt_version.strip() or not isinstance(prompt_sha256, str) or len(prompt_sha256) != 64 or not isinstance(prompt_text, str):
+        if (
+            not isinstance(stage, str)
+            or not stage.strip()
+            or not isinstance(prompt_version, str)
+            or not prompt_version.strip()
+            or not isinstance(prompt_sha256, str)
+            or len(prompt_sha256) != 64
+            or not isinstance(prompt_text, str)
+        ):
             raise VisionRequestInvalid()
         if not isinstance(payload, Mapping):
             raise VisionRequestInvalid()
@@ -821,12 +996,14 @@ class OpenAICompatibleVisionProvider:
                         f"Prompt SHA-256: {prompt_sha256}. Return only valid JSON."
                     ),
                 },
-                {"role": "user", "content": json.dumps(payload, sort_keys=True, separators=(",", ":"))},
+                {
+                    "role": "user",
+                    "content": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                },
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0,
             "max_tokens": 65536,
-
         }
         try:
             response = httpx.post(
@@ -848,9 +1025,7 @@ class OpenAICompatibleVisionProvider:
                 timeout=True, retryable=True, transport_subtype="timeout"
             ) from None
         except httpx.TransportError:
-            raise VisionProviderRequestFailed(
-                retryable=True, transport_subtype="connect"
-            ) from None
+            raise VisionProviderRequestFailed(retryable=True, transport_subtype="connect") from None
         except Exception:
             raise VisionProviderRequestFailed(retryable=False) from None
         if not isinstance(value, Mapping):
@@ -949,9 +1124,7 @@ class OpenAICompatibleVisionProvider:
                 timeout=True, retryable=True, transport_subtype="timeout"
             ) from None
         except httpx.TransportError:
-            raise VisionProviderRequestFailed(
-                retryable=True, transport_subtype="connect"
-            ) from None
+            raise VisionProviderRequestFailed(retryable=True, transport_subtype="connect") from None
         except (TypeError, ValueError, KeyError):
             raise VisionResponseInvalid() from None
         except Exception:
@@ -985,7 +1158,10 @@ def _validated_analysis_windows(
     if (
         not isinstance(source_size, (list, tuple))
         or len(source_size) != 2
-        or not all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in source_size)
+        or not all(
+            isinstance(value, int) and not isinstance(value, bool) and value > 0
+            for value in source_size
+        )
         or not isinstance(raw_windows, (list, tuple))
         or not raw_windows
         or len(raw_windows) > ANALYSIS_WINDOW_MAX_COUNT
@@ -1058,23 +1234,14 @@ def _validate_request(
 ) -> tuple[dict[str, Any], ...]:
     if not isinstance(request, VisionObservationRequest):
         raise VisionRequestInvalid()
-    if (
-        not isinstance(request.analysis_run_id, str)
-        or not request.analysis_run_id.strip()
-    ):
+    if not isinstance(request.analysis_run_id, str) or not request.analysis_run_id.strip():
         raise VisionRequestInvalid()
-    if (
-        not isinstance(request.instruction_version, str)
-        or not request.instruction_version.strip()
-    ):
+    if not isinstance(request.instruction_version, str) or not request.instruction_version.strip():
         raise VisionRequestInvalid()
     if (
         not isinstance(request.instruction_sha256, str)
         or len(request.instruction_sha256) != 64
-        or any(
-            character not in string.hexdigits
-            for character in request.instruction_sha256
-        )
+        or any(character not in string.hexdigits for character in request.instruction_sha256)
     ):
         raise VisionRequestInvalid()
     if (
@@ -1306,7 +1473,6 @@ def _build_payload(
         "response_format": {"type": "json_object"},
         "temperature": 0,
         "max_tokens": 65536,
-
     }
 
 
@@ -1344,7 +1510,12 @@ def validate_visual_evidence_observation(
             raise VisionResponseInvalid()
         source = observation.get("evidence_source")
         reason = observation.get("mask_reason")
-        if not isinstance(source, str) or not source.strip() or not isinstance(reason, str) or not reason.strip():
+        if (
+            not isinstance(source, str)
+            or not source.strip()
+            or not isinstance(reason, str)
+            or not reason.strip()
+        ):
             raise VisionResponseInvalid()
         if status in {"known_empty", "known_nonempty"} and _is_ocr_only_evidence_source(source):
             raise VisionResponseInvalid()
@@ -1363,7 +1534,14 @@ def validate_visual_evidence_observation(
             kind = raw.get("kind")
             if not isinstance(region_id, str) or not region_id.strip() or region_id in region_ids:
                 raise VisionResponseInvalid()
-            allowed_kinds = {"background", "subject", "face", "action", "effect", "continuity_context"}
+            allowed_kinds = {
+                "background",
+                "subject",
+                "face",
+                "action",
+                "effect",
+                "continuity_context",
+            }
             if not protected:
                 allowed_kinds = {"speech_balloon"}
             if not isinstance(kind, str) or kind not in allowed_kinds:
@@ -1374,7 +1552,9 @@ def validate_visual_evidence_observation(
             if bbox is not None and (
                 not isinstance(bbox, list)
                 or len(bbox) != 4
-                or any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in bbox)
+                or any(
+                    isinstance(item, bool) or not isinstance(item, (int, float)) for item in bbox
+                )
                 or not all(0.0 <= float(item) <= 1.0 for item in bbox)
                 or bbox[2] <= bbox[0]
                 or bbox[3] <= bbox[1]
@@ -1388,7 +1568,10 @@ def validate_visual_evidence_observation(
                 if (
                     not isinstance(point, list)
                     or len(point) != 2
-                    or any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in point)
+                    or any(
+                        isinstance(item, bool) or not isinstance(item, (int, float))
+                        for item in point
+                    )
                     or not all(0.0 <= float(item) <= 1.0 for item in point)
                 ):
                     raise VisionResponseInvalid()
@@ -1427,22 +1610,18 @@ def validate_visual_evidence_observation(
             validate_region(region, protected=True) for region in protected_regions
         ]
 
-        if status == "known_empty" and (
-            balloon_regions or float(confidence) <= 0.0
-        ):
+        if status == "known_empty" and (balloon_regions or float(confidence) <= 0.0):
             raise VisionResponseInvalid()
         if status == "unknown" and (
             balloon_regions
             or not any(
-                marker in source.lower()
-                for marker in ("unavailable", "insufficient", "unknown")
+                marker in source.lower() for marker in ("unavailable", "insufficient", "unknown")
             )
         ):
             raise VisionResponseInvalid()
         if status == "known_nonempty":
             if not balloon_regions or any(
-                region.get("mask_status") != "known_nonempty"
-                for region in balloon_regions
+                region.get("mask_status") != "known_nonempty" for region in balloon_regions
             ):
                 raise VisionResponseInvalid()
             if any(
@@ -1450,10 +1629,7 @@ def validate_visual_evidence_observation(
                 for region in balloon_regions
             ):
                 raise VisionResponseInvalid()
-        normalized = {
-            key: observation[key]
-            for key in sorted(_PROVIDER_VISUAL_KEYS)
-        }
+        normalized = {key: observation[key] for key in sorted(_PROVIDER_VISUAL_KEYS)}
         normalized["balloon_regions"] = normalized_balloon_regions
         normalized["protected_regions"] = normalized_protected_regions
         return normalized
@@ -1474,7 +1650,9 @@ def normalize_dialogue_or_ocr_items(value: Any) -> list[str]:
         elif isinstance(item, Mapping) and set(item) <= {"text", "type"}:
             raw_text = item.get("text")
             raw_type = item.get("type")
-            if not isinstance(raw_text, str) or (raw_type is not None and not isinstance(raw_type, str)):
+            if not isinstance(raw_text, str) or (
+                raw_type is not None and not isinstance(raw_type, str)
+            ):
                 raise VisionResponseInvalid()
             text = raw_text.strip()
         else:
@@ -1560,16 +1738,12 @@ def _validate_observations(
             not evidence_refs
             or panel_id not in evidence_refs
             or any(
-                not isinstance(reference, str)
-                or reference not in requested_set
+                not isinstance(reference, str) or reference not in requested_set
                 for reference in evidence_refs
             )
         ):
             raise VisionResponseInvalid()
-        row = {
-            key: observation[key]
-            for key in sorted(required_observation_keys)
-        }
+        row = {key: observation[key] for key in sorted(required_observation_keys)}
         row["dialogue_or_ocr"] = normalize_dialogue_or_ocr_items(row["dialogue_or_ocr"])
         for key in ("visible_facts", "inferences", "uncertainties"):
             if any(not isinstance(item, str) or not item.strip() for item in row[key]):
@@ -1585,7 +1759,9 @@ def _validate_observations(
                 )
             )
             if not row["visible_facts"]:
-                row["visible_facts"] = grounded_visible_facts_from_visual_evidence(row["visual_evidence"])
+                row["visible_facts"] = grounded_visible_facts_from_visual_evidence(
+                    row["visual_evidence"]
+                )
         if not row["visible_facts"]:
             raise VisionResponseInvalid()
         by_panel_id[panel_id] = row
@@ -1646,11 +1822,7 @@ def _validate_synthesis_observations(
             raise VisionRequestInvalid()
         for coordinate in ("x", "y", "width", "height"):
             number = bounds.get(coordinate)
-            if (
-                isinstance(number, bool)
-                or not isinstance(number, int)
-                or number < 0
-            ):
+            if isinstance(number, bool) or not isinstance(number, int) or number < 0:
                 raise VisionRequestInvalid()
         if bounds["width"] == 0 or bounds["height"] == 0:
             raise VisionRequestInvalid()
@@ -1666,9 +1838,7 @@ def _validate_synthesis_observations(
             "uncertainties",
         ):
             _synthesis_string_list(observation.get(field))
-        evidence_refs = _synthesis_string_list(
-            observation.get("evidence_refs"), allow_empty=False
-        )
+        evidence_refs = _synthesis_string_list(observation.get("evidence_refs"), allow_empty=False)
         if not set(evidence_refs) <= expected_set:
             raise VisionRequestInvalid()
         if panel_id not in evidence_refs:
@@ -1843,11 +2013,20 @@ def _validate_synthesis_request(
             )
         if not retry_passage_count_valid:
             raise VisionRequestInvalid()
-        required_passage_keys = {"passage_id", "editorial_role", "text", "claim_ids", "evidence_panel_ids"}
+        required_passage_keys = {
+            "passage_id",
+            "editorial_role",
+            "text",
+            "claim_ids",
+            "evidence_panel_ids",
+        }
         for passage in request.retry_passages:
             if not isinstance(passage, Mapping) or set(passage) != required_passage_keys:
                 raise VisionRequestInvalid()
-            if any(not _valid_synthesis_text(passage.get(key)) for key in ("passage_id", "editorial_role", "text")):
+            if any(
+                not _valid_synthesis_text(passage.get(key))
+                for key in ("passage_id", "editorial_role", "text")
+            ):
                 raise VisionRequestInvalid()
             _synthesis_string_list(passage.get("claim_ids"), allow_empty=False)
             _synthesis_string_list(passage.get("evidence_panel_ids"), allow_empty=False)
@@ -1864,7 +2043,23 @@ def _validate_synthesis_request(
         or not isinstance(request.retry_evidence_lineage, bool)
         or not isinstance(request.retry_dialogue_paraphrase, bool)
         or not isinstance(request.retry_claim_qualification, bool)
+        or not isinstance(request.retry_claim_semantic_grounding, bool)
+        or (
+            request.retry_claim_semantic_diagnostics is not None
+            and not isinstance(request.retry_claim_semantic_diagnostics, Mapping)
+        )
+        or not isinstance(request.retry_causal_arc, bool)
+        or not isinstance(request.retry_visual_story_alignment, bool)
+        or (
+            request.retry_visual_story_diagnostics is not None
+            and not isinstance(request.retry_visual_story_diagnostics, Mapping)
+        )
+        or not isinstance(request.retry_projection_contract, bool)
         or not isinstance(request.retry_local_claim_grounding, bool)
+        or (
+            request.retry_text_only_locked_output is not None
+            and not isinstance(request.retry_text_only_locked_output, Mapping)
+        )
     ):
         raise VisionRequestInvalid()
     for _section, panel_ids in preferred_by_section.items():
@@ -1877,9 +2072,7 @@ def _validate_synthesis_request(
             raise VisionRequestInvalid()
 
     try:
-        analyzer_contract = importlib.import_module(
-            "app.services.analyzer_contract"
-        )
+        analyzer_contract = importlib.import_module("app.services.analyzer_contract")
         committed = analyzer_contract.load_analyzer_instruction(
             narrative_profile_id=profile.profile_id if profile is not None else None
         )
@@ -1893,9 +2086,7 @@ def _validate_synthesis_request(
     ):
         raise VisionRequestInvalid()
 
-    _validate_synthesis_observations(
-        request.ordered_observations, expected_panel_ids
-    )
+    _validate_synthesis_observations(request.ordered_observations, expected_panel_ids)
     _validate_synthesis_coverage(request.coverage_manifest, expected_panel_ids)
     _validate_synthesis_chunks(request.chunks, expected_panel_ids)
     return expected_panel_ids, profile
@@ -1924,12 +2115,8 @@ def validate_narrative_identity(
     ):
         raise VisionRequestInvalid()
     try:
-        narrative_identity = importlib.import_module(
-            "app.services.narrative_identity"
-        )
-        profile = narrative_identity.get_narrative_identity(
-            request.narrative_profile_id
-        )
+        narrative_identity = importlib.import_module("app.services.narrative_identity")
+        profile = narrative_identity.get_narrative_identity(request.narrative_profile_id)
     except Exception:
         raise VisionRequestInvalid() from None
     if (
@@ -1940,17 +2127,288 @@ def validate_narrative_identity(
     return profile
 
 
-_SYNTHESIS_TOP_KEYS = frozenset({
-    "observations", "continuity_ledger", "evidence_graph",
-    "coverage_manifest", "narrative_outline", "script_passages",
-})
-_SYNTHESIS_REDUNDANT_CONTINUITY_KEYS = frozenset({
-    "entities", "motives", "state_changes", "causal_links",
-})
-_SYNTHESIS_STORY_SPINE_FIELDS = frozenset({
-    "who_wants_what", "obstacle", "decision", "consequence",
-    "changed_stakes", "unresolved_question",
-})
+_SYNTHESIS_TOP_KEYS = frozenset(
+    {
+        "observations",
+        "continuity_ledger",
+        "evidence_graph",
+        "coverage_manifest",
+        "narrative_outline",
+        "script_passages",
+    }
+)
+_SYNTHESIS_REDUNDANT_CONTINUITY_KEYS = frozenset(
+    {
+        "entities",
+        "motives",
+        "state_changes",
+        "causal_links",
+    }
+)
+_SYNTHESIS_STORY_SPINE_FIELDS = frozenset(
+    {
+        "who_wants_what",
+        "obstacle",
+        "decision",
+        "consequence",
+        "changed_stakes",
+        "unresolved_question",
+    }
+)
+
+
+def _repair_semantic_claim_evidence_from_diagnostics(
+    output: Mapping[str, Any],
+    diagnostics: Mapping[str, Any] | None,
+    expected_panel_ids: Sequence[str],
+) -> Mapping[str, Any] | None:
+    if not isinstance(diagnostics, Mapping):
+        return None
+    claim_id = str(diagnostics.get("claim_id", ""))
+    required = diagnostics.get("required_anchor_matches")
+    matched_raw = diagnostics.get("matched_claim_anchors")
+    candidates_raw = diagnostics.get("candidate_panels")
+    claim_anchors_raw = diagnostics.get("claim_anchors")
+    if (
+        not claim_id
+        or isinstance(required, bool)
+        or not isinstance(required, int)
+        or required < 1
+        or not isinstance(matched_raw, list)
+        or not isinstance(candidates_raw, list)
+        or not isinstance(claim_anchors_raw, list)
+    ):
+        return None
+    expected = {str(value) for value in expected_panel_ids}
+    claim_anchors = {str(value) for value in claim_anchors_raw if isinstance(value, str)}
+    matched = {str(value) for value in matched_raw if isinstance(value, str)} & claim_anchors
+    critical_raw = diagnostics.get("critical_claim_anchors")
+    critical = (
+        {str(value) for value in critical_raw if isinstance(value, str)} & claim_anchors
+        if isinstance(critical_raw, list)
+        else set()
+    )
+    span_raw = diagnostics.get("semantic_window_max_span")
+    max_span = (
+        span_raw
+        if isinstance(span_raw, int) and not isinstance(span_raw, bool) and span_raw >= 0
+        else None
+    )
+
+    cloned = json.loads(json.dumps(output))
+    graph = cloned.get("evidence_graph") if isinstance(cloned, dict) else None
+    claims = graph.get("claims") if isinstance(graph, dict) else None
+    passages = cloned.get("script_passages") if isinstance(cloned, dict) else None
+    if not isinstance(claims, list) or not isinstance(passages, list):
+        return None
+    target = next(
+        (
+            row
+            for row in claims
+            if isinstance(row, dict) and str(row.get("claim_id", "")) == claim_id
+        ),
+        None,
+    )
+    if target is None or not isinstance(target.get("evidence_panel_ids"), list):
+        return None
+    evidence = [str(value) for value in target["evidence_panel_ids"] if str(value) in expected]
+    evidence_set = set(evidence)
+
+    candidate_rows: list[dict[str, Any]] = []
+    for raw in candidates_raw:
+        if not isinstance(raw, Mapping):
+            continue
+        panel_id = str(raw.get("panel_id", ""))
+        overlap_raw = raw.get("overlap_anchors")
+        if panel_id not in expected or not isinstance(overlap_raw, list):
+            continue
+        overlap = {str(value) for value in overlap_raw if isinstance(value, str)} & claim_anchors
+        order_raw = raw.get("source_order")
+        order = (
+            order_raw if isinstance(order_raw, int) and not isinstance(order_raw, bool) else None
+        )
+        candidate_rows.append({"panel_id": panel_id, "overlap": overlap, "order": order})
+    if not candidate_rows:
+        return None
+
+    selected: list[str] = []
+    local_rows = [row for row in candidate_rows if row["order"] is not None]
+    if max_span is not None and local_rows:
+        local_rows.sort(key=lambda row: (row["order"], row["panel_id"]))
+        feasible: list[tuple[tuple[int, int, int, int], list[dict[str, Any]]]] = []
+        for left in range(len(local_rows)):
+            union: set[str] = set()
+            window: list[dict[str, Any]] = []
+            for right in range(left, len(local_rows)):
+                if local_rows[right]["order"] - local_rows[left]["order"] > max_span:
+                    break
+                window.append(local_rows[right])
+                union.update(local_rows[right]["overlap"])
+                if len(union) >= required and critical <= union:
+                    span = local_rows[right]["order"] - local_rows[left]["order"]
+                    score = (span, len(window), -len(union), local_rows[left]["order"])
+                    feasible.append((score, list(window)))
+                    break
+        if not feasible:
+            return None
+        _score, chosen_window = min(feasible, key=lambda item: item[0])
+        covered: set[str] = set()
+        for row in chosen_window:
+            if row["panel_id"] in evidence_set:
+                covered.update(row["overlap"])
+        remaining = [row for row in chosen_window if row["panel_id"] not in evidence_set]
+        while len(covered) < required or not critical <= covered:
+            best_index = -1
+            best_score = (-1, -1)
+            missing_critical = critical - covered
+            for index, row in enumerate(remaining):
+                critical_gain = len(row["overlap"] & missing_critical)
+                total_gain = len(row["overlap"] - covered)
+                score = (critical_gain, total_gain)
+                if score > best_score:
+                    best_index, best_score = index, score
+            if best_index < 0 or best_score == (0, 0):
+                return None
+            chosen = remaining.pop(best_index)
+            selected.append(chosen["panel_id"])
+            covered.update(chosen["overlap"])
+    else:
+        if len(matched) >= required:
+            return None
+        remaining = list(candidate_rows)
+        covered = set(matched)
+        while len(covered) < required:
+            best_index = -1
+            best_gain = 0
+            for index, row in enumerate(remaining):
+                gain = len(row["overlap"] - covered)
+                if gain > best_gain:
+                    best_index, best_gain = index, gain
+            if best_index < 0 or best_gain <= 0:
+                return None
+            chosen = remaining.pop(best_index)
+            selected.append(chosen["panel_id"])
+            covered.update(chosen["overlap"])
+
+    added = [panel_id for panel_id in selected if panel_id not in evidence_set]
+    if not added:
+        return None
+    target["evidence_panel_ids"] = evidence + added
+    for passage in passages:
+        if not isinstance(passage, dict):
+            continue
+        passage_claim_ids = [str(value) for value in (passage.get("claim_ids") or [])]
+        if claim_id not in passage_claim_ids:
+            continue
+        passage_evidence = [str(value) for value in (passage.get("evidence_panel_ids") or [])]
+        passage["evidence_panel_ids"] = passage_evidence + [
+            value for value in added if value not in passage_evidence
+        ]
+    return cloned
+
+
+def _repair_unsupported_must_from_diagnostics(
+    output: Mapping[str, Any],
+    diagnostics: Mapping[str, Any] | None,
+    expected_panel_ids: Sequence[str],
+) -> Mapping[str, Any] | None:
+    if not isinstance(diagnostics, Mapping):
+        return None
+    missing = diagnostics.get("missing_critical_anchors")
+    if not isinstance(missing, list) or "require" not in {str(v) for v in missing}:
+        return None
+    claim_id = str(diagnostics.get("claim_id", ""))
+    candidates = diagnostics.get("candidate_panels")
+    if not claim_id or not isinstance(candidates, list):
+        return None
+
+    expected = {str(value) for value in expected_panel_ids}
+    cloned = json.loads(json.dumps(output))
+    graph = cloned.get("evidence_graph") if isinstance(cloned, dict) else None
+    claims = graph.get("claims") if isinstance(graph, dict) else None
+    passages = cloned.get("script_passages") if isinstance(cloned, dict) else None
+    if not isinstance(claims, list) or not isinstance(passages, list):
+        return None
+    target = next(
+        (
+            row
+            for row in claims
+            if isinstance(row, dict) and str(row.get("claim_id", "")) == claim_id
+        ),
+        None,
+    )
+    if target is None or not isinstance(target.get("text"), str):
+        return None
+    if re.search(r"\bmust\b", target["text"], flags=re.IGNORECASE) is None:
+        return None
+
+    claim_anchors_raw = diagnostics.get("claim_anchors")
+    claim_anchors = (
+        {str(value) for value in claim_anchors_raw if isinstance(value, str)}
+        if isinstance(claim_anchors_raw, list)
+        else set()
+    )
+    non_modal_anchors = claim_anchors - {"require"}
+    ranked: list[tuple[int, int, str]] = []
+    for index, raw in enumerate(candidates):
+        if not isinstance(raw, Mapping):
+            continue
+        panel_id = str(raw.get("panel_id", ""))
+        if panel_id not in expected:
+            continue
+        excerpt_raw = raw.get("evidence_excerpt")
+        excerpt = (
+            " ".join(str(value) for value in excerpt_raw)
+            if isinstance(excerpt_raw, list)
+            else str(excerpt_raw or "")
+        )
+        if re.search(r"\bwill\b", excerpt, flags=re.IGNORECASE) is None:
+            continue
+        overlap_raw = raw.get("overlap_anchors")
+        overlap = (
+            {str(value) for value in overlap_raw if isinstance(value, str)} & non_modal_anchors
+            if isinstance(overlap_raw, list)
+            else set()
+        )
+        if len(overlap) < 2:
+            continue
+        ranked.append((-len(overlap), index, panel_id))
+    if not ranked:
+        return None
+    _score, _index, support_panel_id = min(ranked)
+
+    for passage in passages:
+        if not isinstance(passage, dict):
+            continue
+        passage_claim_ids = [str(value) for value in (passage.get("claim_ids") or [])]
+        if claim_id not in passage_claim_ids:
+            continue
+        passage_text = passage.get("text")
+        if (
+            isinstance(passage_text, str)
+            and re.search(r"\bmust\b", passage_text, flags=re.IGNORECASE)
+            and passage_claim_ids != [claim_id]
+        ):
+            return None
+
+    target["text"] = re.sub(r"\bmust\b", "will", target["text"], flags=re.IGNORECASE)
+    target_evidence = target.get("evidence_panel_ids")
+    if not isinstance(target_evidence, list):
+        return None
+    if support_panel_id not in target_evidence:
+        target_evidence.append(support_panel_id)
+    for passage in passages:
+        if not isinstance(passage, dict):
+            continue
+        passage_claim_ids = [str(value) for value in (passage.get("claim_ids") or [])]
+        if passage_claim_ids != [claim_id]:
+            continue
+        if isinstance(passage.get("text"), str):
+            passage["text"] = re.sub(r"\bmust\b", "will", passage["text"], flags=re.IGNORECASE)
+        passage_evidence = passage.get("evidence_panel_ids")
+        if isinstance(passage_evidence, list) and support_panel_id not in passage_evidence:
+            passage_evidence.append(support_panel_id)
+    return cloned
 
 
 def _project_provider_synthesis_output(
@@ -1958,6 +2416,7 @@ def _project_provider_synthesis_output(
     request: VisionChapterSynthesisRequest,
 ) -> Mapping[str, Any]:
     """Attach caller-owned deterministic lineage to provider semantic synthesis."""
+
     def _top_level_error(value: Any) -> VisionResponseInvalid:
         diagnostics: dict[str, Any] = {}
         if isinstance(value, Mapping):
@@ -2007,18 +2466,28 @@ def _project_provider_synthesis_output(
         else:
             raise _top_level_error(result)
     if not isinstance(result.get("observations"), list):
-        raise VisionResponseInvalid(validation_subtype="synthesis_projection_observations_shape_invalid")
+        raise VisionResponseInvalid(
+            validation_subtype="synthesis_projection_observations_shape_invalid"
+        )
     if not isinstance(result.get("coverage_manifest"), Mapping):
-        raise VisionResponseInvalid(validation_subtype="synthesis_projection_coverage_shape_invalid")
+        raise VisionResponseInvalid(
+            validation_subtype="synthesis_projection_coverage_shape_invalid"
+        )
 
     continuity = result.get("continuity_ledger")
     if not isinstance(continuity, Mapping):
-        raise VisionResponseInvalid(validation_subtype="synthesis_projection_continuity_shape_invalid")
+        raise VisionResponseInvalid(
+            validation_subtype="synthesis_projection_continuity_shape_invalid"
+        )
     semantic_continuity_keys = ("entities", "motives", "state_changes", "causal_links")
     if any(not isinstance(continuity.get(key), list) for key in semantic_continuity_keys):
-        raise VisionResponseInvalid(validation_subtype="synthesis_projection_continuity_arrays_invalid")
+        raise VisionResponseInvalid(
+            validation_subtype="synthesis_projection_continuity_arrays_invalid"
+        )
     if not continuity.get("entities") or continuity.get("reconciled_after_final_chunk") is not True:
-        raise VisionResponseInvalid(validation_subtype="synthesis_projection_continuity_identity_invalid")
+        raise VisionResponseInvalid(
+            validation_subtype="synthesis_projection_continuity_identity_invalid"
+        )
 
     graph = result.get("evidence_graph")
     claims = graph.get("claims") if isinstance(graph, Mapping) else None
@@ -2031,18 +2500,24 @@ def _project_provider_synthesis_output(
     projected_outline = dict(outline)
     if request.narrative_profile_id is None and "story_spine" not in projected_outline:
         if set(projected_outline) != _SYNTHESIS_STORY_SPINE_FIELDS:
-            raise VisionResponseInvalid(validation_subtype="synthesis_projection_legacy_outline_shape_invalid")
+            raise VisionResponseInvalid(
+                validation_subtype="synthesis_projection_legacy_outline_shape_invalid"
+            )
         projected_outline = {"story_spine": projected_outline}
 
     passages = result.get("script_passages")
     if not isinstance(passages, list):
-        raise VisionResponseInvalid(validation_subtype="synthesis_projection_passages_shape_invalid")
+        raise VisionResponseInvalid(
+            validation_subtype="synthesis_projection_passages_shape_invalid"
+        )
 
     expected_set = set(request.expected_panel_ids)
     claim_evidence: dict[str, tuple[str, ...]] = {}
     for raw_claim in claims:
         if not isinstance(raw_claim, Mapping):
-            raise VisionResponseInvalid(validation_subtype="synthesis_projection_claim_shape_invalid")
+            raise VisionResponseInvalid(
+                validation_subtype="synthesis_projection_claim_shape_invalid"
+            )
         claim_id = raw_claim.get("claim_id")
         evidence = raw_claim.get("evidence_panel_ids")
         if (
@@ -2051,31 +2526,47 @@ def _project_provider_synthesis_output(
             or claim_id in claim_evidence
             or not isinstance(evidence, list)
             or not evidence
-            or any(not isinstance(panel_id, str) or panel_id not in expected_set for panel_id in evidence)
+            or any(
+                not isinstance(panel_id, str) or panel_id not in expected_set
+                for panel_id in evidence
+            )
         ):
-            raise VisionResponseInvalid(validation_subtype="synthesis_projection_claim_evidence_invalid")
+            raise VisionResponseInvalid(
+                validation_subtype="synthesis_projection_claim_evidence_invalid"
+            )
         claim_evidence[claim_id] = tuple(evidence)
 
     projected_passages: list[dict[str, Any]] = []
     for raw_passage in passages:
         if not isinstance(raw_passage, Mapping):
-            raise VisionResponseInvalid(validation_subtype="synthesis_projection_passage_shape_invalid")
+            raise VisionResponseInvalid(
+                validation_subtype="synthesis_projection_passage_shape_invalid"
+            )
         passage = dict(raw_passage)
         claim_ids = passage.get("claim_ids")
         current_evidence = passage.get("evidence_panel_ids", [])
         if (
             not isinstance(claim_ids, list)
             or not claim_ids
-            or any(not isinstance(claim_id, str) or claim_id not in claim_evidence for claim_id in claim_ids)
+            or any(
+                not isinstance(claim_id, str) or claim_id not in claim_evidence
+                for claim_id in claim_ids
+            )
             or not isinstance(current_evidence, list)
-            or any(not isinstance(panel_id, str) or panel_id not in expected_set for panel_id in current_evidence)
+            or any(
+                not isinstance(panel_id, str) or panel_id not in expected_set
+                for panel_id in current_evidence
+            )
         ):
-            raise VisionResponseInvalid(validation_subtype="synthesis_projection_passage_evidence_invalid")
+            raise VisionResponseInvalid(
+                validation_subtype="synthesis_projection_passage_evidence_invalid"
+            )
         needed = {panel_id for claim_id in claim_ids for panel_id in claim_evidence[claim_id]}
         if not needed.issubset(current_evidence):
             present = set(current_evidence)
             passage["evidence_panel_ids"] = list(current_evidence) + [
-                panel_id for panel_id in request.expected_panel_ids
+                panel_id
+                for panel_id in request.expected_panel_ids
                 if panel_id in needed and panel_id not in present
             ]
         projected_passages.append(passage)
@@ -2083,7 +2574,9 @@ def _project_provider_synthesis_output(
     projected_entities: list[dict[str, Any]] = []
     for raw_entity in continuity["entities"]:
         if not isinstance(raw_entity, Mapping):
-            raise VisionResponseInvalid(validation_subtype="synthesis_projection_entity_shape_invalid")
+            raise VisionResponseInvalid(
+                validation_subtype="synthesis_projection_entity_shape_invalid"
+            )
         entity = dict(raw_entity)
         entity.setdefault("aliases", [])
         projected_entities.append(entity)
@@ -2105,11 +2598,67 @@ def _project_provider_synthesis_output(
     }
 
 
-_VISUAL_SUPPORT_STOPWORDS = frozenset({
-    "the", "and", "for", "that", "this", "with", "from", "into", "onto", "then",
-    "when", "while", "where", "what", "who", "why", "how", "his", "her", "their",
-    "they", "them", "was", "were", "are", "has", "have", "had", "but", "not", "only",
-})
+_VISUAL_SUPPORT_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "that",
+        "this",
+        "with",
+        "from",
+        "into",
+        "onto",
+        "then",
+        "when",
+        "while",
+        "where",
+        "what",
+        "who",
+        "why",
+        "how",
+        "his",
+        "her",
+        "their",
+        "they",
+        "them",
+        "was",
+        "were",
+        "are",
+        "has",
+        "have",
+        "had",
+        "but",
+        "not",
+        "only",
+    }
+)
+_VISUAL_SUPPORT_MORPHOLOGY = {
+    "marry": "marry",
+    "marries": "marry",
+    "married": "marry",
+    "marriage": "marry",
+    "require": "require",
+    "requires": "require",
+    "required": "require",
+    "requirement": "require",
+    "requirements": "require",
+    "purify": "purify",
+    "purifies": "purify",
+    "purified": "purify",
+    "purification": "purify",
+    "declare": "declare",
+    "declares": "declare",
+    "declared": "declare",
+    "declaration": "declare",
+    "heal": "heal",
+    "heals": "heal",
+    "healed": "heal",
+    "healing": "heal",
+    "exhaust": "exhaust",
+    "exhausted": "exhaust",
+    "exhaustion": "exhaust",
+}
 
 _VISUAL_ROLE_SECTIONS = {
     "hook": "hook",
@@ -2140,8 +2689,326 @@ def _visual_section_for_passage(
 
 
 def _visual_support_tokens(value: object) -> set[str]:
-    text = str(value or "").casefold().translate(str.maketrans(dict.fromkeys(string.punctuation, " ")))
-    return {token for token in text.split() if len(token) >= 3 and token not in _VISUAL_SUPPORT_STOPWORDS}
+    text = (
+        str(value or "").casefold().translate(str.maketrans(dict.fromkeys(string.punctuation, " ")))
+    )
+    result: set[str] = set()
+    for token in text.split():
+        token = _VISUAL_SUPPORT_MORPHOLOGY.get(token, token)
+        if len(token) >= 5 and token.endswith("ies"):
+            token = token[:-3] + "y"
+        elif len(token) >= 5 and token.endswith("s") and not token.endswith("ss"):
+            token = token[:-1]
+        token = _VISUAL_SUPPORT_MORPHOLOGY.get(token, token)
+        if len(token) >= 3 and token not in _VISUAL_SUPPORT_STOPWORDS:
+            result.add(token)
+    return result
+
+
+def _passage_relevant_visual_ids(
+    passage: Mapping[str, Any],
+    candidate_ids: Sequence[str],
+    claim_by_id: Mapping[str, Mapping[str, Any]],
+    observation_by_id: Mapping[str, Mapping[str, Any]],
+) -> tuple[str, ...]:
+    ordered_ids = tuple(str(value) for value in candidate_ids)
+    fallback_positions = {panel_id: index for index, panel_id in enumerate(observation_by_id)}
+    anchors = _visual_support_tokens(passage.get("text"))
+    semantic_seed_anchors: set[str] = set()
+    semantic_positions: list[int] = []
+    semantic_assets: set[str] = set()
+    claim_evidence_ids: set[str] = set()
+    for claim_id in passage.get("claim_ids") or ():
+        claim = claim_by_id.get(str(claim_id))
+        if claim is None:
+            continue
+        claim_anchors = _visual_support_tokens(claim.get("text"))
+        semantic_seed_anchors.update(claim_anchors)
+        anchors.update(claim_anchors)
+        anchors.update(_visual_support_tokens(claim.get("qualification")))
+        for raw_id in claim.get("evidence_panel_ids") or ():
+            panel_id = str(raw_id)
+            claim_evidence_ids.add(panel_id)
+            obs = observation_by_id.get(panel_id)
+            if obs is None:
+                continue
+            evidence_text = " ".join(
+                str(v)
+                for key in ("visible_facts", "dialogue_or_ocr", "inferences")
+                for v in (obs.get(key) or ())
+            )
+            if not (claim_anchors & _visual_support_tokens(evidence_text)):
+                continue
+            raw_index = obs.get("source_index")
+            semantic_positions.append(
+                int(raw_index)
+                if isinstance(raw_index, int) and not isinstance(raw_index, bool)
+                else fallback_positions.get(panel_id, 10**9)
+            )
+            asset_id = str(obs.get("source_asset_id", ""))
+            if asset_id:
+                semantic_assets.add(asset_id)
+
+    indexed: list[tuple[int, str]] = []
+    seeds: set[str] = set()
+    for panel_id in ordered_ids:
+        obs = observation_by_id.get(panel_id)
+        if obs is None:
+            continue
+        raw_index = obs.get("source_index")
+        source_index = (
+            int(raw_index)
+            if isinstance(raw_index, int) and not isinstance(raw_index, bool)
+            else fallback_positions.get(panel_id, 10**9)
+        )
+        indexed.append((source_index, panel_id))
+        support_text = " ".join(
+            str(v)
+            for key in ("visible_facts", "dialogue_or_ocr", "inferences")
+            for v in (obs.get(key) or ())
+        )
+        overlap_basis = semantic_seed_anchors or anchors
+        overlap_count = len(overlap_basis & _visual_support_tokens(support_text))
+        local = min((abs(source_index - pos) for pos in semantic_positions), default=99) <= 4
+        asset_id = str(obs.get("source_asset_id", ""))
+        same_asset = bool(asset_id and asset_id in semantic_assets)
+        direct = panel_id in claim_evidence_ids
+        if direct or overlap_count >= 3 or local or same_asset:
+            seeds.add(panel_id)
+    if not seeds:
+        return ()
+
+    indexed.sort()
+    seed_positions = [source_index for source_index, panel_id in indexed if panel_id in seeds]
+    relevant = {
+        panel_id
+        for source_index, panel_id in indexed
+        if panel_id in seeds
+        or min((abs(source_index - seed_pos) for seed_pos in seed_positions), default=10**9) <= 12
+    }
+    return tuple(panel_id for panel_id in ordered_ids if panel_id in relevant)
+
+
+def _retention_visual_story_alignment_missing(
+    output: Mapping[str, Any], request: VisionChapterSynthesisRequest
+) -> tuple[str, ...]:
+    if request.narrative_profile_id != "retention_story_v1":
+        return ()
+    passages = output.get("script_passages") if isinstance(output, Mapping) else None
+    graph = output.get("evidence_graph") if isinstance(output, Mapping) else None
+    claims = graph.get("claims") if isinstance(graph, Mapping) else None
+    if not isinstance(passages, list) or not isinstance(claims, list):
+        return ()
+    claim_by_id = {str(c.get("claim_id")): c for c in claims if isinstance(c, Mapping)}
+    obs_by_id = {
+        str(o.get("panel_id")): o for o in request.ordered_observations if isinstance(o, Mapping)
+    }
+    preferred_by_section = request.preferred_visual_panel_ids_by_section or {}
+    missing: list[str] = []
+    for index, passage in enumerate(passages):
+        if not isinstance(passage, Mapping):
+            continue
+        section = _visual_section_for_passage(passage, index, len(passages), request)
+        safe_ids = tuple(str(v) for v in preferred_by_section.get(section, ()))
+        if not safe_ids:
+            continue
+        anchors = _visual_support_tokens(passage.get("text"))
+        claim_evidence: set[str] = set()
+        semantic_evidence_positions: list[int] = []
+        semantic_evidence_assets: set[str] = set()
+        for claim_id in passage.get("claim_ids") or ():
+            claim = claim_by_id.get(str(claim_id))
+            if claim is None:
+                continue
+            claim_anchors = _visual_support_tokens(claim.get("text"))
+            anchors.update(claim_anchors)
+            anchors.update(_visual_support_tokens(claim.get("qualification")))
+            for value in claim.get("evidence_panel_ids") or ():
+                panel_ref = str(value)
+                claim_evidence.add(panel_ref)
+                evidence_obs = obs_by_id.get(panel_ref)
+                if evidence_obs is None:
+                    continue
+                evidence_text = " ".join(
+                    str(v)
+                    for key in ("visible_facts", "dialogue_or_ocr", "inferences")
+                    for v in (evidence_obs.get(key) or ())
+                )
+                if claim_anchors & _visual_support_tokens(evidence_text):
+                    raw_source_index = evidence_obs.get("source_index")
+                    if isinstance(raw_source_index, int) and not isinstance(raw_source_index, bool):
+                        semantic_evidence_positions.append(raw_source_index)
+                    source_asset_id = str(evidence_obs.get("source_asset_id", ""))
+                    if source_asset_id:
+                        semantic_evidence_assets.add(source_asset_id)
+        supported = False
+        for panel_id in safe_ids:
+            obs = obs_by_id.get(panel_id)
+            if obs is None:
+                continue
+            support_text = " ".join(
+                str(v)
+                for key in ("visible_facts", "dialogue_or_ocr", "inferences")
+                for v in (obs.get(key) or ())
+            )
+            overlap = bool(anchors & _visual_support_tokens(support_text))
+            source_asset_id = str(obs.get("source_asset_id", ""))
+            raw_source_index = obs.get("source_index")
+            semantic_local = False
+            if isinstance(raw_source_index, int) and not isinstance(raw_source_index, bool):
+                semantic_local = (
+                    min(
+                        (abs(raw_source_index - pos) for pos in semantic_evidence_positions),
+                        default=99,
+                    )
+                    <= 4
+                )
+            same_semantic_asset = bool(
+                source_asset_id and source_asset_id in semantic_evidence_assets
+            )
+            direct_safe = panel_id in claim_evidence
+            if request.retry_visual_story_alignment:
+                supported = overlap or semantic_local or same_semantic_asset
+            else:
+                supported = direct_safe or overlap or semantic_local or same_semantic_asset
+            if supported:
+                break
+        if not supported:
+            missing.append(str(passage.get("editorial_role") or section or index))
+    return tuple(missing)
+
+
+def _retention_visual_story_alignment_diagnostics(
+    output: Mapping[str, Any],
+    request: VisionChapterSynthesisRequest,
+    missing_alignment: Sequence[str],
+) -> Mapping[str, Any]:
+    passages = output.get("script_passages") if isinstance(output, Mapping) else None
+    graph = output.get("evidence_graph") if isinstance(output, Mapping) else None
+    claims = graph.get("claims") if isinstance(graph, Mapping) else None
+    if not isinstance(passages, list) or not isinstance(claims, list):
+        return {"missing_roles": list(missing_alignment)}
+    claim_by_id = {str(c.get("claim_id")): c for c in claims if isinstance(c, Mapping)}
+    obs_by_id = {
+        str(o.get("panel_id")): o for o in request.ordered_observations if isinstance(o, Mapping)
+    }
+    positions = {panel_id: index for index, panel_id in enumerate(obs_by_id)}
+    source_positions = {}
+    for panel_id, obs in obs_by_id.items():
+        raw_index = obs.get("source_index")
+        source_positions[panel_id] = (
+            int(raw_index)
+            if isinstance(raw_index, int) and not isinstance(raw_index, bool)
+            else positions[panel_id]
+        )
+    preferred_by_section = request.preferred_visual_panel_ids_by_section or {}
+    rows: list[dict[str, Any]] = []
+    missing_set = set(missing_alignment)
+    for index, passage in enumerate(passages):
+        if not isinstance(passage, Mapping):
+            continue
+        section = _visual_section_for_passage(passage, index, len(passages), request)
+        role = str(passage.get("editorial_role") or section or index)
+        if role not in missing_set:
+            continue
+        anchors = _visual_support_tokens(passage.get("text"))
+        claim_evidence: set[str] = set()
+        claim_ids = [str(value) for value in (passage.get("claim_ids") or ())]
+        for claim_id in claim_ids:
+            claim = claim_by_id.get(claim_id)
+            if claim is None:
+                continue
+            anchors.update(_visual_support_tokens(claim.get("text")))
+            anchors.update(_visual_support_tokens(claim.get("qualification")))
+            claim_evidence.update(str(v) for v in claim.get("evidence_panel_ids") or ())
+        direct_positions = [positions[v] for v in claim_evidence if v in positions]
+        direct_source_positions = [
+            source_positions[v] for v in claim_evidence if v in source_positions
+        ]
+        direct_assets = {
+            str(obs_by_id[v].get("source_asset_id", "")) for v in claim_evidence if v in obs_by_id
+        }
+        candidates: list[dict[str, Any]] = []
+        for panel_id in preferred_by_section.get(section, ()):
+            panel_id = str(panel_id)
+            obs = obs_by_id.get(panel_id)
+            if obs is None:
+                continue
+            support_values = [
+                str(v)
+                for key in ("visible_facts", "dialogue_or_ocr", "inferences")
+                for v in (obs.get(key) or ())
+            ]
+            overlap = sorted(anchors & _visual_support_tokens(" ".join(support_values)))
+            source_asset_id = str(obs.get("source_asset_id", ""))
+            same_scene = bool(
+                source_asset_id
+                and source_asset_id in direct_assets
+                and panel_id in positions
+                and min((abs(positions[panel_id] - pos) for pos in direct_positions), default=99)
+                <= 4
+            )
+            source_index = source_positions.get(panel_id)
+            chronology_distance = (
+                min((abs(source_index - pos) for pos in direct_source_positions), default=10**9)
+                if source_index is not None
+                else 10**9
+            )
+            candidates.append(
+                {
+                    "panel_id": panel_id,
+                    "source_index": source_index,
+                    "chronology_distance": None
+                    if chronology_distance == 10**9
+                    else chronology_distance,
+                    "direct_evidence": panel_id in claim_evidence,
+                    "same_scene": same_scene,
+                    "overlap_tokens": overlap[:16],
+                    "excerpt": " | ".join(support_values)[:500],
+                }
+            )
+        candidates.sort(
+            key=lambda row: (
+                not row["direct_evidence"],
+                not row["same_scene"],
+                -len(row["overlap_tokens"]),
+                row["chronology_distance"] if row["chronology_distance"] is not None else 10**9,
+                row["source_index"] if row["source_index"] is not None else 10**9,
+                row["panel_id"],
+            )
+        )
+        usable = candidates[:8]
+        if request.retry_visual_story_alignment:
+            replacement_required = bool(usable) and not any(
+                row["direct_evidence"] and row["overlap_tokens"] for row in usable
+            )
+        else:
+            replacement_required = bool(usable) and not any(
+                row["direct_evidence"] or row["same_scene"] or row["overlap_tokens"]
+                for row in usable
+            )
+        row = {
+            "passage_id": str(passage.get("passage_id", "")),
+            "editorial_role": role,
+            "section": section,
+            "replacement_required": replacement_required,
+            "candidate_panels": usable,
+        }
+        if replacement_required:
+            row["replacement_instruction"] = (
+                "Discard the rejected beat completely. Select a candidate_panel first and build a new granular claim only from that panel's supplied excerpt."
+            )
+        else:
+            row.update(
+                {
+                    "text": str(passage.get("text", ""))[:500],
+                    "claim_ids": claim_ids,
+                    "claim_evidence_panel_ids": sorted(claim_evidence),
+                }
+            )
+        rows.append(row)
+    return {"missing_roles": list(missing_alignment), "passages": rows}
+
 
 def _complete_retry_visual_selection(
     output: Mapping[str, Any], request: VisionChapterSynthesisRequest
@@ -2176,13 +3043,25 @@ def _complete_retry_visual_selection(
     cloned_passages = [dict(item) if isinstance(item, Mapping) else item for item in passages]
     cloned["script_passages"] = cloned_passages
 
-    global_used = {
-        str(panel_id)
-        for passage in cloned_passages
-        if isinstance(passage, Mapping)
-        for panel_id in (passage.get("evidence_panel_ids") or ())
-        if str(panel_id) in preferred
-    }
+    relevant_generic_by_index: dict[int, tuple[str, ...]] = {}
+    relevant_section_by_index: dict[int, tuple[str, ...]] = {}
+    global_relevant: set[str] = set()
+    global_used: set[str] = set()
+    for passage_index, passage in enumerate(cloned_passages):
+        if not isinstance(passage, Mapping):
+            continue
+        section = _visual_section_for_passage(passage, passage_index, len(cloned_passages), request)
+        relevant_generic = _passage_relevant_visual_ids(
+            passage, preferred_order, claim_by_id, observation_by_id
+        )
+        relevant_section = _passage_relevant_visual_ids(
+            passage, preferred_by_section.get(section, ()), claim_by_id, observation_by_id
+        )
+        relevant_generic_by_index[passage_index] = relevant_generic
+        relevant_section_by_index[passage_index] = relevant_section
+        global_relevant.update(relevant_generic)
+        evidence = {str(value) for value in (passage.get("evidence_panel_ids") or ())}
+        global_used.update(evidence & set(relevant_generic))
 
     def ranked_candidates(passage: Mapping[str, Any], candidate_ids: Sequence[str]) -> list[str]:
         evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
@@ -2194,7 +3073,13 @@ def _complete_retry_visual_selection(
                 anchors.update(_visual_support_tokens(claim.get("text")))
                 anchors.update(_visual_support_tokens(claim.get("qualification")))
         grounded_positions = [positions[value] for value in evidence if value in positions]
-        rows: list[tuple[tuple[int, int, int, int], str]] = []
+        grounded_source_assets = {
+            str(observation_by_id[value].get("source_asset_id", ""))
+            for value in evidence
+            if value in observation_by_id
+            and str(observation_by_id[value].get("source_asset_id", ""))
+        }
+        rows: list[tuple[tuple[int, int, int, int, int], str]] = []
         for allow_index, panel_id in enumerate(candidate_ids):
             panel_id = str(panel_id)
             if panel_id in evidence_set:
@@ -2208,23 +3093,34 @@ def _complete_retry_visual_selection(
                 for value in (observation.get(key) or ())
             )
             overlap = len(anchors & _visual_support_tokens(support_text))
-            distance = min((abs(positions[panel_id] - value) for value in grounded_positions), default=10**9)
-            if overlap <= 0 and distance > 2:
-                continue
-            rows.append(((0 if panel_id not in global_used else 1, -overlap, distance, allow_index), panel_id))
+            distance = min(
+                (abs(positions[panel_id] - value) for value in grounded_positions), default=10**9
+            )
+            source_asset_id = str(observation.get("source_asset_id", ""))
+            same_source_scene = bool(source_asset_id and source_asset_id in grounded_source_assets)
+            rows.append(
+                (
+                    (
+                        0 if panel_id not in global_used else 1,
+                        -overlap,
+                        0 if same_source_scene else 1,
+                        distance,
+                        allow_index,
+                    ),
+                    panel_id,
+                )
+            )
         rows.sort(key=lambda item: item[0])
         return [panel_id for _score, panel_id in rows]
 
     for passage_index, passage in enumerate(cloned_passages):
         if not isinstance(passage, dict):
             continue
-        section = _visual_section_for_passage(
-            passage, passage_index, len(cloned_passages), request
-        )
+        section = _visual_section_for_passage(passage, passage_index, len(cloned_passages), request)
         if not section:
             continue
         evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
-        section_order = preferred_by_section.get(section, ())
+        section_order = relevant_section_by_index.get(passage_index, ())
         section_safe = set(section_order)
         selected_section = {value for value in evidence if value in section_safe}
         for candidate in ranked_candidates(passage, section_order):
@@ -2237,12 +3133,14 @@ def _complete_retry_visual_selection(
                 global_used.add(candidate)
         passage["evidence_panel_ids"] = evidence
 
-        selected_generic = {value for value in evidence if value in preferred}
-        generic_order = tuple(value for value in preferred_order if value in section_safe) + tuple(
-            value for value in preferred_order if value not in section_safe
+        relevant_generic = relevant_generic_by_index.get(passage_index, ())
+        relevant_generic_set = set(relevant_generic)
+        selected_generic = {value for value in evidence if value in relevant_generic_set}
+        generic_order = tuple(value for value in relevant_generic if value in section_safe) + tuple(
+            value for value in relevant_generic if value not in section_safe
         )
         for candidate in ranked_candidates(passage, generic_order):
-            if len(selected_generic) >= min(4, len(preferred)):
+            if len(selected_generic) >= min(4, len(relevant_generic_set)):
                 break
             if candidate not in evidence:
                 evidence.append(candidate)
@@ -2250,7 +3148,7 @@ def _complete_retry_visual_selection(
             global_used.add(candidate)
         passage["evidence_panel_ids"] = evidence
 
-    unique_min = min(18, len(preferred))
+    unique_min = min(18, len(global_relevant))
     if len(global_used) < unique_min:
         for passage_index, passage in enumerate(cloned_passages):
             if not isinstance(passage, dict):
@@ -2258,10 +3156,11 @@ def _complete_retry_visual_selection(
             section = _visual_section_for_passage(
                 passage, passage_index, len(cloned_passages), request
             )
-            section_safe = set(preferred_by_section.get(section, ()))
-            generic_order = tuple(value for value in preferred_order if value in section_safe) + tuple(
-                value for value in preferred_order if value not in section_safe
-            )
+            section_safe = set(relevant_section_by_index.get(passage_index, ()))
+            relevant_generic = relevant_generic_by_index.get(passage_index, ())
+            generic_order = tuple(
+                value for value in relevant_generic if value in section_safe
+            ) + tuple(value for value in relevant_generic if value not in section_safe)
             evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
             for candidate in ranked_candidates(passage, generic_order):
                 if len(global_used) >= unique_min:
@@ -2286,11 +3185,44 @@ def validate_synthesis_visual_selection(
     passages = output.get("script_passages") if isinstance(output, Mapping) else None
     if not isinstance(passages, list) or not passages:
         raise VisionResponseInvalid()
+    graph = output.get("evidence_graph") if isinstance(output, Mapping) else None
+    claims = graph.get("claims") if isinstance(graph, Mapping) else None
+    if not isinstance(claims, list):
+        raise VisionResponseInvalid()
+    claim_by_id = {str(item.get("claim_id")): item for item in claims if isinstance(item, Mapping)}
+    observation_by_id = {
+        str(item.get("panel_id")): item
+        for item in request.ordered_observations
+        if isinstance(item, Mapping) and item.get("panel_id")
+    }
+    missing_alignment = _retention_visual_story_alignment_missing(output, request)
+    if missing_alignment:
+        raise VisionResponseInvalid(
+            validation_subtype="retention_visual_story_alignment_missing",
+            selection_diagnostics=_retention_visual_story_alignment_diagnostics(
+                output, request, missing_alignment
+            ),
+        )
     preferred_set = set(preferred)
     locked_passages = tuple(dict(passage) for passage in passages if isinstance(passage, Mapping))
     preferred_by_section = request.preferred_visual_panel_ids_by_section or {}
-    per_passage_min = min(4, len(preferred_set))
-    unique_min = min(18, len(preferred_set))
+    relevant_generic_by_index: dict[int, tuple[str, ...]] = {}
+    relevant_section_by_index: dict[int, tuple[str, ...]] = {}
+    global_relevant: set[str] = set()
+    for passage_index, passage in enumerate(passages):
+        if not isinstance(passage, Mapping):
+            continue
+        section = _visual_section_for_passage(passage, passage_index, len(passages), request)
+        relevant_generic = _passage_relevant_visual_ids(
+            passage, preferred, claim_by_id, observation_by_id
+        )
+        relevant_section = _passage_relevant_visual_ids(
+            passage, preferred_by_section.get(section, ()), claim_by_id, observation_by_id
+        )
+        relevant_generic_by_index[passage_index] = relevant_generic
+        relevant_section_by_index[passage_index] = relevant_section
+        global_relevant.update(relevant_generic)
+    unique_min = min(18, len(global_relevant))
     used_preferred: set[str] = set()
 
     def selection_diagnostics() -> dict[str, Any]:
@@ -2300,16 +3232,38 @@ def validate_synthesis_visual_selection(
             if not isinstance(item, Mapping):
                 continue
             role = str(item.get("editorial_role", ""))
-            section = _visual_section_for_passage(
-                item, passage_index, len(passages), request
+            section = _visual_section_for_passage(item, passage_index, len(passages), request)
+            evidence = (
+                item.get("evidence_panel_ids")
+                if isinstance(item.get("evidence_panel_ids"), list)
+                else []
             )
-            evidence = item.get("evidence_panel_ids") if isinstance(item.get("evidence_panel_ids"), list) else []
             section_safe = set(preferred_by_section.get(section, ()))
-            selected_section = {str(v) for v in evidence if str(v) in section_safe}
-            selected_preferred = {str(v) for v in evidence if str(v) in preferred_set}
+            relevant_section = set(relevant_section_by_index.get(passage_index, ()))
+            relevant_generic = set(relevant_generic_by_index.get(passage_index, ()))
+            selected_section = {str(v) for v in evidence if str(v) in relevant_section}
+            selected_preferred = {str(v) for v in evidence if str(v) in relevant_generic}
             all_used.update(selected_preferred)
-            rows.append({"role": role, "section": section, "section_capacity": len(section_safe), "selected_section": len(selected_section), "selected_preferred": len(selected_preferred), "evidence_count": len(evidence)})
-        return {"preferred_total": len(preferred_set), "unique_min": min(18, len(preferred_set)), "used_preferred": len(all_used), "section_capacities": {str(k): len(v) for k, v in preferred_by_section.items()}, "passages": rows}
+            rows.append(
+                {
+                    "role": role,
+                    "section": section,
+                    "section_capacity": len(section_safe),
+                    "relevant_section_capacity": len(relevant_section),
+                    "required_section": min(4, len(relevant_section)),
+                    "selected_section": len(selected_section),
+                    "selected_preferred": len(selected_preferred),
+                    "evidence_count": len(evidence),
+                }
+            )
+        return {
+            "preferred_total": len(preferred_set),
+            "relevant_total": len(global_relevant),
+            "unique_min": unique_min,
+            "used_preferred": len(all_used),
+            "section_capacities": {str(k): len(v) for k, v in preferred_by_section.items()},
+            "passages": rows,
+        }
 
     for passage_index, passage in enumerate(passages):
         if not isinstance(passage, Mapping):
@@ -2317,24 +3271,29 @@ def validate_synthesis_visual_selection(
         evidence = passage.get("evidence_panel_ids")
         if not isinstance(evidence, list):
             raise VisionResponseInvalid()
-        section = _visual_section_for_passage(
-            passage, passage_index, len(passages), request
-        )
-        section_preferred = set(preferred_by_section.get(section, ()))
+        section = _visual_section_for_passage(passage, passage_index, len(passages), request)
+        relevant_section = set(relevant_section_by_index.get(passage_index, ()))
         if preferred_by_section and section:
-            if len(section_preferred) < 4:
+            if not relevant_section:
                 raise VisionResponseInvalid(
                     validation_subtype="production_visual_section_capacity_insufficient"
                 )
-            selected_section = {panel_id for panel_id in evidence if panel_id in section_preferred}
-            if len(selected_section) < 4:
+            required_section = min(4, len(relevant_section))
+            selected_section = {panel_id for panel_id in evidence if panel_id in relevant_section}
+            if len(selected_section) < required_section:
                 raise VisionResponseInvalid(
                     validation_subtype="production_visual_selection_insufficient",
                     retry_passages=locked_passages,
                     selection_diagnostics=selection_diagnostics(),
                 )
-        selected = {panel_id for panel_id in evidence if panel_id in preferred_set}
-        if len(selected) < per_passage_min:
+        relevant_generic = set(relevant_generic_by_index.get(passage_index, ()))
+        if not relevant_generic:
+            raise VisionResponseInvalid(
+                validation_subtype="production_visual_section_capacity_insufficient"
+            )
+        required_generic = min(4, len(relevant_generic))
+        selected = {panel_id for panel_id in evidence if panel_id in relevant_generic}
+        if len(selected) < required_generic:
             raise VisionResponseInvalid(
                 validation_subtype="production_visual_selection_insufficient",
                 retry_passages=locked_passages,
@@ -2349,6 +3308,51 @@ def validate_synthesis_visual_selection(
         )
 
 
+def _preferred_visual_evidence_digest(
+    request: VisionChapterSynthesisRequest,
+) -> list[dict[str, Any]]:
+    section_order = ("hook", "setup", "conflict", "twist", "cta")
+    sections_by_panel: dict[str, list[str]] = {}
+    for section in section_order:
+        for panel_id in (request.preferred_visual_panel_ids_by_section or {}).get(section, ()):
+            value = str(panel_id)
+            sections_by_panel.setdefault(value, []).append(section)
+    preferred = {str(value) for value in request.preferred_visual_panel_ids}
+    rows: list[dict[str, Any]] = []
+    for source_index, observation in enumerate(request.ordered_observations):
+        if not isinstance(observation, Mapping):
+            continue
+        panel_id = str(observation.get("panel_id", "") or "")
+        if not panel_id or panel_id not in preferred or panel_id not in sections_by_panel:
+            continue
+        raw_index = observation.get("source_order")
+        if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+            raw_index = observation.get("source_index", source_index)
+        chronology_index = (
+            int(raw_index)
+            if isinstance(raw_index, int) and not isinstance(raw_index, bool)
+            else source_index
+        )
+
+        def excerpts(key: str, limit: int, row: Mapping[str, Any] = observation) -> list[str]:
+            values = row.get(key) or ()
+            if not isinstance(values, (list, tuple)):
+                return []
+            return [str(value).strip()[:240] for value in values if str(value).strip()][:limit]
+
+        rows.append(
+            {
+                "panel_id": panel_id,
+                "source_index": chronology_index,
+                "safe_sections": list(sections_by_panel[panel_id]),
+                "visible_facts": excerpts("visible_facts", 2),
+                "dialogue_or_ocr": excerpts("dialogue_or_ocr", 3),
+            }
+        )
+    rows.sort(key=lambda row: (int(row["source_index"]), str(row["panel_id"])))
+    return rows
+
+
 def _build_synthesis_payload(
     request: VisionChapterSynthesisRequest,
     expected_panel_ids: tuple[str, ...],
@@ -2361,19 +3365,18 @@ def _build_synthesis_payload(
         "instruction_sha256": request.instruction_sha256,
         "expected_panel_ids": list(expected_panel_ids),
         "coverage_manifest": dict(request.coverage_manifest),
-        "ordered_observations": [
-            dict(observation) for observation in request.ordered_observations
-        ],
+        "ordered_observations": [dict(observation) for observation in request.ordered_observations],
         "chunks": [dict(chunk) for chunk in request.chunks],
         "preferred_visual_panel_ids": list(request.preferred_visual_panel_ids),
         "preferred_visual_panel_ids_by_section": {
             str(section): list(panel_ids)
-            for section, panel_ids in sorted((request.preferred_visual_panel_ids_by_section or {}).items())
+            for section, panel_ids in sorted(
+                (request.preferred_visual_panel_ids_by_section or {}).items()
+            )
         },
+        "preferred_visual_evidence": _preferred_visual_evidence_digest(request),
     }
-    ledger_json = json.dumps(
-        ledger, ensure_ascii=False, separators=(",", ":")
-    )
+    ledger_json = json.dumps(ledger, ensure_ascii=False, separators=(",", ":"))
     retention_profile = bool(
         profile is not None and getattr(profile, "profile_id", "") == "retention_story_v1"
     )
@@ -2403,6 +3406,10 @@ def _build_synthesis_payload(
                 "Each passage MUST include up to four semantically relevant panel IDs from preferred_visual_panel_ids (four whenever at least four are available), and across all passages "
                 "use at least eighteen distinct preferred_visual_panel_ids when that many are available. These preferred panels have "
                 "known balloon geometry, protected visual subjects, and at least one production-safe balloon-avoiding ROI. Select them for the exact narrated beat, not merely because they are visually attractive. "
+                "Before drafting the dominant arc, inspect preferred_visual_evidence. Choose the production-safe visual anchor BEFORE writing each passage claim or narration. "
+                "The hook MUST center on a preferred_visual_evidence row whose safe_sections contains hook, and setup MUST center on a row whose safe_sections contains setup. The central narrated event must be directly present in that row's visible_facts or dialogue_or_ocr. "
+                "You may add non-safe claim-evidence panels afterward for factual detail, but they cannot replace the safe visual anchor. Do not make hook/setup center on a fact that exists only in ordered_observations and has no semantically matching preferred_visual_evidence row. "
+                "Later passages likewise require a semantically matching safe visual anchor from preferred_visual_evidence for their mapped section. Build the story from what can actually be shown, then connect only grounded causal details. "
                 "preferred_visual_panel_ids_by_section is framing metadata for downstream canonical sections; do not force legacy editorial role names merely to match those keys. Claim evidence must still be fully covered. "
             )
         else:
@@ -2436,17 +3443,103 @@ def _build_synthesis_payload(
             "For a fact, briefly state the direct visible/dialogue evidence basis; for an interpretation, state the grounded uncertainty or limiting condition. "
             "Never leave qualification blank and never add facts beyond the supplied observations. "
         )
+    projection_retry_instruction = ""
+    if request.retry_projection_contract:
+        projection_retry_instruction = (
+            "Corrective retry: the previous response failed the synthesis projection contract. "
+            "Return the complete required top-level structure exactly. continuity_ledger MUST preserve the supplied chunk continuity, "
+            "contain nonempty entities, motives, state_changes, and causal_links arrays as supported by observations, set reconciled_after_final_chunk=true, and fill all six story_spine fields with nonempty grounded strings. "
+            "Every motives[*].entity_id and state_changes[*].entity_id MUST exactly equal an entity_id declared in continuity_ledger.entities. If a motive or state change cannot be reconciled to a declared observed entity, drop that unsupported row rather than inventing a new identity. "
+            "Do not drop grounded entity identity or replace the continuity ledger with a story summary. Add no unsupported facts. "
+        )
+    claim_semantic_retry_instruction = ""
+    if request.retry_claim_semantic_grounding:
+        diagnostic_text = ""
+        if request.retry_claim_semantic_diagnostics:
+            diagnostic_text = (
+                " The rejected claim diagnostic was: "
+                + json.dumps(
+                    dict(request.retry_claim_semantic_diagnostics),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                + "."
+            )
+        claim_semantic_retry_instruction = (
+            "Corrective retry: at least one evidence_graph claim cited panels whose supplied observations did not semantically support the claim. "
+            "Rebuild the evidence_graph and script_passages from the same observation ledger. Every claim must be anchored by explicit words, visible facts, OCR/dialogue, or bounded inferences present in at least one cited evidence panel. "
+            "For the rejected claim specifically, either cite observation panels that explicitly support its missing semantic anchors or DROP/REWRITE the claim; never keep the claim while citing merely adjacent context panels. "
+            "When the diagnostic includes candidate_panels, use those excerpts as the primary repair shortlist: if the claim is preserved, choose one or more candidates whose supplied excerpt directly supports the claim rather than ignoring the shortlist or reusing rejected evidence IDs. Respect candidate source_order and semantic_window_max_span: anchors used to justify one claim MUST come from one local chronology window no wider than that span. Never borrow a rare anchor from a distant scene merely to satisfy vocabulary coverage. "
+            "The diagnostic may include matched_claim_anchors, required_anchor_matches, critical_claim_anchors, and missing_critical_anchors. Before returning the repaired claim, compute the UNION of overlap_anchors only across cited candidates inside one permitted local window. That local union MUST contain at least required_anchor_matches distinct claim anchors and every critical claim anchor. If no local candidate window can supply a missing critical anchor, DROP or REWRITE that concept instead of searching farther away. "
+            "Preserve modality exactly. A source statement that someone WILL do something, plans to do it, or declares it will happen does NOT prove MUST, REQUIRED, FORCED, OBLIGATED, or HAS TO. Likewise CAN or MAY does not prove MUST. Never strengthen descriptive/future wording into obligation unless an evidence panel in the same local window explicitly supplies that obligation. "
+            "Keep claims atomic. If one sentence combines separate propositions such as a treatment requirement, legal trigger, relationship consequence, threat, or outcome whose direct support lives on different panels, SPLIT it into granular claims and cite the direct panels for each proposition. Do not use one partially matching panel to justify a compound claim. "
+            "Do not preserve unsupported entities, motives, targets, causality, trust, resource transfer, threats, laws, relationships, or consequences from the rejected response."
+            + diagnostic_text
+            + " "
+        )
+    causal_arc_retry_instruction = ""
+    if request.retry_causal_arc:
+        causal_arc_retry_instruction = (
+            "Corrective retry: the previous retention response introduced a new claim after the setup without a directed causal path from earlier claim evidence. "
+            "Rebuild narrative_outline, evidence_graph, continuity_ledger semantic arrays, and script_passages from the same observations. "
+            "Keep one forward causal story chain in the BODY. The first passage may be a later teaser and must never be used as a backward causal seed. The body begins at setup (passage two); from the next body passage onward, every newly introduced claim MUST be reachable through continuity_ledger.causal_links from evidence already used by an earlier BODY passage. "
+            "Every continuity_ledger causal link MUST move forward in source chronology. If the hook teases a later consequence, the body must eventually reach that hook evidence; never create a hook-to-setup backward link. Preserve the grounded setup/body anchor unless evidence forces a correction, then repair downstream body passages rather than attaching a disconnected higher-stakes thread. "
+            "Prefer an already-evidenced social, legal, romantic, comedic, logistical, reputational, treatment, or immediate consequence reachable from that anchor. "
+            "Do not preserve a disconnected villain, remote threat, prophecy, side quest, or unrelated stakes merely because it is dramatic. Add no unsupported causal link just to satisfy this rule. "
+        )
+    visual_story_retry_instruction = ""
+    if request.retry_visual_story_alignment:
+        visual_diagnostic_text = ""
+        if request.retry_visual_story_diagnostics:
+            visual_diagnostic_text = (
+                " The rejected visual-story diagnostic was: "
+                + json.dumps(
+                    dict(request.retry_visual_story_diagnostics),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                + "."
+            )
+        visual_story_retry_instruction = (
+            "Corrective retry: the selected retention arc lacks direct or equivalent production-safe visual support for one or more passages. "
+            "Rebuild narrative_outline, evidence_graph, continuity_ledger semantic arrays, and script_passages from the same observations. "
+            "Choose a different truthful causal arc when necessary. Every passage must have at least one semantically matching panel from its corresponding preferred_visual_panel_ids_by_section, or a near same-source scene of its direct claim evidence. "
+            "After a visual-story failure, correction is safe-first: EVERY passage must attach at least one corresponding section-safe panel directly to evidence_graph evidence_panel_ids for a claim used by that passage. That same safe panel MUST itself semantically support the claim through its visible_facts, dialogue_or_ocr, or bounded inference; adding a safe panel as filler beside unrelated supporting evidence is invalid. Overlap-only, nearby-scene, or filler evidence is not enough on this retry. Build that granular claim from what the safe panel visibly shows, then use other grounded panels only for connected supporting detail. "
+            "If the diagnostic marks hook or setup as missing, the previous opening arc is not production-frameable: discard that opening and reselect the whole arc from grounded safe visual evidence rather than preserving its first two beats. "
+            "When the diagnostic contains candidate_panels, treat those excerpts as the primary frameable shortlist for that passage: preserve the beat only if a candidate directly supports it; otherwise rewrite/drop the beat and choose a causal beat that one of the safe candidates actually shows. "
+            "If replacement_required=true for a passage, the rejected passage text, claim_ids, and central claim are INVALID for this retry: do not paraphrase or restate them. Select a candidate_panel first, make the visible event in its excerpt the central beat, cite that panel in the passage evidence, and create only a granular claim directly supported by that observation. Then connect later passages through grounded causal links. "
+            "A replacement-required hook/setup must be safe-first: begin from what the selected production-safe panel visibly shows, then add only details whose cited evidence remains causally connected. Do not force treatment, law, romance, villain, or other prior themes merely because they appeared in the rejected response. "
+            "Do not attach unrelated frameable panels merely to satisfy visual counts, and do not keep a story beat whose only direct evidence cannot pass the supplied production-safe visual allowlists. "
+            + visual_diagnostic_text
+            + " "
+        )
     local_claim_retry_instruction = ""
     if request.retry_local_claim_grounding:
         local_claim_retry_instruction = (
-            "Corrective retry: at least one passage referenced a claim without carrying any evidence panel from that claim. "
+            "Corrective retry: passage-to-claim evidence grounding is incomplete. "
             "Make claims granular to the beat. Every claim_id listed by a passage MUST have at least one of that claim's evidence_panel_ids also listed in the same passage. "
+            "Across all passages that reference a claim, the union of their evidence_panel_ids MUST cover every evidence_panel_id declared on that claim; remove redundant claim evidence only when it is genuinely unnecessary. "
             "Preserve narration meaning and chronology; revise evidence_graph claims, passage claim_ids, and passage evidence_panel_ids only as needed, without inventing facts or panel IDs. "
         )
     locked_passage_instruction = ""
     if request.retry_passages is not None:
-        locked_json = json.dumps([dict(item) for item in request.retry_passages], ensure_ascii=False, separators=(",", ":"))
-        if request.retry_visual_selection:
+        locked_json = json.dumps(
+            [dict(item) for item in request.retry_passages],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if request.retry_causal_arc:
+            anchor_json = json.dumps(
+                [dict(item) for item in request.retry_passages[:2]],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            locked_passage_instruction = (
+                "Causal-arc retry anchor: use the first two previous passages as the grounded opening chain. "
+                "Do not lock passages three onward; replace them with reachable consequences from the same chain. "
+                f"Previous first-two anchor passages: {anchor_json}. "
+            )
+        elif request.retry_visual_selection:
             locked_passage_instruction = (
                 "The previous response passed semantic/narration structure but failed production visual selection. "
                 "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, text, "
@@ -2544,6 +3637,10 @@ def _build_synthesis_payload(
         + retry_instruction
         + evidence_lineage_retry_instruction
         + claim_qualification_retry_instruction
+        + claim_semantic_retry_instruction
+        + causal_arc_retry_instruction
+        + visual_story_retry_instruction
+        + projection_retry_instruction
         + local_claim_retry_instruction
         + visual_selection_instruction
         + final_role_instruction
@@ -2560,7 +3657,6 @@ def _build_synthesis_payload(
         "response_format": {"type": "json_object"},
         "temperature": 0,
         "max_tokens": 65536,
-
     }
     if profile is not None:
         payload["narrative_identity"] = {

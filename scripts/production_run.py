@@ -281,7 +281,27 @@ def _ensure_source(db: Any, args: argparse.Namespace, state: dict[str, Any], sta
 def _ensure_analysis(db: Any, args: argparse.Namespace, state: dict[str, Any], state_path: Path, user: Any, project: Any) -> Any:
     current = pl.latest_analysis(db, project.id)
     if current is not None and str(current.state) in {"RECONCILED", "SCRIPT_DRAFT", "SCRIPT_APPROVED"}:
-        return current
+        current_reconciliation = current.reconciliation_json or {}
+        stored_source_fingerprint = str(current_reconciliation.get("source_fingerprint") or "")
+        source_matches = False
+        if stored_source_fingerprint:
+            current_assets = pl.image_assets(pl.project_assets(db, project.id))
+            source_matches = stored_source_fingerprint == pl._analysis_source_fingerprint(current_assets)
+        if source_matches:
+            requested_profile_id = str(getattr(args, "narrative_profile_id", "") or "").strip()
+            current_identity = current_reconciliation.get("narrative_identity")
+            if not requested_profile_id:
+                if not current_identity:
+                    return current
+            else:
+                requested_profile = narrative_identity.get_narrative_identity(requested_profile_id)
+                if (
+                    isinstance(current_identity, dict)
+                    and current_identity.get("profile_id") == requested_profile.profile_id
+                    and current_identity.get("version") == requested_profile.profile_version
+                    and current_identity.get("sha256") == requested_profile.contract_sha256
+                ):
+                    return current
     started = time.perf_counter()
     synthesis_durations: list[float] = []
     real_synthesize = pl._synthesize_with_cache
@@ -350,7 +370,7 @@ def _ensure_script(db: Any, args: argparse.Namespace, state: dict[str, Any], sta
         )
         db.commit()
         generated = True
-    if script.approved_at is None:
+    if script.approved_at is None and not bool(getattr(args, "review_hold", False)):
         script = pl.approve_script(
             db,
             script.id,
@@ -492,6 +512,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--language", default="en")
     parser.add_argument("--voice-id", default=DEFAULT_ENGLISH_VOICE_ID)
     parser.add_argument("--narrative-profile-id", default="")
+    parser.add_argument("--review-hold", action="store_true", help="Stop after generating an unapproved script for editorial review")
     parser.add_argument("--watermark", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--watermark-text", default="")
     parser.add_argument("--max-analysis-attempts", type=int, default=2)
@@ -547,6 +568,20 @@ def main() -> int:
         _ensure_source(db, args, state, state_path, user, project)
         _ensure_analysis(db, args, state, state_path, user, project)
         script = _ensure_script(db, args, state, state_path, user, project)
+        if bool(getattr(args, "review_hold", False)) and script.approved_at is None:
+            state["status"] = "REVIEW_HOLD"
+            state.pop("failure", None)
+            state["result"] = {
+                "project_id": project.id,
+                "script_id": script.id,
+                "script_version": int(script.version),
+                "script_hash": pl._script_content_hash(script),
+                "words": len(script.plain_text.split()),
+            }
+            state["execution_wall_s"] = round(time.perf_counter() - total_started, 6)
+            _event(state, state_path, "run.review_hold", **state["result"])
+            print("PRODUCTION_RUN_REVIEW_HOLD " + json.dumps(state["result"], sort_keys=True), flush=True)
+            return 0
         job = _ensure_production(db, args, state, state_path, user, project, script)
         result = _validate_final(db, state, state_path, project, job)
         state["status"] = "PASS"

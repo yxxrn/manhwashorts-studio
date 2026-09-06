@@ -102,6 +102,7 @@ from app.services.vision_adapter import (
     ANALYSIS_WINDOW_CONTRACT_VERSION,
     ANALYSIS_WINDOW_MAX_COUNT,
     SYNTHESIS_WIRE_CONTRACT_VERSION,
+    TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES,
     VisionCapabilityError,
     VisionChapterSynthesisRequest,
     VisionObservationRequest,
@@ -172,6 +173,33 @@ def project_assets(db: Session, project_id: str) -> list[SourceAsset]:
             .order_by(SourceAsset.order_index, SourceAsset.created_at)
         )
     )
+
+
+_ANALYSIS_SOURCE_FINGERPRINT_VERSION = "analysis-source-order-v1"
+
+
+def _analysis_source_fingerprint(assets: Sequence[SourceAsset]) -> str:
+    payload = {
+        "version": _ANALYSIS_SOURCE_FINGERPRINT_VERSION,
+        "segmentation_version": segmentation.SEGMENTATION_VERSION,
+        "assets": [
+            {
+                "sequence_index": index,
+                "source_asset_id": str(asset.id),
+                "order_index": int(asset.order_index),
+                "checksum": str(asset.original_checksum or asset.checksum or ""),
+                "original_width": int(asset.original_width or asset.width or 0),
+                "original_height": int(asset.original_height or asset.height or 0),
+                "source_bounds": dict(asset.source_bounds_json or {}),
+                "strip_order": int(asset.strip_order),
+                "region_order": int(asset.region_order),
+                "source_family": str(asset.source_family or ""),
+            }
+            for index, asset in enumerate(assets)
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def text_sources(assets: list[SourceAsset]) -> list[tuple[int, str]]:
@@ -600,6 +628,7 @@ def _build_source_inputs(
                 decoded_width=decoded_width,
                 decoded_height=decoded_height,
                 source_family=str(asset.source_family or ""),
+                source_sequence_order=int(asset.order_index),
             )
         )
         asset_by_id[asset.id] = asset
@@ -1108,6 +1137,7 @@ def _validate_observation_rows(
 
 
 _VISION_OBSERVATION_CACHE_VERSION = "vision-observation-chunk-v2"
+_VISION_OBSERVATION_PANEL_CACHE_VERSION = "vision-observation-panel-v1"
 _VISION_OBSERVATION_MAX_ATTEMPTS = 3
 _VISION_OBSERVATION_CONCURRENCY = 3
 
@@ -1163,8 +1193,41 @@ def _vision_observation_cache_path(cache_key: str) -> Path:
     return settings.data_dir / "vision-observation-cache" / f"{cache_key}.json"
 
 
+def _vision_observation_stable_panel_cache_key(
+    provider: Any,
+    request: VisionObservationRequest,
+    panel: Mapping[str, Any],
+) -> str | None:
+    model = str(getattr(provider, "model_id", "") or "").strip()
+    endpoint = str(getattr(provider, "endpoint", "") or "").strip()
+    identity = _vision_observation_panel_identity(panel)
+    if not model or not endpoint or identity is None:
+        return None
+    for key in ("panel_id", "strip_region_id", "source_order", "coverage_map_hash"):
+        identity.pop(key, None)
+    source = {
+        "version": _VISION_OBSERVATION_PANEL_CACHE_VERSION,
+        "provider_type": f"{type(provider).__module__}.{type(provider).__qualname__}",
+        "model": model,
+        "endpoint": endpoint,
+        "instruction_version": request.instruction_version,
+        "instruction_sha256": request.instruction_sha256,
+        "visual_instruction_version": request.visual_instruction_version,
+        "visual_instruction_sha256": request.visual_instruction_sha256,
+        "panel": identity,
+    }
+    encoded = json.dumps(source, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _vision_observation_stable_panel_cache_path(cache_key: str) -> Path:
+    return settings.data_dir / "vision-observation-panel-cache" / f"{cache_key}.json"
+
+
 _VISION_SYNTHESIS_CACHE_VERSION = "vision-synthesis-v2"
-_VISION_SYNTHESIS_MAX_ATTEMPTS = 5
+_VISION_SYNTHESIS_MAX_ATTEMPTS = 12  # structural/general corrective budget
+_VISION_SYNTHESIS_TEXT_FINISH_ATTEMPTS = 4  # extra reserve only for structurally locked wording repairs
+_VISION_SYNTHESIS_TOTAL_ATTEMPTS = _VISION_SYNTHESIS_MAX_ATTEMPTS + _VISION_SYNTHESIS_TEXT_FINISH_ATTEMPTS
 
 
 def _vision_synthesis_cache_key(provider: Any, request: VisionChapterSynthesisRequest) -> str | None:
@@ -1294,7 +1357,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
         return cached
     response: Any = None
     active_request = request
-    for attempt in range(1, _VISION_SYNTHESIS_MAX_ATTEMPTS + 1):
+    for attempt in range(1, _VISION_SYNTHESIS_TOTAL_ATTEMPTS + 1):
         try:
             response = provider.synthesize(active_request)
             _validate_synthesis_subtitle_admission(response, active_request)
@@ -1305,8 +1368,14 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "script_passage_narration_must_contain_90-125_words",
                 "script_passage_copies_source_dialogue",
                 "script_passage_claim_lacks_local_evidence",
+                "script_passage_evidence_does_not_cover_its_claims",
                 "claim_qualification_must_be_a_non-empty_string",
+                "claim_evidence_lacks_semantic_anchor",
+                "retention_passage_introduces_disconnected_claim",
+                "retention_visual_story_alignment_missing",
                 "production_narration_word_count_out_of_range",
+                "retention_hook_must_contain_8-14_words",
+                "retention_hook_must_be_one_sentence",
                 "production_visual_selection_insufficient",
                 "production_subtitle_overflow",
                 "synthesis_provider_json_invalid",
@@ -1314,17 +1383,67 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "synthesis_projection_invalid",
             }
             subtype = str(getattr(exc, "validation_subtype", "") or "")
+            print(
+                f"VISION_SYNTHESIS_CORRECTION attempt={attempt} subtype={subtype or 'unknown'}",
+                file=sys.stderr,
+                flush=True,
+            )
+            diagnostics = getattr(exc, "selection_diagnostics", None)
+            if isinstance(diagnostics, Mapping) and diagnostics:
+                encoded_diagnostics = json.dumps(
+                    dict(diagnostics), ensure_ascii=False, separators=(",", ":")
+                )
+                print(
+                    "VISION_SYNTHESIS_DIAGNOSTICS "
+                    f"attempt={attempt} subtype={subtype or 'unknown'} "
+                    + encoded_diagnostics[:12000],
+                    file=sys.stderr,
+                    flush=True,
+                )
             evidence_lineage_retryable = (
                 subtype.endswith("_contains_an_unknown_panel")
                 or subtype.endswith("_references_an_unknown_panel")
             )
             projection_retryable = subtype.startswith("synthesis_projection_")
+            story_spine_retryable = subtype.startswith("story_spine") and subtype.endswith("_must_be_a_non-empty_string")
+            continuity_entity_retryable = subtype in {
+                "motive_references_an_unknown_entity",
+                "state_change_references_an_unknown_entity",
+            }
             if (
                 subtype not in retryable_subtypes
                 and not evidence_lineage_retryable
                 and not projection_retryable
-            ) or attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS:
+                and not story_spine_retryable
+                and not continuity_entity_retryable
+            ):
                 raise
+            if attempt >= _VISION_SYNTHESIS_TOTAL_ATTEMPTS:
+                raise
+            if (
+                attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS
+                and subtype not in TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES
+            ):
+                raise
+            if subtype not in TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES:
+                active_request = replace(active_request, retry_text_only_locked_output=None)
+            if projection_retryable or story_spine_retryable or continuity_entity_retryable:
+                active_request = replace(
+                    active_request,
+                    retry_projection_contract=True,
+                    retry_claim_semantic_grounding=active_request.retry_claim_semantic_grounding,
+                    retry_claim_semantic_diagnostics=active_request.retry_claim_semantic_diagnostics,
+                    retry_causal_arc=active_request.retry_causal_arc,
+                    retry_visual_story_alignment=active_request.retry_visual_story_alignment,
+                    retry_visual_story_diagnostics=active_request.retry_visual_story_diagnostics,
+                    retry_evidence_lineage=False,
+                    retry_visual_selection=False,
+                    retry_dialogue_paraphrase=False,
+                    retry_claim_qualification=active_request.retry_claim_qualification,
+                    retry_local_claim_grounding=active_request.retry_local_claim_grounding,
+                    retry_word_counts=None,
+                    retry_passages=active_request.retry_passages if active_request.retry_causal_arc else None,
+                )
             if evidence_lineage_retryable:
                 active_request = replace(
                     active_request,
@@ -1338,7 +1457,61 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 )
             counts = tuple(getattr(exc, "passage_word_counts", ()) or ())
             retry_passages = getattr(exc, "retry_passages", None)
-            if subtype == "claim_qualification_must_be_a_non-empty_string":
+            if subtype == "retention_visual_story_alignment_missing":
+                visual_diagnostics = dict(getattr(exc, "selection_diagnostics", {}) or {})
+                diagnostic_passages = visual_diagnostics.get("passages")
+                missing_sections = {
+                    str(item.get("section", ""))
+                    for item in diagnostic_passages
+                    if isinstance(item, Mapping)
+                } if isinstance(diagnostic_passages, list) else set()
+                release_visual_anchor = bool({"hook", "setup"} & missing_sections)
+                active_request = replace(
+                    active_request,
+                    retry_visual_story_alignment=True,
+                    retry_visual_story_diagnostics=visual_diagnostics,
+                    retry_causal_arc=(False if release_visual_anchor else active_request.retry_causal_arc),
+                    retry_claim_semantic_grounding=True,
+                    retry_claim_semantic_diagnostics=(None if release_visual_anchor else active_request.retry_claim_semantic_diagnostics),
+                    retry_claim_qualification=active_request.retry_claim_qualification,
+                    retry_local_claim_grounding=active_request.retry_local_claim_grounding,
+                    retry_visual_selection=False,
+                    retry_dialogue_paraphrase=False,
+                    retry_evidence_lineage=False,
+                    retry_projection_contract=False,
+                    retry_word_counts=None,
+                    retry_passages=(
+                        None
+                        if release_visual_anchor
+                        else active_request.retry_passages
+                        if active_request.retry_causal_arc
+                        else None
+                    ),
+                )
+            elif subtype == "retention_passage_introduces_disconnected_claim":
+                active_request = replace(
+                    active_request,
+                    retry_causal_arc=True, retry_claim_semantic_grounding=False,
+                    retry_claim_qualification=False, retry_local_claim_grounding=False,
+                    retry_visual_selection=False, retry_dialogue_paraphrase=False,
+                    retry_evidence_lineage=False, retry_projection_contract=False,
+                    retry_word_counts=None,
+                    retry_passages=(retry_passages if retry_passages is not None else active_request.retry_passages),
+                )
+            elif subtype == "claim_evidence_lacks_semantic_anchor":
+                active_request = replace(
+                    active_request,
+                    retry_claim_semantic_grounding=True,
+                    retry_claim_semantic_diagnostics=dict(getattr(exc, "selection_diagnostics", {}) or {}),
+                    retry_claim_qualification=False,
+                    retry_local_claim_grounding=False,
+                    retry_visual_selection=False,
+                    retry_dialogue_paraphrase=False,
+                    retry_evidence_lineage=False,
+                    retry_word_counts=None,
+                    retry_passages=active_request.retry_passages if active_request.retry_causal_arc else None,
+                )
+            elif subtype == "claim_qualification_must_be_a_non-empty_string":
                 active_request = replace(
                     active_request,
                     retry_claim_qualification=True,
@@ -1349,7 +1522,10 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                     retry_word_counts=None,
                     retry_passages=None,
                 )
-            elif subtype == "script_passage_claim_lacks_local_evidence":
+            elif subtype in {
+                "script_passage_claim_lacks_local_evidence",
+                "script_passage_evidence_does_not_cover_its_claims",
+            }:
                 active_request = replace(
                     active_request,
                     retry_local_claim_grounding=True,
@@ -1364,6 +1540,11 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 active_request = replace(
                     active_request,
                     retry_dialogue_paraphrase=True,
+                    retry_causal_arc=False,
+                    retry_visual_story_alignment=False,
+                    retry_claim_semantic_grounding=False,
+                    retry_claim_semantic_diagnostics=None,
+                    retry_projection_contract=False,
                     retry_local_claim_grounding=False,
                     retry_visual_selection=False,
                     retry_claim_qualification=False,
@@ -1374,6 +1555,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                         if retry_passages is not None
                         else active_request.retry_passages
                     ),
+                    retry_text_only_locked_output=(dict(getattr(exc, "retry_locked_output", {}) or {}) or None),
                 )
             elif counts and not evidence_lineage_retryable:
                 active_request = replace(
@@ -1385,6 +1567,14 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                     retry_evidence_lineage=False,
                     retry_word_counts=counts,
                     retry_passages=retry_passages if retry_passages is not None else active_request.retry_passages,
+                    retry_text_only_locked_output=(
+                        dict(getattr(exc, "retry_locked_output", {}) or {})
+                        or (
+                            dict(response)
+                            if subtype == "production_subtitle_overflow" and isinstance(response, Mapping)
+                            else None
+                        )
+                    ),
                 )
             if subtype == "production_visual_selection_insufficient":
                 active_request = replace(
@@ -1403,7 +1593,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 )
             time.sleep(0.05)
         except VisionProviderRequestFailed as exc:
-            if not exc.retryable or attempt >= _VISION_SYNTHESIS_MAX_ATTEMPTS:
+            if not exc.retryable or attempt >= _VISION_SYNTHESIS_TOTAL_ATTEMPTS:
                 raise
             delay = exc.retry_after_s if isinstance(exc.retry_after_s, (int, float)) else min(2 ** (attempt - 1), 4)
             time.sleep(max(0.05, min(float(delay), 10.0)))
@@ -1412,6 +1602,63 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
     output = _validated_synthesis_cache_output(response, request)
     _store_cached_synthesis_output(cache_key, output)
     return output
+
+
+def _remap_stable_observation_row(
+    row: Mapping[str, Any],
+    panel_id: str,
+    panel: Mapping[str, Any],
+) -> dict[str, Any]:
+    remapped = dict(row)
+    remapped["panel_id"] = panel_id
+    remapped["evidence_refs"] = [panel_id]
+    raw_visual = remapped.get("visual_evidence")
+    if isinstance(raw_visual, Mapping):
+        parsed = visual_scoring.parse_panel_visual_evidence(raw_visual)
+        parsed = replace(
+            parsed,
+            panel_id=panel_id,
+            source_asset_id=str(panel["source_asset_id"]),
+            source_order=int(panel["source_order"]),
+            evidence_hash="",
+        )
+        provider_visual = visual_scoring.panel_visual_evidence_json(parsed)
+        provider_visual.pop("evidence_hash", None)
+        # Typed evidence stores geometry as tuples; provider-wire validation is
+        # intentionally JSON-strict and requires arrays. Canonicalize through
+        # JSON so stable-cache reuse follows the exact provider response shape.
+        remapped["visual_evidence"] = json.loads(json.dumps(provider_visual))
+    return remapped
+
+
+def _load_stable_observation_row(
+    provider: Any,
+    request: VisionObservationRequest,
+    panel_id: str,
+    panel: Mapping[str, Any],
+    *,
+    require_visual_evidence: bool,
+) -> dict[str, Any] | None:
+    cache_key = _vision_observation_stable_panel_cache_key(provider, request, panel)
+    if cache_key is None:
+        return None
+    path = _vision_observation_stable_panel_cache_path(cache_key)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("version") != _VISION_OBSERVATION_PANEL_CACHE_VERSION:
+            return None
+        raw = payload.get("row")
+        if not isinstance(raw, Mapping):
+            return None
+        row = _remap_stable_observation_row(raw, panel_id, panel)
+        return _validate_observation_rows(
+            [row], (panel_id,), expected_panels={panel_id: panel},
+            require_visual_evidence=require_visual_evidence,
+        )[0]
+    except (OSError, TypeError, ValueError, VisionResponseInvalid, _AnalysisBlocked):
+        return None
 
 
 def _load_cached_observation_rows(
@@ -1442,6 +1689,34 @@ def _load_cached_observation_rows(
         )
     except (OSError, TypeError, ValueError, _AnalysisBlocked):
         return None
+
+
+def _store_stable_observation_row(
+    provider: Any,
+    request: VisionObservationRequest,
+    panel: Mapping[str, Any],
+    row: Mapping[str, Any],
+) -> None:
+    panel_id = str(panel.get("panel_id", "") or "")
+    refs = row.get("evidence_refs")
+    if not panel_id or not isinstance(refs, list) or set(refs) != {panel_id}:
+        return
+    cache_key = _vision_observation_stable_panel_cache_key(provider, request, panel)
+    if cache_key is None:
+        return
+    path = _vision_observation_stable_panel_cache_path(cache_key)
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+    payload = {"version": _VISION_OBSERVATION_PANEL_CACHE_VERSION, "row": dict(row)}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    except OSError:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
 
 
 def _store_cached_observation_rows(cache_key: str | None, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -1496,7 +1771,24 @@ def _observe_chunks(
             require_visual_evidence=require_visual_evidence,
         )
         provider_calls: list[dict[str, Any]] = []
-        cache_hit = rows is not None
+        chunk_cache_hit = rows is not None
+        stable_cache_hit = False
+        if rows is None:
+            stable_rows = [
+                _load_stable_observation_row(
+                    provider, request, panel_id, panel_transports[panel_id],
+                    require_visual_evidence=require_visual_evidence,
+                )
+                for panel_id in panel_ids
+            ]
+            if all(row is not None for row in stable_rows):
+                rows = _validate_observation_rows(
+                    stable_rows, panel_ids,
+                    expected_panels={panel_id: panel_transports[panel_id] for panel_id in panel_ids},
+                    require_visual_evidence=require_visual_evidence,
+                )
+                _store_cached_observation_rows(cache_key, rows)
+                stable_cache_hit = True
         if rows is None:
             def call_with_retries(
                 child_request: VisionObservationRequest,
@@ -1616,11 +1908,16 @@ def _observe_chunks(
                     require_visual_evidence=require_visual_evidence,
                 )
             _store_cached_observation_rows(cache_key, rows)
+        for panel_id, row in zip(panel_ids, rows, strict=True):
+            _store_stable_observation_row(
+                provider, request, panel_transports[panel_id], row
+            )
         return {
             "chunk_index": chunk_index,
             "panel_ids": panel_ids,
             "rows": rows,
-            "cache_hit": cache_hit,
+            "cache_hit": chunk_cache_hit or stable_cache_hit,
+            "stable_cache_hit": stable_cache_hit,
             "provider_calls": provider_calls,
         }
 

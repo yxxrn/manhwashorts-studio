@@ -35,6 +35,7 @@ class SourceAssetInput:
     decoded_width: int | None = None
     decoded_height: int | None = None
     source_family: str = ""
+    source_sequence_order: int = 0
 
 
 @dataclass(frozen=True)
@@ -291,9 +292,12 @@ def plan_overlapping_tiles(
     return tuple(tiles)
 
 
-def _asset_key(asset: SourceAssetInput) -> tuple[int, int, int, int, str]:
+def _asset_key(asset: SourceAssetInput) -> tuple[int, int, int, int, int, str]:
     bounds = _safe_rect(asset)
-    return (asset.strip_order, asset.region_order, bounds[1], bounds[0], asset.source_asset_id)
+    return (
+        asset.source_sequence_order, asset.strip_order, asset.region_order,
+        bounds[1], bounds[0], asset.source_asset_id,
+    )
 
 
 def _lineage_key(asset: SourceAssetInput) -> tuple[str, int, int]:
@@ -577,6 +581,7 @@ def build_complete_coverage_map(
                 "original_width": asset.original_width,
                 "region_order": asset.region_order,
                 "source_asset_id": asset.source_asset_id,
+                "source_sequence_order": asset.source_sequence_order,
                 "source_bounds": list(bounds),
                 "strip_order": asset.strip_order,
             }

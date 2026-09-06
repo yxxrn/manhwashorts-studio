@@ -1831,3 +1831,26 @@ def test_reference_sentence_karaoke_skips_legacy_one_word_speed_qc(monkeypatch):
         subtitle_contract={"contract_version": "sentence_chunked_word_karaoke_v2"},
     )
     assert captured == {"groups": groups, "duration": 1.0}
+
+
+def test_reference_plan_raises_target_to_section_bounded_floor():
+    boundaries = (
+        ("hook", 0.0, 4.227),
+        ("setup", 4.407, 13.388),
+        ("conflict", 13.568, 21.063),
+        ("conflict", 21.243, 30.735),
+        ("twist", 30.915, 40.416),
+        ("cta", 40.596, 50.618),
+    )
+    spans = [
+        SimpleNamespace(section=section, text=section, start_time=start, end_time=end)
+        for section, start, end in boundaries
+    ]
+    caps = {"hook": 2, "setup": 3, "conflict": 5, "twist": 3, "cta": 3}
+    shots = editorial_visual_planner._plan_reference(
+        spans, _candidates(16), reference_profile.REFERENCE_MATCHED_SHORTS_V1, None, None,
+        allow_review_cadence_adaptation=True, max_shots_by_section=caps,
+        cadence_capacity_override=16,
+    )
+    assert len(shots) == 16
+    assert {section: sum(1 for shot in shots if shot["section"] == section) for section in caps} == caps

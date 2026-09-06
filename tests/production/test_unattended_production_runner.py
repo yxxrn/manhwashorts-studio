@@ -224,3 +224,139 @@ def test_script_resume_regenerates_when_latest_analysis_changes():
     assert 'analysis = pl.latest_analysis(db, project.id)' in block
     assert 'script_metadata.get("analysis_id") != analysis.id' in block
     assert 'analysis_id=analysis.id' in block
+
+
+def test_review_hold_keeps_new_script_unapproved(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    runner = _runner_module()
+    analysis = SimpleNamespace(id="analysis-1")
+    script = SimpleNamespace(
+        id="script-1",
+        version=1,
+        approved_at=None,
+        editorial_metadata={"analysis_id": "analysis-1"},
+        plain_text="A grounded draft waits for editorial review before production begins.",
+    )
+    monkeypatch.setattr(runner.pl, "latest_analysis", lambda *_a, **_k: analysis)
+    monkeypatch.setattr(runner.pl, "latest_script_row", lambda *_a, **_k: script)
+    monkeypatch.setattr(
+        runner.pl,
+        "approve_script",
+        lambda *_a, **_k: pytest.fail("review hold must not auto-approve the script"),
+    )
+    monkeypatch.setattr(runner.pl, "_script_content_hash", lambda _script: "hash")
+    args = SimpleNamespace(review_hold=True, narrative_profile_id="retention_story_v1")
+    state = {"events": [], "stages": {}}
+    result = runner._ensure_script(
+        SimpleNamespace(commit=lambda: None),
+        args,
+        state,
+        tmp_path / "state.json",
+        SimpleNamespace(id="user"),
+        SimpleNamespace(id="project"),
+    )
+    assert result is script
+    assert result.approved_at is None
+
+
+def test_runner_exposes_editorial_review_hold_before_production():
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    assert 'parser.add_argument("--review-hold", action="store_true"' in source
+    assert 'state["status"] = "REVIEW_HOLD"' in source
+    assert '"run.review_hold"' in source
+    assert source.index('state["status"] = "REVIEW_HOLD"') < source.index("job = _ensure_production")
+
+
+def test_analysis_resume_reuses_only_matching_narrative_contract(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    runner = _runner_module()
+    current = SimpleNamespace(
+        state="SCRIPT_APPROVED",
+        reconciliation_json={
+            "narrative_identity": {
+                "profile_id": "retention_story_v1",
+                "version": "0.9.0",
+                "sha256": "stale",
+            }
+        },
+    )
+    replacement = SimpleNamespace(
+        state="RECONCILED",
+        blocking_reasons_json={},
+        reconciliation_json={"performance": {"observation": {}, "frameability": {}}},
+        coverage_manifest_json={"processed_panels": 10},
+    )
+    calls = []
+    monkeypatch.setattr(runner.pl, "latest_analysis", lambda *_a, **_k: current)
+    monkeypatch.setattr(runner.pl, "run_analysis", lambda *_a, **_k: calls.append(1) or replacement)
+
+    class Db:
+        def commit(self):
+            return None
+
+    args = SimpleNamespace(
+        narrative_profile_id="retention_story_v1",
+        max_analysis_attempts=1,
+        retry_delay_s=0.0,
+    )
+    state = {"events": [], "stages": {}}
+    result = runner._ensure_analysis(
+        Db(),
+        args,
+        state,
+        tmp_path / "state.json",
+        SimpleNamespace(id="user"),
+        SimpleNamespace(id="project"),
+    )
+    assert result is replacement
+    assert calls == [1]
+
+
+def test_analysis_resume_rebuilds_when_source_fingerprint_changes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    runner = _runner_module()
+    identity = {"profile_id": "retention_story_v1", "version": "1.5.0", "sha256": "profile"}
+    current = SimpleNamespace(state="SCRIPT_APPROVED", reconciliation_json={
+        "source_fingerprint": "old", "narrative_identity": identity,
+    })
+    replacement = SimpleNamespace(
+        state="RECONCILED", blocking_reasons_json={},
+        reconciliation_json={"performance": {"observation": {}, "frameability": {}}},
+        coverage_manifest_json={"processed_panels": 10},
+    )
+    monkeypatch.setattr(runner.pl, "latest_analysis", lambda *_a, **_k: current)
+    monkeypatch.setattr(runner.pl, "project_assets", lambda *_a, **_k: [object()])
+    monkeypatch.setattr(runner.pl, "image_assets", lambda assets: assets)
+    monkeypatch.setattr(runner.pl, "_analysis_source_fingerprint", lambda _assets: "new")
+    calls=[]
+    monkeypatch.setattr(runner.pl, "run_analysis", lambda *_a, **_k: calls.append(1) or replacement)
+    monkeypatch.setattr(runner.narrative_identity, "get_narrative_identity", lambda _pid: SimpleNamespace(
+        profile_id="retention_story_v1", profile_version="1.5.0", contract_sha256="profile"))
+    class Db:
+        def commit(self): return None
+    args=SimpleNamespace(narrative_profile_id="retention_story_v1", max_analysis_attempts=1, retry_delay_s=0.0)
+    result=runner._ensure_analysis(Db(), args, {"events":[],"stages":{}}, tmp_path/"state.json",
+        SimpleNamespace(id="u"), SimpleNamespace(id="p"))
+    assert result is replacement
+    assert calls == [1]
+
+
+def test_analysis_resume_reuses_matching_source_fingerprint(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    runner = _runner_module()
+    identity={"profile_id":"retention_story_v1","version":"1.5.0","sha256":"profile"}
+    current=SimpleNamespace(state="SCRIPT_APPROVED", reconciliation_json={
+        "source_fingerprint":"same", "narrative_identity":identity})
+    monkeypatch.setattr(runner.pl,"latest_analysis",lambda *_a,**_k: current)
+    monkeypatch.setattr(runner.pl,"project_assets",lambda *_a,**_k:[object()])
+    monkeypatch.setattr(runner.pl,"image_assets",lambda assets: assets)
+    monkeypatch.setattr(runner.pl,"_analysis_source_fingerprint",lambda _assets:"same")
+    monkeypatch.setattr(runner.pl,"run_analysis",lambda *_a,**_k: pytest.fail("matching source/profile should reuse"))
+    monkeypatch.setattr(runner.narrative_identity,"get_narrative_identity",lambda _pid: SimpleNamespace(
+        profile_id="retention_story_v1",profile_version="1.5.0",contract_sha256="profile"))
+    args=SimpleNamespace(narrative_profile_id="retention_story_v1",max_analysis_attempts=1,retry_delay_s=0.0)
+    result=runner._ensure_analysis(SimpleNamespace(),args,{"events":[],"stages":{}},tmp_path/"state.json",
+        SimpleNamespace(id="u"),SimpleNamespace(id="p"))
+    assert result is current

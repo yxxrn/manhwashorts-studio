@@ -521,3 +521,37 @@ def test_segmentation_never_calls_random_entry_points(monkeypatch):
 
     coverage = builder(inputs, segmentation_version="task3-v1")
     assert coverage.source_asset_ids == tuple(strip.source_asset_id for strip in strips)
+
+
+def test_source_sequence_order_precedes_lineage_local_sorting():
+    segmentation = _require_segmentation()
+    source_type = segmentation.SourceAssetInput
+    first = source_type(
+        source_asset_id="z-ch183",
+        original_checksum="first",
+        original_width=32,
+        original_height=32,
+        source_bounds=(0, 0, 32, 32),
+        strip_order=0,
+        region_order=0,
+        payload=_jpeg(32, 32),
+        source_sequence_order=10,
+    )
+    second = source_type(
+        source_asset_id="a-ch184",
+        original_checksum="second",
+        original_width=32,
+        original_height=32,
+        source_bounds=(0, 0, 32, 32),
+        strip_order=0,
+        region_order=0,
+        payload=_jpeg(32, 32),
+        source_sequence_order=20,
+    )
+    coverage = segmentation.build_complete_coverage_map(
+        (second, first), segmentation_version="chronology-v1"
+    )
+    assert coverage.source_asset_ids == ("z-ch183", "a-ch184")
+    canonical = [r for r in coverage.regions if r.region_class == "canonical_panel"]
+    assert [r.source_asset_id for r in canonical] == ["z-ch183", "a-ch184"]
+    assert [r.source_order for r in canonical] == [0, 1]

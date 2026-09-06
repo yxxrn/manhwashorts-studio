@@ -470,6 +470,12 @@ _RETENTION_STOPWORDS = frozenset({
     "be", "been", "being", "he", "she", "they", "it", "as", "by", "into", "while", "when", "after",
     "before", "now", "then", "just", "still", "only", "all", "can", "could", "would", "will",
 })
+_RETENTION_WEAK_RELEVANCE_TOKENS = frozenset({
+    "must", "should", "may", "might", "one",
+    "king", "queen", "prince", "princess", "emperor", "empress",
+    "majesty", "sir", "lord", "lady", "man", "woman", "girl", "boy",
+    "person", "character",
+})
 
 
 def _retention_tokens(value: object) -> set[str]:
@@ -528,13 +534,23 @@ def _retention_story_relevance(
             str(value) for value in claim_text_by_section.get(str(section), ()) if str(value).strip()
         )
         claim_tokens = _retention_tokens(claim_text)
-        claim_overlap = len(claim_tokens & evidence_tokens)
+        claim_overlap_tokens = claim_tokens & evidence_tokens
+        direct_match = bool(
+            panel_id and panel_id in set(direct_evidence_by_section.get(str(section), ()))
+        )
+        substantive_claim_overlap = (
+            claim_overlap_tokens - _RETENTION_WEAK_RELEVANCE_TOKENS
+        )
+        if claim_tokens and not direct_match and not substantive_claim_overlap:
+            overlap = 0
+            claim_overlap_tokens = set()
+        claim_overlap = len(claim_overlap_tokens)
         # Passage text is primary. Claim text is a secondary bridge for
         # equivalent story facts whose concrete names do not repeat in every
         # passage (for example Snow Plum Pill vs. spiritual elixir).
         score = overlap / max(1.0, len(story_tokens) ** 0.5)
         score += 0.5 * claim_overlap / max(1.0, len(claim_tokens) ** 0.5)
-        if panel_id and panel_id in set(direct_evidence_by_section.get(str(section), ())):
+        if direct_match:
             score += 4.0
         result[str(section)] = round(float(score), 6)
     return result
