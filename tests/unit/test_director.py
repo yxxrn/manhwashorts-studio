@@ -94,3 +94,22 @@ def test_human_editor_audit_rejects_repeated_roi_and_curve():
     issues = audit_sequence([first, second, third])
     assert "repeated_roi" in issues
     assert "repeated_camera_curve" in issues
+
+
+def test_section_fallback_does_not_create_word_level_events():
+    class Span:
+        section = "cta"
+        text = "A quiet pause before the result."
+        start_time = 0.0
+        end_time = 4.0
+        word_timings = [
+            {"word": "A", "start": 0.1, "end": 0.2},
+            {"word": "quiet", "start": 0.5, "end": 0.8},
+            {"word": "pause", "start": 1.0, "end": 1.3},
+            {"word": "before", "start": 1.5, "end": 1.8},
+            {"word": "result", "start": 2.0, "end": 2.4},
+        ]
+
+    beats = analyze_span(Span())
+    assert len(beats) == 1
+    assert beats[0].kind == "victory"

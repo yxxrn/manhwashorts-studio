@@ -3456,3 +3456,57 @@ def test_rhetorical_passage_tokens_do_not_seed_distant_visual():
     passage = {"text": "The legal catch appears as they try to save the queen.", "claim_ids": ["c"], "evidence_panel_ids": ["evidence"]}
     relevant = va._passage_relevant_visual_ids(passage, ("random",), {"c": claim}, observations)
     assert relevant == ()
+
+
+def test_retention_semantic_expansion_stays_local_to_section_evidence():
+    from types import SimpleNamespace
+
+    from app.services import reference_visual_review as review
+
+    script = SimpleNamespace(
+        editorial_metadata={"narrative_identity": {"profile_id": "retention_story_v1"}},
+        sections=[
+            {
+                "section": "cta",
+                "text": "Then the swords come out and the admission token rides on the result.",
+                "evidence_panel_ids": ["wager"],
+                "evidence": [{"claim_id": "c1", "panel_ids": ["wager"]}],
+            }
+        ],
+    )
+    regions = [
+        SimpleNamespace(
+            panel_id="old-line",
+            source_order=20,
+            observation_json={
+                "visible_facts": ["Namgung clan direct line beside a sword illustration."],
+                "dialogue_or_ocr": [],
+                "inferences": [],
+            },
+        ),
+        SimpleNamespace(
+            panel_id="wager",
+            source_order=100,
+            observation_json={
+                "visible_facts": ["Two men prepare to fight."],
+                "dialogue_or_ocr": ["PUT THE ADMISSION TOKEN ON THE LINE."],
+                "inferences": [],
+            },
+        ),
+        SimpleNamespace(
+            panel_id="local-action",
+            source_order=108,
+            observation_json={
+                "visible_facts": ["Two men clash with swords over the admission token."],
+                "dialogue_or_ocr": [],
+                "inferences": [],
+            },
+        ),
+    ]
+    claims = {"cta": ("Namgung puts the admission token on the line for a sparring match.",)}
+    expanded = review.expand_retention_section_evidence(
+        script, regions, {"cta": ("wager",)}, claim_text_by_section=claims
+    )
+    assert "wager" in expanded["cta"]
+    assert "local-action" in expanded["cta"]
+    assert "old-line" not in expanded["cta"]

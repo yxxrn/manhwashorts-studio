@@ -570,13 +570,33 @@ def expand_retention_section_evidence(
     story = section_story_text_map(script)
     direct = section_direct_claim_evidence_map(script)
     output = {str(k): list(dict.fromkeys(str(x) for x in v if str(x))) for k, v in existing.items()}
+    source_order_by_panel = {
+        str(getattr(region, "panel_id", "")): int(getattr(region, "source_order", -1))
+        for region in regions
+        if str(getattr(region, "panel_id", ""))
+    }
+    semantic_radius = 12
     for section in story:
         output.setdefault(section, [])
+        direct_ids = {str(value) for value in direct.get(str(section), ()) if str(value)}
+        anchor_ids = set(output[section]) | direct_ids
+        anchor_orders = tuple(
+            source_order_by_panel[panel_id]
+            for panel_id in anchor_ids
+            if source_order_by_panel.get(panel_id, -1) > 0
+        )
         ranked: list[tuple[float, int, str]] = []
         for region in regions:
             panel_id = str(getattr(region, "panel_id", ""))
             source_order = int(getattr(region, "source_order", -1))
             if not panel_id or source_order <= 0:
+                continue
+            direct_match = panel_id in direct_ids
+            if (
+                not direct_match
+                and anchor_orders
+                and min(abs(source_order - anchor) for anchor in anchor_orders) > semantic_radius
+            ):
                 continue
             score = _retention_story_relevance(
                 region, (section,), story, direct, claim_text_by_section

@@ -91,7 +91,15 @@ def analyze_span(span: object, block_end: float | None = None) -> list[StoryBeat
     end = max(float(span.end_time), float(block_end or span.end_time))
     timings = list(getattr(span, "word_timings", []) or [])
     kind = _kind_for(str(span.text), str(span.section))
-    events = [(float(t.get("start", start)), _kind_for(str(t.get("word", "")), str(span.section))) for t in timings if _kind_for(str(t.get("word", "")), str(span.section)) not in {"neutral", "approach", "suspense"}]
+    # Section-level fallbacks (CTA -> victory, twist -> reveal) describe the
+    # whole span. They must not turn every neutral timed word into a dramatic
+    # event, otherwise beat splitting duplicates the fallback across the span.
+    events = [
+        (float(t.get("start", start)), _kind_for(str(t.get("word", "")), ""))
+        for t in timings
+        if _kind_for(str(t.get("word", "")), "")
+        not in {"neutral", "approach", "suspense"}
+    ]
     if not events:
         return [_beat(str(span.section), str(span.text), start, end, timings, kind, "visual_during")]
     beats: list[StoryBeat] = []
