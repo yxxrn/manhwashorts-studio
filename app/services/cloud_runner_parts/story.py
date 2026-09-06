@@ -3,6 +3,8 @@
 # ruff: noqa: F821 -- runtime globals are refreshed from the compatibility facade.
 from __future__ import annotations
 
+from app.services.entity_resolution import build_continuity_entities
+
 from .runtime import runtime_bound
 
 _RUNTIME_NAMES = (
@@ -318,32 +320,10 @@ class StoryMapMixin:
             observations.append(observation)
 
         panel_ids = [str(observation["panel_id"]) for observation in observations]
-        entity_panels: dict[str, list[str]] = {}
-        entity_names: dict[str, str] = {}
-        for panel_id in panel_ids:
-            source = visual_by_id[panel_id]["observation"]
-            for entity in source.get("entities", []):
-                if not isinstance(entity, str) or not entity.strip():
-                    continue
-                canonical = entity.strip()
-                entity_key = canonical.casefold()
-                entity_names.setdefault(entity_key, canonical)
-                entity_panels.setdefault(entity_key, []).append(panel_id)
-        if not entity_names:
-            # A structural continuity bucket is not a semantic identity or
-            # narrative claim; it preserves the validator's nonempty ledger
-            # invariant when visual evidence contains no named entity.
-            entity_names["observed_context"] = "observed context"
-            entity_panels["observed_context"] = list(panel_ids)
-        entities = [
-            {
-                "entity_id": f"visual-entity-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}",
-                "canonical_name": entity_names[key],
-                "aliases": [],
-                "panel_ids": list(dict.fromkeys(entity_panels[key])),
-            }
-            for key in sorted(entity_names)
-        ]
+        observation_sources = {
+            panel_id: visual_by_id[panel_id]["observation"] for panel_id in panel_ids
+        }
+        entities = build_continuity_entities(observation_sources, panel_ids)
         continuity = {
             "chunks": [{"chunk_id": "visual-reconciled-chunk", "panel_ids": panel_ids}],
             "entities": entities,
