@@ -833,6 +833,40 @@ def _validate_retention_causal_chain(
                     )
                 )
                 reachable_claims = reachable_claims[:16]
+                prior_orders = [panel_order[pid] for pid in prior_evidence if pid in panel_order]
+                frontier_order = max(prior_orders, default=-1)
+                forward_claims: list[dict[str, Any]] = []
+                for candidate_id, candidate in claim_by_id.items():
+                    if candidate_id in body_seen or candidate_id == claim_id:
+                        continue
+                    candidate_evidence = {
+                        str(v) for v in (candidate.get("evidence_panel_ids", []) or [])
+                    }
+                    if not candidate_evidence or candidate_evidence & reachable_panel_ids:
+                        continue
+                    candidate_orders = [
+                        panel_order[pid] for pid in candidate_evidence if pid in panel_order
+                    ]
+                    if not candidate_orders or min(candidate_orders) <= frontier_order:
+                        continue
+                    forward_claims.append(
+                        {
+                            "claim_id": candidate_id,
+                            "claim_text": str(candidate.get("text", ""))[:300],
+                            "evidence_panel_ids": sorted(
+                                candidate_evidence,
+                                key=lambda pid: (panel_order.get(pid, 10**9), pid),
+                            )[:12],
+                            "first_source_order": min(candidate_orders),
+                        }
+                    )
+                forward_claims.sort(
+                    key=lambda item: (
+                        int(item["first_source_order"]),
+                        str(item["claim_id"]),
+                    )
+                )
+                forward_claims = forward_claims[:16]
                 _fail(
                     "retention passage introduces disconnected claim",
                     diagnostics={
@@ -853,6 +887,7 @@ def _validate_retention_causal_chain(
                             key=lambda pid: (panel_order.get(pid, 10**9), pid),
                         )[-64:],
                         "reachable_candidate_claims": reachable_claims,
+                        "forward_candidate_claims": forward_claims,
                     },
                 )
         if body_index == 0:

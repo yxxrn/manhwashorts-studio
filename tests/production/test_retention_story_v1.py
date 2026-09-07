@@ -2235,6 +2235,48 @@ def test_disconnected_claim_diagnostics_identify_reachable_replacement():
     ]
 
 
+def test_disconnected_claim_diagnostics_offer_grounded_forward_alternatives():
+    from app.services import analyzer_contract as contract
+
+    continuity = {
+        "chunks": [{"panel_ids": ["a", "b", "c", "d"]}],
+        "causal_links": [{"from_panel_id": "a", "to_panel_id": "b"}],
+    }
+    graph = {
+        "claims": [
+            {"claim_id": "setup", "text": "setup", "evidence_panel_ids": ["a"]},
+            {"claim_id": "connected", "text": "connected", "evidence_panel_ids": ["b"]},
+            {
+                "claim_id": "forward-alt",
+                "text": "nearer grounded consequence",
+                "evidence_panel_ids": ["c"],
+            },
+            {
+                "claim_id": "disconnected",
+                "text": "later disconnected consequence",
+                "evidence_panel_ids": ["d"],
+            },
+        ]
+    }
+    passages = [
+        {"passage_id": "hook", "claim_ids": ["forward-alt"]},
+        {"passage_id": "setup", "claim_ids": ["setup"]},
+        {"passage_id": "conflict", "claim_ids": ["connected"]},
+        {"passage_id": "twist", "claim_ids": ["disconnected"]},
+    ]
+
+    with pytest.raises(contract.AnalyzerContractError) as caught:
+        contract._validate_retention_causal_chain(continuity, graph, passages)
+
+    diagnostics = caught.value.diagnostics
+    assert diagnostics["reachable_candidate_claims"] == []
+    assert [row["claim_id"] for row in diagnostics["forward_candidate_claims"]] == [
+        "forward-alt"
+    ]
+    assert diagnostics["forward_candidate_claims"][0]["evidence_panel_ids"] == ["c"]
+    assert diagnostics["forward_candidate_claims"][0]["first_source_order"] == 2
+
+
 def test_deterministic_disconnected_passage_reuses_existing_reachable_claim():
     from app.services import vision_adapter
 
