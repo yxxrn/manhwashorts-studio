@@ -226,6 +226,8 @@ def test_roi_enumeration_adds_moderate_scale_scan_only_with_authoritative_mask()
     )
 
     assert not any(roi.roi_label.startswith("content_scan_s") for roi in no_mask)
+    assert not any(roi.roi_label.startswith("content_supplemental_") for roi in no_mask)
+    assert any(roi.roi_label.startswith("content_supplemental_") for roi in with_mask)
     moderate = [roi for roi in with_mask if roi.roi_label.startswith("content_scan_s")]
     assert moderate
     assert len(with_mask) > len(no_mask)

@@ -216,6 +216,29 @@ def enumerate_reference_roi_alternatives(
                             (focus_x, focus_y),
                             scale,
                         )
+    # Supplemental searches run after legacy rescue selection so adding new
+    # viewpoints can never suppress an existing rescue path.
+    if image is not None and border_mask is not None:
+        supplemental_specs = ()
+        if panel_size[1] > panel_size[0]:
+            supplemental_specs = (
+                (0.70, (0.75,), (0.50,)),
+                (0.70, (0.15,), (0.30,)),
+                (0.60, (0.10,), (0.40,)),
+                (0.60, (0.15,), (0.50,)),
+                (0.50, (0.60,), (0.50, 0.70)),
+            )
+        elif panel_size[0] > panel_size[1]:
+            supplemental_specs = ((1.00, (0.50,), (0.30,)),)
+        for spec_index, (scale, active_y, active_x) in enumerate(supplemental_specs):
+            for row, focus_y in enumerate(active_y):
+                for column, focus_x in enumerate(active_x):
+                    add(
+                        "alternate_roi",
+                        f"content_supplemental_{spec_index:02d}_{row:02d}_{column:02d}",
+                        (focus_x, focus_y),
+                        scale,
+                    )
     return tuple(alternatives)
 
 
@@ -579,12 +602,15 @@ def expand_retention_section_evidence(
     max_semantic_per_section: int = 16,
     claim_text_by_section: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, tuple[str, ...]]:
-    """Add grounded semantic matches plus one bounded preceding context panel."""
+    """Add grounded semantic matches plus tightly bounded story context."""
     if _narrative_profile_id(script) != "retention_story_v1":
         return {str(k): tuple(v) for k, v in existing.items()}
     story = section_story_text_map(script)
     direct = section_direct_claim_evidence_map(script)
-    output = {str(k): list(dict.fromkeys(str(x) for x in v if str(x))) for k, v in existing.items()}
+    output = {
+        str(k): list(dict.fromkeys(str(x) for x in v if str(x)))
+        for k, v in existing.items()
+    }
     source_order_by_panel = {
         str(getattr(region, "panel_id", "")): int(getattr(region, "source_order", -1))
         for region in regions
@@ -600,14 +626,20 @@ def expand_retention_section_evidence(
         key=lambda row: (row[0], row[1]),
     )
     predecessor_by_panel: dict[str, tuple[int, str]] = {}
+    successor_by_panel: dict[str, tuple[int, str]] = {}
     for previous, current in zip(ordered_context, ordered_context[1:], strict=False):
         gap = current[0] - previous[0]
         if 0 < gap <= _RETENTION_CONTEXT_NEIGHBOR_MAX_GAP:
             predecessor_by_panel[current[1]] = previous
+            successor_by_panel[previous[1]] = current
     semantic_radius = 12
-    for section in story:
+    story_sections = tuple(story)
+    final_section = story_sections[-1] if story_sections else ""
+    for section_index, section in enumerate(story):
         output.setdefault(section, [])
-        direct_ids = {str(value) for value in direct.get(str(section), ()) if str(value)}
+        direct_ids = {
+            str(value) for value in direct.get(str(section), ()) if str(value)
+        }
         anchor_ids = set(output[section]) | direct_ids
         anchor_orders = tuple(
             source_order_by_panel[panel_id]
@@ -623,11 +655,38 @@ def expand_retention_section_evidence(
             previous_order, previous_id = previous
             if previous_id in direct_ids:
                 continue
-            neighbor_candidates.append((direct_order - previous_order, direct_order, previous_id))
+            neighbor_candidates.append(
+                (direct_order - previous_order, direct_order, previous_id)
+            )
         if neighbor_candidates:
             _gap, _direct_order, previous_id = min(neighbor_candidates)
             if previous_id not in output[section]:
                 output[section].append(previous_id)
+        # One immediate boundary handoff is allowed only when that successor
+        # is already grounded by the next story section.
+        if section_index + 1 < len(story_sections):
+            next_section = story_sections[section_index + 1]
+            next_grounded_ids = {
+                str(value)
+                for value in existing.get(next_section, ())
+                if str(value)
+            } | {
+                str(value)
+                for value in direct.get(next_section, ())
+                if str(value)
+            }
+            handoffs: list[tuple[int, str]] = []
+            for anchor_id in set(output[section]) | direct_ids:
+                successor = successor_by_panel.get(anchor_id)
+                if (
+                    successor is not None
+                    and successor[1] in next_grounded_ids
+                    and successor[1] not in output[section]
+                ):
+                    handoffs.append(successor)
+            if handoffs:
+                _order, handoff_id = min(handoffs)
+                output[section].append(handoff_id)
         ranked: list[tuple[float, int, str]] = []
         for region in regions:
             panel_id = str(getattr(region, "panel_id", ""))
@@ -638,7 +697,8 @@ def expand_retention_section_evidence(
             if (
                 not direct_match
                 and anchor_orders
-                and min(abs(source_order - anchor) for anchor in anchor_orders) > semantic_radius
+                and min(abs(source_order - anchor) for anchor in anchor_orders)
+                > semantic_radius
             ):
                 continue
             score = _retention_story_relevance(
@@ -651,9 +711,77 @@ def expand_retention_section_evidence(
         )[: max(1, int(max_semantic_per_section))]:
             if panel_id not in output[section]:
                 output[section].append(panel_id)
+        if section == final_section and len(story_sections) > 1:
+            final_text = " ".join(
+                str(value)
+                for value in story.get(section, ())
+                if str(value).strip()
+            )
+            final_tokens = _retention_tokens(final_text)
+            prior_grounded_ids: set[str] = set()
+            for prior_section in story_sections[:-1]:
+                prior_grounded_ids.update(
+                    str(value)
+                    for value in existing.get(prior_section, ())
+                    if str(value)
+                )
+                prior_grounded_ids.update(
+                    str(value)
+                    for value in direct.get(prior_section, ())
+                    if str(value)
+                )
+            regions_by_panel = {
+                str(getattr(region, "panel_id", "")): region
+                for region in regions
+                if str(getattr(region, "panel_id", ""))
+            }
+            recap_ranked: list[tuple[int, int, str]] = []
+            for panel_id in prior_grounded_ids:
+                region = regions_by_panel.get(panel_id)
+                raw = (
+                    getattr(region, "observation_json", None)
+                    if region is not None
+                    else None
+                )
+                if not isinstance(raw, Mapping):
+                    continue
+                evidence_parts: list[str] = []
+                for key in ("visible_facts", "dialogue_or_ocr", "inferences"):
+                    values = raw.get(key)
+                    if isinstance(values, Sequence) and not isinstance(
+                        values, (str, bytes)
+                    ):
+                        evidence_parts.extend(
+                            str(value) for value in values if str(value).strip()
+                        )
+                shared = (
+                    final_tokens & _retention_tokens(" ".join(evidence_parts))
+                ) - _RETENTION_WEAK_RELEVANCE_TOKENS
+                if len(shared) < 2:
+                    continue
+                recap_ranked.append(
+                    (len(shared), source_order_by_panel.get(panel_id, -1), panel_id)
+                )
+            for _shared, _order, panel_id in sorted(
+                recap_ranked, key=lambda row: (-row[0], row[1], row[2])
+            )[:6]:
+                if panel_id not in output[section]:
+                    output[section].append(panel_id)
+            anchors = sorted(
+                (
+                    (source_order_by_panel.get(panel_id, -1), panel_id)
+                    for panel_id in output[section]
+                    if source_order_by_panel.get(panel_id, -1) > 0
+                ),
+                reverse=True,
+            )
+            for _anchor_order, anchor_id in anchors:
+                successor = successor_by_panel.get(anchor_id)
+                if successor is None or successor[1] in output[section]:
+                    continue
+                output[section].append(successor[1])
+                break
     return {name: tuple(values) for name, values in output.items()}
-
-
 
 
 def build_reference_panel_fallback_candidates(

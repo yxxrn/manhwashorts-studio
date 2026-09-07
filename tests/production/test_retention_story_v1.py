@@ -3932,6 +3932,101 @@ def test_retention_expansion_does_not_add_distant_predecessor():
     assert expanded["cta"] == ("direct",)
 
 
+def test_retention_expansion_adds_grounded_next_section_boundary_handoff():
+    from types import SimpleNamespace
+
+    from app.services import reference_visual_review as review
+
+    script = SimpleNamespace(
+        editorial_metadata={"narrative_identity": {"profile_id": "retention_story_v1"}},
+        sections=[
+            {
+                "section": "hook",
+                "text": "A wooden door appears.",
+                "evidence_panel_ids": ["door"],
+                "evidence": [{"claim_id": "h1", "panel_ids": ["door"]}],
+            },
+            {
+                "section": "setup",
+                "text": "He opens the doorway.",
+                "evidence_panel_ids": ["doorway"],
+                "evidence": [{"claim_id": "s1", "panel_ids": ["doorway"]}],
+            },
+        ],
+    )
+    regions = [
+        SimpleNamespace(
+            panel_id="door",
+            source_order=100,
+            observation_json={"visible_facts": ["Wooden door."], "dialogue_or_ocr": [], "inferences": []},
+        ),
+        SimpleNamespace(
+            panel_id="doorway",
+            source_order=102,
+            observation_json={"visible_facts": ["Open doorway."], "dialogue_or_ocr": [], "inferences": []},
+        ),
+    ]
+    expanded = review.expand_retention_section_evidence(
+        script,
+        regions,
+        {"hook": ("door",), "setup": ("doorway",)},
+    )
+    assert "doorway" in expanded["hook"]
+
+
+def test_retention_final_section_reuses_concrete_recap_and_one_successor():
+    from types import SimpleNamespace
+
+    from app.services import reference_visual_review as review
+    script = SimpleNamespace(
+        editorial_metadata={"narrative_identity": {"profile_id": "retention_story_v1"}},
+        sections=[
+            {
+                "section": "setup",
+                "text": "The wooden door opens.",
+                "evidence_panel_ids": ["door", "weak"],
+                "evidence": [{"claim_id": "s1", "panel_ids": ["door", "weak"]}],
+            },
+            {
+                "section": "cta",
+                "text": "Standing beside the wooden door, the offer could turn the prison into storage.",
+                "evidence_panel_ids": ["offer"],
+                "evidence": [{"claim_id": "c1", "panel_ids": ["offer"]}],
+            },
+        ],
+    )
+    regions = [
+        SimpleNamespace(
+            panel_id="door",
+            source_order=100,
+            observation_json={"visible_facts": ["Large wooden door."], "dialogue_or_ocr": [], "inferences": []},
+        ),
+        SimpleNamespace(
+            panel_id="weak",
+            source_order=110,
+            observation_json={"visible_facts": ["Wooden floor."], "dialogue_or_ocr": [], "inferences": []},
+        ),
+        SimpleNamespace(
+            panel_id="offer",
+            source_order=200,
+            observation_json={"visible_facts": ["Creature makes an offer beside the prison."], "dialogue_or_ocr": [], "inferences": []},
+        ),
+        SimpleNamespace(
+            panel_id="after",
+            source_order=202,
+            observation_json={"visible_facts": ["The creature waves beside the doorway."], "dialogue_or_ocr": [], "inferences": []},
+        ),
+    ]
+    expanded = review.expand_retention_section_evidence(
+        script,
+        regions,
+        {"setup": ("door", "weak"), "cta": ("offer",)},
+    )
+    assert "door" in expanded["cta"]
+    assert "weak" not in expanded["cta"]
+    assert "after" in expanded["cta"]
+
+
 def test_visual_section_capacity_retries_by_reselecting_visual_story(monkeypatch):
     from app.services import pipeline
     from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
