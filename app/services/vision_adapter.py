@@ -3864,6 +3864,7 @@ def _build_synthesis_payload(
             "When the causal diagnostic identifies an offending claim_id, repair that exact downstream claim first. If reachable_candidate_claims are supplied, prefer those already-grounded candidate claim_ids and their cited evidence as the replacement shortlist; do not invent a bridge to keep the rejected claim. If forbidden_claim_ids are supplied, those claims already failed a targeted retry and MUST be removed from downstream script_passages and from the selected story chain rather than paraphrased back into it. "
             "If forward_candidate_claims are supplied, they are already-grounded claims that occur after the current body frontier but are NOT yet causally reachable. Treat them only as an ordered shortlist for rebuilding the downstream chain: prefer the earliest candidate whose observation-supported meaning can be connected by one or more explicit forward causal_links from the existing body. Never add a causal link merely because a candidate is chronologically nearby. If none can be connected from supplied evidence, drop the rejected concept and choose a different grounded chain. "
             "When reachable_candidate_claims and forward_candidate_claims are both explicitly empty, the rejected downstream concept has no supported continuation in the current graph. Treat zero_candidate_release=true as a structural release: retire the offending claim_id immediately, never restate or paraphrase its concept, and rebuild that passage plus only the necessary downstream ending from reachable_panel_ids already connected to the body. A replacement may mint a new granular claim only from the supplied observation meaning of those reachable panels. For a final passage, resolve on a concrete grounded fact or consequence already established by that reachable evidence instead of inventing a fresh terminal beat. "
+            "When forbidden_causal_links are supplied, every listed from_panel_id -> to_panel_id pair is already proven to move backward in source chronology and MUST NOT appear again. Before returning, audit every continuity_ledger causal link against the ordered chunks: each target must occur strictly after its source. Remove a backward edge; never repair it by merely swapping endpoints. Add a different forward edge only when the supplied observations explicitly support that causal relation. "
             + causal_diagnostic_text
             + " "
         )
@@ -3936,16 +3937,34 @@ def _build_synthesis_payload(
                 f"Previous correction-base script_passages: {locked_json}. "
             )
         elif request.retry_causal_arc:
-            anchor_json = json.dumps(
-                [dict(item) for item in request.retry_passages[:2]],
-                ensure_ascii=False,
-                separators=(",", ":"),
+            release_hook_teaser = bool(
+                isinstance(request.retry_causal_diagnostics, Mapping)
+                and request.retry_causal_diagnostics.get("release_hook_teaser")
             )
-            locked_passage_instruction = (
-                "Causal-arc retry anchor: use the first two previous passages as the grounded opening chain. "
-                "Do not lock passages three onward; replace them with reachable consequences from the same chain. "
-                f"Previous first-two anchor passages: {anchor_json}. "
-            )
+            if release_hook_teaser:
+                setup_anchor_json = json.dumps(
+                    [dict(item) for item in request.retry_passages[1:2]],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                locked_passage_instruction = (
+                    "Hook-reachability retry anchor: the previous hook is not an anchor because its evidence was not reachable from the body causal chain. "
+                    "Preserve the previous setup passage as the grounded BODY anchor, then rebuild only the body progression needed to form one forward causal chain. "
+                    "Rebuild passage one after that chain is valid: choose a truthful later consequence whose evidence is reachable from the setup through explicit forward causal links. If the previous hook claim cannot be reached, replace it instead of forcing a bridge. "
+                    "Do not create a hook-to-setup link and do not move the setup backward to preserve the old hook. "
+                    f"Previous setup anchor passage: {setup_anchor_json}. "
+                )
+            else:
+                anchor_json = json.dumps(
+                    [dict(item) for item in request.retry_passages[:2]],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                locked_passage_instruction = (
+                    "Causal-arc retry anchor: use the first two previous passages as the grounded opening chain. "
+                    "Do not lock passages three onward; replace them with reachable consequences from the same chain. "
+                    f"Previous first-two anchor passages: {anchor_json}. "
+                )
         elif request.retry_visual_story_alignment:
             alignment_targets: list[Mapping[str, Any]] = []
             if isinstance(request.retry_visual_story_diagnostics, Mapping):

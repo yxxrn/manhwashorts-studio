@@ -1391,6 +1391,21 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
         for value in initial_forbidden_raw
         if isinstance(value, str) and value
     } if isinstance(initial_forbidden_raw, list) else set()
+    initial_forbidden_links_raw = (
+        initial_causal_diagnostics.get("forbidden_causal_links")
+        if isinstance(initial_causal_diagnostics, Mapping)
+        else None
+    )
+    causal_forbidden_links = {
+        (
+            str(item.get("from_panel_id", "")).strip(),
+            str(item.get("to_panel_id", "")).strip(),
+        )
+        for item in initial_forbidden_links_raw
+        if isinstance(item, Mapping)
+        and str(item.get("from_panel_id", "")).strip()
+        and str(item.get("to_panel_id", "")).strip()
+    } if isinstance(initial_forbidden_links_raw, list) else set()
     initial_semantic_diagnostics = request.retry_claim_semantic_diagnostics
     initial_semantic_forbidden_raw = (
         initial_semantic_diagnostics.get("forbidden_claim_ids")
@@ -1701,6 +1716,22 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "retention_hook_teaser_is_not_reachable_from_body_causal_chain",
             }:
                 causal_diagnostics = dict(getattr(exc, "selection_diagnostics", {}) or {})
+                if subtype == "retention_causal_link_moves_backward_in_chronology":
+                    from_panel_id = str(causal_diagnostics.get("from_panel_id", "")).strip()
+                    to_panel_id = str(causal_diagnostics.get("to_panel_id", "")).strip()
+                    if from_panel_id and to_panel_id:
+                        causal_forbidden_links.add((from_panel_id, to_panel_id))
+                    if causal_forbidden_links:
+                        causal_diagnostics["forbidden_causal_links"] = [
+                            {
+                                "from_panel_id": source,
+                                "to_panel_id": target,
+                            }
+                            for source, target in sorted(causal_forbidden_links)
+                        ]
+                    causal_diagnostics["chronology_repair"] = True
+                elif subtype == "retention_hook_teaser_is_not_reachable_from_body_causal_chain":
+                    causal_diagnostics["release_hook_teaser"] = True
                 reachable_candidates = causal_diagnostics.get("reachable_candidate_claims")
                 forward_candidates = causal_diagnostics.get("forward_candidate_claims")
                 zero_candidate_release = bool(
