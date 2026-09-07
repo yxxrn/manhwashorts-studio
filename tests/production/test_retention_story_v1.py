@@ -4965,6 +4965,76 @@ def test_visual_capacity_retry_prompt_requires_safe_first_beat_replacement():
     assert "Two fighters collide in a sword exchange." in content
 
 
+def test_visual_story_retry_prompt_unlocks_rejected_target_claim_and_evidence():
+    from app.services import narrative_identity as identity
+    from app.services import vision_adapter as va
+
+    profile = identity.get_narrative_identity("retention_story_v1")
+    version, digest, instruction = identity.load_narrative_instruction(profile.profile_id)
+    locked = (
+        {
+            "passage_id": "p1",
+            "editorial_role": "setup",
+            "text": "A healthy setup stays grounded.",
+            "claim_ids": ["c1"],
+            "evidence_panel_ids": ["safe-setup"],
+        },
+        {
+            "passage_id": "p2",
+            "editorial_role": "resolve",
+            "text": "The rejected beat must be replaced.",
+            "claim_ids": ["c2"],
+            "evidence_panel_ids": ["old-panel"],
+        },
+    )
+    diagnostics = {
+        "passages": [
+            {
+                "passage_id": "p2",
+                "role": "resolve",
+                "section": "conflict",
+                "replacement_required": True,
+                "capacity_zero": False,
+                "candidate_panels": [
+                    {
+                        "panel_id": "safe-replacement",
+                        "source_index": 73,
+                        "excerpt": "She has one shot to execute Vinter's plan.",
+                    }
+                ],
+            }
+        ]
+    }
+    request = va.VisionChapterSynthesisRequest(
+        analysis_run_id="visual-story-unlock-test",
+        instruction_version=version,
+        instruction_sha256=digest,
+        instruction_text=instruction,
+        expected_panel_ids=("safe-setup", "old-panel", "safe-replacement"),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+        narrative_profile_id=profile.profile_id,
+        narrative_profile_version=profile.profile_version,
+        narrative_profile_sha256=profile.contract_sha256,
+        retry_visual_story_alignment=True,
+        retry_visual_story_diagnostics=diagnostics,
+        retry_claim_semantic_grounding=True,
+        retry_claim_semantic_diagnostics={"claim_id": "c2"},
+        retry_passages=locked,
+    )
+
+    payload = va._build_synthesis_payload(request, request.expected_panel_ids, "mock", profile)
+    content = payload["messages"][1]["content"]
+    assert "Visual-story alignment retry" in content
+    assert "Preserve every non-target passage_id" in content
+    assert "allow replacing text, claim_ids, evidence_panel_ids" in content
+    assert "Select a candidate_panel first" in content
+    assert "safe-replacement" in content
+    assert "failed a narration-length or subtitle-layout gate" not in content
+    assert "change only passage text" not in content
+
+
 def test_semantic_retry_payload_requires_evidence_near_atomic_claims():
     from app.services import narrative_identity
     from app.services import vision_adapter as va

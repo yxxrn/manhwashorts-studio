@@ -3945,6 +3945,29 @@ def _build_synthesis_payload(
                 "Do not lock passages three onward; replace them with reachable consequences from the same chain. "
                 f"Previous first-two anchor passages: {anchor_json}. "
             )
+        elif request.retry_visual_story_alignment:
+            alignment_targets: list[Mapping[str, Any]] = []
+            if isinstance(request.retry_visual_story_diagnostics, Mapping):
+                diagnostic_passages = request.retry_visual_story_diagnostics.get("passages")
+                if isinstance(diagnostic_passages, list):
+                    alignment_targets = [
+                        item for item in diagnostic_passages if isinstance(item, Mapping)
+                    ]
+            target_json = json.dumps(
+                [dict(item) for item in alignment_targets],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            locked_passage_instruction = (
+                "Visual-story alignment retry: use the previous script_passages as a targeted correction base. "
+                "Preserve every non-target passage_id, editorial_role, text, claim_ids, evidence_panel_ids, ordering, and grounded meaning exactly unless replacing a rejected beat invalidates a direct downstream causal dependency; in that case repair only the minimum downstream dependency. "
+                "For each diagnostic passage with replacement_required=true, preserve passage_id, editorial_role, and ordering, but allow replacing text, claim_ids, evidence_panel_ids, the relevant evidence_graph claim rows, and only the minimal forward causal links needed for the replacement. "
+                "Select a candidate_panel first and build one atomic grounded claim only from that panel's supplied excerpt; do not paraphrase or retain the rejected central claim. "
+                "For a diagnostic passage with replacement_required=false, keep its existing beat and adjust claim/evidence linkage only as needed with a section-safe panel that semantically supports the claim. "
+                "Do not rewrite healthy passages for style or drama, do not add filler panels, and keep chronology plus forward causality valid. "
+                f"Visual-story alignment targets: {target_json}. "
+                f"Previous correction-base script_passages: {locked_json}. "
+            )
         elif request.retry_claim_semantic_grounding:
             semantic_claim_id = ""
             if isinstance(request.retry_claim_semantic_diagnostics, Mapping):
