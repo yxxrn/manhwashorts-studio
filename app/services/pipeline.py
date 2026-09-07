@@ -1701,6 +1701,18 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "retention_hook_teaser_is_not_reachable_from_body_causal_chain",
             }:
                 causal_diagnostics = dict(getattr(exc, "selection_diagnostics", {}) or {})
+                reachable_candidates = causal_diagnostics.get("reachable_candidate_claims")
+                forward_candidates = causal_diagnostics.get("forward_candidate_claims")
+                zero_candidate_release = bool(
+                    claim_id
+                    and isinstance(reachable_candidates, list)
+                    and not reachable_candidates
+                    and isinstance(forward_candidates, list)
+                    and not forward_candidates
+                )
+                if zero_candidate_release:
+                    causal_forbidden_claim_ids.add(claim_id)
+                    causal_diagnostics["zero_candidate_release"] = True
                 if causal_forbidden_claim_ids:
                     causal_diagnostics["forbidden_claim_ids"] = sorted(
                         causal_forbidden_claim_ids

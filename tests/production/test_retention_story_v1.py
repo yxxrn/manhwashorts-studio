@@ -2200,6 +2200,70 @@ def test_disconnected_claim_retries_full_causal_arc(monkeypatch):
     assert retry.retry_claim_semantic_grounding is False
 
 
+def test_zero_candidate_disconnected_claim_is_retired_on_first_causal_retry(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="causal-zero-candidate-release",
+        instruction_version="v",
+        instruction_sha256="f" * 64,
+        instruction_text="x",
+        expected_panel_ids=("a",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+    locked = tuple(
+        {
+            "passage_id": f"p{i}",
+            "editorial_role": "hook" if i == 1 else f"beat{i}",
+            "text": f"Grounded passage {i} stays on the same causal chain.",
+            "claim_ids": [f"c{i}"],
+            "evidence_panel_ids": ["a"],
+        }
+        for i in range(1, 7)
+    )
+    diagnostics = {
+        "passage_number": 6,
+        "passage_id": "p6",
+        "claim_id": "claim_loyalty",
+        "reachable_panel_ids": ["a"],
+        "reachable_candidate_claims": [],
+        "forward_candidate_claims": [],
+    }
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            if len(self.requests) == 1:
+                raise VisionResponseInvalid(
+                    validation_subtype="retention_passage_introduces_disconnected_claim",
+                    retry_passages=locked,
+                    selection_diagnostics=diagnostics,
+                )
+            return {"accepted": True}
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+    monkeypatch.setattr(
+        pipeline, "_validated_synthesis_cache_output", lambda output, _request: output
+    )
+
+    assert pipeline._synthesize_with_cache(provider, request) == {"accepted": True}
+    retry = provider.requests[1]
+    assert retry.retry_causal_arc is True
+    assert retry.retry_passages == locked
+    assert retry.retry_causal_diagnostics["zero_candidate_release"] is True
+    assert retry.retry_causal_diagnostics["forbidden_claim_ids"] == ["claim_loyalty"]
+
+
 def test_disconnected_claim_diagnostics_identify_reachable_replacement():
     from app.services import analyzer_contract as contract
 
@@ -2552,6 +2616,58 @@ def test_causal_retry_payload_anchors_only_first_two_passages():
     )
     payload = va._build_synthesis_payload(request, request.expected_panel_ids, "mock", profile)
     content = payload["messages"][1]["content"]
+    assert "Previous first-two anchor passages" in content
+    assert "Do not lock passages three onward" in content
+
+
+def test_zero_candidate_causal_retry_payload_releases_terminal_concept():
+    from app.services import narrative_identity as identity
+    from app.services import vision_adapter as va
+
+    profile = identity.get_narrative_identity("retention_story_v1")
+    version, digest, instruction = identity.load_narrative_instruction(profile.profile_id)
+    locked = tuple(
+        {
+            "passage_id": f"p{i}",
+            "editorial_role": "hook" if i == 1 else f"beat{i}",
+            "text": f"Grounded passage {i} stays on the same causal chain.",
+            "claim_ids": [f"c{i}"],
+            "evidence_panel_ids": ["a"],
+        }
+        for i in range(1, 7)
+    )
+    request = va.VisionChapterSynthesisRequest(
+        analysis_run_id="causal-zero-candidate-prompt",
+        instruction_version=version,
+        instruction_sha256=digest,
+        instruction_text=instruction,
+        expected_panel_ids=("a",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+        narrative_profile_id=profile.profile_id,
+        narrative_profile_version=profile.profile_version,
+        narrative_profile_sha256=profile.contract_sha256,
+        retry_causal_arc=True,
+        retry_causal_diagnostics={
+            "passage_number": 6,
+            "passage_id": "p6",
+            "claim_id": "claim_loyalty",
+            "reachable_panel_ids": ["a"],
+            "reachable_candidate_claims": [],
+            "forward_candidate_claims": [],
+            "zero_candidate_release": True,
+            "forbidden_claim_ids": ["claim_loyalty"],
+        },
+        retry_passages=locked,
+    )
+
+    payload = va._build_synthesis_payload(request, request.expected_panel_ids, "mock", profile)
+    content = payload["messages"][1]["content"]
+    assert "zero_candidate_release=true as a structural release" in content
+    assert "retire the offending claim_id immediately" in content
+    assert "reachable_panel_ids already connected to the body" in content
+    assert "resolve on a concrete grounded fact or consequence already established" in content
     assert "Previous first-two anchor passages" in content
     assert "Do not lock passages three onward" in content
 
