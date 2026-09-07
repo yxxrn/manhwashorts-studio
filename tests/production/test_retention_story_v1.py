@@ -3414,6 +3414,50 @@ def test_semantic_meta_words_are_not_story_anchors():
     assert tokens == {"marry"}
 
 
+def test_semantic_question_mark_is_a_questioning_anchor():
+    from app.services import analyzer_contract
+
+    tokens = analyzer_contract._semantic_anchor_tokens("JUST BECAUSE YOU LOVE ME?")
+    assert {"question", "love"}.issubset(tokens)
+
+
+def test_retention_semantic_grounding_accepts_explicit_question_plus_local_force_evidence():
+    from app.services import analyzer_contract
+
+    graph = {
+        "claims": [
+            {
+                "claim_id": "claim_rejection",
+                "claim_type": "fact",
+                "text": "Penelope questions why he forces his love on her.",
+                "qualification": "direct dialogue",
+                "evidence_panel_ids": ["question", "force"],
+            }
+        ]
+    }
+    observations = [
+        {
+            "panel_id": "question",
+            "source_index": 108,
+            "visible_facts": ["Pink-haired female character."],
+            "dialogue_or_ocr": ["JUST BECAUSE YOU LOVE ME?"],
+            "inferences": [],
+            "uncertainties": [],
+        },
+        {
+            "panel_id": "force",
+            "source_index": 112,
+            "visible_facts": [],
+            "dialogue_or_ocr": [
+                "AND YOU'RE FORCING YOUR RELENTLESS LOVE ON ME WHILE PROTECTING ME WHEN I NEVER ASKED YOU TO."
+            ],
+            "inferences": [],
+            "uncertainties": [],
+        },
+    ]
+    analyzer_contract._validate_retention_claim_semantic_grounding(graph, observations)
+
+
 def test_visual_support_tokens_normalize_story_morphology():
     from app.services import vision_adapter
 

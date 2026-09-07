@@ -518,6 +518,8 @@ _RETENTION_REQUIRED_LOCAL_ANCHORS = frozenset(
 
 def _semantic_anchor_tokens(text: str) -> set[str]:
     result: set[str] = set()
+    if "?" in text:
+        result.add("question")
     for token in _normalized_lexical_words(text):
         if token in {"yes", "yeah", "yep"} or token.startswith("affirmativ"):
             result.add("affirmative")
