@@ -424,6 +424,178 @@ def test_retention_hook_contract_failure_retries_as_locked_text_repair(monkeypat
     assert retry.retry_local_claim_grounding is False
 
 
+def test_retention_visual_recap_retry_is_locked_prose_only(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    locked = tuple(
+        {
+            "passage_id": f"p{index}",
+            "editorial_role": role,
+            "text": text,
+            "claim_ids": [f"c{index}"],
+            "evidence_panel_ids": ["panel-1"],
+        }
+        for index, (role, text) in enumerate(
+            (
+                ("hook", "The ambush begins before Mira can warn the others."),
+                ("pressure", "Mira is positioned in front while motion lines emphasize the rush."),
+                ("decision", "A stylized sound effect marks the impact as she turns to fight."),
+                ("consequence", "The strike leaves the doorway exposed and changes their escape route."),
+            ),
+            start=1,
+        )
+    )
+    locked_output = {
+        "continuity_ledger": {"sentinel": "keep"},
+        "evidence_graph": {"claims": [{"claim_id": "sentinel"}]},
+        "narrative_outline": {"story_spine": {"sentinel": "keep"}},
+        "script_passages": [dict(item) for item in locked],
+    }
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="retention-visual-recap-retry-test",
+        instruction_version="test-v1",
+        instruction_sha256="e" * 64,
+        instruction_text="test",
+        expected_panel_ids=("panel-1",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+        narrative_profile_id="retention_story_v1",
+        target_word_count_min=115,
+        target_word_count_max=125,
+        retry_causal_arc=True,
+        retry_visual_story_alignment=True,
+        retry_claim_semantic_grounding=True,
+        retry_projection_contract=True,
+    )
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            if len(self.requests) == 1:
+                raise VisionResponseInvalid(
+                    validation_subtype="retention_visual_recap_prose",
+                    passage_word_counts=(9, 11, 13, 11),
+                    retry_passages=locked,
+                    retry_locked_output=locked_output,
+                )
+            return {"accepted": True}
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+    monkeypatch.setattr(
+        pipeline,
+        "_validated_synthesis_cache_output",
+        lambda output, _request: output,
+    )
+
+    assert pipeline._synthesize_with_cache(provider, request) == {"accepted": True}
+    assert len(provider.requests) == 2
+    retry = provider.requests[1]
+    assert retry.retry_text_only_locked_output == locked_output
+    assert retry.retry_passages == locked
+    assert retry.retry_word_counts is None
+    assert retry.retry_dialogue_paraphrase is False
+    assert retry.retry_causal_arc is False
+    assert retry.retry_visual_story_alignment is False
+    assert retry.retry_claim_semantic_grounding is False
+    assert retry.retry_projection_contract is False
+    assert retry.retry_visual_selection is False
+    assert retry.retry_local_claim_grounding is False
+
+
+def test_retention_visual_recap_locked_prompt_requests_only_story_prose_repair():
+    from dataclasses import replace
+
+    from app.services import narrative_identity as identity
+    from app.services import vision_adapter
+
+    profile = identity.get_narrative_identity("retention_story_v1")
+    version, digest, instruction = identity.load_narrative_instruction(profile.profile_id)
+    locked = (
+        {
+            "passage_id": "p1",
+            "editorial_role": "hook",
+            "text": "The ambush begins before Mira can warn the others.",
+            "claim_ids": ["c1"],
+            "evidence_panel_ids": ["panel-1"],
+        },
+        {
+            "passage_id": "p2",
+            "editorial_role": "pressure",
+            "text": "Mira is positioned in front while motion lines emphasize the rush.",
+            "claim_ids": ["c2"],
+            "evidence_panel_ids": ["panel-1"],
+        },
+        {
+            "passage_id": "p3",
+            "editorial_role": "decision",
+            "text": "A stylized sound effect marks the impact as she turns to fight.",
+            "claim_ids": ["c3"],
+            "evidence_panel_ids": ["panel-1"],
+        },
+        {
+            "passage_id": "p4",
+            "editorial_role": "consequence",
+            "text": "The strike leaves the doorway exposed and changes their escape route.",
+            "claim_ids": ["c4"],
+            "evidence_panel_ids": ["panel-1"],
+        },
+    )
+    locked_output = {"script_passages": [dict(item) for item in locked]}
+    request = vision_adapter.VisionChapterSynthesisRequest(
+        analysis_run_id="retention-visual-recap-prompt-test",
+        instruction_version=version,
+        instruction_sha256=digest,
+        instruction_text=instruction,
+        expected_panel_ids=("panel-1",),
+        coverage_manifest={"processed_panels": 1},
+        ordered_observations=(
+            {
+                "panel_id": "panel-1",
+                "visible_facts": ["Mira turns to fight after the doorway is exposed."],
+                "dialogue_or_ocr": [],
+                "inferences": [],
+                "uncertainties": [],
+                "evidence_refs": ["panel-1"],
+            },
+        ),
+        chunks=({"chunk_id": "chunk-1", "panel_ids": ["panel-1"]},),
+        narrative_profile_id=profile.profile_id,
+        narrative_profile_version=profile.profile_version,
+        narrative_profile_sha256=profile.contract_sha256,
+        target_word_count_min=profile.target_word_min,
+        target_word_count_max=profile.target_word_max,
+    )
+    request = replace(
+        request,
+        retry_passages=locked,
+        retry_text_only_locked_output=locked_output,
+    )
+
+    payload = vision_adapter._build_synthesis_payload(
+        request,
+        request.expected_panel_ids,
+        "mock-model",
+        profile,
+    )
+    user_instruction = payload["messages"][1]["content"]
+
+    assert "failed a text-only narration gate" in user_instruction
+    assert "change only passage text" in user_instruction
+    assert "Rewrite as event-driven spoken story prose" in user_instruction
+    assert "motion lines" in user_instruction
+    assert "stylized sound effects" in user_instruction
+    assert "Previous locked script_passages" in user_instruction
+
+
 def test_claim_qualification_failure_retries_synthesis_without_reusing_bad_passages(monkeypatch):
     from app.services import pipeline
     from app.services.vision_adapter import (

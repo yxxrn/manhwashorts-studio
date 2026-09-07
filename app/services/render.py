@@ -857,6 +857,19 @@ def _reference_motion_pixel_safety(
         and isinstance(scene.selected_roi, Mapping)
         and isinstance(scene.framing_telemetry, Mapping)
     )
+    blur_fit = bool(
+        isinstance(scene.selected_roi, Mapping)
+        and scene.selected_roi.get("roi_label")
+        == reference_profile.REVIEW_BLUR_FIT_FULL_PANEL_ROI_LABEL
+        and isinstance(scene.framing_telemetry, Mapping)
+        and scene.framing_telemetry.get("fallback_reason")
+        == reference_profile.REVIEW_BLUR_FIT_FULL_PANEL_REASON
+    )
+    if blur_fit:
+        # The blur-fit compositor paints the entire overscan canvas. Camera
+        # motion only crops inside that canvas, so source-panel low-information
+        # masks are not a valid blank-space signal for this presentation.
+        return (image.width >= width and image.height >= height), 0.0
     edge_metric = (
         framing_analysis.color_agnostic_edge_blank_span_fractions
         if has_reference_geometry
@@ -2216,6 +2229,25 @@ def _refine_review_pixel_blank_crop(
     )
 
 
+def _prepare_blur_fit_reference_frame(
+    panel: Image.Image, dest: Path, width: int, height: int
+) -> Path:
+    """Fit the full evidence panel over a blurred cover background."""
+    output_size = (_reference_even(round(width * 1.15)), _reference_even(round(height * 1.15)))
+    background = ImageOps.fit(panel, output_size, method=Image.Resampling.LANCZOS)
+    radius = max(2.0, min(output_size) * reference_profile.REVIEW_BLUR_FIT_BACKGROUND_BLUR_RATIO)
+    background = background.filter(ImageFilter.GaussianBlur(radius=radius))
+    margin = max(2, round(min(output_size) * reference_profile.REVIEW_BLUR_FIT_FOREGROUND_MARGIN_RATIO))
+    inner = (max(2, output_size[0] - 2 * margin), max(2, output_size[1] - 2 * margin))
+    foreground = ImageOps.contain(panel, inner, method=Image.Resampling.LANCZOS)
+    left = (output_size[0] - foreground.width) // 2
+    top = (output_size[1] - foreground.height) // 2
+    background.paste(foreground, (left, top))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    background.save(dest, "JPEG", quality=94)
+    return dest
+
+
 def _prepare_exact_reference_frame(
     *,
     scene: SceneInput,
@@ -2340,6 +2372,32 @@ def _prepare_exact_reference_frame(
             "visual.panel_lineage_unavailable: selected reference ROI is invalid",
             code="visual.panel_lineage_unavailable",
         ) from exc
+    blur_fit = str(selected_roi.get("roi_label", "") or "") == reference_profile.REVIEW_BLUR_FIT_FULL_PANEL_ROI_LABEL
+    if blur_fit:
+        if not allow_conservative_full_panel or scene.publish_allowed is not False:
+            raise RenderError("visual.blur_fit_not_allowed: full-panel blur fit is review-gated", code="visual.blur_fit_not_allowed")
+        if crop_box != (0, 0, panel.width, panel.height):
+            raise RenderError("visual.panel_lineage_unavailable: blur-fit ROI must preserve the full panel", code="visual.panel_lineage_unavailable")
+        persisted_telemetry = _reference_telemetry_mapping(scene.framing_telemetry)
+        expected = framing_analysis.FramingTelemetry(
+            contract_version=evidence.contract_version, detector_version=mask.detector_version,
+            mask_sha256=mask.mask_sha256, crop_box=crop_box, base_zoom=1.0,
+            source_resolution_zoom_cap=1.0, protected_region_zoom_cap=1.0,
+            edge_connected_blank_fraction=0.0, non_discardable_low_information_fraction=0.0,
+            protected_retained_fraction=1.0, balloon_mask_intersection_ratio=0.0,
+            subject_coverage=1.0, face_coverage=1.0, action_coverage=1.0, effect_coverage=1.0,
+            continuity_context_coverage=1.0, mask_confidence=float(evidence.mask_confidence),
+            mask_source=evidence.evidence_source, fallback_reason=reference_profile.REVIEW_BLUR_FIT_FULL_PANEL_REASON,
+            rejection_code=None,
+        )
+        expected_map = asdict(expected)
+        for field_name in _REFERENCE_TELEMETRY_FIELDS:
+            if _reference_canonical_json(persisted_telemetry.get(field_name)) != _reference_canonical_json(expected_map.get(field_name)):
+                raise RenderError("visual.panel_lineage_unavailable: blur-fit framing telemetry is stale", code="visual.panel_lineage_unavailable")
+        nested = persisted_telemetry.get("selected_roi")
+        if not isinstance(nested, Mapping) or any(nested.get(key) != selected_roi.get(key) for key in ("kind", "roi_label", "crop_box")):
+            raise RenderError("visual.panel_lineage_unavailable: blur-fit selected ROI is stale", code="visual.panel_lineage_unavailable")
+        return _prepare_blur_fit_reference_frame(panel, dest, width, height)
     persisted_telemetry = _reference_telemetry_mapping(scene.framing_telemetry)
     review_blank_threshold = reference_profile.review_frame_edge_blank_threshold(
         persisted_telemetry

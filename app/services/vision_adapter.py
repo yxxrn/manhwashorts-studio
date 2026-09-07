@@ -367,6 +367,7 @@ TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES = frozenset(
         "production_narration_word_count_out_of_range",
         "retention_hook_must_contain_8-14_words",
         "retention_hook_must_be_one_sentence",
+        "retention_visual_recap_prose",
         "production_subtitle_overflow",
     }
 )
@@ -4029,9 +4030,9 @@ def _build_synthesis_payload(
                 )
             elif retention_profile:
                 locked_passage_instruction = (
-                    "The previous response passed semantic/evidence structure but failed a narration-length or subtitle-layout gate. "
+                    "The previous response passed semantic/evidence structure but failed a text-only narration gate. "
                     "Use these previous script_passages as a LOCKED correction base. Preserve every passage_id, editorial_role, claim_ids, "
-                    "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only passage text. Keep the first hook at 8-14 words in one sentence and keep the total narration within the production target. Prefer shorter ordinary words and balanced phrase lengths for the fixed two-line subtitle layout. "
+                    "evidence_panel_ids, ordering, claims, and grounded meaning exactly; change only passage text. Rewrite as event-driven spoken story prose. Do not narrate panel framing or composition, motion lines, stylized sound effects, or background decoration; add no names, facts, or dialogue beyond the locked grounded meaning. Keep the first hook at 8-14 words in one sentence and keep the total narration within the production target. Prefer shorter ordinary words and balanced phrase lengths for the fixed two-line subtitle layout. "
                     f"Previous locked script_passages: {locked_json}. "
                 )
             else:
@@ -4048,7 +4049,7 @@ def _build_synthesis_payload(
             retry_instruction = (
                 f"Corrective retry: the previous passage word counts were {list(request.retry_word_counts)} for a total of {previous_total}. "
                 f"Rewrite only passage text lengths as needed so total narration is {request.target_word_count_min}-{request.target_word_count_max} whitespace-separated words. "
-                "Keep the same passage count, IDs, roles, claims, evidence references, ordering, and grounded meaning; keep the first hook one sentence at 8-14 words. "
+                "Keep the same passage count, IDs, roles, claims, evidence references, ordering, and grounded meaning; keep the first hook one sentence at 8-14 words. Tell the grounded events as natural spoken story prose and avoid panel framing, composition, motion-line, sound-effect, or decorative-background description. "
             )
         else:
             retry_instruction = (
@@ -4064,6 +4065,7 @@ def _build_synthesis_payload(
             "{passage_id,editorial_role,text,claim_ids,evidence_panel_ids}. editorial_role is a meaningful semantic label, not a legacy fixed vocabulary. "
             "The first passage is the hook and must be one sentence of 8-14 whitespace-counted words. "
             "Every claim_id listed by a passage must be locally grounded: that passage evidence_panel_ids must include at least one panel from that claim's evidence_panel_ids. Use granular claims for distinct beats instead of attaching one broad claim everywhere. "
+            "Tell the chapter as event-driven spoken story prose. Describe what the characters do, learn, choose, lose, reveal, or cause; do not narrate panel framing, character positioning, motion lines, stylized sound effects, or background decoration as story content. "
             "From the third passage onward, prefer a factual delta when the evidence naturally advances the story. Do not invent a new claim merely to make passages differ; a grounded reused claim is acceptable when it is the truthful continuation or payoff. "
             "The final passage should land on a concrete grounded consequence, reveal, reversal, threat, or changed fact. Prefer a fresh factual payoff when evidence supports one, but do not invent a new claim solely for novelty; avoid generic uncertainty such as the outcome is uncertain, danger keeps growing, or equivalent filler. "
             "narrative_outline.ending_kind must be cliffhanger or consequence, and the final passage must state a grounded consequence, reveal, reversal, threat, or unresolved concrete fact without ending in a question mark. "

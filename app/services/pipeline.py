@@ -1439,6 +1439,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "production_narration_word_count_out_of_range",
                 "retention_hook_must_contain_8-14_words",
                 "retention_hook_must_be_one_sentence",
+                "retention_visual_recap_prose",
                 "production_visual_selection_insufficient",
                 "production_visual_section_capacity_insufficient",
                 "production_subtitle_overflow",
@@ -1830,6 +1831,31 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                         else active_request.retry_passages
                     ),
                     retry_text_only_locked_output=(dict(getattr(exc, "retry_locked_output", {}) or {}) or None),
+                )
+            elif subtype == "retention_visual_recap_prose":
+                active_request = replace(
+                    active_request,
+                    retry_dialogue_paraphrase=False,
+                    retry_causal_arc=False,
+                    retry_causal_diagnostics=None,
+                    retry_visual_story_alignment=False,
+                    retry_visual_story_diagnostics=None,
+                    retry_claim_semantic_grounding=False,
+                    retry_claim_semantic_diagnostics=None,
+                    retry_projection_contract=False,
+                    retry_local_claim_grounding=False,
+                    retry_visual_selection=False,
+                    retry_claim_qualification=False,
+                    retry_evidence_lineage=False,
+                    retry_word_counts=None,
+                    retry_passages=(
+                        retry_passages
+                        if retry_passages is not None
+                        else active_request.retry_passages
+                    ),
+                    retry_text_only_locked_output=(
+                        dict(getattr(exc, "retry_locked_output", {}) or {}) or None
+                    ),
                 )
             elif counts and not evidence_lineage_retryable:
                 active_request = replace(

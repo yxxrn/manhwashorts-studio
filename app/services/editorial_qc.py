@@ -143,6 +143,10 @@ _NARRATIVE_REPORTER_MARKERS = (
     "transitions into",
     "comes into view",
     "we see",
+    "motion lines",
+    "stylized sound effect",
+    "positioned in front",
+    "positioned behind",
 )
 _NARRATIVE_MECHANICAL_OPENINGS = ("then", "meanwhile", "next", "after that", "later", "as")
 
@@ -193,6 +197,27 @@ def _narrative_contains_sequence(text: object, source: object) -> bool:
         tuple(passage_words[index : index + 4]) in source_ngrams
         for index in range(len(passage_words) - 3)
     )
+
+
+def _narrative_reporter_signals(
+    passage_texts: Sequence[str],
+) -> tuple[tuple[str, ...], int]:
+    lower_text = " ".join(passage_texts).casefold()
+    hits = tuple(marker for marker in _NARRATIVE_REPORTER_MARKERS if marker in lower_text)
+    reporter_passages = sum(
+        any(marker in text.casefold() for marker in _NARRATIVE_REPORTER_MARKERS)
+        for text in passage_texts
+    )
+    return hits, reporter_passages
+
+
+def has_visual_recap_prose(passages: Sequence[Mapping[str, object]]) -> bool:
+    """Return whether narration crosses the conservative visual-recap threshold."""
+
+    passage_texts = [str(item.get("text", "")) for item in passages]
+    reporter_prose_hits, reporter_passages = _narrative_reporter_signals(passage_texts)
+    visual_description_ratio = _narrative_ratio(reporter_passages, len(passage_texts))
+    return len(reporter_prose_hits) >= 2 or visual_description_ratio >= 0.4
 
 
 def screen_narrative_naturalness(
@@ -257,13 +282,7 @@ def screen_narrative_naturalness(
     )
     cta_hits = tuple(marker for marker in _NARRATIVE_CTA_MARKERS if marker in lower_text)
     ai_slop_hits = tuple(marker for marker in _NARRATIVE_AI_SLOP_MARKERS if marker in lower_text)
-    reporter_prose_hits = tuple(
-        marker for marker in _NARRATIVE_REPORTER_MARKERS if marker in lower_text
-    )
-    reporter_passages = sum(
-        any(marker in text.casefold() for marker in _NARRATIVE_REPORTER_MARKERS)
-        for text in passage_texts
-    )
+    reporter_prose_hits, reporter_passages = _narrative_reporter_signals(passage_texts)
     mechanical_openings = sum(
         any(
             text.casefold().lstrip().startswith(marker + " ")

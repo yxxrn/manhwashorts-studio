@@ -297,6 +297,26 @@ def _review_subject_boxes(candidate: ReferencePanelFallbackCandidate) -> tuple[t
     return tuple(boxes)
 
 
+def _is_blur_fit_roi(roi: ReferenceROIAlternative) -> bool:
+    return str(getattr(roi, "roi_label", "") or "") == reference_profile.REVIEW_BLUR_FIT_FULL_PANEL_ROI_LABEL
+
+
+def _blur_fit_telemetry(candidate: ReferencePanelFallbackCandidate, roi: ReferenceROIAlternative):
+    return framing_analysis.FramingTelemetry(
+        contract_version=candidate.visual_evidence.contract_version,
+        detector_version=candidate.border_mask.detector_version,
+        mask_sha256=candidate.border_mask.mask_sha256,
+        crop_box=roi.crop_box, base_zoom=1.0, source_resolution_zoom_cap=1.0,
+        protected_region_zoom_cap=1.0, edge_connected_blank_fraction=0.0,
+        non_discardable_low_information_fraction=0.0, protected_retained_fraction=1.0,
+        balloon_mask_intersection_ratio=0.0, subject_coverage=1.0, face_coverage=1.0,
+        action_coverage=1.0, effect_coverage=1.0, continuity_context_coverage=1.0,
+        mask_confidence=float(candidate.visual_evidence.mask_confidence),
+        mask_source=candidate.visual_evidence.evidence_source,
+        fallback_reason=reference_profile.REVIEW_BLUR_FIT_FULL_PANEL_REASON, rejection_code=None,
+    )
+
+
 def _review_crop_editorial_metrics(
     candidate: ReferencePanelFallbackCandidate,
     roi: ReferenceROIAlternative,
@@ -306,6 +326,20 @@ def _review_crop_editorial_metrics(
     beat: str,
 ) -> dict[str, object]:
     """Measure human-facing composition quality beyond raw framing feasibility."""
+
+    if _is_blur_fit_roi(roi):
+        return {
+            "version": "review-editorial-crop-quality-v1", "role": _review_role(section, beat),
+            "crop_area_fraction": 1.0, "face_region_count": len(_review_face_boxes(candidate)),
+            "visible_face_count": len(_review_face_boxes(candidate)), "face_cutoff_count": 0,
+            "face_margin_violation_count": 0, "minimum_visible_face_fraction": 1.0,
+            "minimum_face_margin_ratio": 1.0, "face_omission": False,
+            "subject_region_count": len(_review_subject_boxes(candidate)),
+            "subject_completeness_score": 1.0, "semantic_detail_roi": False,
+            "semantic_focus_label": "full_panel", "semantic_focus_distance": 0.0,
+            "extreme_crop": False, "unjustified_detail_crop": False,
+            "blur_fit_full_panel": True, "anomaly_flags": [],
+        }
 
     crop = _normalized_crop_box(roi.crop_box, candidate.panel_size)
     crop_width = max(1e-9, crop[2] - crop[0])
@@ -459,6 +493,7 @@ def _review_editorial_crop_quality_key(
         1 if bool(metrics.get("face_omission", False)) else 0,
         int(metrics.get("face_margin_violation_count", 0) or 0),
         1 if bool(metrics.get("unjustified_detail_crop", False)) else 0,
+        1 if bool(metrics.get("blur_fit_full_panel", False)) else 0,
         round(1.0 - max(0.0, min(1.0, subject_score)), 6),
         *reference_profile.review_framing_quality_key(
             blank_fraction,
@@ -1468,21 +1503,19 @@ def _reference_panel_attempt(
     if allow_low_resolution:
         feasibility_kwargs["allow_source_resolution_warning"] = True
     try:
-        feasible, telemetry = _review_framing_candidate_is_feasible(
-            roi.crop_box,
-            ready,
-            candidate.border_mask,
-            candidate.panel_size,
-            (profile.final_width, profile.final_height),
-            review_aggressive_crop=review_aggressive_crop,
-            standard_blank_target=(
-                reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
-                if review_aggressive_crop
-                else profile.framing_blank_target_fraction
-            ),
-            allow_conservative_full_panel=allow_conservative_full_panel,
-            **feasibility_kwargs,
-        )
+        if _is_blur_fit_roi(roi):
+            if not (allow_conservative_full_panel and review_aggressive_crop):
+                feasible, telemetry = False, {"rejection_code": "visual.blur_fit_not_allowed"}
+            else:
+                feasible, telemetry = True, _blur_fit_telemetry(candidate, roi)
+        else:
+            feasible, telemetry = _review_framing_candidate_is_feasible(
+                roi.crop_box, ready, candidate.border_mask, candidate.panel_size,
+                (profile.final_width, profile.final_height),
+                review_aggressive_crop=review_aggressive_crop,
+                standard_blank_target=(reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION if review_aggressive_crop else profile.framing_blank_target_fraction),
+                allow_conservative_full_panel=allow_conservative_full_panel, **feasibility_kwargs,
+            )
     except framing_analysis.VisualEvidenceError as exc:
         if exc.code == "visual.balloon_mask_unknown":
             raise ReferencePlanningError(str(exc), exc.code) from exc
@@ -1615,21 +1648,17 @@ def _feasible_roi_capacity(
     )
     feasible = 0
     for roi in _ordered_roi_alternatives(candidate):
-        accepted, _telemetry = _review_framing_candidate_is_feasible(
-            roi.crop_box,
-            ready,
-            candidate.border_mask,
-            candidate.panel_size,
-            (profile.final_width, profile.final_height),
-            review_aggressive_crop=review_aggressive_crop,
-            standard_blank_target=(
-                reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION
-                if review_aggressive_crop
-                else profile.framing_blank_target_fraction
-            ),
-            allow_conservative_full_panel=allow_conservative_full_panel,
-            **feasibility_kwargs,
-        )
+        if _is_blur_fit_roi(roi):
+            accepted = bool(allow_conservative_full_panel and review_aggressive_crop)
+            _telemetry = _blur_fit_telemetry(candidate, roi) if accepted else {"rejection_code": "visual.blur_fit_not_allowed"}
+        else:
+            accepted, _telemetry = _review_framing_candidate_is_feasible(
+                roi.crop_box, ready, candidate.border_mask, candidate.panel_size,
+                (profile.final_width, profile.final_height),
+                review_aggressive_crop=review_aggressive_crop,
+                standard_blank_target=(reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION if review_aggressive_crop else profile.framing_blank_target_fraction),
+                allow_conservative_full_panel=allow_conservative_full_panel, **feasibility_kwargs,
+            )
         if accepted:
             if review_aggressive_crop:
                 metrics = _review_crop_editorial_metrics(

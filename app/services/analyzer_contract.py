@@ -1161,6 +1161,10 @@ def _validate_script_passages_v3(
                 _fail("retention hook must contain 8-14 words")
             if len(_normalized_sentences(hook_text)) != 1:
                 _fail("retention hook must be one sentence")
+            from app.services import editorial_qc
+
+            if editorial_qc.has_visual_recap_prose(value):
+                _fail("retention visual recap prose")
         final_text = _nonempty_string(value[-1]["text"], "final script passage text").rstrip()
         _validate_v3_ending(outline, final_text, profile)
 

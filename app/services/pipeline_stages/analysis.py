@@ -100,7 +100,10 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
     assets = image_assets(project_assets(db, project_id))
     source_fingerprint = _analysis_source_fingerprint(assets)
     run_id = secrets.token_hex(16)
-    for old in db.scalars(select(StoryAnalysis).where(StoryAnalysis.project_id == project_id)):
+    prior_analyses = list(db.scalars(select(StoryAnalysis).where(StoryAnalysis.project_id == project_id)))
+    prior_usable = [old for old in prior_analyses if str(old.state) in {'RECONCILED', 'SCRIPT_DRAFT', 'SCRIPT_APPROVED'}]
+    checkpoint = db.begin_nested() if prior_usable else None
+    for old in prior_analyses:
         db.delete(old)
     db.flush()
     row = StoryAnalysis(project_id=project_id, analysis_run_id=run_id, state='PROCESSING', instruction_version=analyzer_contract.PROMPT_VERSION)
@@ -251,9 +254,25 @@ def run_analysis(api, db, project_id, actor_id, *, narrative_profile_id):
         project.status = ProjectStatus.REVIEW
         audit(db, 'analysis.run', 'project', project_id, actor_id, generator='vision_first', provider=capability.provider_name, model=capability.model, state=row.state, panel_count=coverage.panel_count, processed_panel_count=len(enriched))
         db.flush()
+        if checkpoint is not None:
+            checkpoint.commit()
         return row
     except _AnalysisBlocked as blocked:
-        return _persist_blocked_analysis(db, project, row, [blocked.code], [blocked.finding])
+        failed = _persist_blocked_analysis(db, project, row, [blocked.code], [blocked.finding])
+        if checkpoint is None:
+            return failed
+        blocking_reasons = dict(failed.blocking_reasons_json or {})
+        coverage_manifest = dict(failed.coverage_manifest_json or {})
+        checkpoint.rollback()
+        preserved_failure = StoryAnalysis(
+            project_id=project_id,
+            analysis_run_id=run_id,
+            state='BLOCKED',
+            instruction_version=analyzer_contract.PROMPT_VERSION,
+            blocking_reasons_json=blocking_reasons,
+            coverage_manifest_json=coverage_manifest,
+        )
+        return preserved_failure
 
 
 

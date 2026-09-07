@@ -2831,3 +2831,47 @@ def test_retention_assignment_reserves_shared_panel_for_higher_future_relevance(
         allow_review_duration=True, review_duration_bounds_s=(9.0, 9.0),
     )
     assert [shot["source_order"] for shot in result] == [100, 110, 120]
+
+
+def test_standard_pixel_preflight_adds_blur_fit_only_when_enabled(monkeypatch):
+    from app.services import reference_visual_review
+
+    regions, crops, candidates = _builder_inputs()
+    monkeypatch.setattr(
+        reference_visual_review,
+        "_roi_passes_exact_pixel_preflight",
+        lambda **_kwargs: False,
+    )
+    common = {
+        "panel_regions": (regions[0],),
+        "panel_candidates_by_region_id": {"region-a": candidates["region-a"]},
+        "panel_crops_by_region_id": {"region-a": crops["region-a"]},
+        "section_evidence_panel_ids": {"hook": ("panel-a",)},
+        "section_citations": {},
+        "beats_by_section": {"hook": ("action",)},
+        "profile": reference_profile.REFERENCE_MATCHED_SHORTS_V1,
+        "pixel_refinement_preflight": True,
+    }
+    assert pipeline._build_reference_panel_fallback_candidates(**common) == ()
+    result = pipeline._build_reference_panel_fallback_candidates(
+        **common,
+        allow_conservative_full_panel=True,
+    )
+    assert len(result) == 1
+    roi = result[0].roi_alternatives[0]
+    assert roi.roi_label == reference_profile.REVIEW_BLUR_FIT_FULL_PANEL_ROI_LABEL
+    assert roi.crop_box == (0, 0, 100, 200)
+
+
+def test_blur_fit_frame_preserves_foreground_aspect_ratio(tmp_path):
+    from PIL import ImageOps
+
+    panel = Image.new("RGB", (200, 800), (90, 120, 160))
+    dest = tmp_path / "blur-fit.jpg"
+    render._prepare_blur_fit_reference_frame(panel, dest, 1080, 1920)
+    with Image.open(dest) as prepared:
+        assert prepared.size == (1242, 2208)
+        margin = round(min(prepared.size) * reference_profile.REVIEW_BLUR_FIT_FOREGROUND_MARGIN_RATIO)
+        inner = (prepared.width - 2 * margin, prepared.height - 2 * margin)
+        expected = ImageOps.contain(panel, inner, method=Image.Resampling.LANCZOS)
+        assert expected.width / expected.height == pytest.approx(panel.width / panel.height, rel=0.01)

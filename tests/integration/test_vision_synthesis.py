@@ -457,6 +457,40 @@ def test_sharp_friend_synthesis_carries_identity_and_validates_v3(
     assert "api_key" not in metadata_json
 
 
+def test_retention_visual_recap_contract_error_maps_to_text_only_retry(
+    mock_provider_url, monkeypatch
+):
+    module = _vision_module()
+    contract = importlib.import_module("app.services.analyzer_contract")
+    request = _request(module, narrative_profile_id="retention_story_v1")
+    provider = _provider(module, mock_provider_url)
+    output = _valid_output()
+    _install_response(monkeypatch, module, output)
+
+    def validate_with_visual_recap_failure(
+        _value,
+        *,
+        expected_panel_ids,
+        narrative_profile_id=None,
+        validate_text_checks=True,
+        **_kwargs,
+    ):
+        assert tuple(expected_panel_ids) == PANEL_IDS
+        if narrative_profile_id == "retention_story_v1" and validate_text_checks:
+            raise contract.AnalyzerContractError("retention visual recap prose")
+
+    monkeypatch.setattr(contract, "validate_analyzer_output", validate_with_visual_recap_failure)
+
+    with pytest.raises(module.VisionResponseInvalid) as caught:
+        provider.synthesize(request)
+
+    assert caught.value.validation_subtype == "retention_visual_recap_prose"
+    assert caught.value.retry_passages == tuple(
+        dict(item) for item in output["script_passages"]
+    )
+    assert caught.value.retry_locked_output == output
+
+
 def test_sharp_friend_synthesis_rejects_profile_hash_mismatch_before_network(
     mock_provider_url, monkeypatch
 ):

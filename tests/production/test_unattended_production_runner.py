@@ -37,6 +37,20 @@ def test_unattended_runner_accepts_explicit_voice_profile():
     assert 'speed=1.0' in source
 
 
+def test_analysis_rerun_keeps_usable_checkpoint_until_replacement_reconciles():
+    source = (ROOT / "app" / "services" / "pipeline_stages" / "analysis.py").read_text(encoding="utf-8")
+    start = source.index("def run_analysis(")
+    block = source[start:source.index("def analysis_status(", start)]
+    assert "prior_usable =" in block
+    assert "checkpoint = db.begin_nested() if prior_usable else None" in block
+    assert block.index("checkpoint = db.begin_nested()") < block.index("for old in prior_analyses:")
+    success = block.index("row.state = 'RECONCILED'")
+    assert block.index("checkpoint.commit()", success) > success
+    blocked = block.index("except _AnalysisBlocked as blocked:")
+    assert block.index("checkpoint.rollback()", blocked) > blocked
+    assert block.index("preserved_failure = StoryAnalysis(", blocked) > blocked
+
+
 def test_analysis_stage_retry_is_narrow_and_fail_closed():
     runner = _runner_module()
     assert {

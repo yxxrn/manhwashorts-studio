@@ -196,6 +196,36 @@ def test_repeated_reporter_prose_is_blocking_visual_recap():
     assert any(result.code == "narrative.visual_recap_prose" and result.blocking for result in results)
 
 
+def test_visual_production_language_is_blocking_visual_recap():
+    passages = _passages()
+    passages[0]["text"] = (
+        "They embrace with her positioned in front as a stylized sound effect fills the beat."
+    )
+    passages[2]["text"] = "Hands seize the necklace as motion lines emphasize the struggle."
+
+    report = editorial_qc.screen_narrative_naturalness(passages, _claims(), _profile())
+    results = quality.check_narrative_naturalness(report)
+
+    assert editorial_qc.has_visual_recap_prose(passages) is True
+    assert set(report.reporter_prose_hits) >= {
+        "positioned in front",
+        "stylized sound effect",
+        "motion lines",
+    }
+    assert any(result.code == "narrative.visual_recap_prose" and result.blocking for result in results)
+
+
+def test_natural_spatial_story_language_is_not_visual_recap():
+    passages = _passages()
+    passages[0]["text"] = "She steps in front of him before he can reach the door."
+    passages[2]["text"] = "The blast catches them from behind, forcing both of them back."
+
+    report = editorial_qc.screen_narrative_naturalness(passages, _claims(), _profile())
+
+    assert editorial_qc.has_visual_recap_prose(passages) is False
+    assert "narrative.visual_recap_prose" not in report.warnings
+
+
 def test_mechanical_sequence_is_warning_not_blocking():
     passages = _passages()
     passages[0]["text"] = "Then the route changes because the group hesitates."

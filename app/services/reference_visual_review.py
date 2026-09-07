@@ -433,6 +433,22 @@ def enumerate_conservative_full_panel_roi_alternatives(
     )
 
 
+def enumerate_blur_fit_full_panel_roi_alternatives(
+    panel_size: tuple[int, int],
+) -> tuple[editorial_visual_planner.ReferenceROIAlternative, ...]:
+    """Preserve a grounded panel when every safe portrait crop is exhausted."""
+
+    width, height = panel_size
+    return (
+        editorial_visual_planner.ReferenceROIAlternative(
+            kind="primary",
+            roi_label=reference_profile.REVIEW_BLUR_FIT_FULL_PANEL_ROI_LABEL,
+            crop_box=(0, 0, width, height),
+            focus=(0.5, 0.5, 0.5, 0.5),
+        ),
+    )
+
+
 def _roi_passes_exact_pixel_preflight(
     *,
     image: Image.Image,
@@ -903,11 +919,71 @@ def build_reference_panel_fallback_candidates(
                         allow_conservative_full_panel=allow_conservative_full_panel,
                     )
                 )
-                if not roi_alternatives:
-                    continue
-                if not any(roi.kind == "primary" for roi in roi_alternatives):
+                if roi_alternatives and not any(
+                    roi.kind == "primary" for roi in roi_alternatives
+                ):
                     promoted = replace(roi_alternatives[0], kind="primary")
                     roi_alternatives = (promoted, *roi_alternatives[1:])
+                if allow_conservative_full_panel:
+                    editorial_probe = type(
+                        "_BlurFitEditorialProbe",
+                        (),
+                        {
+                            "panel_size": expected_size,
+                            "visual_evidence": evidence,
+                            "panel_candidate": candidate,
+                        },
+                    )()
+                    safe_sections: set[str] = set()
+                    for roi in roi_alternatives:
+                        try:
+                            feasible, telemetry = (
+                                editorial_visual_planner._review_framing_candidate_is_feasible(
+                                    roi.crop_box,
+                                    evidence,
+                                    mask,
+                                    expected_size,
+                                    (int(profile.final_width), int(profile.final_height)),
+                                    review_aggressive_crop=True,
+                                    standard_blank_target=reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION,
+                                    allow_conservative_full_panel=True,
+                                )
+                            )
+                        except (
+                            AttributeError,
+                            TypeError,
+                            ValueError,
+                            visual_scoring.VisualEvidenceError,
+                        ):
+                            feasible = False
+                            telemetry = None
+                        if not feasible:
+                            continue
+                        for section in eligible_by_region[region_id]:
+                            metrics = editorial_visual_planner._review_crop_editorial_metrics(
+                                editorial_probe,
+                                roi,
+                                telemetry,
+                                section=str(section),
+                                beat="",
+                            )
+                            if (
+                                editorial_visual_planner._review_editorial_rejection_code(metrics)
+                                is None
+                            ):
+                                safe_sections.add(str(section))
+                    missing_sections = {
+                        str(value) for value in eligible_by_region[region_id]
+                    } - safe_sections
+                    if missing_sections:
+                        fallback = enumerate_blur_fit_full_panel_roi_alternatives(
+                            expected_size
+                        )[0]
+                        if roi_alternatives:
+                            fallback = replace(fallback, kind="alternate_roi")
+                        roi_alternatives = (*roi_alternatives, fallback)
+                if not roi_alternatives:
+                    continue
             built.append(
                 editorial_visual_planner.ReferencePanelFallbackCandidate(
                     source_asset_id=str(region.source_asset_id),
