@@ -1700,6 +1700,122 @@ def test_deterministic_semantic_claim_text_repair_refuses_missing_critical_ancho
         is None
     )
 
+
+def test_deterministic_semantic_claim_candidate_excerpt_retires_run24_compound_claim():
+    from app.services import vision_adapter
+
+    output = {
+        "evidence_graph": {
+            "claims": [
+                {
+                    "claim_id": "claim-8",
+                    "claim_type": "fact",
+                    "text": "Vinter gave her the information to end the cycle.",
+                    "qualification": "Directly supported.",
+                    "evidence_panel_ids": ["wrong-panel"],
+                }
+            ]
+        },
+        "script_passages": [
+            {
+                "passage_id": "pressure",
+                "editorial_role": "pressure",
+                "text": "Vinter gave her the information to end the cycle.",
+                "claim_ids": ["claim-8"],
+                "evidence_panel_ids": ["wrong-panel"],
+            }
+        ],
+    }
+    diagnostics = {
+        "claim_id": "claim-8",
+        "claim_anchors": ["cycle", "gave", "information", "vinter"],
+        "matched_claim_anchors": [],
+        "required_anchor_matches": 3,
+        "semantic_window_max_span": 12,
+        "candidate_panels": [
+            {
+                "panel_id": "plan-panel",
+                "source_order": 73,
+                "overlap_anchors": ["vinter"],
+                "evidence_excerpt": [
+                    "I ONLY HAVE ONE SHOT TO EXECUTE THE PLAN THAT VINTER TOLD ME ABOUT."
+                ],
+            },
+            {
+                "panel_id": "unrelated-panel",
+                "source_order": 74,
+                "overlap_anchors": [],
+                "evidence_excerpt": ["A door closes behind her."],
+            },
+        ],
+    }
+
+    repaired = vision_adapter._repair_semantic_claim_from_candidate_excerpt(
+        output,
+        diagnostics,
+        ("wrong-panel", "plan-panel", "unrelated-panel"),
+    )
+
+    assert repaired is not None
+    claim = repaired["evidence_graph"]["claims"][0]
+    passage = repaired["script_passages"][0]
+    expected_text = "I ONLY HAVE ONE SHOT TO EXECUTE THE PLAN THAT VINTER TOLD ME ABOUT."
+    assert claim["text"] == expected_text
+    assert passage["text"] == expected_text
+    assert claim["evidence_panel_ids"] == ["plan-panel"]
+    assert passage["evidence_panel_ids"] == ["plan-panel"]
+    assert "end the cycle" not in claim["text"].casefold()
+    assert "gave her the information" not in claim["text"].casefold()
+
+
+def test_deterministic_semantic_claim_candidate_excerpt_refuses_multi_claim_passage():
+    from app.services import vision_adapter
+
+    output = {
+        "evidence_graph": {
+            "claims": [
+                {
+                    "claim_id": "claim-8",
+                    "text": "Vinter gave her the information to end the cycle.",
+                    "evidence_panel_ids": ["wrong-panel"],
+                },
+                {
+                    "claim_id": "claim-9",
+                    "text": "She has one attempt left.",
+                    "evidence_panel_ids": ["plan-panel"],
+                },
+            ]
+        },
+        "script_passages": [
+            {
+                "passage_id": "pressure",
+                "text": "Two claims are intentionally coupled here.",
+                "claim_ids": ["claim-8", "claim-9"],
+                "evidence_panel_ids": ["wrong-panel", "plan-panel"],
+            }
+        ],
+    }
+    diagnostics = {
+        "claim_id": "claim-8",
+        "claim_anchors": ["cycle", "gave", "information", "vinter"],
+        "candidate_panels": [
+            {
+                "panel_id": "plan-panel",
+                "source_order": 73,
+                "overlap_anchors": ["vinter"],
+                "evidence_excerpt": ["VINTER TOLD ME ABOUT THE PLAN."],
+            }
+        ],
+    }
+
+    assert (
+        vision_adapter._repair_semantic_claim_from_candidate_excerpt(
+            output, diagnostics, ("wrong-panel", "plan-panel")
+        )
+        is None
+    )
+
+
 def test_deterministic_semantic_evidence_repair_refuses_insufficient_union():
     from app.services import vision_adapter
 
@@ -2117,6 +2233,60 @@ def test_disconnected_claim_diagnostics_identify_reachable_replacement():
     assert [row["claim_id"] for row in diagnostics["reachable_candidate_claims"]] == [
         "reachable-alt"
     ]
+
+
+def test_deterministic_disconnected_passage_reuses_existing_reachable_claim():
+    from app.services import vision_adapter
+
+    output = {
+        "evidence_graph": {
+            "claims": [
+                {
+                    "claim_id": "setup",
+                    "text": "The armored man holds a withered flower.",
+                    "evidence_panel_ids": ["flower-panel"],
+                },
+                {
+                    "claim_id": "disconnected",
+                    "text": "A pink-haired woman suddenly attacks.",
+                    "evidence_panel_ids": ["remote-panel"],
+                },
+            ]
+        },
+        "script_passages": [
+            {
+                "passage_id": "late-beat",
+                "editorial_role": "twist",
+                "text": "A pink-haired woman suddenly attacks.",
+                "claim_ids": ["disconnected"],
+                "evidence_panel_ids": ["remote-panel"],
+            }
+        ],
+    }
+    diagnostics = {
+        "passage_id": "late-beat",
+        "claim_id": "disconnected",
+        "reachable_candidate_claims": [
+            {
+                "claim_id": "setup",
+                "claim_text": "The armored man holds a withered flower.",
+                "evidence_panel_ids": ["flower-panel"],
+            }
+        ],
+    }
+
+    repaired = vision_adapter._repair_disconnected_passage_from_diagnostics(
+        output,
+        diagnostics,
+        ("flower-panel", "remote-panel"),
+    )
+
+    assert repaired is not None
+    passage = repaired["script_passages"][0]
+    assert passage["claim_ids"] == ["setup"]
+    assert passage["evidence_panel_ids"] == ["flower-panel"]
+    assert passage["text"] == "The armored man holds a withered flower."
+    assert "pink-haired" not in passage["text"].casefold()
 
 
 def test_repeated_disconnected_claim_gets_one_bounded_forbidden_claim_escalation(monkeypatch):

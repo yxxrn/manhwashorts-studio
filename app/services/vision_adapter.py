@@ -821,6 +821,12 @@ class OpenAICompatibleVisionProvider:
                         getattr(current_exc, "diagnostics", None),
                         expected_panel_ids,
                     )
+                if repaired is None and isinstance(validation_candidate, Mapping):
+                    repaired = _repair_semantic_claim_from_candidate_excerpt(
+                        validation_candidate,
+                        getattr(current_exc, "diagnostics", None),
+                        expected_panel_ids,
+                    )
                 if repaired is None:
                     break
                 validation_candidate = repaired
@@ -842,6 +848,36 @@ class OpenAICompatibleVisionProvider:
                     continue
                 validated_result = repaired
                 current_exc = None
+            if (
+                current_exc is not None
+                and _safe_validation_subtype(str(current_exc))
+                == "retention_passage_introduces_disconnected_claim"
+                and isinstance(validation_candidate, Mapping)
+            ):
+                repaired = _repair_disconnected_passage_from_diagnostics(
+                    validation_candidate,
+                    getattr(current_exc, "diagnostics", None),
+                    expected_panel_ids,
+                )
+                if repaired is not None:
+                    validation_candidate = repaired
+                    try:
+                        if profile is None:
+                            analyzer_contract.validate_analyzer_output(
+                                repaired, expected_panel_ids=expected_panel_ids
+                            )
+                        else:
+                            analyzer_contract.validate_analyzer_output(
+                                repaired,
+                                expected_panel_ids=expected_panel_ids,
+                                narrative_profile_id=profile.profile_id,
+                                validate_text_checks=False,
+                            )
+                    except analyzer_contract.AnalyzerContractError as repaired_exc:
+                        current_exc = repaired_exc
+                    else:
+                        validated_result = repaired
+                        current_exc = None
             if current_exc is not None:
                 exc = current_exc
                 counts: tuple[int, ...] | None = None
@@ -2372,6 +2408,179 @@ def _repair_semantic_claim_text_from_diagnostics(
     target["text"] = replacement
     target["qualification"] = "Atomic evidence key grounded in the cited local observation."
     return cloned
+
+
+def _repair_semantic_claim_from_candidate_excerpt(
+    output: Mapping[str, Any],
+    diagnostics: Mapping[str, Any] | None,
+    expected_panel_ids: Sequence[str],
+) -> Mapping[str, Any] | None:
+    """Replace one unsupported sole-claim beat with an exact local evidence excerpt."""
+    if not isinstance(diagnostics, Mapping):
+        return None
+    claim_id = str(diagnostics.get("claim_id", "")).strip()
+    claim_anchors_raw = diagnostics.get("claim_anchors")
+    candidates_raw = diagnostics.get("candidate_panels")
+    if (
+        not claim_id
+        or not isinstance(claim_anchors_raw, list)
+        or not isinstance(candidates_raw, list)
+    ):
+        return None
+
+    claim_anchors = {
+        str(value) for value in claim_anchors_raw if isinstance(value, str) and value
+    }
+    if not claim_anchors:
+        return None
+    expected = {str(value) for value in expected_panel_ids}
+    cloned = json.loads(json.dumps(output))
+    graph = cloned.get("evidence_graph") if isinstance(cloned, dict) else None
+    claims = graph.get("claims") if isinstance(graph, dict) else None
+    passages = cloned.get("script_passages") if isinstance(cloned, dict) else None
+    if not isinstance(claims, list) or not isinstance(passages, list):
+        return None
+    target = next(
+        (
+            row
+            for row in claims
+            if isinstance(row, dict) and str(row.get("claim_id", "")) == claim_id
+        ),
+        None,
+    )
+    if target is None:
+        return None
+
+    referencing_passages: list[dict[str, Any]] = []
+    for passage in passages:
+        if not isinstance(passage, dict):
+            continue
+        passage_claim_ids = [str(value) for value in (passage.get("claim_ids") or [])]
+        if claim_id not in passage_claim_ids:
+            continue
+        if passage_claim_ids != [claim_id]:
+            return None
+        referencing_passages.append(passage)
+    if not referencing_passages:
+        return None
+
+    try:
+        analyzer_contract = importlib.import_module("app.services.analyzer_contract")
+        semantic_tokens = analyzer_contract._semantic_anchor_tokens
+        semantic_overlap = analyzer_contract._semantic_anchor_overlap
+    except Exception:
+        return None
+
+    ranked: list[tuple[int, int, int, str, str]] = []
+    for candidate_index, raw in enumerate(candidates_raw):
+        if not isinstance(raw, Mapping):
+            continue
+        panel_id = str(raw.get("panel_id", ""))
+        if panel_id not in expected:
+            continue
+        order_raw = raw.get("source_order")
+        source_order = (
+            order_raw
+            if isinstance(order_raw, int) and not isinstance(order_raw, bool)
+            else 10**9
+        )
+        excerpts_raw = raw.get("evidence_excerpt")
+        excerpts = excerpts_raw if isinstance(excerpts_raw, list) else []
+        for excerpt_index, excerpt_raw in enumerate(excerpts):
+            if not isinstance(excerpt_raw, str) or not excerpt_raw.strip():
+                continue
+            excerpt = excerpt_raw.strip()
+            overlap = semantic_overlap(claim_anchors, semantic_tokens(excerpt))
+            if not overlap:
+                continue
+            ranked.append(
+                (-len(overlap), source_order, candidate_index * 10 + excerpt_index, panel_id, excerpt)
+            )
+    if not ranked:
+        return None
+    _score, _order, _stable_index, panel_id, replacement = min(ranked)
+
+    original_text = str(target.get("text", "")).strip()
+    if replacement.casefold() == original_text.casefold():
+        return None
+    target["text"] = replacement
+    target["qualification"] = "Direct local observation from the cited panel."
+    target["evidence_panel_ids"] = [panel_id]
+    for passage in referencing_passages:
+        passage["text"] = replacement
+        passage["evidence_panel_ids"] = [panel_id]
+    return cloned
+
+
+def _repair_disconnected_passage_from_diagnostics(
+    output: Mapping[str, Any],
+    diagnostics: Mapping[str, Any] | None,
+    expected_panel_ids: Sequence[str],
+) -> Mapping[str, Any] | None:
+    """Swap one disconnected sole-claim passage to an existing reachable claim."""
+    if not isinstance(diagnostics, Mapping):
+        return None
+    passage_id = str(diagnostics.get("passage_id", "")).strip()
+    claim_id = str(diagnostics.get("claim_id", "")).strip()
+    candidates_raw = diagnostics.get("reachable_candidate_claims")
+    if not passage_id or not claim_id or not isinstance(candidates_raw, list):
+        return None
+
+    expected = {str(value) for value in expected_panel_ids}
+    cloned = json.loads(json.dumps(output))
+    graph = cloned.get("evidence_graph") if isinstance(cloned, dict) else None
+    claims = graph.get("claims") if isinstance(graph, dict) else None
+    passages = cloned.get("script_passages") if isinstance(cloned, dict) else None
+    if not isinstance(claims, list) or not isinstance(passages, list):
+        return None
+    claim_by_id = {
+        str(row.get("claim_id", "")): row
+        for row in claims
+        if isinstance(row, dict) and str(row.get("claim_id", ""))
+    }
+    target_passage = next(
+        (
+            row
+            for row in passages
+            if isinstance(row, dict) and str(row.get("passage_id", "")) == passage_id
+        ),
+        None,
+    )
+    if target_passage is None:
+        return None
+    if [str(value) for value in (target_passage.get("claim_ids") or [])] != [claim_id]:
+        return None
+
+    for raw in candidates_raw:
+        if not isinstance(raw, Mapping):
+            continue
+        candidate_id = str(raw.get("claim_id", "")).strip()
+        candidate = claim_by_id.get(candidate_id)
+        if not candidate_id or candidate_id == claim_id or not isinstance(candidate, dict):
+            continue
+        actual_text = str(candidate.get("text", "")).strip()
+        diagnostic_text = str(raw.get("claim_text", "")).strip()
+        if not actual_text or (diagnostic_text and diagnostic_text != actual_text):
+            continue
+        actual_evidence = [
+            str(value)
+            for value in (candidate.get("evidence_panel_ids") or [])
+            if str(value) in expected
+        ]
+        diagnostic_evidence = [
+            str(value)
+            for value in (raw.get("evidence_panel_ids") or [])
+            if str(value) in expected
+        ]
+        if not actual_evidence or not diagnostic_evidence:
+            continue
+        if not set(diagnostic_evidence) <= set(actual_evidence):
+            continue
+        target_passage["claim_ids"] = [candidate_id]
+        target_passage["evidence_panel_ids"] = actual_evidence
+        target_passage["text"] = actual_text
+        return cloned
+    return None
 
 
 def _repair_unsupported_must_from_diagnostics(
