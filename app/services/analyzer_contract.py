@@ -534,6 +534,41 @@ def _semantic_anchor_tokens(text: str) -> set[str]:
     return result
 
 
+def _semantic_inflection_variants(token: str) -> set[str]:
+    """Return conservative regular-English inflection variants for anchor matching.
+
+    This intentionally does not bridge synonyms. It only lets a grounded lexical
+    anchor survive ordinary verb inflection such as save/saved or
+    embrace/embracing when the observation and claim use different forms.
+    """
+
+    variants = {token}
+    if len(token) >= 5 and token.endswith("ed"):
+        stem = token[:-2]
+        variants.add(stem)
+        variants.add(token[:-1])  # saved -> save, forced -> force
+        if len(stem) >= 2 and stem[-1] == stem[-2]:
+            variants.add(stem[:-1])  # stopped -> stop
+    if len(token) >= 6 and token.endswith("ing"):
+        stem = token[:-3]
+        variants.add(stem)
+        variants.add(stem + "e")  # embracing -> embrace, making -> make
+        if len(stem) >= 2 and stem[-1] == stem[-2]:
+            variants.add(stem[:-1])  # running -> run
+    return variants
+
+
+def _semantic_anchor_overlap(anchors: set[str], observed: set[str]) -> set[str]:
+    observed_variants: set[str] = set()
+    for token in observed:
+        observed_variants.update(_semantic_inflection_variants(token))
+    return {
+        anchor
+        for anchor in anchors
+        if _semantic_inflection_variants(anchor) & observed_variants
+    }
+
+
 def _retention_semantic_candidate_panels(
     anchors: set[str], observation_by_panel: Mapping[str, Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -547,7 +582,7 @@ def _retention_semantic_candidate_panels(
                 observed |= _semantic_anchor_tokens(text)
                 if text and len(excerpts) < 4:
                     excerpts.append(text[:240])
-        overlap = sorted(anchors & observed)
+        overlap = sorted(_semantic_anchor_overlap(anchors, observed))
         if not overlap:
             continue
         raw_order = obs.get("source_order")
@@ -634,7 +669,7 @@ def _validate_retention_claim_semantic_grounding(graph_value: Any, observations:
                     break
                 local |= rows[right][1]
                 local_has_dialogue = local_has_dialogue or rows[right][2]
-                matched_local = anchors & local
+                matched_local = _semantic_anchor_overlap(anchors, local)
                 if len(matched_local) > len(best_local):
                     best_local = matched_local
                     best_local_has_dialogue = local_has_dialogue

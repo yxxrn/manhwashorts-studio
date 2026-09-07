@@ -1391,6 +1391,18 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
         for value in initial_forbidden_raw
         if isinstance(value, str) and value
     } if isinstance(initial_forbidden_raw, list) else set()
+    initial_semantic_diagnostics = request.retry_claim_semantic_diagnostics
+    initial_semantic_forbidden_raw = (
+        initial_semantic_diagnostics.get("forbidden_claim_ids")
+        if isinstance(initial_semantic_diagnostics, Mapping)
+        else None
+    )
+    semantic_forbidden_claim_ids = {
+        str(value)
+        for value in initial_semantic_forbidden_raw
+        if isinstance(value, str) and value
+    } if isinstance(initial_semantic_forbidden_raw, list) else set()
+    semantic_failure_keys: set[tuple[str, tuple[str, ...]]] = set()
     for attempt in range(1, _VISION_SYNTHESIS_TOTAL_ATTEMPTS + 1):
         try:
             response = provider.synthesize(active_request)
@@ -1436,6 +1448,65 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 if isinstance(diagnostics, Mapping)
                 else ""
             )
+            if subtype == "claim_evidence_lacks_semantic_anchor" and claim_id:
+                evidence_panel_ids = tuple(
+                    sorted(
+                        str(value)
+                        for value in (diagnostics.get("evidence_panel_ids", []) or [])
+                        if isinstance(value, str) and value
+                    )
+                ) if isinstance(diagnostics, Mapping) else ()
+                semantic_failure_key = (claim_id, evidence_panel_ids)
+                if claim_id in semantic_forbidden_claim_ids:
+                    print(
+                        "VISION_SYNTHESIS_NO_PROGRESS "
+                        f"attempt={attempt} subtype={subtype} forbidden_claim_id={claim_id}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    raise
+                if semantic_failure_key in semantic_failure_keys:
+                    if attempt < _VISION_SYNTHESIS_MAX_ATTEMPTS:
+                        semantic_forbidden_claim_ids.add(claim_id)
+                        escalated_diagnostics = (
+                            dict(diagnostics) if isinstance(diagnostics, Mapping) else {}
+                        )
+                        escalated_diagnostics["forbidden_claim_ids"] = sorted(
+                            semantic_forbidden_claim_ids
+                        )
+                        semantic_retry_passages = getattr(exc, "retry_passages", None)
+                        active_request = replace(
+                            active_request,
+                            retry_claim_semantic_grounding=True,
+                            retry_claim_semantic_diagnostics=escalated_diagnostics,
+                            retry_claim_qualification=False,
+                            retry_local_claim_grounding=False,
+                            retry_visual_selection=False,
+                            retry_dialogue_paraphrase=False,
+                            retry_evidence_lineage=False,
+                            retry_word_counts=None,
+                            retry_passages=(
+                                semantic_retry_passages
+                                if semantic_retry_passages is not None
+                                else active_request.retry_passages
+                                if active_request.retry_causal_arc
+                                else None
+                            ),
+                        )
+                        print(
+                            "VISION_SYNTHESIS_SEMANTIC_ESCALATION "
+                            f"attempt={attempt} subtype={subtype} claim_id={claim_id}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        continue
+                    print(
+                        f"VISION_SYNTHESIS_NO_PROGRESS attempt={attempt} subtype={subtype}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    raise
+                semantic_failure_keys.add(semantic_failure_key)
             if (
                 subtype in causal_no_progress_subtypes
                 and claim_id
@@ -1646,10 +1717,17 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                     retry_passages=(retry_passages if retry_passages is not None else active_request.retry_passages),
                 )
             elif subtype == "claim_evidence_lacks_semantic_anchor":
+                semantic_diagnostics = dict(
+                    getattr(exc, "selection_diagnostics", {}) or {}
+                )
+                if semantic_forbidden_claim_ids:
+                    semantic_diagnostics["forbidden_claim_ids"] = sorted(
+                        semantic_forbidden_claim_ids
+                    )
                 active_request = replace(
                     active_request,
                     retry_claim_semantic_grounding=True,
-                    retry_claim_semantic_diagnostics=dict(getattr(exc, "selection_diagnostics", {}) or {}),
+                    retry_claim_semantic_diagnostics=semantic_diagnostics,
                     retry_claim_qualification=False,
                     retry_local_claim_grounding=False,
                     retry_visual_selection=False,

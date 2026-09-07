@@ -974,6 +974,37 @@ def test_retention_claim_semantic_grounding_accepts_observed_anchor():
     analyzer_contract._validate_retention_claim_semantic_grounding(graph, observations)
 
 
+def test_retention_claim_semantic_grounding_accepts_regular_verb_inflection():
+    from app.services import analyzer_contract
+
+    graph = {
+        "claims": [
+            {
+                "claim_id": "c1",
+                "claim_type": "fact",
+                "text": "The two people embraced with light effects.",
+                "qualification": "Visible in the panel.",
+                "evidence_panel_ids": ["panel-1"],
+            }
+        ]
+    }
+    observations = [
+        {
+            "panel_id": "panel-1",
+            "visible_facts": ["Two people are embracing with light effects."],
+            "dialogue_or_ocr": [],
+            "inferences": [],
+            "uncertainties": [],
+        }
+    ]
+    analyzer_contract._validate_retention_claim_semantic_grounding(graph, observations)
+
+    graph["claims"][0]["text"] = "She saved him."
+    observations[0]["visible_facts"] = []
+    observations[0]["dialogue_or_ocr"] = ["WHY DID YOU SAVE ME?"]
+    analyzer_contract._validate_retention_claim_semantic_grounding(graph, observations)
+
+
 def test_retention_semantic_grounding_rejects_qualification_only_support():
     from app.services import analyzer_contract
 
@@ -1304,6 +1335,154 @@ def test_semantic_claim_retry_preserves_passage_correction_base(monkeypatch):
     assert retry.retry_passages == locked
 
 
+def test_repeated_semantic_claim_gets_one_bounded_forbidden_claim_escalation(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="semantic-bounded-escalation",
+        instruction_version="v",
+        instruction_sha256="e" * 64,
+        instruction_text="x",
+        expected_panel_ids=("a", "b"),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+    failures = [
+        {"claim_id": "bad", "claim_text": "She saved him.", "evidence_panel_ids": ["a"]},
+        {"claim_id": "bad", "claim_text": "She was the one who saved him.", "evidence_panel_ids": ["a"]},
+    ]
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            if len(self.requests) <= len(failures):
+                raise VisionResponseInvalid(
+                    validation_subtype="claim_evidence_lacks_semantic_anchor",
+                    selection_diagnostics=failures[len(self.requests) - 1],
+                )
+            return {"accepted": True}
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+    monkeypatch.setattr(
+        pipeline, "_validated_synthesis_cache_output", lambda output, _request: output
+    )
+
+    assert pipeline._synthesize_with_cache(provider, request) == {"accepted": True}
+    assert len(provider.requests) == 3
+    assert provider.requests[2].retry_claim_semantic_diagnostics["forbidden_claim_ids"] == [
+        "bad"
+    ]
+
+
+def test_forbidden_semantic_claim_fails_fast_after_escalation(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="semantic-no-loop",
+        instruction_version="v",
+        instruction_sha256="e" * 64,
+        instruction_text="x",
+        expected_panel_ids=("a",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            raise VisionResponseInvalid(
+                validation_subtype="claim_evidence_lacks_semantic_anchor",
+                selection_diagnostics={
+                    "claim_id": "repeat-me",
+                    "claim_text": f"attempt {len(self.requests)} wording",
+                    "evidence_panel_ids": ["a"],
+                },
+            )
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+
+    with pytest.raises(VisionResponseInvalid):
+        pipeline._synthesize_with_cache(provider, request)
+
+    assert len(provider.requests) == 3
+    assert provider.requests[2].retry_claim_semantic_diagnostics["forbidden_claim_ids"] == [
+        "repeat-me"
+    ]
+
+
+def test_semantic_forbidden_claim_survives_different_failure_before_return(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="semantic-no-oscillation",
+        instruction_version="v",
+        instruction_sha256="e" * 64,
+        instruction_text="x",
+        expected_panel_ids=("a", "b"),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+    failures = [
+        ("claim-a", "a"),
+        ("claim-a", "a"),
+        ("claim-b", "b"),
+        ("claim-a", "a"),
+    ]
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            claim_id, panel_id = failures[len(self.requests) - 1]
+            raise VisionResponseInvalid(
+                validation_subtype="claim_evidence_lacks_semantic_anchor",
+                selection_diagnostics={
+                    "claim_id": claim_id,
+                    "claim_text": f"wording {len(self.requests)}",
+                    "evidence_panel_ids": [panel_id],
+                },
+            )
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+
+    with pytest.raises(VisionResponseInvalid):
+        pipeline._synthesize_with_cache(provider, request)
+
+    assert len(provider.requests) == 4
+    assert provider.requests[2].retry_claim_semantic_diagnostics["forbidden_claim_ids"] == [
+        "claim-a"
+    ]
+    assert provider.requests[3].retry_claim_semantic_diagnostics["forbidden_claim_ids"] == [
+        "claim-a"
+    ]
+
+
 def test_semantic_retry_payload_targets_only_rejected_claim_passages():
     from app.services import narrative_identity as identity
     from app.services import vision_adapter as va
@@ -1344,6 +1523,37 @@ def test_semantic_retry_payload_targets_only_rejected_claim_passages():
     assert "Preserve every passage that does not reference the rejected claim_id exactly" in content
     assert "Rejected claim_id: bad" in content
     assert "rewrite only the minimum downstream passage needed" in content
+
+
+def test_semantic_retry_prompt_retires_forbidden_claim_ids():
+    from app.services import narrative_identity as identity
+    from app.services import vision_adapter as va
+
+    profile = identity.get_narrative_identity("retention_story_v1")
+    version, digest, instruction = identity.load_narrative_instruction(profile.profile_id)
+    request = va.VisionChapterSynthesisRequest(
+        analysis_run_id="semantic-forbidden-wire",
+        instruction_version=version,
+        instruction_sha256=digest,
+        instruction_text=instruction,
+        expected_panel_ids=("a",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+        narrative_profile_id="retention_story_v1",
+        retry_claim_semantic_grounding=True,
+        retry_claim_semantic_diagnostics={
+            "claim_id": "bad",
+            "forbidden_claim_ids": ["bad"],
+            "candidate_panels": [{"panel_id": "a", "overlap_anchors": ["save"]}],
+        },
+    )
+
+    payload = va._build_synthesis_payload(request, request.expected_panel_ids, "mock", profile)
+    content = payload["messages"][1]["content"]
+    assert "forbidden_claim_ids" in content
+    assert "those claim IDs are retired" in content
+    assert "mint a new claim_id" in content
 
 
 def test_deterministic_semantic_evidence_repair_adds_high_gain_candidate():
