@@ -268,6 +268,7 @@ class VisionChapterSynthesisRequest:
     retry_claim_semantic_grounding: bool = False
     retry_claim_semantic_diagnostics: Mapping[str, Any] | None = None
     retry_causal_arc: bool = False
+    retry_causal_diagnostics: Mapping[str, Any] | None = None
     retry_visual_story_alignment: bool = False
     retry_visual_story_diagnostics: Mapping[str, Any] | None = None
     retry_projection_contract: bool = False
@@ -2055,6 +2056,10 @@ def _validate_synthesis_request(
             and not isinstance(request.retry_claim_semantic_diagnostics, Mapping)
         )
         or not isinstance(request.retry_causal_arc, bool)
+        or (
+            request.retry_causal_diagnostics is not None
+            and not isinstance(request.retry_causal_diagnostics, Mapping)
+        )
         or not isinstance(request.retry_visual_story_alignment, bool)
         or (
             request.retry_visual_story_diagnostics is not None
@@ -3627,6 +3632,17 @@ def _build_synthesis_payload(
         )
     causal_arc_retry_instruction = ""
     if request.retry_causal_arc:
+        causal_diagnostic_text = ""
+        if request.retry_causal_diagnostics:
+            causal_diagnostic_text = (
+                " The rejected causal diagnostic was: "
+                + json.dumps(
+                    dict(request.retry_causal_diagnostics),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                + "."
+            )
         causal_arc_retry_instruction = (
             "Corrective retry: the previous retention response failed the causal contract because a body claim was disconnected or a causal link moved backward in source chronology. "
             "Rebuild narrative_outline, evidence_graph, continuity_ledger semantic arrays, and script_passages from the same observations. "
@@ -3635,6 +3651,9 @@ def _build_synthesis_payload(
             "Prefer an already-evidenced social, legal, romantic, comedic, logistical, reputational, treatment, or immediate consequence reachable from that anchor. "
             "Each downstream passage should earn its place with concrete evidence-backed progression when available. The final passage should resolve on a grounded changed fact or concrete consequence rather than generic uncertainty, without inventing novelty solely to satisfy progression. "
             "Do not preserve a disconnected villain, remote threat, prophecy, side quest, or unrelated stakes merely because it is dramatic. Add no unsupported causal link just to satisfy this rule. "
+            "When the causal diagnostic identifies an offending claim_id, repair that exact downstream claim first. If reachable_candidate_claims are supplied, prefer those already-grounded candidate claim_ids and their cited evidence as the replacement shortlist; do not invent a bridge to keep the rejected claim. If forbidden_claim_ids are supplied, those claims already failed a targeted retry and MUST be removed from downstream script_passages and from the selected story chain rather than paraphrased back into it. "
+            + causal_diagnostic_text
+            + " "
         )
     visual_story_retry_instruction = ""
     if request.retry_visual_story_alignment:

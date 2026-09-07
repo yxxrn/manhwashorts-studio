@@ -1380,6 +1380,17 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
     response: Any = None
     active_request = request
     previous_retry_signature: str | None = None
+    initial_causal_diagnostics = request.retry_causal_diagnostics
+    initial_forbidden_raw = (
+        initial_causal_diagnostics.get("forbidden_claim_ids")
+        if isinstance(initial_causal_diagnostics, Mapping)
+        else None
+    )
+    causal_forbidden_claim_ids = {
+        str(value)
+        for value in initial_forbidden_raw
+        if isinstance(value, str) and value
+    } if isinstance(initial_forbidden_raw, list) else set()
     for attempt in range(1, _VISION_SYNTHESIS_TOTAL_ATTEMPTS + 1):
         try:
             response = provider.synthesize(active_request)
@@ -1396,6 +1407,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "claim_evidence_lacks_semantic_anchor",
                 "retention_passage_introduces_disconnected_claim",
                 "retention_causal_link_moves_backward_in_chronology",
+                "retention_hook_teaser_is_not_reachable_from_body_causal_chain",
                 "retention_visual_story_alignment_missing",
                 "production_narration_word_count_out_of_range",
                 "retention_hook_must_contain_8-14_words",
@@ -1414,7 +1426,53 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 file=sys.stderr,
                 flush=True,
             )
+            causal_no_progress_subtypes = {
+                "retention_passage_introduces_disconnected_claim",
+                "retention_hook_teaser_is_not_reachable_from_body_causal_chain",
+            }
+            diagnostics = getattr(exc, "selection_diagnostics", None)
+            claim_id = (
+                str(diagnostics.get("claim_id", "")).strip()
+                if isinstance(diagnostics, Mapping)
+                else ""
+            )
+            if (
+                subtype in causal_no_progress_subtypes
+                and claim_id
+                and claim_id in causal_forbidden_claim_ids
+            ):
+                print(
+                    "VISION_SYNTHESIS_NO_PROGRESS "
+                    f"attempt={attempt} subtype={subtype} forbidden_claim_id={claim_id}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise
             if retry_signature == previous_retry_signature:
+                if (
+                    subtype in causal_no_progress_subtypes
+                    and claim_id
+                    and attempt < _VISION_SYNTHESIS_MAX_ATTEMPTS
+                ):
+                    causal_forbidden_claim_ids.add(claim_id)
+                    escalated_diagnostics = (
+                        dict(diagnostics) if isinstance(diagnostics, Mapping) else {}
+                    )
+                    escalated_diagnostics["forbidden_claim_ids"] = sorted(
+                        causal_forbidden_claim_ids
+                    )
+                    active_request = replace(
+                        active_request,
+                        retry_causal_arc=True,
+                        retry_causal_diagnostics=escalated_diagnostics,
+                    )
+                    print(
+                        "VISION_SYNTHESIS_CAUSAL_ESCALATION "
+                        f"attempt={attempt} subtype={subtype} claim_id={claim_id}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    continue
                 print(
                     f"VISION_SYNTHESIS_NO_PROGRESS attempt={attempt} subtype={subtype or 'unknown'}",
                     file=sys.stderr,
@@ -1422,7 +1480,6 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 )
                 raise
             previous_retry_signature = retry_signature
-            diagnostics = getattr(exc, "selection_diagnostics", None)
             if isinstance(diagnostics, Mapping) and diagnostics:
                 encoded_diagnostics = json.dumps(
                     dict(diagnostics), ensure_ascii=False, separators=(",", ":")
@@ -1468,6 +1525,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                     retry_claim_semantic_grounding=active_request.retry_claim_semantic_grounding,
                     retry_claim_semantic_diagnostics=active_request.retry_claim_semantic_diagnostics,
                     retry_causal_arc=active_request.retry_causal_arc,
+                    retry_causal_diagnostics=active_request.retry_causal_diagnostics,
                     retry_visual_story_alignment=active_request.retry_visual_story_alignment,
                     retry_visual_story_diagnostics=active_request.retry_visual_story_diagnostics,
                     retry_evidence_lineage=False,
@@ -1569,10 +1627,18 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
             elif subtype in {
                 "retention_passage_introduces_disconnected_claim",
                 "retention_causal_link_moves_backward_in_chronology",
+                "retention_hook_teaser_is_not_reachable_from_body_causal_chain",
             }:
+                causal_diagnostics = dict(getattr(exc, "selection_diagnostics", {}) or {})
+                if causal_forbidden_claim_ids:
+                    causal_diagnostics["forbidden_claim_ids"] = sorted(
+                        causal_forbidden_claim_ids
+                    )
                 active_request = replace(
                     active_request,
-                    retry_causal_arc=True, retry_claim_semantic_grounding=False,
+                    retry_causal_arc=True,
+                    retry_causal_diagnostics=causal_diagnostics or None,
+                    retry_claim_semantic_grounding=False,
                     retry_claim_qualification=False, retry_local_claim_grounding=False,
                     retry_visual_selection=False, retry_dialogue_paraphrase=False,
                     retry_evidence_lineage=False, retry_projection_contract=False,

@@ -1874,6 +1874,186 @@ def test_disconnected_claim_retries_full_causal_arc(monkeypatch):
     assert retry.retry_claim_semantic_grounding is False
 
 
+def test_disconnected_claim_diagnostics_identify_reachable_replacement():
+    from app.services import analyzer_contract as contract
+
+    continuity = {
+        "chunks": [{"panel_ids": ["a", "b", "c"]}],
+        "causal_links": [{"from_panel_id": "a", "to_panel_id": "b"}],
+    }
+    graph = {
+        "claims": [
+            {"claim_id": "setup", "text": "setup", "evidence_panel_ids": ["a"]},
+            {"claim_id": "connected", "text": "connected", "evidence_panel_ids": ["b"]},
+            {"claim_id": "disconnected", "text": "remote threat", "evidence_panel_ids": ["c"]},
+            {"claim_id": "reachable-alt", "text": "near consequence", "evidence_panel_ids": ["b"]},
+        ]
+    }
+    passages = [
+        {"passage_id": "hook", "claim_ids": ["reachable-alt"]},
+        {"passage_id": "setup", "claim_ids": ["setup"]},
+        {"passage_id": "conflict", "claim_ids": ["connected"]},
+        {"passage_id": "twist", "claim_ids": ["disconnected"]},
+    ]
+
+    with pytest.raises(contract.AnalyzerContractError) as caught:
+        contract._validate_retention_causal_chain(continuity, graph, passages)
+
+    diagnostics = caught.value.diagnostics
+    assert diagnostics["passage_id"] == "twist"
+    assert diagnostics["claim_id"] == "disconnected"
+    assert diagnostics["claim_evidence_panel_ids"] == ["c"]
+    assert diagnostics["reachable_panel_ids"] == ["a", "b"]
+    assert [row["claim_id"] for row in diagnostics["reachable_candidate_claims"]] == [
+        "reachable-alt"
+    ]
+
+
+def test_repeated_disconnected_claim_gets_one_bounded_forbidden_claim_escalation(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="causal-bounded-escalation",
+        instruction_version="v",
+        instruction_sha256="f" * 64,
+        instruction_text="x",
+        expected_panel_ids=("a", "b"),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+    locked = tuple(
+        {
+            "passage_id": f"p{i}",
+            "editorial_role": "hook" if i == 1 else f"beat{i}",
+            "text": f"Grounded passage {i} stays on the same causal chain.",
+            "claim_ids": [f"c{i}"],
+            "evidence_panel_ids": ["a"],
+        }
+        for i in range(1, 5)
+    )
+    diagnostics = {
+        "passage_id": "p3",
+        "claim_id": "remote-threat",
+        "reachable_candidate_claims": [
+            {"claim_id": "near-consequence", "evidence_panel_ids": ["b"]}
+        ],
+    }
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            if len(self.requests) <= 2:
+                raise VisionResponseInvalid(
+                    validation_subtype="retention_passage_introduces_disconnected_claim",
+                    retry_passages=locked,
+                    selection_diagnostics=diagnostics,
+                )
+            return {"accepted": True}
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+    monkeypatch.setattr(
+        pipeline, "_validated_synthesis_cache_output", lambda output, _request: output
+    )
+
+    assert pipeline._synthesize_with_cache(provider, request) == {"accepted": True}
+    assert len(provider.requests) == 3
+    assert provider.requests[1].retry_causal_diagnostics["claim_id"] == "remote-threat"
+    assert provider.requests[2].retry_causal_diagnostics["forbidden_claim_ids"] == [
+        "remote-threat"
+    ]
+
+
+def test_repeated_forbidden_disconnected_claim_fails_fast_after_escalation(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="causal-no-loop",
+        instruction_version="v",
+        instruction_sha256="f" * 64,
+        instruction_text="x",
+        expected_panel_ids=("a",),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+    diagnostics = {"passage_id": "p3", "claim_id": "repeat-me"}
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            raise VisionResponseInvalid(
+                validation_subtype="retention_passage_introduces_disconnected_claim",
+                selection_diagnostics=diagnostics,
+            )
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+
+    with pytest.raises(VisionResponseInvalid):
+        pipeline._synthesize_with_cache(provider, request)
+
+    assert len(provider.requests) == 3
+    assert provider.requests[2].retry_causal_diagnostics["forbidden_claim_ids"] == ["repeat-me"]
+
+
+def test_forbidden_disconnected_claim_stays_forbidden_across_different_failure(monkeypatch):
+    from app.services import pipeline
+    from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid
+
+    request = VisionChapterSynthesisRequest(
+        analysis_run_id="causal-no-oscillation",
+        instruction_version="v",
+        instruction_sha256="f" * 64,
+        instruction_text="x",
+        expected_panel_ids=("a", "b"),
+        coverage_manifest={},
+        ordered_observations=(),
+        chunks=(),
+    )
+    failures = ["claim-a", "claim-a", "claim-b", "claim-a"]
+
+    class Provider:
+        model_id = ""
+        endpoint = ""
+
+        def __init__(self):
+            self.requests = []
+
+        def synthesize(self, active_request):
+            self.requests.append(active_request)
+            claim_id = failures[len(self.requests) - 1]
+            raise VisionResponseInvalid(
+                validation_subtype="retention_passage_introduces_disconnected_claim",
+                selection_diagnostics={"passage_id": "p3", "claim_id": claim_id},
+            )
+
+    provider = Provider()
+    monkeypatch.setattr(pipeline, "_validate_synthesis_subtitle_admission", lambda *_args: None)
+
+    with pytest.raises(VisionResponseInvalid):
+        pipeline._synthesize_with_cache(provider, request)
+
+    assert len(provider.requests) == 4
+    assert provider.requests[2].retry_causal_diagnostics["forbidden_claim_ids"] == ["claim-a"]
+    assert provider.requests[3].retry_causal_diagnostics["forbidden_claim_ids"] == ["claim-a"]
+
+
 def test_backward_causal_link_retries_full_causal_arc(monkeypatch):
     from app.services import pipeline
     from app.services.vision_adapter import VisionChapterSynthesisRequest, VisionResponseInvalid

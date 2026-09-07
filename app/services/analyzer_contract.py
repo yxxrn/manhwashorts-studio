@@ -717,23 +717,30 @@ def _validate_retention_causal_chain(
             or target not in panel_order
             or panel_order[target] <= panel_order[source]
         ):
-            _fail("retention causal link moves backward in chronology")
+            _fail(
+                "retention causal link moves backward in chronology",
+                diagnostics={
+                    "from_panel_id": source,
+                    "to_panel_id": target,
+                    "from_source_order": panel_order.get(source),
+                    "to_source_order": panel_order.get(target),
+                },
+            )
         edges.setdefault(source, set()).add(target)
 
-    def reachable(starts: set[str], targets: set[str]) -> bool:
-        if starts & targets:
-            return True
+    def reachable_nodes(starts: set[str]) -> set[str]:
         seen = set(starts)
         frontier = list(starts)
         while frontier:
             current = frontier.pop()
             for nxt in edges.get(current, ()):
-                if nxt in targets:
-                    return True
                 if nxt not in seen:
                     seen.add(nxt)
                     frontier.append(nxt)
-        return False
+        return seen
+
+    def reachable(starts: set[str], targets: set[str]) -> bool:
+        return bool(reachable_nodes(starts) & targets)
 
     hook = _mapping(passages_value[0], "script passage")
     hook_evidence = {
@@ -759,7 +766,58 @@ def _validate_retention_causal_chain(
                 and claim_id not in body_seen
                 and not reachable(prior_evidence, evidence)
             ):
-                _fail("retention passage introduces disconnected claim")
+                reachable_panel_ids = reachable_nodes(prior_evidence)
+                reachable_claims: list[dict[str, Any]] = []
+                for candidate_id, candidate in claim_by_id.items():
+                    if candidate_id in body_seen or candidate_id == claim_id:
+                        continue
+                    candidate_evidence = {
+                        str(v) for v in (candidate.get("evidence_panel_ids", []) or [])
+                    }
+                    if not candidate_evidence or not (candidate_evidence & reachable_panel_ids):
+                        continue
+                    reachable_claims.append(
+                        {
+                            "claim_id": candidate_id,
+                            "claim_text": str(candidate.get("text", ""))[:300],
+                            "evidence_panel_ids": sorted(
+                                candidate_evidence,
+                                key=lambda pid: (panel_order.get(pid, 10**9), pid),
+                            )[:12],
+                        }
+                    )
+                reachable_claims.sort(
+                    key=lambda item: (
+                        min(
+                            (panel_order.get(str(pid), 10**9) for pid in item["evidence_panel_ids"]),
+                            default=10**9,
+                        ),
+                        str(item["claim_id"]),
+                    )
+                )
+                reachable_claims = reachable_claims[:16]
+                _fail(
+                    "retention passage introduces disconnected claim",
+                    diagnostics={
+                        "passage_number": body_index + 2,
+                        "passage_id": str(passage.get("passage_id", "")),
+                        "claim_id": claim_id,
+                        "claim_text": str(claim.get("text", ""))[:500] if claim else "",
+                        "claim_evidence_panel_ids": sorted(
+                            evidence,
+                            key=lambda pid: (panel_order.get(pid, 10**9), pid),
+                        )[:24],
+                        "prior_body_evidence_panel_ids": sorted(
+                            prior_evidence,
+                            key=lambda pid: (panel_order.get(pid, 10**9), pid),
+                        )[-32:],
+                        "reachable_panel_ids": sorted(
+                            reachable_panel_ids,
+                            key=lambda pid: (panel_order.get(pid, 10**9), pid),
+                        )[-64:],
+                        "reachable_candidate_claims": reachable_claims,
+                    },
+                )
         if body_index == 0:
             setup_evidence = set(current)
         prior_evidence.update(current)
@@ -768,7 +826,31 @@ def _validate_retention_causal_chain(
     setup_orders = [panel_order[v] for v in setup_evidence if v in panel_order]
     is_late_teaser = bool(hook_orders and setup_orders and min(hook_orders) > min(setup_orders))
     if is_late_teaser and not reachable(setup_evidence, hook_evidence):
-        _fail("retention hook teaser is not reachable from body causal chain")
+        reachable_from_setup = reachable_nodes(setup_evidence)
+        hook_claim_ids = _string_list(
+            hook.get("claim_ids"), "passage claim_ids", allow_empty=False
+        )
+        _fail(
+            "retention hook teaser is not reachable from body causal chain",
+            diagnostics={
+                "passage_number": 1,
+                "passage_id": str(hook.get("passage_id", "")),
+                "claim_id": hook_claim_ids[0] if len(hook_claim_ids) == 1 else "",
+                "hook_claim_ids": hook_claim_ids,
+                "hook_evidence_panel_ids": sorted(
+                    hook_evidence,
+                    key=lambda pid: (panel_order.get(pid, 10**9), pid),
+                )[:24],
+                "setup_evidence_panel_ids": sorted(
+                    setup_evidence,
+                    key=lambda pid: (panel_order.get(pid, 10**9), pid),
+                )[:24],
+                "reachable_panel_ids": sorted(
+                    reachable_from_setup,
+                    key=lambda pid: (panel_order.get(pid, 10**9), pid),
+                )[-64:],
+            },
+        )
 
 
 def _validate_narrative_outline(value: Any) -> None:
