@@ -16,6 +16,28 @@ from app.constants import (
 from app.services.production_profiles.comic_lore import topic_title_for_script
 
 
+def _write_copy_paste_upload_files(api, output_dir: Path, payload: dict) -> None:
+    """Write raw fields that can be pasted directly into YouTube Studio."""
+    tags = [str(value).strip() for value in list(payload.get("tags") or []) if str(value).strip()]
+    files = {
+        "title.txt": str(payload.get("title") or "").strip(),
+        "description.txt": str(payload.get("description") or "").strip(),
+        "tags.txt": ", ".join(tags),
+    }
+    temporary_paths: list[Path] = []
+    try:
+        for filename, content in files.items():
+            target = output_dir / filename
+            temporary = output_dir / f".{filename}.tmp"
+            temporary_paths.append(temporary)
+            temporary.write_text(content + "\n", encoding="utf-8")
+            temporary.replace(target)
+    except OSError as exc:
+        for temporary in temporary_paths:
+            temporary.unlink(missing_ok=True)
+        raise api.PipelineError(f"manual upload copy-paste files could not be written: {exc}") from exc
+
+
 def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manifest):
     """Persist the upload-ready metadata package beside the final artifact."""
     from app.services.youtube_metadata import build_metadata
@@ -58,6 +80,7 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
                 and cached_payload.get("contract_version") == "manual-upload-package-v1"
                 and cached_payload.get("project_id") == str(project.id)
             ):
+                _write_copy_paste_upload_files(api, output_dir, cached_payload)
                 return target, cached_payload
     except (OSError, json.JSONDecodeError):
         pass
@@ -96,6 +119,7 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
             json.dumps({"identity": identity}, indent=2) + "\n", encoding="utf-8"
         )
         identity_tmp.replace(identity_path)
+        _write_copy_paste_upload_files(api, output_dir, payload)
     except OSError as exc:
         temporary.unlink(missing_ok=True)
         identity_tmp.unlink(missing_ok=True)
