@@ -127,7 +127,7 @@ transport/orchestration only. Check for an existing process before starting a
 long provider or render job; resume valid checkpoints rather than duplicating work.
 
 Never commit runtime data, media, DBs, provider caches, secrets, or source input.
-In the current deployment `data/`, `manhwa/`, and `ms_env.sh` are intentionally
+In the current deployment `data/`, `manhwa/`, and `.env` are intentionally
 untracked. Before committing, inspect both `git status --short` and the staged diff.
 
 ## Documentation policy

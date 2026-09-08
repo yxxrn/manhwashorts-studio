@@ -23,7 +23,7 @@ For a fresh source-to-final run that must be safe to leave unattended, use the b
 scripts/manhwashorts production-run --run-id <id> --title "<title>" --chapter-from <n> --chapter-to <n> --source-id <suwayomi-source-id> --language en
 ```
 
-The launcher requires `ms_env.sh`, takes an exclusive per-run lock, runs production-environment/machine/disk/source/vision/TTS preflight **before** creating or importing a project, and checkpoints every completed stage under `data/production-runs/<run-id>.json`. Re-running the same command resumes the same corpus and reuses validated source, analysis/provider caches, approved script, render identity, and final artifacts. Provider/transport retries are bounded; evidence, lineage, QC, and deterministic capability failures remain fail-closed. A PASS run is an idempotent no-op on later invocations.
+The launcher reads the single repository `.env`, takes an exclusive per-run lock, runs production-environment/machine/disk/source/vision/TTS preflight **before** creating or importing a project, and checkpoints every completed stage under `data/production-runs/<run-id>.json`. Re-running the same command resumes the same corpus and reuses validated source, analysis/provider caches, approved script, render identity, and final artifacts. Provider/transport retries are bounded; evidence, lineage, QC, and deterministic capability failures remain fail-closed. A PASS run is an idempotent no-op on later invocations.
 
 ## Production TTS baseline
 
@@ -92,7 +92,7 @@ git diff --check
 git diff --cached --stat
 ```
 
-`data/`, `manhwa/`, and `ms_env.sh` are expected runtime-only paths in the current
+`data/`, `manhwa/`, and `.env` are expected runtime-only paths in the current
 checkout. Never stage them. Secrets/tokens must not appear in shell commands,
 patches, logs, or documentation.
 
@@ -116,4 +116,4 @@ A new optimization may replace the baseline only when an **equivalent-input benc
 
 The current Oracle host has 20 logical CPUs. Run 7 measured the full-equivalent final render at worker/thread budgets 1/10, 2/5, and 3/3; one scene worker with 10 x264 threads was fastest. Keep the repository default at automatic (`0`) for portability, and set `MS_RENDER_WORKERS=1` plus `MS_RENDER_X264_THREADS=10` in the Oracle runtime environment. Preserve libx264 preset slow, CRF 18, High profile, 1080x1920, and 60 FPS.
 
-When launching production scripts outside the installed service wrapper, source the runtime environment first. A missing provider environment must fail closed as `vision_capability_missing`; do not bypass that gate or repeat source ingest merely to recover the launcher.
+When launching production scripts outside the installed service wrapper, keep the required provider settings in `.env`. A missing provider configuration must fail closed as `vision_capability_missing`; do not bypass that gate or repeat source ingest merely to recover the launcher.

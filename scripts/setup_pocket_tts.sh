@@ -6,11 +6,11 @@ PORT="${POCKET_TTS_PORT:-8790}"
 VOICE="${POCKET_TTS_VOICE:-alba}"
 SERVICE="manhwashorts-pocket-tts.service"
 
-python3 -m venv "$RUNTIME_DIR/.venv"
-"$RUNTIME_DIR/.venv/bin/pip" install -U pip setuptools wheel
-"$RUNTIME_DIR/.venv/bin/pip" install \
-  --index-url https://download.pytorch.org/whl/cpu 'torch>=2.5'
-"$RUNTIME_DIR/.venv/bin/pip" install 'pocket-tts[quantize]==3.1.0'
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python3 "$ROOT/scripts/setup_pocket_tts_runtime.py" --runtime-dir "$RUNTIME_DIR"
+if [[ -f "$RUNTIME_DIR/mode.txt" ]]; then MODE="$(tr -d '\r\n' < "$RUNTIME_DIR/mode.txt")"; else MODE="fp32"; fi
+QUANTIZE_ARG=""
+[[ "$MODE" == "int8" ]] && QUANTIZE_ARG=" --quantize"
 
 UNIT_FILE="$(mktemp)"
 cat > "$UNIT_FILE" <<EOF
@@ -23,7 +23,7 @@ Wants=network-online.target
 Type=simple
 User=$USER
 WorkingDirectory=$RUNTIME_DIR
-ExecStart=$RUNTIME_DIR/.venv/bin/pocket-tts serve --host 127.0.0.1 --port $PORT --language english --default-voice $VOICE --quantize
+ExecStart=$RUNTIME_DIR/.venv/bin/pocket-tts serve --host 127.0.0.1 --port $PORT --language english --default-voice $VOICE$QUANTIZE_ARG
 Restart=on-failure
 RestartSec=3
 CPUQuota=250%
@@ -42,7 +42,7 @@ sudo systemctl enable --now "$SERVICE"
 
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:$PORT/openapi.json" >/dev/null; then
-    echo "Pocket TTS ready: voice=$VOICE port=$PORT"
+    echo "Pocket TTS ready: voice=$VOICE port=$PORT mode=$MODE"
     systemctl --no-pager --full status "$SERVICE" | head -12
     exit 0
   fi

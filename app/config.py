@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     """Runtime configuration for ManhwaShorts Studio."""
 
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
+        env_file=None if os.environ.get("MS_TEST_MODE") == "1" else BASE_DIR / ".env",
         env_file_encoding="utf-8",
         env_prefix="MS_",
         extra="ignore",
@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     # --- Rendering ---
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
+    tesseract_bin: str = "tesseract"
     render_workers: int = 1
     # Total CPU thread budget shared by concurrent libx264 scene encoders.
     # Zero preserves x264 automatic thread selection; deployments may pin a
@@ -171,7 +172,11 @@ class Settings(BaseSettings):
     auto_thumbnail_enabled: bool = True
     thumbnail_variants: int = 3
     thumbnail_clickbait_level: str = "high"
-    thumbnail_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    thumbnail_font: str = str(
+        Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "arialbd.ttf"
+        if os.name == "nt"
+        else Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+    )
 
 
     # --- Cleanup (Fase 0.1 - keep the project light) ---

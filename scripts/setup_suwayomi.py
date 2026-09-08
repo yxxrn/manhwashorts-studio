@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -27,9 +28,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def java_major() -> int | None:
+def java_major(java_bin: str) -> int | None:
     try:
-        process = subprocess.run(["java", "-version"], capture_output=True, text=True, check=False)
+        process = subprocess.run([java_bin, "-version"], capture_output=True, text=True, check=False)
     except OSError:
         return None
     text = (process.stderr or process.stdout).splitlines()[0] if (process.stderr or process.stdout) else ""
@@ -40,10 +41,11 @@ def java_major() -> int | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--java-bin", default=os.environ.get("MS_SUWAYOMI_JAVA_BIN", "java"))
     args = parser.parse_args()
-    major = java_major()
+    major = java_major(args.java_bin)
     if major is None or major < 21:
-        raise SystemExit("Suwayomi requires Java 21+. Install a Java 21 runtime, then rerun this setup.")
+        raise SystemExit(f"Suwayomi requires Java 21+; configured runtime is {args.java_bin!r}.")
     DEST.parent.mkdir(parents=True, exist_ok=True)
     if DEST.is_file() and sha256(DEST) == SHA256 and not args.force:
         print(f"Suwayomi {VERSION} already installed: {DEST}")
@@ -57,7 +59,7 @@ def main() -> int:
         actual = sha256(tmp_path)
         if actual != SHA256:
             raise SystemExit(f"checksum mismatch: expected {SHA256}, got {actual}")
-        tmp_path.replace(DEST)
+        shutil.move(str(tmp_path), str(DEST))
     finally:
         tmp_path.unlink(missing_ok=True)
     print(f"Installed: {DEST}")

@@ -17,13 +17,15 @@ def _runner_module():
     return module
 
 
-def test_production_launcher_sources_runtime_env_before_runner():
+def test_production_launcher_uses_single_dotenv_config():
     launcher = (ROOT / "scripts" / "manhwashorts").read_text(encoding="utf-8")
     block = launcher.split("production-run)", 1)[1].split("youtube-account)", 1)[0]
-    assert "source \"$RUNTIME_ENV\"" in block
     assert "scripts/production_run.py" in block
-    assert block.index("source \"$RUNTIME_ENV\"") < block.index("scripts/production_run.py")
-    assert "Missing runtime env" in block
+    assert "source " not in block
+    assert "RUNTIME_ENV" not in block
+    config = (ROOT / "app" / "config.py").read_text(encoding="utf-8")
+    assert "BASE_DIR / \".env\"" in config
+    assert "MS_TEST_MODE" in config
 
 
 def test_unattended_runner_accepts_explicit_voice_profile():

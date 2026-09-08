@@ -142,6 +142,14 @@ def create_browser_account(
     }
 
 
+def import_browser_account_cookies(account_id: str, content: str) -> dict:
+    try:
+        publisher = YouTubeStudioBrowserPublisher(account_id=account_id)
+        return publisher.import_netscape_cookies(content)
+    except BrowserPublishError as exc:
+        raise PipelineError(str(exc)) from exc
+
+
 def update_browser_account(
     account_id: str,
     *,

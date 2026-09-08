@@ -1,24 +1,69 @@
 # Fresh-machine installation
 
-ManhwaShorts treats a new machine and an upgrade as the same reproducible bootstrap path. The supported automatic host setup is Debian/Ubuntu; Ubuntu 24.04 amd64 is the primary production target.
+ManhwaShorts uses one portable deployment contract on Linux and Windows. `.env`
+is the single machine config; runtime media/database state stays outside Git.
 
 ## One-command setup
 
+Linux/Ubuntu:
+
 ```bash
-git clone https://github.com/yxxrn/manhwashorts-studio.git
-cd manhwashorts-studio
-./install.sh
+./bootstrap.sh
 ```
 
-`install.sh` installs Python/venv, FFmpeg + FFprobe, libass-capable Ubuntu FFmpeg, espeak-ng, Tesseract, the checked-in subtitle font dependencies, Google Chrome on amd64, and Java 21. It then creates/repairs `.venv`, installs exact Python requirements, creates `.env` only when missing, installs the pinned/checksummed Suwayomi JAR, applies `alembic upgrade head`, and runs the readiness check.
+Windows native:
 
-Use `./install.sh --systemd` on a server that should start ManhwaShorts after reboot. Use `--without-suwayomi` when source acquisition is managed elsewhere. `--dry-run` shows the plan without modifying the host.
+```text
+bootstrap.cmd
+```
 
-## Database rule
+Bootstrap installs or verifies Python 3.11+, FFmpeg/FFprobe with libass,
+Tesseract, Chrome, Java 21, the pinned Suwayomi JAR, Asura Scans, Read Comics
+Online, Pocket TTS, database migrations, and machine readiness. Linux also
+installs systemd services; Windows creates login-startup launchers.
 
-Normal runtime startup never bootstraps schema with SQLAlchemy `create_all`. Alembic is the single source of truth for both an empty database and future upgrades. Test databases retain `create_all` only inside `MS_TEST_MODE=1` for speed and isolation.
+Pocket TTS uses `alba`. INT8 is preferred when the host supports `torchao`; local
+FP32 is the automatic fallback on platforms where quantization is unavailable.
 
-A fresh SQLite database therefore receives a real `alembic_version` row on its first startup. An existing database is upgraded to the checked-in head before the API begins serving requests.
+## Move an existing deployment
+
+Copy only the configuration you intentionally want to preserve, then seed it:
+
+```bash
+./bootstrap.sh --config /secure/path/manhwashorts.env
+```
+
+```text
+bootstrap.cmd -ConfigPath "C:\secure\manhwashorts.env"
+```
+
+The supplied file becomes `.env` only when the target clone has no `.env`. A
+rerun never replaces an existing deployment config. On Linux `.env` is locked to
+mode `0600`.
+
+Legacy `ms_env.sh` is migration-only. If found, bootstrap merges safe `MS_*`
+assignments into `.env` without printing values, then moves the legacy file to a
+private runtime backup. New deployments must not create a second env file.
+
+## YouTube account bootstrap
+
+Recommended path: export Netscape `cookies.txt` from a browser already signed in
+to the target YouTube account, then run bootstrap with account arguments. Example:
+
+```bash
+./bootstrap.sh --youtube-account rurushortss --youtube-cookies /secure/cookies.txt
+```
+
+```text
+bootstrap.cmd -YouTubeAccount rurushortss -YouTubeCookies "C:\secure\cookies.txt"
+```
+
+ManhwaShorts imports only Google/YouTube cookies, requires a complete login
+session, verifies YouTube Studio headlessly, and persists the authenticated
+Chrome profile. Cookie values are never returned/logged by the import path. The
+source `cookies.txt` is not copied into the repo and may be deleted after a
+successful import. Interactive Chrome login is only a fallback for expired
+cookies, 2FA, CAPTCHA, or explicit Google re-verification.
 
 ## Machine check
 
@@ -26,18 +71,14 @@ A fresh SQLite database therefore receives a real `alembic_version` row on its f
 scripts/manhwashorts doctor
 ```
 
-The check covers Python/venv packages, FFmpeg/FFprobe and required filters, subtitle font, TTS executable, Chrome/Playwright, Java/Suwayomi when enabled, writable runtime directories, and exact database revision. YouTube login is intentionally reported separately because Google login/2FA remains a human action.
+The required checks include `.env`, Python/venv packages, FFmpeg filters,
+Tesseract, Pocket TTS, Chrome/Playwright, Java/Suwayomi, exact Asura Scans and
+Read Comics Online source IDs, writable runtime paths, and the Alembic schema.
+YouTube authentication is reported separately because it is optional until
+publishing is requested.
 
-For agents or scripts:
+## Upgrade
 
-```bash
-scripts/manhwashorts doctor --json
-```
-
-## YouTube state
-
-Chrome profiles remain outside Git under the current OS user's home directory. Moving to a new machine does not copy Google credentials automatically; create/select each account profile and perform one normal interactive Google login. Account-level `trust_channel_defaults` is registry metadata, while the authenticated Google session remains inside that profile. Never transfer passwords or raw cookies through Git.
-
-## Upgrade an existing machine
-
-Pull the new code and rerun the installer. It preserves `.env`, `data/`, browser profiles, and provider credentials; package installation and Suwayomi setup are idempotent, and Alembic applies only pending migrations.
+Pull the new code and rerun the same bootstrap. Existing `.env`, runtime data,
+database, browser profiles, and provider credentials are preserved. Setup steps
+are idempotent and Alembic applies only pending migrations.

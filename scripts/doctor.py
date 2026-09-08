@@ -61,6 +61,8 @@ def collect() -> list[Check]:
     from app.services.youtube_browser import YouTubeStudioBrowserPublisher
 
     checks: list[Check] = []
+    env_file = ROOT / ".env"
+    checks.append(Check("Config", env_file.is_file(), str(env_file) if env_file.is_file() else "run bootstrap to create .env"))
     py_ok = sys.version_info >= (3, 11)
     checks.append(Check("Python", py_ok, sys.version.split()[0]))
     in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
@@ -86,9 +88,21 @@ def collect() -> list[Check]:
 
     font = Path(settings.subtitle_font).expanduser()
     checks.append(Check("Subtitle font", font.is_file(), str(font)))
+    tesseract = _command(settings.tesseract_bin)
+    checks.append(Check("Tesseract", bool(tesseract), tesseract or f"{settings.tesseract_bin} not found"))
 
     tts_name = str(settings.tts_provider or "").lower()
-    if tts_name == "espeak":
+    if settings.tts_local_first:
+        try:
+            import httpx
+            base_url = str(settings.tts_pocket_url).rstrip("/")
+            response = httpx.get(f"{base_url}/openapi.json", timeout=2.0)
+            pocket_ok = response.status_code == 200
+        except Exception:
+            pocket_ok = False
+        checks.append(Check("Pocket TTS", pocket_ok, f"{settings.tts_pocket_voice} @ {settings.tts_pocket_url}"))
+        checks.append(Check("TTS fallback", True, f"configured provider: {tts_name or 'none'}", required=False))
+    elif tts_name == "espeak":
         espeak = _command(settings.espeak_bin)
         checks.append(Check("TTS", bool(espeak), espeak or "espeak-ng not found"))
     else:
@@ -103,15 +117,39 @@ def collect() -> list[Check]:
         except Exception:
             pw_ok = False
         checks.append(Check("Playwright", pw_ok, "Python driver installed" if pw_ok else "playwright package unavailable"))
-        registry_root = Path(settings.youtube_browser_profile_dir).expanduser()
-        checks.append(Check("YouTube login", registry_root.exists(), "profile exists; auth can be checked in UI" if registry_root.exists() else "first Google login still required", required=False))
+        try:
+            from app.services.youtube_accounts import YouTubeBrowserAccountRegistry
+            accounts = YouTubeBrowserAccountRegistry().list_accounts()
+            authenticated_ids = [
+                account.account_id
+                for account in accounts
+                if YouTubeStudioBrowserPublisher._profile_has_persisted_google_auth(account.profile_dir)
+            ]
+        except Exception:
+            authenticated_ids = []
+        checks.append(Check(
+            "YouTube login", bool(authenticated_ids),
+            "authenticated profile(s): " + ", ".join(authenticated_ids)
+            if authenticated_ids else "optional: import cookies.txt or login once",
+            required=False,
+        ))
 
     if settings.suwayomi_enabled:
         java = _command(settings.suwayomi_java_bin)
         major = _java_major(java)
         checks.append(Check("Java", major is not None and major >= 21, f"Java {major}" if major else "Java 21+ not found"))
         jar = Path(settings.suwayomi_jar_path).expanduser()
-        checks.append(Check("Suwayomi", jar.is_file(), str(jar) if jar.is_file() else "run scripts/setup_suwayomi.py"))
+        checks.append(Check("Suwayomi JAR", jar.is_file(), str(jar) if jar.is_file() else "run scripts/setup_suwayomi.py"))
+        try:
+            from app.services import suwayomi as suwayomi_svc
+            state = suwayomi_svc.ensure_sidecar()
+            service_ok = bool(state.get("available"))
+            checks.append(Check("Suwayomi service", service_ok, str(state.get("url") or settings.suwayomi_url) if service_ok else str(state.get("error") or "unavailable")))
+            source_ids = {str(row.get("id") or "") for row in suwayomi_svc.client().sources()} if service_ok else set()
+            for label, source_id in (("Asura Scans", "6247824327199706550"), ("Read Comics Online", "7185601298150078890")):
+                checks.append(Check(f"Source {label}", source_id in source_ids, source_id if source_id in source_ids else "run scripts/setup_suwayomi_extensions.py"))
+        except Exception as exc:
+            checks.append(Check("Suwayomi service", False, f"{type(exc).__name__}: {exc}"))
 
     for label, path in (("Data dir", settings.data_dir), ("Storage dir", settings.storage_dir), ("Output dir", settings.output_dir), ("Temp dir", settings.tmp_dir)):
         target = Path(path).expanduser()

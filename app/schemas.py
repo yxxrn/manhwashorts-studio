@@ -539,6 +539,10 @@ class YouTubeBrowserAccountCreate(BaseModel):
     trust_channel_defaults: bool | None = None
 
 
+class YouTubeBrowserCookieImport(BaseModel):
+    content: str = Field(min_length=1, max_length=2_000_000)
+
+
 class YouTubeBrowserAccountUpdate(BaseModel):
     label: str | None = Field(default=None, max_length=120)
     make_default: bool = False

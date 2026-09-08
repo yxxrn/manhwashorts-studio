@@ -26,26 +26,24 @@ After the environment is ready, the cross-platform direct entrypoint remains
 non-interactive production invocation has the form:
 
 ```text
-python scripts/run_operator_cli.py --mode production --env-file <private-ms-env.sh> --project-id <id> --actor-id <operator> --approved-script-hash <sha256> --approved-script-version <version>
+python scripts/run_operator_cli.py --mode production --project-id <id> --actor-id <operator> --approved-script-hash <sha256> --approved-script-version <version>
 ```
 
 To refresh visual/narrative repair for production without generating a silent
 preview or starting TTS/render, use the explicit pre-production mode:
 
 ```text
-python scripts/run_operator_cli.py --mode repair-production --env-file <private-ms-env.sh> --project-id <id> --actor-id <operator> --source-root <chapter-source-root>
+python scripts/run_operator_cli.py --mode repair-production --project-id <id> --actor-id <operator> --source-root <chapter-source-root>
 ```
 
 A successful repair-production run stops at `READY_TO_RENDER` with
 `voice_state=WAITING_FOR_PRODUCTION`; the resulting latest script still requires
 normal explicit approval before `--mode production` can run.
 
-`--env-file` is optional and accepts only a regular file containing safe
-`MS_*` assignments (with optional `export`); it is parsed without executing a
-shell, and its values are never printed. Missing, symlinked, malformed, or
-unknown assignments fail closed before application configuration is loaded.
-The private file must remain outside Git-tracked content (the local `data/`
-tree is ignored). On first run, the bootstrap creates or
+Normal deployment settings come from the repository `.env`. `--env-file` remains
+an optional one-run override for recovery/testing only; it accepts a regular file
+of safe `MS_*` assignments, parses it without executing a shell, and never prints
+values. Keep any override file outside Git-tracked content. On first run, the bootstrap creates or
 repairs the repository `.venv` in place and installs only the authoritative
 runtime `requirements.txt` (never `requirements-dev.txt`). It verifies
 SQLAlchemy, Pillow, FastAPI/Pydantic, cryptography/BYOK, and the operator

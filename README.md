@@ -51,7 +51,7 @@ Expected runtime-only paths:
 ```text
 data/
 manhwa/
-ms_env.sh
+.env
 ```
 
 Do not stage those paths.
@@ -69,21 +69,46 @@ GPU encoding is optional. `MS_VIDEO_ENCODER=auto` probes supported encoders and 
 
 ## Install
 
-Fresh Ubuntu/Debian machine (recommended):
+`.env` is the single deployment config on Linux and Windows. A fresh machine is
+bootstrapped with one command after cloning the repository.
+
+Linux/Ubuntu production host:
 
 ```bash
-git clone https://github.com/yxxrn/manhwashorts-studio.git
-cd manhwashorts-studio
-./install.sh
+./bootstrap.sh
 ```
 
-The installer is idempotent. It installs native media dependencies, Python runtime packages, Google Chrome on amd64, Java 21 + the pinned Suwayomi JAR, copies portable `.env` defaults, migrates the database to the Alembic head, and runs the machine readiness check. To also install/start a boot-persistent service:
+Windows native PowerShell/cmd host:
+
+```text
+bootstrap.cmd
+```
+
+Both paths prepare Python, FFmpeg, Tesseract, Chrome, Java/Suwayomi, the required
+Asura Scans + Read Comics Online sources, Pocket TTS with `alba`, the database,
+and a final machine-doctor check. Linux installs boot-persistent systemd services;
+Windows creates per-user startup launchers. Pocket prefers INT8 when supported and
+falls back to local FP32 instead of failing bootstrap.
+
+To carry an existing deployment config to a new machine:
 
 ```bash
-./install.sh --systemd
+./bootstrap.sh --config /secure/path/manhwashorts.env
 ```
 
-If this machine does not use Suwayomi, use `./install.sh --without-suwayomi`. Existing `.env`, database, browser profiles, and credentials are never replaced by a rerun.
+```text
+bootstrap.cmd -ConfigPath "C:\secure\manhwashorts.env"
+```
+
+YouTube login can be bootstrapped in the same command with a Netscape
+`cookies.txt` export. The cookie file is filtered to Google/YouTube domains,
+verified against Studio headlessly, and is not retained as plaintext by the app.
+Interactive Chrome login remains a fallback only for expired sessions or Google
+security challenges.
+
+Existing `.env`, runtime data, database, and authenticated browser profiles are
+preserved on rerun. `install.sh` remains the lower-level Linux installer;
+`bootstrap.sh` is the normal production entrypoint.
 
 Useful lifecycle commands:
 
@@ -94,9 +119,8 @@ scripts/manhwashorts serve
 scripts/manhwashorts youtube-account list
 ```
 
-Manual/development install remains supported with `python3 -m venv .venv` and `pip install -r requirements.txt`; install `requirements-dev.txt` for the full regression suite. See `docs/FRESH_MACHINE.md` for fresh-host details and recovery behavior.
-
-Then open `http://127.0.0.1:8000` unless `MS_HOST`/`MS_PORT` were changed.
+See `docs/FRESH_MACHINE.md` and `docs/YOUTUBE_SETUP.md` for migration and account
+bootstrap details.
 
 ## Operator workflow
 
@@ -129,7 +153,6 @@ When review analysis is already durable but the latest script/visual repair must
 ```bash
 python scripts/run_operator_cli.py \
   --mode repair-production \
-  --env-file /path/to/private-ms-env.sh \
   --project-id <project-id> \
   --actor-id <operator-id> \
   --source-root /path/to/chapter
@@ -144,7 +167,6 @@ Final production requires the exact latest approved script identity:
 ```bash
 python scripts/run_operator_cli.py \
   --mode production \
-  --env-file /path/to/private-ms-env.sh \
   --project-id <project-id> \
   --actor-id <operator-id> \
   --approved-script-hash <sha256> \

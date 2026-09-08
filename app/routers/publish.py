@@ -15,6 +15,7 @@ from app.schemas import (
     StatOut,
     YouTubeBrowserAccountCreate,
     YouTubeBrowserAccountUpdate,
+    YouTubeBrowserCookieImport,
 )
 from app.services import publish as publish_svc
 from app.services.pipeline import PipelineError
@@ -52,6 +53,14 @@ def create_youtube_browser_account(
         label=payload.label,
         trust_channel_defaults=payload.trust_channel_defaults,
     )
+
+
+@router.post("/youtube/browser/accounts/{account_id}/cookies")
+def import_youtube_browser_account_cookies(
+    account_id: str, payload: YouTubeBrowserCookieImport, workspace: CurrentWorkspace
+) -> dict:
+    del workspace
+    return _guard(publish_svc.import_browser_account_cookies, account_id, payload.content)
 
 
 @router.patch("/youtube/browser/accounts/{account_id}")

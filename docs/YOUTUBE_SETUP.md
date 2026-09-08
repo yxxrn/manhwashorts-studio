@@ -6,7 +6,7 @@ ManhwaShorts publishes through the YouTube Studio web UI with Playwright and per
 
 Each YouTube account/channel uses its own Chrome user-data directory. Runtime account metadata lives under `~/.config/manhwashorts/youtube-accounts/`; the pre-migration/default profile remains `~/.config/manhwashorts/youtube-browser-runtime`.
 
-Google authentication stays inside Chrome. Do not export/commit cookies, storage state, passwords, or session tokens. If Google requests 2FA, CAPTCHA, or re-verification, stop automation and complete it interactively in that account profile.
+Authentication is persisted inside each Chrome profile. The recommended bootstrap is a Netscape `cookies.txt` export from the target signed-in account; ManhwaShorts filters it to Google/YouTube domains, verifies Studio headlessly, and never returns/logs cookie values. Never commit cookie exports, storage state, passwords, or session tokens. If Google requests 2FA, CAPTCHA, or re-verification, use interactive Chrome only for that recovery.
 
 ## Runtime settings
 
@@ -41,6 +41,7 @@ REST:
 - `GET /api/youtube/browser/accounts`
 - `POST /api/youtube/browser/accounts`
 - `PATCH /api/youtube/browser/accounts/{account_id}`
+- `POST /api/youtube/browser/accounts/{account_id}/cookies`
 - `GET /api/youtube/browser/status?account_id=<id>`
 
 CLI helpers inside this repository:
@@ -89,4 +90,19 @@ Never bypass Google security challenges programmatically. Browser profiles are a
 
 ## Initial login
 
-Login must be completed interactively for each new profile. Use `scripts/youtube_browser_login.sh <account-id>` from a temporary X11/VNC/noVNC session, complete Google security steps, verify Studio loads, close Chrome, then check `/api/youtube/browser/status?account_id=<id>`.
+Use cookie bootstrap first:
+
+```bash
+scripts/manhwashorts youtube-account ensure <account-id> "Channel label"
+scripts/manhwashorts youtube-account import-cookies <account-id> /secure/cookies.txt
+scripts/manhwashorts youtube-account default <account-id>
+```
+
+The dashboard also exposes **Import cookies.txt** on each account row. A valid
+import is injected into a new persistent profile and verified against YouTube
+Studio headlessly. Re-running bootstrap against an already-authenticated profile
+is idempotent and does not overwrite that session.
+
+If cookies are expired or Google requests an interactive challenge, use
+`scripts/youtube_browser_login.sh <account-id>` as a recovery fallback. Do not
+bypass CAPTCHA, 2FA, or account security challenges programmatically.

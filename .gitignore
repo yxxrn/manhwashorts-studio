@@ -53,3 +53,6 @@ node_modules/
 cookies*.json
 *storage_state*.json
 youtube-browser/
+
+# Legacy deployment env (migrated into .env by bootstrap)
+ms_env.sh

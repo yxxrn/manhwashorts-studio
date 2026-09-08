@@ -8,7 +8,6 @@ stage, and retries only narrowly transient provider failures.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import shutil
@@ -30,7 +29,7 @@ from app.models import Publication
 from app.routers import projects as project_router
 from app.routers import sources as source_router
 from app.schemas import ProjectCreate, SuwayomiImportRequest
-from app.services import narrative_identity, operator_cli, resolver
+from app.services import file_lock, narrative_identity, operator_cli, resolver
 from app.services import pipeline as pl
 from app.services.pipeline_stages import production as production_stage
 
@@ -547,8 +546,8 @@ def main() -> int:
     state_dir.mkdir(parents=True, exist_ok=True)
     lock_handle = lock_path.open("a+")
     try:
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+        file_lock.try_lock(lock_handle)
+    except file_lock.LockBusyError:
         print(f"Run {args.run_id} is already active", file=sys.stderr)
         return 3
     state = _load_state(state_path, args)
@@ -605,7 +604,7 @@ def main() -> int:
         return 1
     finally:
         db.close()
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        file_lock.unlock(lock_handle)
         lock_handle.close()
 
 

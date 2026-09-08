@@ -3,18 +3,30 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 WITH_SUWAYOMI=1
+WITH_POCKET_TTS=0
 WITH_SYSTEMD=0
+PRODUCTION_MODE=0
 INSTALL_PACKAGES=1
 INSTALL_CHROME=1
 DRY_RUN=0
+YOUTUBE_ACCOUNT=""
+YOUTUBE_COOKIES=""
+YOUTUBE_LABEL=""
+CONFIG_IMPORT=""
 
 usage() {
   cat <<'EOF'
 Usage: ./install.sh [options]
   --systemd              install and start a systemd service
+  --production           set the single .env config to production defaults
+  --with-pocket-tts      install/start local Pocket TTS (Alba, INT8 CPU)
   --without-suwayomi     skip Java/Suwayomi and disable the sidecar in .env
   --skip-system-packages do not run apt (useful when dependencies already exist)
   --skip-chrome          do not download/install Google Chrome
+  --youtube-account ID   create/use this YouTube account profile
+  --youtube-cookies PATH  import Netscape cookies.txt headlessly into that profile
+  --youtube-label LABEL   optional display label for the YouTube account
+  --config PATH            seed .env from an existing deployment config on a fresh machine
   --dry-run              print the intended installation steps only
 EOF
 }
@@ -22,9 +34,15 @@ EOF
 while (($#)); do
   case "$1" in
     --systemd) WITH_SYSTEMD=1 ;;
+    --production) PRODUCTION_MODE=1 ;;
+    --with-pocket-tts) WITH_POCKET_TTS=1 ;;
     --without-suwayomi) WITH_SUWAYOMI=0 ;;
     --skip-system-packages) INSTALL_PACKAGES=0 ;;
     --skip-chrome) INSTALL_CHROME=0 ;;
+    --youtube-account) shift; YOUTUBE_ACCOUNT="${1:-}" ;;
+    --youtube-cookies) shift; YOUTUBE_COOKIES="${1:-}" ;;
+    --youtube-label) shift; YOUTUBE_LABEL="${1:-}" ;;
+    --config) shift; CONFIG_IMPORT="${1:-}" ;;
     --dry-run) DRY_RUN=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -90,9 +108,20 @@ PY
 fi
 
 if [[ ! -f .env ]]; then
-  say "Creating local .env from portable defaults"
-  run cp .env.example .env
+  if [[ -n "$CONFIG_IMPORT" ]]; then
+    [[ -f "$CONFIG_IMPORT" ]] || { echo "Config file not found: $CONFIG_IMPORT" >&2; exit 2; }
+    say "Importing single deployment config .env"
+    run cp "$CONFIG_IMPORT" .env
+  else
+    say "Creating single deployment config .env from portable defaults"
+    run cp .env.example .env
+  fi
 fi
+if [[ -f ms_env.sh ]]; then
+  say "Migrating legacy ms_env.sh into .env"
+  run "$ROOT/.venv/bin/python" scripts/migrate_legacy_env.py
+fi
+if (( ! DRY_RUN )); then chmod 600 .env; fi
 
 upsert_env() {
   local key="$1" value="$2"
@@ -117,9 +146,32 @@ PY
 if ((WITH_SUWAYOMI)); then
   say "Installing pinned Suwayomi sidecar"
   run "$ROOT/.venv/bin/python" scripts/setup_suwayomi.py
+  run "$ROOT/.venv/bin/python" scripts/setup_suwayomi_extensions.py
 else
   upsert_env MS_SUWAYOMI_ENABLED false
   upsert_env MS_SUWAYOMI_AUTO_START false
+fi
+
+if ((PRODUCTION_MODE)); then
+  upsert_env MS_ENVIRONMENT production
+  upsert_env MS_DEBUG false
+fi
+
+if ((WITH_POCKET_TTS)); then
+  say "Installing local Pocket TTS service"
+  run "$ROOT/scripts/setup_pocket_tts.sh"
+  pocket_runtime="${POCKET_TTS_RUNTIME_DIR:-$APP_HOME/pocket-tts-runtime}"
+  if [[ -f "$pocket_runtime/mode.txt" ]]; then
+    pocket_mode="$(tr -d '\r\n' < "$pocket_runtime/mode.txt")"
+  else
+    pocket_mode="fp32"
+  fi
+  pocket_model="pocket-tts-3.1.0-${pocket_mode}"
+  upsert_env MS_TTS_LOCAL_FIRST true
+  upsert_env MS_TTS_POCKET_URL http://127.0.0.1:8790
+  upsert_env MS_TTS_POCKET_VOICE alba
+  upsert_env MS_TTS_POCKET_MODEL "$pocket_model"
+  upsert_env MS_TTS_POCKET_PRODUCTION_SPEED 0.90
 fi
 
 say "Migrating database to Alembic head"
@@ -155,6 +207,15 @@ EOF
     root_run systemctl daemon-reload
     root_run systemctl enable --now manhwashorts.service
   fi
+fi
+
+if [[ -n "$YOUTUBE_ACCOUNT" || -n "$YOUTUBE_COOKIES" ]]; then
+  [[ -n "$YOUTUBE_ACCOUNT" && -n "$YOUTUBE_COOKIES" ]] || { echo "--youtube-account and --youtube-cookies must be provided together." >&2; exit 2; }
+  [[ -f "$YOUTUBE_COOKIES" ]] || { echo "YouTube cookies file not found: $YOUTUBE_COOKIES" >&2; exit 2; }
+  say "Bootstrapping YouTube Studio account from cookies.txt"
+  run "$ROOT/.venv/bin/python" scripts/youtube_browser_account.py ensure "$YOUTUBE_ACCOUNT" "$YOUTUBE_LABEL"
+  run "$ROOT/.venv/bin/python" scripts/youtube_browser_account.py default "$YOUTUBE_ACCOUNT"
+  run "$ROOT/.venv/bin/python" scripts/youtube_browser_account.py import-cookies "$YOUTUBE_ACCOUNT" "$YOUTUBE_COOKIES"
 fi
 
 say "Running machine doctor"

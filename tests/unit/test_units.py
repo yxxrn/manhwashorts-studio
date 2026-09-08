@@ -829,3 +829,9 @@ def test_join_scene_clips_can_filter_joined_stream_without_second_encode(tmp_pat
     graph = command[command.index("-filter_complex") + 1]
     assert "[joined_exact]hflip,format=yuv420p[joined_filtered]" in graph
     assert command[command.index("-map") + 1] == "[joined_filtered]"
+
+
+def test_test_mode_ignores_deployment_dotenv(monkeypatch):
+    from app.config import Settings
+    monkeypatch.setenv("MS_TEST_MODE", "1")
+    assert Settings.model_config.get("env_file") is None

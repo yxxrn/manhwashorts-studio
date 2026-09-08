@@ -1454,7 +1454,7 @@ async function loadYouTubeAccounts() {
     main.appendChild(el('div', 'item-title', `${row.label} · ${row.account_id}`));
     main.appendChild(el('div', 'item-meta', `Chrome profile: ${row.profile_dir}`));
     main.appendChild(el('div', 'item-meta', `Upload defaults: ${row.effective_trust_channel_defaults ? 'trusted' : 'full automation'}${row.trust_channel_defaults === null ? ' · inherit' : ''}`));
-    main.appendChild(el('div', 'item-meta', `Login: scripts/youtube_browser_login.sh ${row.account_id}`));
+    main.appendChild(el('div', 'item-meta', 'Login: import cookies.txt (recommended) · interactive Chrome only if re-authentication is required'));
     item.appendChild(main);
 
     const actions = el('div', 'row-actions');
@@ -1469,6 +1469,31 @@ async function loadYouTubeAccounts() {
       } catch (err) { toast(err.message, 'error'); }
     }));
     actions.appendChild(status);
+
+    const importCookies = el('button', 'btn secondary small', 'Import cookies.txt');
+    importCookies.type = 'button';
+    const cookieInput = document.createElement('input');
+    cookieInput.type = 'file';
+    cookieInput.accept = '.txt,text/plain';
+    cookieInput.hidden = true;
+    cookieInput.addEventListener('change', async () => {
+      const file = cookieInput.files && cookieInput.files[0];
+      if (!file) return;
+      if (file.size > 2000000) { toast('cookies.txt terlalu besar (maks 2 MB).', 'error'); cookieInput.value = ''; return; }
+      await withBusy(importCookies, 'Mengimpor…', async () => {
+        try {
+          const content = await file.text();
+          const result = await api(`/api/youtube/browser/accounts/${encodeURIComponent(row.account_id)}/cookies`, {
+            method: 'POST', body: { content },
+          });
+          toast(result.authenticated ? `${row.label}: login YouTube siap.` : `${row.label}: cookie import belum terverifikasi.`, result.authenticated ? 'ok' : 'error');
+        } catch (err) { toast(err.message, 'error'); }
+        finally { cookieInput.value = ''; }
+      });
+    });
+    importCookies.addEventListener('click', () => cookieInput.click());
+    actions.appendChild(importCookies);
+    actions.appendChild(cookieInput);
 
     const trustDefaults = el('button', 'btn secondary small',
       row.effective_trust_channel_defaults ? 'Pakai automation penuh' : 'Trust Upload defaults');
@@ -1527,7 +1552,7 @@ $('add-yt-account-btn').addEventListener('click', () => withBusy(
       $('yt-account-trust-defaults').checked = false;
       await loadYouTubeAccounts();
       $('pub-account').value = created.account_id;
-      toast(`Profile ${created.label} dibuat. Login dengan: ${created.login_command}`, 'ok');
+      toast(`Profile ${created.label} dibuat. Gunakan Import cookies.txt untuk login cepat.`, 'ok');
     } catch (err) { toast(err.message, 'error'); }
   }));
 

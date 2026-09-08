@@ -8,9 +8,10 @@ application.
 
 from __future__ import annotations
 
-import fcntl
+import os
 import re
 import shutil
+import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -19,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
+from app.services import file_lock
 from app.services.youtube_accounts import YouTubeBrowserAccountRegistry
 
 
@@ -116,10 +118,19 @@ class YouTubeStudioBrowserPublisher:
             found = shutil.which(requested)
             if found:
                 return found
-        for candidate in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        for candidate in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome.exe"):
             found = shutil.which(candidate)
             if found:
                 return found
+        if os.name == "nt":
+            candidates = [
+                Path(os.environ.get("PROGRAMFILES", "")) / "Google/Chrome/Application/chrome.exe",
+                Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Google/Chrome/Application/chrome.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+            ]
+            for candidate in candidates:
+                if candidate.is_file():
+                    return str(candidate)
         return ""
 
     @contextmanager
@@ -127,8 +138,8 @@ class YouTubeStudioBrowserPublisher:
         lock_path = self.profile_dir / ".publisher.lock"
         with lock_path.open("a+") as lock:
             try:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
+                file_lock.try_lock(lock)
+            except file_lock.LockBusyError as exc:
                 raise BrowserPublishError(
                     "another YouTube Studio browser session is already running",
                     code="browser_busy",
@@ -137,20 +148,23 @@ class YouTubeStudioBrowserPublisher:
             try:
                 yield
             finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                file_lock.unlock(lock)
 
     def _launch_context(self, playwright, *, headless: bool | None = None):
+        browser_args = [] if os.name == "nt" else ["--no-sandbox", "--disable-dev-shm-usage"]
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+            if os.name == "nt"
+            else "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+        )
         return playwright.chromium.launch_persistent_context(
             user_data_dir=str(self.profile_dir),
             executable_path=self.executable or None,
             headless=settings.youtube_browser_headless if headless is None else headless,
             viewport={"width": 1440, "height": 1000},
-            locale="en-US",
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
-            ),
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            locale="en-US", user_agent=user_agent, args=browser_args,
         )
 
     @staticmethod
@@ -178,6 +192,132 @@ class YouTubeStudioBrowserPublisher:
             page.get_by_role("button", name=re.compile(r"^(sign in|masuk)$", re.I)).count()
             or page.get_by_text(re.compile(r"sign in to youtube|login ke youtube", re.I)).count()
         )
+
+    @staticmethod
+    def parse_netscape_youtube_cookies(content: str) -> list[dict[str, object]]:
+        if not isinstance(content, str) or not content.strip():
+            raise BrowserPublishError("cookies.txt content is empty", code="cookie_import_invalid")
+        if len(content.encode("utf-8")) > 2_000_000:
+            raise BrowserPublishError("cookies.txt is too large", code="cookie_import_invalid")
+        cookies: list[dict[str, object]] = []
+        now = time.time()
+        for raw_line in content.splitlines():
+            line = raw_line.strip("\r\n")
+            if not line.strip():
+                continue
+            http_only = False
+            if line.startswith("#HttpOnly_"):
+                line = line[len("#HttpOnly_"):]
+                http_only = True
+            elif line.lstrip().startswith("#"):
+                continue
+            parts = line.split("\t", 6)
+            if len(parts) != 7:
+                continue
+            domain, _include_subdomains, path, secure_text, expires_text, name, value = parts
+            host = domain.lstrip(".").casefold()
+            if not (host == "youtube.com" or host.endswith(".youtube.com") or host == "google.com" or host.endswith(".google.com")):
+                continue
+            if not name:
+                continue
+            try:
+                expires = int(expires_text or "0")
+            except ValueError:
+                expires = 0
+            if expires > 0 and expires <= now:
+                continue
+            cookie: dict[str, object] = {
+                "name": name, "value": value, "domain": domain, "path": path or "/",
+                "secure": secure_text.upper() == "TRUE", "httpOnly": http_only,
+            }
+            if expires > 0:
+                cookie["expires"] = float(expires)
+            cookies.append(cookie)
+            if len(cookies) > 1000:
+                raise BrowserPublishError("cookies.txt contains too many Google/YouTube cookies", code="cookie_import_invalid")
+        names = {str(cookie["name"]) for cookie in cookies}
+        strong = {"SID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"}
+        if "LOGIN_INFO" not in names or not names.intersection(strong):
+            raise BrowserPublishError("cookies.txt does not contain a complete YouTube login session", code="cookie_import_invalid")
+        return cookies
+
+    @staticmethod
+    def _profile_has_persisted_google_auth(profile_dir: Path) -> bool:
+        candidates = [profile_dir / "Default" / "Cookies", profile_dir / "Default" / "Network" / "Cookies"]
+        strong = {"SID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"}
+        for cookie_db in candidates:
+            if not cookie_db.is_file():
+                continue
+            try:
+                connection = sqlite3.connect(str(cookie_db), timeout=1)
+                try:
+                    rows = connection.execute(
+                        "SELECT host_key, name FROM cookies WHERE host_key LIKE '%youtube.com' OR host_key LIKE '%google.com'"
+                    ).fetchall()
+                finally:
+                    connection.close()
+            except (OSError, sqlite3.Error):
+                continue
+            names = {(str(host), str(name)) for host, name in rows}
+            has_login = any(host.endswith("youtube.com") and name == "LOGIN_INFO" for host, name in names)
+            has_strong = any(
+                (host.endswith("youtube.com") or host.endswith("google.com")) and name in strong
+                for host, name in names
+            )
+            if has_login and has_strong:
+                return True
+        return False
+
+    def import_netscape_cookies(self, content: str) -> dict[str, object]:
+        cookies = self.parse_netscape_youtube_cookies(content)
+        if self._profile_has_persisted_google_auth(self.profile_dir):
+            raise BrowserPublishError(
+                "This YouTube account profile is already authenticated. Use a different Account ID to import another session.",
+                code="cookie_import_profile_authenticated",
+            )
+        if not self.executable:
+            raise BrowserPublishError("Chrome/Chromium executable was not found", code="browser_unavailable")
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise BrowserPublishError("Playwright is required to import YouTube Studio cookies", code="install_playwright") from exc
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        verified = False
+        try:
+            with self._single_browser(), sync_playwright() as playwright:
+                context = self._launch_context(playwright, headless=True)
+                try:
+                    context.clear_cookies()
+                    context.add_cookies(cookies)
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(self.studio_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+                    page.wait_for_timeout(1500)
+                    self._dismiss_compatibility_warning(page)
+                    if self._looks_signed_out(page):
+                        raise BrowserPublishError(
+                            "Imported cookies did not authenticate YouTube Studio. Export fresh cookies from the target signed-in account.",
+                            code="cookie_import_not_authenticated",
+                        )
+                    verified = True
+                finally:
+                    if not verified:
+                        with suppress(Exception):
+                            context.clear_cookies()
+                    context.close()
+        except BrowserPublishError:
+            raise
+        except Exception as exc:
+            raise BrowserPublishError(
+                f"YouTube cookie import failed during browser verification ({type(exc).__name__})",
+                code="cookie_import_failed",
+            ) from None
+        time.sleep(0.25)
+        if not self._profile_has_persisted_google_auth(self.profile_dir):
+            raise BrowserPublishError(
+                "YouTube Studio accepted the session but durable login cookies were not persisted.",
+                code="cookie_import_not_persisted",
+            )
+        return {"authenticated": True, "method": "cookies_txt", "imported_cookie_count": len(cookies), "account_id": self.account_id}
 
     def session_status(self) -> BrowserSessionStatus:
         if not settings.youtube_browser_enabled:
