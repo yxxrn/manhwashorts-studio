@@ -13,6 +13,7 @@ from app.constants import (
     STANDARD_FINAL_DURATION_MAX_SECONDS,
     STANDARD_FINAL_DURATION_MIN_SECONDS,
 )
+from app.services.production_profiles.comic_lore import topic_title_for_script
 
 
 def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manifest):
@@ -39,7 +40,7 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
         "video_checksum": str(getattr(job, "checksum", "") or ""),
         "thumbnail": Path(thumbnail_path).name if thumbnail_path else "",
         "subtitles": Path(subtitle_path).name if subtitle_path else "",
-        "topic_title": str((dict((getattr(script, "editorial_metadata", None) or {}).get("render_features") or {})).get("topic_title") or ""),
+        "topic_title": topic_title_for_script(script),
     }
     identity = hashlib.sha256(
         json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -60,9 +61,7 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
                 return target, cached_payload
     except (OSError, json.JSONDecodeError):
         pass
-    raw_metadata = getattr(script, "editorial_metadata", None) or {}
-    render_features = dict(raw_metadata.get("render_features") or {}) if isinstance(raw_metadata, dict) else {}
-    title_override = str(render_features.get("topic_title") or "").strip()
+    title_override = topic_title_for_script(script)
     generated = build_metadata(
         project_title=project.title,
         manhwa_title=project.manhwa_title,

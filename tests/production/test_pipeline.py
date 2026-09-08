@@ -48,7 +48,7 @@ def _probe(path: Path) -> dict:
     }
 
 
-def _seed_project(db, recap_text: str, panel_count: int = 12) -> str:
+def _seed_project(db, recap_text: str, panel_count: int = 20) -> str:
     """Create a workspace, project, and rights-declared assets directly in the DB."""
     import io
 
@@ -274,7 +274,7 @@ def _prepare_media(db, project_id: str, *, actor_id: str = "test", seed: int = 4
     script = pl.current_script(db, project_id)
     pl.approve_script(db, script.id, actor_id=actor_id, editorial_review_confirmed=True)
     segments = pl.generate_voiceover(
-        db, project_id, actor_id=actor_id, provider_name="espeak", speed=0.75
+        db, project_id, actor_id=actor_id, provider_name="espeak", speed=0.65
     )
     scenes = pl.build_timeline(db, project_id, actor_id=actor_id)
     return draft, script, segments, scenes, pl.project_cues(db, project_id)
@@ -479,7 +479,7 @@ def test_publish_dry_run_writes_receipt_and_no_fabricated_stats(db, recap_text, 
 
     # Use a larger visual fixture so the new same-panel hard gate is exercised
     # by a production-shaped timeline rather than a four-panel compatibility set.
-    project_id = _seed_project(db, recap_text, panel_count=12)
+    project_id = _seed_project(db, recap_text, panel_count=20)
     _prepare_media(db, project_id)
     job = pl.execute_render(db, pl.enqueue_render(db, project_id, "final", actor_id="test").id)
     assert job.status == "succeeded", job.error_message
@@ -507,7 +507,7 @@ def test_explicit_public_publish_needs_no_second_confirmation(db, recap_text, mo
             return BrowserPublishResult(video_id="public_test", privacy_status=kwargs["privacy_status"], thumbnail_status="uploaded")
 
     monkeypatch.setattr(publish_svc, "YouTubeStudioBrowserPublisher", BrowserPublisher)
-    project_id = _seed_project(db, recap_text, panel_count=12)
+    project_id = _seed_project(db, recap_text, panel_count=20)
     _prepare_media(db, project_id)
     pl.execute_render(db, pl.enqueue_render(db, project_id, "final", actor_id="test").id)
     publication = publish_svc.publish(db, project_id, privacy_status="public")

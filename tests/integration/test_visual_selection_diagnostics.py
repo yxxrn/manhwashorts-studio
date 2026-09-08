@@ -8,6 +8,7 @@ from app.services import vision_adapter as va
 def _passage(role: str, ids: list[str]) -> dict:
     return {
         "editorial_role": role,
+        "text": "shared support topic",
         "evidence_panel_ids": ids,
     }
 
@@ -28,7 +29,17 @@ def test_visual_selection_failure_reports_safe_counts():
         instruction_text="x",
         expected_panel_ids=preferred,
         coverage_manifest={},
-        ordered_observations=(),
+        ordered_observations=tuple(
+            {
+                "panel_id": panel_id,
+                "source_index": index,
+                "source_asset_id": f"asset-{index}",
+                "visible_facts": ["shared support topic"],
+                "dialogue_or_ocr": [],
+                "inferences": [],
+            }
+            for index, panel_id in enumerate(preferred)
+        ),
         chunks=(),
         target_word_count_min=115,
         target_word_count_max=125,
@@ -36,6 +47,7 @@ def test_visual_selection_failure_reports_safe_counts():
         preferred_visual_panel_ids_by_section=sections,
     )
     output = {
+        "evidence_graph": {"claims": []},
         "script_passages": [
             _passage("hook", list(preferred[:4])),
             _passage("setup", list(preferred[:4])),
