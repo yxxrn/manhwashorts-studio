@@ -17,25 +17,25 @@ from app.services.production_profiles.comic_lore import topic_title_for_script
 
 
 def _write_copy_paste_upload_files(api, output_dir: Path, payload: dict) -> None:
-    """Write raw fields that can be pasted directly into YouTube Studio."""
+    """Write one human-readable upload sheet beside machine metadata."""
+    title = str(payload.get("title") or "").strip()
+    description = str(payload.get("description") or "").strip()
     tags = [str(value).strip() for value in list(payload.get("tags") or []) if str(value).strip()]
-    files = {
-        "title.txt": str(payload.get("title") or "").strip(),
-        "description.txt": str(payload.get("description") or "").strip(),
-        "tags.txt": ", ".join(tags),
-    }
-    temporary_paths: list[Path] = []
+    content = (
+        f"TITLE\n{title}\n\n"
+        f"DESCRIPTION\n{description}\n\n"
+        f"TAGS\n{', '.join(tags)}\n"
+    )
+    target = output_dir / "upload.txt"
+    temporary = output_dir / ".upload.txt.tmp"
     try:
-        for filename, content in files.items():
-            target = output_dir / filename
-            temporary = output_dir / f".{filename}.tmp"
-            temporary_paths.append(temporary)
-            temporary.write_text(content + "\n", encoding="utf-8")
-            temporary.replace(target)
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(target)
+        for legacy_name in ("title.txt", "description.txt", "tags.txt"):
+            (output_dir / legacy_name).unlink(missing_ok=True)
     except OSError as exc:
-        for temporary in temporary_paths:
-            temporary.unlink(missing_ok=True)
-        raise api.PipelineError(f"manual upload copy-paste files could not be written: {exc}") from exc
+        temporary.unlink(missing_ok=True)
+        raise api.PipelineError(f"manual upload copy-paste file could not be written: {exc}") from exc
 
 
 def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manifest):

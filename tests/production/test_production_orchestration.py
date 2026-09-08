@@ -146,10 +146,8 @@ def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp
         approved_script_hash=approved_hash,
         approved_script_version=1,
     )
-    assert (tmp_path / "title.txt").is_file()
-    assert (tmp_path / "description.txt").is_file()
-    assert (tmp_path / "tags.txt").is_file()
-    (tmp_path / "tags.txt").unlink()
+    assert (tmp_path / "upload.txt").is_file()
+    (tmp_path / "upload.txt").unlink()
     second = pl.run_production(
         db,
         project.id,
@@ -168,10 +166,13 @@ def test_production_resume_reuses_audio_timeline_and_render(db, monkeypatch, tmp
     assert package["thumbnail"] == "thumbnail.jpg"
     assert "this video is a recap and commentary" in package["description"].lower()
     assert "video ini" not in package["description"].lower()
-    assert (tmp_path / "title.txt").read_text(encoding="utf-8").strip() == package["title"]
-    assert (tmp_path / "description.txt").read_text(encoding="utf-8").strip() == package["description"]
-    assert (tmp_path / "tags.txt").read_text(encoding="utf-8").strip() == ", ".join(package["tags"])
-    assert '"' not in (tmp_path / "tags.txt").read_text(encoding="utf-8")
+    upload = (tmp_path / "upload.txt").read_text(encoding="utf-8")
+    assert f"TITLE\n{package['title']}" in upload
+    assert f"DESCRIPTION\n{package['description']}" in upload
+    assert f"TAGS\n{', '.join(package['tags'])}" in upload
+    assert '"' not in upload.split("TAGS\n", 1)[1]
+    for legacy_name in ("title.txt", "description.txt", "tags.txt"):
+        assert not (tmp_path / legacy_name).exists()
     assert script.editorial_metadata["production"]["upload_metadata_status"] == "passed"
     assert script.editorial_metadata["production"]["upload_metadata_path"] == str(tmp_path / "metadata.json")
 
