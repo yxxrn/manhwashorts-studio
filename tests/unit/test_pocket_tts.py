@@ -137,7 +137,7 @@ def test_alba_credit_is_present_only_for_pocket_audio():
     assert tts_svc.voice_attribution("http", "alba") == ""
 
 
-def test_pocket_clarity_gate_falls_back_before_heavy_time_stretch(db, monkeypatch):
+def test_pocket_clarity_gate_keeps_proven_080_retime_local(db, monkeypatch):
     from datetime import UTC, datetime
 
     from app.models import Project, ScriptVersion, User, Workspace
@@ -198,7 +198,6 @@ def test_pocket_clarity_gate_falls_back_before_heavy_time_stretch(db, monkeypatc
         db, project.id, actor_id="test", duration_bounds_s=(50.0, 60.0)
     )
     assert len(segments) == 1
-    assert segments[0].provider == "fake-cloud"
-    assert "clarity-safe range" in str(
-        segments[0].voice_profile.get("tts_fallback_reason", "")
-    ) or segments[0].provider == "fake-cloud"
+    assert segments[0].provider == "pocket"
+    assert tts_svc.POCKET_TTS_CLARITY_TEMPO_MIN == 0.80
+    assert tts_svc.PRODUCTION_AUDIO_TIMING_POLICY_VERSION == "production-audio-timing-v3"
