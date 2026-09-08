@@ -46,3 +46,29 @@ def test_render_reuse_invalidates_when_watermark_changes(db, tmp_path):
     assert pl._render_stage_ready(db, project.id, script_hash) is job
     project.watermark_text = "@anotherchannel"
     assert pl._render_stage_ready(db, project.id, script_hash) is None
+
+
+def test_render_output_identity_tracks_comic_render_features():
+    class Project:
+        watermark_enabled = False
+        watermark_text = ""
+
+    script = ScriptVersion(
+        project_id="project",
+        version=1,
+        generator="test",
+        sections=[],
+        editorial_metadata={
+            "render_features": {
+                "comic_text_cleanup": True,
+                "adaptive_karaoke_contrast": True,
+            }
+        },
+    )
+    identity = pl._render_output_identity(Project(), script)
+    assert identity["render_features"] == {
+        "comic_text_cleanup": True,
+        "comic_text_cleanup_version": "comic-render-text-cleanup-v2",
+        "adaptive_karaoke_contrast": True,
+        "adaptive_karaoke_contrast_version": "adaptive-karaoke-contrast-v1",
+    }

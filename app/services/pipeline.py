@@ -4339,7 +4339,7 @@ def _timeline_stage_ready(db: Session, project_id: str) -> bool:
     return bool(scenes and cues and all(scene.end_time > scene.start_time for scene in scenes))
 
 
-def _render_output_identity(project: Project) -> dict[str, Any]:
+def _render_output_identity(project: Project, script: ScriptVersion | None = None) -> dict[str, Any]:
     enabled = bool(getattr(project, "watermark_enabled", False))
     text = str(getattr(project, "watermark_text", "") or "").strip() if enabled else ""
     identity = {"version": "render-watermark-v3", "watermark_enabled": enabled, "watermark_text": text}
@@ -4352,6 +4352,22 @@ def _render_output_identity(project: Project) -> dict[str, Any]:
             "watermark_font_sha256": hashlib.sha256(font_path.read_bytes()).hexdigest() if font_path.is_file() else "missing",
             "watermark_synthetic_bold": render_svc.WATERMARK_SYNTHETIC_BOLD,
         })
+    if script is not None:
+        raw_metadata = getattr(script, "editorial_metadata", {})
+        metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+        raw_features = metadata.get("render_features", {})
+        features = raw_features if isinstance(raw_features, Mapping) else {}
+        cleanup_enabled = features.get("comic_text_cleanup") is True
+        karaoke_enabled = features.get("adaptive_karaoke_contrast") is True
+        if cleanup_enabled or karaoke_enabled:
+            from app.services import render as render_svc
+
+            identity["render_features"] = {
+                "comic_text_cleanup": cleanup_enabled,
+                "comic_text_cleanup_version": render_svc.COMIC_TEXT_CLEANUP_VERSION if cleanup_enabled else "",
+                "adaptive_karaoke_contrast": karaoke_enabled,
+                "adaptive_karaoke_contrast_version": render_svc.ADAPTIVE_KARAOKE_CONTRAST_VERSION if karaoke_enabled else "",
+            }
     return identity
 
 
@@ -4366,7 +4382,7 @@ def _render_stage_ready(
     project = db.get(Project, project_id)
     if project is None:
         return None
-    current_identity = _render_output_identity(project)
+    current_identity = _render_output_identity(project, script)
     persisted_identity = production.get("render_output_identity")
     if persisted_identity is None:
         if current_identity["watermark_enabled"]:

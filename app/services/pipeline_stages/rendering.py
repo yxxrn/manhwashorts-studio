@@ -105,6 +105,9 @@ def build_render_request(api, db, job, *, silent_reference_review, output_overri
     script = current_script(db, job.project_id)
     if script is None:
         raise PipelineError('no script to render')
+    render_features = dict((getattr(script, 'editorial_metadata', None) or {}).get('render_features') or {})
+    comic_text_cleanup = bool(job.kind == 'final' and render_features.get('comic_text_cleanup') is True)
+    adaptive_karaoke_contrast = bool(job.kind == 'final' and render_features.get('adaptive_karaoke_contrast') is True)
     approved_reference_conservative = bool(
         editorial_profile is not None
         and getattr(script, 'approved_at', None) is not None
@@ -139,6 +142,9 @@ def build_render_request(api, db, job, *, silent_reference_review, output_overri
         except render_svc.RenderError as exc:
             raise PipelineError(f'{exc.code}: {exc}') from exc
         subtitle_contract = subtitle_karaoke.contract_manifest(editorial_profile)
+        if adaptive_karaoke_contrast:
+            subtitle_contract = dict(subtitle_contract)
+            subtitle_contract['active_word_color'] = 'adaptive_scene_contrast_v1'
         subtitle_contract_version = subtitle_karaoke.SUBTITLE_CONTRACT_VERSION
         subtitle_timing_source = 'audio_segment.word_timings'
     work = storage.workspace_dir(job.project_id, 'audio')
@@ -203,7 +209,7 @@ def build_render_request(api, db, job, *, silent_reference_review, output_overri
         reference_mask = accepted_reference.get('border_mask') if isinstance(accepted_reference, Mapping) else None
         scene_inputs.append(render_svc.SceneInput(image_path=image_path, start_time=start_time, end_time=end_time, focus_x=scene.focus_x, focus_y=scene.focus_y, focus_end_x=scene.focus_end_x, focus_end_y=scene.focus_end_y, camera_curve=camera_curve, motion_mode=motion_mode, motion_intensity=scene.motion_intensity, motion_reason=scene.motion_reason, effect=scene.effect, disabled_effects=scene.disabled_effects, transition=scene.transition, overlay_text=scene.overlay_text, panel_region_id=getattr(scene, 'panel_region_id', None) if editorial_profile else None, panel_id=getattr(scene, 'panel_id', '') if editorial_profile else '', panel_bounds=(int(scene.panel_bounds_json['x']), int(scene.panel_bounds_json['y']), int(scene.panel_bounds_json['x']) + int(scene.panel_bounds_json['width']), int(scene.panel_bounds_json['y']) + int(scene.panel_bounds_json['height'])) if editorial_profile and isinstance(getattr(scene, 'panel_bounds_json', None), Mapping) else None, visual_evidence=getattr(scene, 'visual_evidence_json', None) if editorial_profile else None, source_asset_checksum=getattr(scene, 'source_asset_checksum', '') if editorial_profile else '', source_asset_id=scene.asset_id if editorial_profile else '', source_order=accepted_reference.get('source_order') if isinstance(accepted_reference, Mapping) else None, panel_size=(int(scene.panel_bounds_json['width']), int(scene.panel_bounds_json['height'])) if editorial_profile and isinstance(getattr(scene, 'panel_bounds_json', None), Mapping) else None, evidence_hash=accepted_reference.get('evidence_hash', '') if isinstance(accepted_reference, Mapping) else '', border_mask=reference_mask, selected_roi=reference_roi, fallback_attempts=reference_ledger, framing_telemetry=reference_telemetry, publish_allowed=not bool(editorial_profile)))
     filename = 'preview.mp4' if job.kind == 'preview' else 'final.mp4'
-    return render_svc.RenderRequest(project_id=job.project_id, scenes=scene_inputs, audio_path=voice_path, cues=cues, output_path=storage.output_path(job.project_id, filename), preview=job.kind == 'preview', title_text='' if editorial_profile else project.title, profile=editorial_profile, music_path=music_path, music_gain_db=-24.0, encoder=job.encoder_requested or None, sentence_groups=list(sentence_groups), subtitle_contract_version=subtitle_contract_version, subtitle_timing_source=subtitle_timing_source, subtitle_contract=subtitle_contract, persisted_reference_framing=bool(editorial_profile), stabilized_reference_motion=stabilized_reference_motion, allow_conservative_full_panel=approved_reference_conservative, watermark_enabled=bool(job.kind == 'final' and getattr(project, 'watermark_enabled', False)), watermark_text=str(getattr(project, 'watermark_text', '') or '') if job.kind == 'final' else '')
+    return render_svc.RenderRequest(project_id=job.project_id, scenes=scene_inputs, audio_path=voice_path, cues=cues, output_path=storage.output_path(job.project_id, filename), preview=job.kind == 'preview', title_text='' if editorial_profile else project.title, profile=editorial_profile, music_path=music_path, music_gain_db=-24.0, encoder=job.encoder_requested or None, sentence_groups=list(sentence_groups), subtitle_contract_version=subtitle_contract_version, subtitle_timing_source=subtitle_timing_source, subtitle_contract=subtitle_contract, persisted_reference_framing=bool(editorial_profile), stabilized_reference_motion=stabilized_reference_motion, allow_conservative_full_panel=approved_reference_conservative, watermark_enabled=bool(job.kind == 'final' and getattr(project, 'watermark_enabled', False)), watermark_text=str(getattr(project, 'watermark_text', '') or '') if job.kind == 'final' else '', adaptive_karaoke_contrast=adaptive_karaoke_contrast, comic_text_cleanup=comic_text_cleanup)
 
 
 

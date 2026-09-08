@@ -134,6 +134,31 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
     if str(approved_script_hash).strip() != script_hash or approved_script_version is None or int(approved_script_version) != int(script.version):
         raise PipelineError('production approval does not match the latest script')
     metadata = dict(script.editorial_metadata or {})
+    render_features = dict(metadata.get('render_features') or {})
+    section_locked_visual_alignment = bool(render_features.get('section_locked_visual_alignment') is True)
+    reference_section_panel_ids = None
+    if section_locked_visual_alignment:
+        reference_section_panel_ids = {}
+        for section in list(getattr(script, 'sections', []) or []):
+            section_name = str(section.get('section', '') or '').strip()
+            panel_ids = [
+                str(value).strip()
+                for value in list(section.get('evidence_panel_ids', []) or [])
+                if str(value).strip()
+            ]
+            if section_name and panel_ids:
+                reference_section_panel_ids[section_name] = panel_ids
+        if not reference_section_panel_ids:
+            raise PipelineError('comic.section_evidence_missing: section-locked visual alignment requires evidence panel ids')
+        raw_supplements = render_features.get('section_visual_supplements') or {}
+        if isinstance(raw_supplements, dict):
+            for section_name, values in raw_supplements.items():
+                if section_name not in reference_section_panel_ids or not isinstance(values, (list, tuple)):
+                    continue
+                for value in values:
+                    panel_id = str(value).strip()
+                    if panel_id and panel_id not in reference_section_panel_ids[section_name]:
+                        reference_section_panel_ids[section_name].append(panel_id)
     production = dict(metadata.get('production') or {})
     if production.get('script_hash') != script_hash:
         production = {'script_hash': script_hash, 'script_version': script.version}
@@ -219,6 +244,8 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
         'profile_version': str(getattr(resolved_profile, 'version', '') or ''),
         'standard_reference_production': standard_reference_production,
         'adaptive_reference_production': adaptive_policy is not None,
+        'section_locked_visual_alignment': section_locked_visual_alignment,
+        'section_evidence_panel_ids': reference_section_panel_ids or {},
         'duration_bounds_s': (
             list(bounds)
             if bounds is not None
@@ -239,6 +266,7 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
             adaptive_reference_production=adaptive_policy is not None,
             adaptive_reference_duration_bounds_s=bounds,
             standard_reference_production=standard_reference_production,
+            reference_section_panel_ids=reference_section_panel_ids,
         )
     production['timeline_script_hash'] = script_hash
     production['timeline_planning_identity'] = timeline_planning_identity
