@@ -745,6 +745,18 @@ def test_youtube_metadata_keeps_english_package_language_consistent_and_tags_spe
     assert story in meta["description"]
 
 
+def test_youtube_metadata_honors_topic_title_override():
+    from app.services.youtube_metadata import build_metadata
+
+    meta = build_metadata(
+        "Run26", "Doctor Doom: The Book of Doom", "",
+        "Victor combines dangerous inventions with forbidden experiments.",
+        language="en",
+        title_override="Why Doctor Doom Is So Dangerous: Science + Sorcery",
+    )
+    assert meta["title"] == "Why Doctor Doom Is So Dangerous: Science + Sorcery #shorts"
+
+
 def test_youtube_metadata_title_never_truncates_mid_word():
     from app.services.youtube_metadata import build_metadata
 

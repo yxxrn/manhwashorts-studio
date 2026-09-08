@@ -70,5 +70,5 @@ def test_render_output_identity_tracks_comic_render_features():
         "comic_text_cleanup": True,
         "comic_text_cleanup_version": "comic-render-text-cleanup-v2",
         "adaptive_karaoke_contrast": True,
-        "adaptive_karaoke_contrast_version": "adaptive-karaoke-contrast-v1",
+        "adaptive_karaoke_contrast_version": "adaptive-karaoke-contrast-v2",
     }

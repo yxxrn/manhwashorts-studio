@@ -39,6 +39,7 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
         "video_checksum": str(getattr(job, "checksum", "") or ""),
         "thumbnail": Path(thumbnail_path).name if thumbnail_path else "",
         "subtitles": Path(subtitle_path).name if subtitle_path else "",
+        "topic_title": str((dict((getattr(script, "editorial_metadata", None) or {}).get("render_features") or {})).get("topic_title") or ""),
     }
     identity = hashlib.sha256(
         json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -59,6 +60,9 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
                 return target, cached_payload
     except (OSError, json.JSONDecodeError):
         pass
+    raw_metadata = getattr(script, "editorial_metadata", None) or {}
+    render_features = dict(raw_metadata.get("render_features") or {}) if isinstance(raw_metadata, dict) else {}
+    title_override = str(render_features.get("topic_title") or "").strip()
     generated = build_metadata(
         project_title=project.title,
         manhwa_title=project.manhwa_title,
@@ -66,6 +70,7 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
         script_text=script.plain_text,
         attribution="; ".join(attributions),
         language=project.language,
+        title_override=title_override,
     )
     if not thumbnail_path and getattr(job, "thumbnail_key", ""):
         thumbnail_path = str(job.thumbnail_key)
@@ -185,7 +190,7 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
                     job=existing, thumbnail_manifest=thumbnail_manifest,
                 )
                 production.update({
-                    'render_output_identity': _render_output_identity(get_project(db, project_id)),
+                    'render_output_identity': _render_output_identity(get_project(db, project_id), script),
                     'thumbnail_status': 'passed',
                     'thumbnail_path': thumbnail_manifest.get('thumbnail_path', ''),
                     'thumbnail_headline': thumbnail_manifest.get('headline', ''),
@@ -290,7 +295,7 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
         'script_hash': script_hash,
         'script_version': script.version,
         'render_job_id': job.id,
-        'render_output_identity': _render_output_identity(project),
+        'render_output_identity': _render_output_identity(project, script),
         'post_render_qc': 'passed',
         'thumbnail_status': 'passed' if thumbnail_manifest is not None else 'disabled',
         'thumbnail_path': (thumbnail_manifest or {}).get('thumbnail_path', ''),

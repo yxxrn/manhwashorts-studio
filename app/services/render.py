@@ -1815,13 +1815,14 @@ def fit_sentence_karaoke_groups(
 
 
 COMIC_TEXT_CLEANUP_VERSION = "comic-render-text-cleanup-v2"
-ADAPTIVE_KARAOKE_CONTRAST_VERSION = "adaptive-karaoke-contrast-v1"
+ADAPTIVE_KARAOKE_CONTRAST_VERSION = "adaptive-karaoke-contrast-v2"
 _ADAPTIVE_KARAOKE_COLORS: tuple[tuple[str, tuple[int, int, int]], ...] = (
     ("yellow", (255, 235, 40)),
     ("cyan", (40, 225, 255)),
     ("red", (255, 70, 70)),
-    ("white", (255, 255, 255)),
 )
+_ADAPTIVE_KARAOKE_MIN_DISTANCE = 0.24
+_ADAPTIVE_KARAOKE_MIN_LUMA_CONTRAST = 1.04
 
 
 def _ass_bgr(rgb: tuple[int, int, int]) -> str:
@@ -1834,8 +1835,7 @@ def _relative_luma(rgb: tuple[int, int, int]) -> float:
     return 0.2126 * red + 0.7152 * green + 0.0722 * blue
 
 
-def _adaptive_karaoke_color_for_frame(image_path: Path, *, anchor: tuple[float, float] = (0.50, 0.56)) -> dict[str, object]:
-    started = time.perf_counter()
+def _sample_karaoke_background(image_path: Path, *, anchor: tuple[float, float] = (0.50, 0.56)) -> tuple[int, int, int]:
     with Image.open(image_path) as raw:
         image = raw.convert("RGB")
         width, height = image.size
@@ -1845,20 +1845,25 @@ def _adaptive_karaoke_color_for_frame(image_path: Path, *, anchor: tuple[float, 
         bottom = min(height, round(height * min(1.0, anchor[1] + 0.12)))
         sample = image.crop((left, top, right, bottom)).resize((32, 32), Image.Resampling.BILINEAR)
         pixels = list(sample.getdata())
-    sampled = tuple(round(sum(pixel[i] for pixel in pixels) / max(1, len(pixels))) for i in range(3))
-    background_luma = _relative_luma(sampled)
-    best_name = "yellow"
-    best_rgb = _ADAPTIVE_KARAOKE_COLORS[0][1]
-    best_score = -1.0
-    for name, rgb in _ADAPTIVE_KARAOKE_COLORS:
-        candidate_luma = _relative_luma(rgb)
-        contrast = (max(background_luma, candidate_luma) + 0.05) / (min(background_luma, candidate_luma) + 0.05)
-        distance = sum((float(a) - float(b)) ** 2 for a, b in zip(sampled, rgb, strict=True)) ** 0.5 / 441.673
-        score = contrast + (1.35 * distance)
-        if score > best_score:
-            best_name, best_rgb, best_score = name, rgb, score
-    return {"version": ADAPTIVE_KARAOKE_CONTRAST_VERSION, "name": best_name, "ass_color": _ass_bgr(best_rgb), "sampled_rgb": list(sampled), "score": round(best_score, 4), "wall_s": round(time.perf_counter() - started, 6)}
+    return tuple(round(sum(pixel[i] for pixel in pixels) / max(1, len(pixels))) for i in range(3))
 
+
+def _adaptive_karaoke_color_for_video(image_paths: Sequence[Path]) -> dict[str, object]:
+    started = time.perf_counter()
+    samples = [_sample_karaoke_background(path) for path in image_paths]
+    if not samples:
+        raise RenderError("adaptive karaoke requires prepared frames", code="subtitle.adaptive_color_missing")
+    metrics: list[dict[str, object]] = []
+    for name, rgb in _ADAPTIVE_KARAOKE_COLORS:
+        distances = [sum((float(a) - float(b)) ** 2 for a, b in zip(sample, rgb, strict=True)) ** 0.5 / 441.673 for sample in samples]
+        candidate_luma = _relative_luma(rgb)
+        contrasts = [(max(_relative_luma(sample), candidate_luma) + 0.05) / (min(_relative_luma(sample), candidate_luma) + 0.05) for sample in samples]
+        metrics.append({"name": name, "rgb": rgb, "min_distance": min(distances), "avg_distance": sum(distances) / len(distances), "min_luma_contrast": min(contrasts), "avg_luma_contrast": sum(contrasts) / len(contrasts)})
+    selected = next((row for row in metrics if float(row["min_distance"]) >= _ADAPTIVE_KARAOKE_MIN_DISTANCE and float(row["min_luma_contrast"]) >= _ADAPTIVE_KARAOKE_MIN_LUMA_CONTRAST), None)
+    if selected is None:
+        selected = max(metrics, key=lambda row: (float(row["min_distance"]) + 0.35 * float(row["min_luma_contrast"]), float(row["avg_distance"])))
+    rgb = tuple(int(value) for value in selected["rgb"])
+    return {"version": ADAPTIVE_KARAOKE_CONTRAST_VERSION, "mode": "per_video_locked", "name": selected["name"], "ass_color": _ass_bgr(rgb), "sample_count": len(samples), "samples_rgb": [list(sample) for sample in samples], "candidates": [{key: (round(value, 4) if isinstance(value, float) else value) for key, value in row.items() if key != "rgb"} for row in metrics], "wall_s": round(time.perf_counter() - started, 6)}
 
 def _comic_text_cleanup_heuristic_v1(image_path: Path) -> dict[str, object]:
     """Legacy fallback when local OCR is unavailable."""
@@ -3488,11 +3493,14 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
         clips = [encoded[index] for index in range(len(request.scenes))]
 
     adaptive_color_spans: list[dict[str, object]] = []
+    adaptive_video_color: dict[str, object] | None = None
     if request.adaptive_karaoke_contrast and request.sentence_groups:
-        for scene, prepared in zip(request.scenes, prepared_images, strict=True):
-            color = dict(_adaptive_karaoke_color_for_frame(prepared))
-            color.update({"start_time": scene.start_time, "end_time": scene.end_time})
-            adaptive_color_spans.append(color)
+        adaptive_video_color = dict(_adaptive_karaoke_color_for_video(prepared_images))
+        adaptive_color_spans.append({
+            **adaptive_video_color,
+            "start_time": 0.0,
+            "end_time": sum(scene.duration for scene in request.scenes),
+        })
     ass_path: Path | None = None
     has_subtitles = bool(request.cues or request.sentence_groups)
     if request.sentence_groups:
@@ -3726,8 +3734,10 @@ def render_video(request: RenderRequest, progress=None) -> RenderResult:
             "adaptive_karaoke_contrast": {
                 "enabled": bool(request.adaptive_karaoke_contrast),
                 "version": ADAPTIVE_KARAOKE_CONTRAST_VERSION,
-                "wall_s": round(sum(float(entry.get("wall_s", 0.0) or 0.0) for entry in adaptive_color_spans), 6),
-                "scene_colors": adaptive_color_spans,
+                "mode": "per_video_locked" if request.adaptive_karaoke_contrast else "disabled",
+                "wall_s": round(float((adaptive_video_color or {}).get("wall_s", 0.0) or 0.0), 6),
+                "selected_color": adaptive_video_color,
+                "color_spans": adaptive_color_spans,
             },
             "output": {
                 "duration": info.get("duration"),

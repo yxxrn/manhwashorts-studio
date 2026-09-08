@@ -13,6 +13,7 @@ import io
 import json
 import re
 import shutil
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
@@ -25,7 +26,7 @@ from app.config import settings
 from app.services import visual_scoring
 from app.services.file_integrity import sha256_file
 
-THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v5"
+THUMBNAIL_CONTRACT_VERSION = "auto-thumbnail-v6"
 TARGET_SIZE = (1080, 1920)
 MAX_HEADLINE_WORDS = 7
 MAX_HEADLINE_CHARS = 38
@@ -37,6 +38,7 @@ _HEADLINE_NEAR_DUPLICATE_THRESHOLD = 0.72
 _THUMBNAIL_ACCENT_COLORS = {
     "yellow": (255, 224, 48, 255),
     "red": (255, 72, 72, 255),
+    "cyan": (40, 225, 255, 255),
     "blue": (72, 164, 255, 255),
     "green": (72, 228, 120, 255),
 }
@@ -159,9 +161,27 @@ class VisualCandidate:
     face_boxes: tuple[tuple[float, float, float, float], ...]
     image_jpeg: bytes
     source_asset_id: str
+    panel_id: str
     source_family: str
     roi_label: str
     focus_y: float
+
+
+def _topic_thumbnail_config(script: object) -> dict[str, object]:
+    raw_metadata = getattr(script, "editorial_metadata", None) or {}
+    metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+    raw_features = metadata.get("render_features", {})
+    features = raw_features if isinstance(raw_features, Mapping) else {}
+    panel_ids = tuple(str(value).strip() for value in list(features.get("thumbnail_panel_ids") or []) if str(value).strip())
+    accent_words = tuple(str(value).strip().upper() for value in list(features.get("thumbnail_accent_words") or []) if str(value).strip())[:2]
+    return {
+        "topic_title": str(features.get("topic_title") or "").strip(),
+        "headline": _clean_headline(features.get("thumbnail_headline")),
+        "panel_ids": panel_ids,
+        "accent_words": accent_words,
+        "comic_palette": features.get("thumbnail_palette") in {"comic_yellow_red_v1", "comic_dual_contrast_v1"},
+        "text_cleanup": features.get("thumbnail_text_cleanup") is True,
+    }
 
 
 def _script_sections(script: object) -> tuple[dict[str, str], str]:
@@ -190,7 +210,7 @@ def _language(story: str) -> str:
 
 def _clean_headline(value: object) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip()).strip("\"'` ")
-    text = re.sub(r"[^A-Za-zÀ-ÿ0-9?!' -]+", "", text)
+    text = re.sub(r"[^A-Za-zÀ-ÿ0-9?!'. -]+", "", text)
     words = text.split()[:MAX_HEADLINE_WORDS]
     while words and len(" ".join(words)) > MAX_HEADLINE_CHARS:
         words.pop()
@@ -379,6 +399,10 @@ def _headline_pronouns_are_grounded(text: str, story: str, language: str) -> boo
 def generate_headlines(script: object, headline_history: Sequence[str] = ()) -> tuple[list[HeadlineCandidate], dict[str, str], str]:
     sections, story = _script_sections(script)
     language = _language(story)
+    topic = _topic_thumbnail_config(script)
+    if topic["headline"]:
+        anchors = tuple(_normalized_word(value) for value in str(topic["topic_title"]).split() if _normalized_word(value))
+        return [HeadlineCandidate(str(topic["headline"]), "hook", "topic_bound_v1", anchors, 6.0, tuple(topic["accent_words"]))], sections, language
     llm_rows = _llm_headlines(sections, language, headline_history)
     fallback_rows = _fallback_headlines(sections, language)
     # When the provider produced grounded story-specific options, keep only
@@ -457,7 +481,50 @@ def _encode_jpeg(image: Image.Image, quality: int = 94) -> bytes:
     return buffer.getvalue()
 
 
-def _clean_scene_image(scene: object, source_path: Path) -> bytes:
+def _thumbnail_strict_yellow_text_cleanup(image_path: Path) -> None:
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        return
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    hue, saturation, value = cv2.split(hsv)
+    yellow = ((hue >= 18) & (hue <= 42) & (saturation >= 100) & (value >= 170)).astype(np.uint8) * 255
+    closed = cv2.morphologyEx(yellow, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (31, 17)), iterations=2)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(closed, 8)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    frame_height, frame_width = image.shape[:2]
+    frame_area = frame_height * frame_width
+    changed = False
+    for label in range(1, count):
+        x, y, width, height, area = (int(v) for v in stats[label])
+        if y > frame_height * 0.45 or not frame_area * 0.006 <= area <= frame_area * 0.36 or width < 70 or height < 40:
+            continue
+        component = labels == label
+        dark = ((gray < 145) & component).astype(np.uint8) * 255
+        glyph_count, _, glyph_stats, _ = cv2.connectedComponentsWithStats(dark, 8)
+        glyphs = 0
+        for glyph_label in range(1, glyph_count):
+            _gx, _gy, gw, gh, ga = (int(v) for v in glyph_stats[glyph_label])
+            density = ga / max(1, gw * gh)
+            if 3 <= ga <= 1800 and 2 <= gw <= 110 and 3 <= gh <= 85 and gw * gh <= 6000 and 0.04 <= density <= 0.95:
+                glyphs += 1
+        if glyphs < 20:
+            continue
+        interior = cv2.erode(component.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1)
+        color_samples = image[component & (yellow > 0)]
+        if len(color_samples) < 20:
+            continue
+        image[interior > 0] = np.median(color_samples, axis=0).astype(np.uint8)
+        changed = True
+    if changed:
+        cv2.imwrite(str(image_path), image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+
+
+def _clean_scene_image(scene: object, source_path: Path, *, comic_text_cleanup: bool = False) -> bytes:
     with Image.open(source_path) as source:
         source.load()
         image = source.convert("RGB")
@@ -479,6 +546,20 @@ def _clean_scene_image(scene: object, source_path: Path) -> bytes:
         method=Image.Resampling.LANCZOS,
         centering=(focus_x, focus_y),
     )
+    if comic_text_cleanup:
+        from app.services import render as render_svc
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temporary:
+                temporary_path = Path(temporary.name)
+            image.save(temporary_path, "JPEG", quality=96)
+            render_svc._comic_text_cleanup_frame(temporary_path)
+            _thumbnail_strict_yellow_text_cleanup(temporary_path)
+            with Image.open(temporary_path) as cleaned:
+                image = cleaned.convert("RGB").copy()
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
     image = ImageEnhance.Contrast(image).enhance(1.08)
     image = ImageEnhance.Sharpness(image).enhance(1.12)
     image = ImageEnhance.Color(image).enhance(1.03)
@@ -552,6 +633,22 @@ def _accent_color(image: Image.Image, placement: str) -> tuple[str, tuple[int, i
     return max(_THUMBNAIL_ACCENT_COLORS.items(), key=lambda item: score(item[1]))
 
 
+def _comic_dual_palette(image: Image.Image, placement: str) -> tuple[tuple[str, tuple[int, int, int, int]], tuple[str, tuple[int, int, int, int]]]:
+    regions = {"top": (0.05, 0.32), "middle": (0.35, 0.65), "bottom": (0.68, 0.95)}
+    top, bottom = regions.get(placement, regions["top"])
+    sample = image.crop((0, int(image.height * top), image.width, int(image.height * bottom))).resize((32, 32))
+    bg = tuple(float(value) for value in ImageStat.Stat(sample.convert("RGB")).mean[:3])
+    def score(item: tuple[str, tuple[int, int, int, int]]) -> float:
+        fg = item[1][:3]
+        distance = sum((float(fg[i]) - bg[i]) ** 2 for i in range(3)) ** 0.5 / 441.7
+        fg_luma = (0.2126 * fg[0] + 0.7152 * fg[1] + 0.0722 * fg[2]) / 255.0
+        bg_luma = (0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2]) / 255.0
+        return abs(fg_luma - bg_luma) + 0.75 * distance
+    choices = [(name, _THUMBNAIL_ACCENT_COLORS[name]) for name in ("yellow", "red", "cyan")]
+    choices.sort(key=score, reverse=True)
+    return choices[0], choices[1]
+
+
 def _largest_face_area(face_boxes: Sequence[tuple[float, float, float, float]]) -> float:
     return max(((x2 - x1) * (y2 - y1) for x1, y1, x2, y2 in face_boxes), default=0.0)
 
@@ -570,16 +667,23 @@ def _face_edge_penalty(face_boxes: Sequence[tuple[float, float, float, float]]) 
 def build_visual_candidates(
     scenes: Sequence[object],
     resolve_asset_path: Callable[[str], Path | None],
+    *,
+    allowed_panel_ids: Sequence[str] = (),
+    comic_text_cleanup: bool = False,
 ) -> list[VisualCandidate]:
     candidates: list[VisualCandidate] = []
+    allowed = {str(value).strip() for value in allowed_panel_ids if str(value).strip()}
     section_bonus = {"twist": 2.4, "conflict": 1.9, "hook": 1.5, "setup": 0.6, "cta": -0.8}
     for scene_index, scene in enumerate(scenes):
+        panel_id = str(getattr(scene, "panel_id", "") or "")
+        if allowed and panel_id not in allowed:
+            continue
         asset_id = str(getattr(scene, "asset_id", "") or "")
         source_path = resolve_asset_path(asset_id) if asset_id else None
         if source_path is None or not source_path.is_file():
             continue
         try:
-            image_jpeg = _clean_scene_image(scene, source_path)
+            image_jpeg = _clean_scene_image(scene, source_path, comic_text_cleanup=comic_text_cleanup)
             analyzed = visual_scoring.analyze_panel(image_jpeg, asset_id, scene_index)
         except (OSError, ValueError, visual_scoring.VisualEvidenceError):
             continue
@@ -617,6 +721,7 @@ def build_visual_candidates(
                 face_boxes=tuple(features.face_boxes),
                 image_jpeg=image_jpeg,
                 source_asset_id=asset_id,
+                panel_id=panel_id,
                 source_family=str(getattr(scene, "source_family", "") or ""),
                 roi_label=str(getattr(scene, "roi_label", "") or ""),
                 focus_y=float(getattr(scene, "focus_y", 0.4) or 0.4),
@@ -766,6 +871,8 @@ def _render_variant(
     visual: VisualCandidate,
     headline: HeadlineCandidate,
     destination: Path,
+    *,
+    comic_palette: bool = False,
 ) -> dict[str, Any]:
     with Image.open(io.BytesIO(visual.image_jpeg)) as decoded:
         base = decoded.convert("RGB").resize(TARGET_SIZE, Image.Resampling.LANCZOS)
@@ -792,7 +899,11 @@ def _render_variant(
         top_y = int((TARGET_SIZE[1] - block_h) / 2)
     else:
         top_y = TARGET_SIZE[1] - block_h - 125
-    accent_name, accent_fill = _accent_color(base, visual.placement)
+    if comic_palette:
+        (main_name, main_fill), (accent_name, accent_fill) = _comic_dual_palette(base, visual.placement)
+    else:
+        main_name, main_fill = "white", _THUMBNAIL_MAIN_TEXT_COLOR
+        accent_name, accent_fill = _accent_color(base, visual.placement)
     headline_words = headline.text.split()
     accent_indexes = set(_accent_word_indexes(headline))
     accent_words = [headline_words[index] for index in sorted(accent_indexes)]
@@ -805,7 +916,7 @@ def _render_variant(
         line_words = line.split()
         for local_index, word in enumerate(line_words):
             global_index = word_cursor + local_index
-            fill = accent_fill if global_index in accent_indexes else _THUMBNAIL_MAIN_TEXT_COLOR
+            fill = accent_fill if global_index in accent_indexes else main_fill
             draw.text(
                 (int(cursor_x) + shadow, y + shadow),
                 word,
@@ -872,18 +983,18 @@ def _render_variant(
         "file_size": destination.stat().st_size if destination.is_file() else 0,
         "placement": visual.placement,
         "background_style": "outline_only",
-        "text_color": "white",
+        "text_color": main_name,
         "accent_color": accent_name,
         "accent_words": accent_words,
         "accent_word_count": len(accent_words),
-        "color_contract": "white_main_selective_accent_v1",
+        "color_contract": "comic_dual_contrast_v1" if comic_palette else "white_main_selective_accent_v1",
         "stroke_width": stroke,
         "shadow_offset": shadow,
     }
 
 
-def _story_hash(sections: Mapping[str, str]) -> str:
-    payload = json.dumps(dict(sections), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _story_hash(sections: Mapping[str, str], topic: Mapping[str, object] | None = None) -> str:
+    payload = json.dumps({"sections": dict(sections), "thumbnail_topic": dict(topic or {})}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -927,7 +1038,8 @@ def generate_thumbnail_package(
         raise ThumbnailError("thumbnail.video_missing: final video is unavailable")
     output_dir.mkdir(parents=True, exist_ok=True)
     sections, _story = _script_sections(script)
-    story_hash = _story_hash(sections)
+    topic = _topic_thumbnail_config(script)
+    story_hash = _story_hash(sections, topic)
     video_checksum = sha256_file(video_path)
     if not force:
         existing = _existing_manifest(
@@ -938,7 +1050,14 @@ def generate_thumbnail_package(
 
     headline_history = _load_headline_history()
     headlines, _sections, language = generate_headlines(script, headline_history)
-    visuals = build_visual_candidates(scenes, resolve_asset_path)
+    visuals = build_visual_candidates(
+        scenes,
+        resolve_asset_path,
+        allowed_panel_ids=topic["panel_ids"],
+        comic_text_cleanup=bool(topic["text_cleanup"]),
+    )
+    if not visuals and topic["panel_ids"]:
+        raise ThumbnailError("thumbnail.topic_visual_missing: configured topic panel could not be rebuilt")
     if not visuals:
         raise ThumbnailError("thumbnail.no_visual_candidate: no clean source panel could be rebuilt")
     pairs = rank_pairs(visuals, headlines, sections)
@@ -961,9 +1080,9 @@ def generate_thumbnail_package(
             continue
         variant_index = len(rendered) + 1
         destination = output_dir / f"thumbnail_v{variant_index}.jpg"
-        placement = _pair_placement(visual, headline, story_hash)
+        placement = visual.placement if topic["headline"] else _pair_placement(visual, headline, story_hash)
         rendered_visual = replace(visual, placement=placement)
-        qc = _render_variant(rendered_visual, headline, destination)
+        qc = _render_variant(rendered_visual, headline, destination, comic_palette=bool(topic["comic_palette"]))
         if not qc["qc_pass"]:
             destination.unlink(missing_ok=True)
             continue
@@ -977,6 +1096,7 @@ def generate_thumbnail_package(
                 "scene_index": visual.scene_index,
                 "scene_section": visual.section,
                 "source_asset_id": visual.source_asset_id,
+                "panel_id": visual.panel_id,
                 "source_family": visual.source_family,
                 "roi_label": visual.roi_label,
                 "visual_score": visual.visual_score,
@@ -1022,6 +1142,7 @@ def generate_thumbnail_package(
         "video_checksum": video_checksum,
         "story_hash": story_hash,
         "language": language,
+        "topic_binding": topic,
         "headline_count": len(headlines),
         "visual_candidate_count": len(visuals),
         "thumbnail_path": str(thumbnail_path),

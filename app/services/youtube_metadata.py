@@ -128,11 +128,16 @@ def build_metadata(
     script_text: str,
     attribution: str = "",
     language: str = "en",
+    title_override: str = "",
 ) -> dict:
     """Build grounded YouTube metadata in one language from the approved recap."""
-    llm_titles = _llm_hook_titles(project_title, manhwa_title, chapter, script_text)
-    core = llm_titles[0] if llm_titles else _fallback_hook_title(script_text)
-    title = _compose_video_title(core, manhwa_title, chapter, project_title)
+    override = _clean_core_title(title_override)
+    if override:
+        title = f"{override} #shorts"[:100].rstrip()
+    else:
+        llm_titles = _llm_hook_titles(project_title, manhwa_title, chapter, script_text)
+        core = llm_titles[0] if llm_titles else _fallback_hook_title(script_text)
+        title = _compose_video_title(core, manhwa_title, chapter, project_title)
 
     language_key = str(language or "en").casefold().split("-", 1)[0]
     if language_key == "id":

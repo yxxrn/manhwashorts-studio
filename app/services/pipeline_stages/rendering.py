@@ -144,7 +144,7 @@ def build_render_request(api, db, job, *, silent_reference_review, output_overri
         subtitle_contract = subtitle_karaoke.contract_manifest(editorial_profile)
         if adaptive_karaoke_contrast:
             subtitle_contract = dict(subtitle_contract)
-            subtitle_contract['active_word_color'] = 'adaptive_scene_contrast_v1'
+            subtitle_contract['active_word_color'] = 'adaptive_video_locked_v2'
         subtitle_contract_version = subtitle_karaoke.SUBTITLE_CONTRACT_VERSION
         subtitle_timing_source = 'audio_segment.word_timings'
     work = storage.workspace_dir(job.project_id, 'audio')
