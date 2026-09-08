@@ -142,6 +142,23 @@ def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, d
                     duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=gap,
                 )
             else:
+                if chosen_provider.name == "pocket":
+                    correction = tts_svc._duration_window_tempo(
+                        sum(float(clip.duration) for clip in produced), len(produced),
+                        duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=gap,
+                    )
+                    if correction is not None:
+                        tempo, _target = correction
+                        if not (
+                            tts_svc.POCKET_TTS_CLARITY_TEMPO_MIN
+                            <= float(tempo)
+                            <= tts_svc.POCKET_TTS_CLARITY_TEMPO_MAX
+                        ):
+                            raise tts_svc.TTSError(
+                                "Pocket TTS duration correction exceeds clarity-safe range "
+                                f"({tts_svc.POCKET_TTS_CLARITY_TEMPO_MIN:.2f}-"
+                                f"{tts_svc.POCKET_TTS_CLARITY_TEMPO_MAX:.2f})"
+                            )
                 produced, policy = tts_svc.normalize_speech_clips_to_duration_window(
                     produced, duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=gap
                 )

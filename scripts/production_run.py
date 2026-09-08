@@ -510,7 +510,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--source-id", required=True)
     parser.add_argument("--language", default="en")
     parser.add_argument("--voice-id", default=DEFAULT_ENGLISH_VOICE_ID)
-    parser.add_argument("--narrative-profile-id", default="")
+    parser.add_argument("--narrative-profile-id", default="sharp_friend_v1")
     parser.add_argument("--review-hold", action="store_true", help="Stop after generating an unapproved script for editorial review")
     parser.add_argument("--watermark", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--watermark-text", default="")

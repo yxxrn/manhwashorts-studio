@@ -135,3 +135,70 @@ def test_alba_credit_is_present_only_for_pocket_audio():
     credit = tts_svc.voice_attribution("pocket", "alba")
     assert "Alba MacKenna" in credit and "CC BY 4.0" in credit
     assert tts_svc.voice_attribution("http", "alba") == ""
+
+
+def test_pocket_clarity_gate_falls_back_before_heavy_time_stretch(db, monkeypatch):
+    from datetime import UTC, datetime
+
+    from app.models import Project, ScriptVersion, User, Workspace
+    from app.security import hash_password
+    from app.services import pipeline as pl
+    from app.services import tts as tts_svc
+
+    class FastPocket:
+        name = "pocket"
+        def available(self): return True
+        def synthesize_sections(self, texts, work, voice_id, speed):
+            path = work / "fast-pocket.wav"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"pocket")
+            return [tts_svc.SpeechClip(path, texts[0], 41.0, "alba", "pocket",
+                tts_svc.estimate_word_timings(texts[0], 41.0),
+                tts_svc.voice_profile_for("pocket", "alba", speed=speed))]
+
+
+    class Fallback:
+        name = "fake-cloud"
+        def available(self): return True
+        def synthesize_sections(self, texts, work, voice_id, speed):
+            path = work / "fallback.wav"
+            path.write_bytes(b"fallback")
+            return [tts_svc.SpeechClip(path, texts[0], 51.0, voice_id, self.name,
+                tts_svc.estimate_word_timings(texts[0], 51.0),
+                tts_svc.voice_profile_for(self.name, voice_id, speed=speed))]
+
+    class Decision:
+        def __init__(self, source, provider):
+            self.source, self.provider, self.model = source, provider, "test"
+
+    user = User(email="clarity-fallback@example.com", name="Clarity", password_hash=hash_password("password"))
+    db.add(user)
+    db.flush()
+    workspace = Workspace(owner_id=user.id, name="Clarity Workspace")
+    db.add(workspace)
+    db.flush()
+    project = Project(workspace_id=workspace.id, title="Clarity Test", language="en", voice_id="en")
+    db.add(project)
+    db.flush()
+
+    script = ScriptVersion(
+        project_id=project.id, version=1, generator="vision_evidence_v2",
+        sections=[{"section":"hook","text":"Lu Sheng breaks the balance before anyone can react."}],
+        approved_by="reviewer", approved_at=datetime.now(UTC),
+    )
+    db.add(script)
+    db.commit()
+    primary, fallback = FastPocket(), Fallback()
+    monkeypatch.setattr(pl.resolver_svc, "resolve_tts", lambda *_a, **_k: (primary, Decision("local", "pocket")))
+    monkeypatch.setattr(pl.resolver_svc, "resolve_tts_fallback", lambda *_a, **_k: (fallback, Decision("env", "fake-cloud")))
+    monkeypatch.setattr(tts_svc, "normalize_speech_clips_to_duration_window",
+        lambda clips, **_k: (clips, {"applied": False}))
+
+    segments = pl.generate_voiceover(
+        db, project.id, actor_id="test", duration_bounds_s=(50.0, 60.0)
+    )
+    assert len(segments) == 1
+    assert segments[0].provider == "fake-cloud"
+    assert "clarity-safe range" in str(
+        segments[0].voice_profile.get("tts_fallback_reason", "")
+    ) or segments[0].provider == "fake-cloud"

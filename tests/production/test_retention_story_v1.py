@@ -169,11 +169,11 @@ def test_retention_story_relevance_precedes_visual_fit_for_unused_candidates():
     assert ranked[0] is story_match
 
 
-def test_unattended_runner_exposes_opt_in_retention_profile():
+def test_unattended_runner_defaults_to_sharp_friend_and_keeps_retention_opt_in():
     from pathlib import Path
 
     source = Path("scripts/production_run.py").read_text(encoding="utf-8")
-    assert 'parser.add_argument("--narrative-profile-id", default="")' in source
+    assert 'parser.add_argument("--narrative-profile-id", default="sharp_friend_v1")' in source
     assert 'narrative_profile_id=(getattr(args, "narrative_profile_id", "") or None)' in source
     assert "run state identity does not match requested narrative profile" in source
 
