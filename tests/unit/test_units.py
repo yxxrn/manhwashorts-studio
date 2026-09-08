@@ -745,6 +745,23 @@ def test_youtube_metadata_keeps_english_package_language_consistent_and_tags_spe
     assert story in meta["description"]
 
 
+def test_youtube_metadata_uses_manhua_tags_without_manhwa_leakage():
+    from app.services.youtube_metadata import build_metadata
+
+    meta = build_metadata(
+        "Recap",
+        "Logging 10,000 Years into the Future",
+        "348-350",
+        "Lu Sheng steps through the blast completely unharmed.",
+        language="en",
+        comic_type="manhua",
+    )
+    assert meta["tags"][:4] == ["manhua", "manhuarecap", "shorts", "manhuashorts"]
+    assert "manhwa" not in meta["tags"]
+    assert "manhwarecap" not in meta["tags"]
+    assert "manhwashorts" not in meta["tags"]
+
+
 def test_youtube_metadata_honors_topic_title_override():
     from app.services.youtube_metadata import build_metadata
 

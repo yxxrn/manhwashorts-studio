@@ -59,6 +59,7 @@ class ProjectCreate(BaseModel):
     manhwa_title: str = Field(default="", max_length=200)
     chapter: str = Field(default="", max_length=60)
     content_type: ContentType = ContentType.CHAPTER_RECAP
+    comic_type: str = Field(default="comic", pattern=r"^(comic|manhwa|manhua|manga)$")
     language: Literal["en", "id"] = DEFAULT_PROJECT_LANGUAGE
     spoiler_level: SpoilerLevel = SpoilerLevel.MEDIUM
     narration_style: NarrationStyle = NarrationStyle.DRAMATIC
@@ -84,6 +85,7 @@ class ProjectUpdate(BaseModel):
     manhwa_title: str | None = Field(default=None, max_length=200)
     chapter: str | None = Field(default=None, max_length=60)
     content_type: ContentType | None = None
+    comic_type: str | None = Field(default=None, pattern=r"^(comic|manhwa|manhua|manga)$")
     language: Literal["en", "id"] | None = None
     spoiler_level: SpoilerLevel | None = None
     narration_style: NarrationStyle | None = None
@@ -112,6 +114,7 @@ class ProjectOut(BaseModel):
     manhwa_title: str
     chapter: str
     content_type: str
+    comic_type: str
     language: str
     spoiler_level: str
     narration_style: str
@@ -884,6 +887,7 @@ class SuwayomiImportOut(BaseModel):
     source_id: str
     source: str
     language: str
+    comic_type: str
     chapters: list[str]
     pages_downloaded: int
     assets_created: int

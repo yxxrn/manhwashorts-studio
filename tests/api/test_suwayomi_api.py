@@ -16,7 +16,7 @@ class FakeConnector:
         from app.services import suwayomi
         chapters = tuple({"id": n, "chapterNumber": float(n), "name": f"Chapter {n}", "sourceOrder": n} for n in range(int(chapter_from), int(chapter_to) + 1))
         return suwayomi.ResolvedRange(
-            manga={"id": 7, "title": title, "sourceId": "42"},
+            manga={"id": 7, "title": title, "sourceId": "42", "genre": ["Manhwa", "Action"]},
             source={"id": "42", "displayName": "Test Source", "lang": language or "en"},
             chapters=chapters,
         )
@@ -69,6 +69,8 @@ def test_import_range_creates_ordered_normal_assets_and_is_idempotent(client, pa
     assert body["pages_downloaded"] == 3
     assert body["assets_created"] == 3
     assert body["rights_status"] == "undeclared"
+    assert body["comic_type"] == "manhwa"
+    assert client.get(f"/api/projects/{project['id']}").json()["comic_type"] == "manhwa"
 
     assets = client.get(f"/api/projects/{project['id']}/assets").json()
     assert [asset["order_index"] for asset in assets] == [0, 1, 2]
@@ -134,6 +136,15 @@ def test_managed_sidecar_target_is_loopback_only_and_honors_port():
     assert suwayomi._managed_bind_target("http://10.0.0.5:4567") is None
     assert suwayomi._managed_bind_target("https://127.0.0.1:4567") is None
     assert suwayomi._managed_bind_target("http://127.0.0.1:4567/subpath") is None
+
+
+def test_suwayomi_medium_classification_uses_source_genre_not_country_or_title():
+    from app.routers.sources import _comic_type_from_manga
+
+    assert _comic_type_from_manga({"genre": ["Manhua", "Action"]}) == "manhua"
+    assert _comic_type_from_manga({"genre": ["Romance", "Manhwa"]}) == "manhwa"
+    assert _comic_type_from_manga({"genre": ["Manga", "Shounen"]}) == "manga"
+    assert _comic_type_from_manga({"genre": ["Action"]}) == "comic"
 
 
 def test_suwayomi_page_identity_includes_source_and_manga():

@@ -64,6 +64,7 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
         "script_text": str(script.plain_text or ""),
         "attribution": "; ".join(attributions),
         "language": str(project.language or "en"),
+        "comic_type": str(getattr(project, "comic_type", "comic") or "comic"),
         "video_checksum": str(getattr(job, "checksum", "") or ""),
         "thumbnail": Path(thumbnail_path).name if thumbnail_path else "",
         "subtitles": Path(subtitle_path).name if subtitle_path else "",
@@ -97,6 +98,7 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
         script_text=script.plain_text,
         attribution="; ".join(attributions),
         language=project.language,
+        comic_type=str(getattr(project, "comic_type", "comic") or "comic"),
         title_override=title_override,
     )
     if not thumbnail_path and getattr(job, "thumbnail_key", ""):

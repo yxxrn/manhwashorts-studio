@@ -62,7 +62,7 @@ SEARCH_MUTATION = """mutation ManhwaShortsSearch($input: FetchSourceMangaInput!)
 }"""
 MANGA_CHAPTERS_MUTATION = """mutation ManhwaShortsManga($id: Int!) {
   fetchMangaAndChapters(input: {id: $id, fetchManga: true, fetchChapters: true}) {
-    manga { id title sourceId source { id name displayName lang } }
+    manga { id title sourceId genre source { id name displayName lang } }
     chapters { id name mangaId scanlator sourceOrder chapterNumber }
   }
 }"""

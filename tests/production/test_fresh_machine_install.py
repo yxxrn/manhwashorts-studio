@@ -9,6 +9,7 @@ def test_env_example_has_no_machine_specific_home_path():
     text = (ROOT / ".env.example").read_text()
     assert "/home/ubuntu/" not in text
     assert "MS_YOUTUBE_BROWSER_EXECUTABLE=google-chrome" in text
+    assert "MS_SUBTITLE_FONT_NAME=Barber Chop" in text
 
 
 def test_fresh_machine_installer_covers_native_runtime_and_migration():

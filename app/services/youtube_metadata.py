@@ -58,11 +58,11 @@ def _fallback_hook_title(script_text: str) -> str:
         return signal_score + length_score, -len(row)
     return _clean_core_title(max(rows[:8], key=score))
 
-def _llm_hook_titles(project_title: str, manhwa_title: str, chapter: str, script_text: str) -> list[str]:
+def _llm_hook_titles(project_title: str, manhwa_title: str, chapter: str, script_text: str, comic_type: str = "comic") -> list[str]:
     if settings.llm_provider != "openai_compatible" or not settings.llm_base_url or not settings.llm_api_key:
         return []
     system = (
-        "Write high-CTR YouTube Shorts titles for a manhwa recap. Lead with one concrete event, reveal, decision, threat, contradiction, or mystery from the supplied story. "
+        f"Write high-CTR YouTube Shorts titles for a {comic_type} recap. Lead with one concrete event, reveal, decision, threat, contradiction, or mystery from the supplied story. "
         "Do not summarize the chapter and do not invent facts, motives, identities, outcomes, or stakes. Avoid generic clickbait including THIS CHANGED EVERYTHING, NO ONE SAW THIS COMING, WHAT HAPPENED NEXT, and YOU WON'T BELIEVE. "
         "Use the same language as the recap. Return five distinct core titles, 6-13 words each, without the series name, chapter number, or #shorts. Strict JSON: {\"titles\":[string]}."
     )
@@ -129,17 +129,28 @@ def build_metadata(
     attribution: str = "",
     language: str = "en",
     title_override: str = "",
+    comic_type: str = "comic",
 ) -> dict:
     """Build grounded YouTube metadata in one language from the approved recap."""
     override = _clean_core_title(title_override)
     if override:
         title = f"{override} #shorts"[:100].rstrip()
     else:
-        llm_titles = _llm_hook_titles(project_title, manhwa_title, chapter, script_text)
+        llm_titles = _llm_hook_titles(project_title, manhwa_title, chapter, script_text, comic_type)
         core = llm_titles[0] if llm_titles else _fallback_hook_title(script_text)
         title = _compose_video_title(core, manhwa_title, chapter, project_title)
 
     language_key = str(language or "en").casefold().split("-", 1)[0]
+    medium = str(comic_type or "comic").strip().casefold()
+    if medium not in {"comic", "manhwa", "manhua", "manga"}:
+        medium = "comic"
+    tag_sets = {
+        "comic": ("comic", "comicrecap", "comicshorts"),
+        "manhwa": ("manhwa", "manhwarecap", "manhwashorts"),
+        "manhua": ("manhua", "manhuarecap", "manhuashorts"),
+        "manga": ("manga", "mangarecap", "mangashorts"),
+    }
+    medium_tag, recap_tag, shorts_tag = tag_sets[medium]
     if language_key == "id":
         chapter_label = f"Bab {chapter}" if chapter.strip() else ""
         recap_label = f"Rangkuman {manhwa_title.strip()} {chapter_label}".strip()
@@ -148,7 +159,7 @@ def build_metadata(
             "tetap milik pemegang hak masing-masing."
         )
         credit_label = "Kredit"
-        raw_tags = ["manhwa", "rangkumanmanhwa", "shorts", "manhwaindonesia"]
+        raw_tags = [medium_tag, f"rangkuman{medium_tag}", "shorts", shorts_tag]
     else:
         chapter_label = f"Chapter {chapter}" if chapter.strip() else ""
         recap_label = f"{manhwa_title.strip()} recap {chapter_label}".strip()
@@ -157,7 +168,7 @@ def build_metadata(
             "remain with their respective rights holders."
         )
         credit_label = "Credits"
-        raw_tags = ["manhwa", "manhwarecap", "shorts", "manhwashorts"]
+        raw_tags = [medium_tag, recap_tag, "shorts", shorts_tag]
 
     suffix_parts = [recap_label if manhwa_title.strip() else "", rights_notice]
     if attribution.strip():

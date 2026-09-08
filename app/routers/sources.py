@@ -21,6 +21,14 @@ from app.services import pipeline as pl
 router = APIRouter(prefix="/api", tags=["sources"], route_class=CommitRoute)
 
 
+def _comic_type_from_manga(manga: dict) -> str:
+    genres = {str(value).strip().casefold() for value in (manga.get("genre") or []) if str(value).strip()}
+    for comic_type in ("manhua", "manhwa", "manga"):
+        if comic_type in genres:
+            return comic_type
+    return "comic"
+
+
 def _ready_client() -> suwayomi.SuwayomiClient:
     state = suwayomi.ensure_sidecar()
     if not state.get("available"):
@@ -153,8 +161,10 @@ def import_suwayomi_range(
             created.append(row)
             existing.add(identity)
             next_index += 1
+    comic_type = _comic_type_from_manga(resolved.manga)
+    project.comic_type = comic_type
     project.status = ProjectStatus.DRAFT
-    pl.audit(db, "source.suwayomi.import", "project", project.id, user.id, manga_id=resolved.manga.get("id"), source_id=resolved.source.get("id"), chapters=[ch.get("chapterNumber") for ch in resolved.chapters], pages=len(pages), assets=len(created), duplicates=duplicates, rights=rights.status)
+    pl.audit(db, "source.suwayomi.import", "project", project.id, user.id, manga_id=resolved.manga.get("id"), source_id=resolved.source.get("id"), comic_type=comic_type, chapters=[ch.get("chapterNumber") for ch in resolved.chapters], pages=len(pages), assets=len(created), duplicates=duplicates, rights=rights.status)
     db.flush()
     return {
         "status": "imported",
@@ -164,6 +174,7 @@ def import_suwayomi_range(
         "source_id": str(resolved.source.get("id") or resolved.manga.get("sourceId") or ""),
         "source": source_label,
         "language": str(resolved.source.get("lang") or ""),
+        "comic_type": comic_type,
         "chapters": [str(ch.get("chapterNumber")) for ch in resolved.chapters],
         "pages_downloaded": len(pages),
         "assets_created": len(created),

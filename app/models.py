@@ -103,6 +103,7 @@ class Project(Base, TimestampMixin):
     manhwa_title: Mapped[str] = mapped_column(String(200), default="")
     chapter: Mapped[str] = mapped_column(String(60), default="")
     content_type: Mapped[str] = mapped_column(String(40), default=ContentType.CHAPTER_RECAP)
+    comic_type: Mapped[str] = mapped_column(String(20), default="comic")
     language: Mapped[str] = mapped_column(String(10), default=DEFAULT_PROJECT_LANGUAGE)
     spoiler_level: Mapped[str] = mapped_column(String(20), default=SpoilerLevel.MEDIUM)
     narration_style: Mapped[str] = mapped_column(String(20), default=NarrationStyle.DRAMATIC)
