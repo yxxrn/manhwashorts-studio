@@ -1195,6 +1195,7 @@ def check_narrative_naturalness(report: object) -> list[CheckResult]:
         "narrative.generic_hype": "Narrative text contains generic hype language.",
         "narrative.ai_slop": "Narrative text contains generic AI-style filler or empty intensity.",
         "narrative.visual_recap_prose": "Narrative prose is describing panels instead of telling the grounded story.",
+        "narrative.stiff_spoken_prose": "Narrative prose sounds like a synopsis or visual inventory instead of natural speech.",
         "narrative.ending_invalid": "Narrative ending does not match its ending kind.",
         "narrative.display_derivation_invalid": "Narrative display derivation is invalid.",
     }
@@ -1214,6 +1215,8 @@ def check_narrative_naturalness(report: object) -> list[CheckResult]:
                 detail["markers"] = list(getattr(report, "ai_slop_hits", ()))
             if code == "narrative.visual_recap_prose":
                 detail["markers"] = list(getattr(report, "reporter_prose_hits", ()))
+            if code == "narrative.stiff_spoken_prose":
+                detail["markers"] = list(getattr(report, "stiff_spoken_prose_hits", ()))
             results.append(_fail(code, CheckSeverity.ERROR, blocking[code], detail))
         elif code in warning_messages:
             results.append(

@@ -1208,6 +1208,7 @@ class NarrationMixin:
                     if blocking_checks:
                         marker_values = list(getattr(report, "ai_slop_hits", ()) or ())
                         marker_values.extend(getattr(report, "reporter_prose_hits", ()) or ())
+                        marker_values.extend(getattr(report, "stiff_spoken_prose_hits", ()) or ())
                         raise CloudStageError(
                             "cloud.narrative_qc_blocked",
                             reviewable=True,

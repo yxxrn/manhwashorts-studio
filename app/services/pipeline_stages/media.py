@@ -115,7 +115,9 @@ def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, d
         effective_voice_id = _voice_for(chosen_provider)
         synthesis_speed = float(speed)
         if chosen_provider.name == "pocket" and duration_bounds_s is not None:
-            synthesis_speed = float(tts_svc.settings.tts_pocket_production_speed)
+            # Synthesize once at native cadence; duration normalization may apply one
+            # pitch-preserving correction afterward if the measured master needs it.
+            synthesis_speed = float(tts_svc.POCKET_TTS_NATIVE_PRODUCTION_SPEED)
         batch = getattr(chosen_provider, "synthesize_sections", None)
         if callable(batch):
             produced = batch(spoken_texts, work, effective_voice_id, synthesis_speed)

@@ -68,6 +68,13 @@ _STIFF_SPOKEN_PROSE_PATTERNS = (
     r"\bthe (?:male|female)\b",
     r"\bswung (?:his|her) forward\b",
     r"\bduel freezes in place\b",
+    r"\b(?:dark|white|black|red|blue|silver|blond|blonde|brown)[ -]haired (?:fighter|character|warrior|man|woman)\b",
+    r"\b(?:muscular|burly|slender) (?:opponent|fighter|character|warrior|man|woman)\b",
+    r"\b(?:dynamic|dramatic) [a-z -]{0,24}\bpose\b",
+    r"\b(?:dramatic fire effects?|intense aura|purple energy|black cracks)\b",
+    r"\b(?:highlights how|rais(?:e|es|ing) the stakes|high-stakes confrontation|signals? (?:their|his|her) destiny)\b",
+    r"\bthis (?:dramatic|explosive|intense) (?:tie|scene|moment|exchange|confrontation)\b",
+    r"\bwhat (?:final )?(?:clash|battle|challenge|fate) awaits\b",
 )
 _STORY_BRIDGE_PATTERN = (
     r"\b(?:but|so|yet|because|however|instead|while|meanwhile|until|therefore|later|earlier|afterward|before|when|as)\b"

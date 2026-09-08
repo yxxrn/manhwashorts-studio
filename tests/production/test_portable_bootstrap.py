@@ -45,6 +45,8 @@ def test_pocket_runtime_is_cross_platform_and_quantization_is_optional():
     assert "Scripts/python.exe" in setup
     assert 'f"pocket-tts=={VERSION}"' in setup
     assert '"torchao>=0.16.0"' in setup
+    assert 'POCKET_TTS_MODE' in setup
+    assert '"fp32"' in setup
     assert 'mode = "int8"' in setup
     assert 'else "fp32"' in setup
     win = _text("scripts/start_pocket_tts_windows.ps1")

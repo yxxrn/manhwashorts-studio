@@ -2695,6 +2695,14 @@ def _narration_retry_feedback(
                 "claim IDs, and evidence. Replace filler with the concrete event or consequence already present "
                 "in PRIMARY story claims; do not add facts." + marker_note
             )
+        if failed_predicate == "narrative.stiff_spoken_prose":
+            return (
+                "rewrite as concise conversational spoken narration. Use grounded canonical character names when available; "
+                "do not identify characters by hair color, physique, pose, aura, or decorative effects. Replace synopsis-style "
+                "conclusions with the concrete contrast, decision, or consequence already supported by the claims. Split overloaded "
+                "sentences into natural breaths and do not manufacture a generic future-facing question. Preserve exact claim IDs, "
+                "evidence panel IDs, uncertainty, and facts." + marker_note
+            )
         return (
             "use natural evidence-grounded prose and avoid generic hype, CTA language, copied dialogue, "
             "panel-description prose, AI filler, and unsupported claims." + marker_note

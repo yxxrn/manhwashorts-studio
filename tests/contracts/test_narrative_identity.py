@@ -84,7 +84,7 @@ def test_profile_is_frozen_and_has_exact_sharp_friend_identity_fields():
     module = _identity_module()
     profile = getattr(module, "SHARP_FRIEND_V1", None)
     assert profile.profile_id == "sharp_friend_v1"
-    assert profile.profile_version == "1.1.0"
+    assert profile.profile_version == "1.2.0"
     assert profile.language == "en-US"
     assert profile.identity == (
         "a clever, friendly, perceptive friend under controlled tension"
@@ -116,7 +116,7 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     module = _identity_module()
     version, digest, text = module.load_narrative_instruction("sharp_friend_v1")
     assert version == "vision-first-story-analyzer-v3"
-    assert digest == "f7fbea43b23d42d848b8000f2d0379102bf8b1982b3a14c370a56925839513ac"
+    assert digest == "e28b20a0848ded97114b498de0209ee0f2cd02c005b1d401b482e597079f98d0"
     assert digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert "\r" not in text
     assert "observe every ordered panel" in text.lower()
@@ -125,7 +125,7 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     assert "support_only visual claims" in text.lower()
     assert (
         module.get_narrative_identity("sharp_friend_v1").contract_sha256
-        == "678543c42e7894ae10a04fd6ce84105d044c2b4922770b2c7baaed5f36ac3e40"
+        == "7e554fab8f23f2fbe9a4777ea98d280f4cbb9664f5c360aaa045dc0155eb2886"
     )
 
 
@@ -575,8 +575,8 @@ def test_v2_default_dispatch_validates_the_legacy_shape_unchanged():
 
 def test_house_voice_resource_is_versioned_and_loaded_into_identity():
     module = _identity_module()
-    voice = module._load_house_voice()
-    assert f"Version: {module.HOUSE_VOICE_VERSION}" in voice
-    assert "Tell the story, do not describe the manga." in voice
+    voice = module._load_house_voice(module.SHARP_FRIEND_V1)
+    assert f"Version: {module.SHARP_FRIEND_HOUSE_VOICE_VERSION}" in voice
+    assert "Tell the story, never narrate the artwork." in voice
     _, _, combined = module.load_narrative_instruction("sharp_friend_v1")
     assert voice in combined

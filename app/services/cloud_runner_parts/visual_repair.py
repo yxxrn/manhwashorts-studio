@@ -701,6 +701,7 @@ class VisualNarrativeRepairMixin:
                             "anti_slop_markers": list(dict.fromkeys([
                                 *list(getattr(report, "ai_slop_hits", ()) or ()),
                                 *list(getattr(report, "reporter_prose_hits", ()) or ()),
+                                *list(getattr(report, "stiff_spoken_prose_hits", ()) or ()),
                             ]))[:8],
                         },
                     )
@@ -804,6 +805,7 @@ class VisualNarrativeRepairMixin:
                                 "anti_slop_markers": list(dict.fromkeys([
                                     *list(getattr(report, "ai_slop_hits", ()) or ()),
                                     *list(getattr(report, "reporter_prose_hits", ()) or ()),
+                                *list(getattr(report, "stiff_spoken_prose_hits", ()) or ()),
                                 ]))[:8],
                             },
                         )

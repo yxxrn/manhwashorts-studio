@@ -31,6 +31,9 @@ def main() -> int:
     parser.add_argument("--runtime-dir", type=Path, default=default_root)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    requested_mode = os.environ.get("POCKET_TTS_MODE", "fp32").strip().lower()
+    if requested_mode not in {"fp32", "int8"}:
+        raise SystemExit("POCKET_TTS_MODE must be fp32 or int8")
     runtime = args.runtime_dir.expanduser().resolve()
     python = _venv_python(runtime / ".venv")
 
@@ -53,7 +56,11 @@ def main() -> int:
             quant_probe = subprocess.run(
                 [str(python), "-c", "import torchao"], capture_output=True, text=True, check=False, timeout=60
             )
-            mode = "int8" if quant_probe.returncode == 0 else "fp32"
+            mode = (
+                "int8"
+                if requested_mode == "int8" and quant_probe.returncode == 0
+                else "fp32"
+            )
             (runtime / "mode.txt").write_text(mode + "\n", encoding="ascii")
             print(f"Pocket TTS runtime already ready: {runtime} mode={mode}")
             return 0
@@ -79,7 +86,7 @@ def main() -> int:
         raise SystemExit("Pocket TTS runtime import check failed")
     if probe.stdout.strip().casefold() != "false":
         raise SystemExit("Pocket TTS bootstrap expected a CPU-only PyTorch runtime")
-    quantized = quant.returncode == 0 and subprocess.run(
+    quantized = requested_mode == "int8" and quant.returncode == 0 and subprocess.run(
         [str(python), "-c", "import torchao"], capture_output=True, text=True, check=False, timeout=60
     ).returncode == 0
     mode = "int8" if quantized else "fp32"

@@ -9,6 +9,8 @@ from pathlib import Path
 
 HOUSE_VOICE_VERSION = "manhwa-house-voice-v1"
 HOUSE_VOICE_FILENAME = "manhwa_house_voice_v1.txt"
+SHARP_FRIEND_HOUSE_VOICE_VERSION = "manhwa-house-voice-v2"
+SHARP_FRIEND_HOUSE_VOICE_FILENAME = "manhwa_house_voice_v2.txt"
 
 
 class NarrativeIdentityError(ValueError):
@@ -39,9 +41,10 @@ class NarrativeIdentityProfile:
 
 SHARP_FRIEND_V1 = NarrativeIdentityProfile(
     profile_id="sharp_friend_v1",
-    profile_version="1.1.0",
+    profile_version="1.2.0",
     language="en-US",
     identity="a clever, friendly, perceptive friend under controlled tension",
+    contract_sha256="7e554fab8f23f2fbe9a4777ea98d280f4cbb9664f5c360aaa045dc0155eb2886",
 )
 
 RETENTION_STORY_V1 = NarrativeIdentityProfile(
@@ -102,14 +105,20 @@ def canonical_profile_contract_json(
     )
 
 
-def _load_house_voice() -> str:
-    path = Path(__file__).resolve().parents[1] / "prompts" / HOUSE_VOICE_FILENAME
+def _load_house_voice(profile: NarrativeIdentityProfile) -> str:
+    if profile.profile_id == "sharp_friend_v1":
+        filename = SHARP_FRIEND_HOUSE_VOICE_FILENAME
+        version = SHARP_FRIEND_HOUSE_VOICE_VERSION
+    else:
+        filename = HOUSE_VOICE_FILENAME
+        version = HOUSE_VOICE_VERSION
+    path = Path(__file__).resolve().parents[1] / "prompts" / filename
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         raise NarrativeIdentityError("narrative identity resource is invalid") from None
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    if f"Version: {HOUSE_VOICE_VERSION}" not in normalized:
+    if f"Version: {version}" not in normalized:
         raise NarrativeIdentityError("narrative identity resource is invalid")
     return normalized.strip()
 
@@ -124,7 +133,7 @@ def _load_prompt(profile: NarrativeIdentityProfile) -> tuple[str, str]:
     version_line = f"Version: {profile.prompt_version}"
     if version_line not in normalized:
         raise NarrativeIdentityError("narrative identity resource is invalid")
-    combined = normalized.rstrip() + "\n\n" + _load_house_voice() + "\n"
+    combined = normalized.rstrip() + "\n\n" + _load_house_voice(profile) + "\n"
     prompt_sha256 = hashlib.sha256(combined.encode("utf-8")).hexdigest()
     return prompt_sha256, combined
 

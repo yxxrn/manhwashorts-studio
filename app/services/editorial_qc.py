@@ -85,6 +85,7 @@ class NarrativeNaturalnessReport:
     cta_hits: tuple[str, ...]
     ai_slop_hits: tuple[str, ...]
     reporter_prose_hits: tuple[str, ...]
+    stiff_spoken_prose_hits: tuple[str, ...]
     mechanical_opening_ratio: float
     visual_description_ratio: float
     claim_evidence_coverage_ratio: float
@@ -149,6 +150,16 @@ _NARRATIVE_REPORTER_MARKERS = (
     "positioned behind",
 )
 _NARRATIVE_MECHANICAL_OPENINGS = ("then", "meanwhile", "next", "after that", "later", "as")
+_NARRATIVE_STIFF_SPOKEN_PATTERNS = (
+    ("appearance_based_character_label", r"\b(?:dark|white|black|red|blue|silver|blond|blonde|brown)[ -]haired (?:fighter|character|warrior|man|woman)\b"),
+    ("physique_based_character_label", r"\b(?:muscular|burly|slender) (?:opponent|fighter|character|warrior|man|woman)\b"),
+    ("visual_pose_inventory", r"\b(?:dynamic|dramatic) [a-z -]{0,24}\bpose\b"),
+    ("visual_effect_inventory", r"\b(?:dramatic fire effects?|intense aura|purple energy|black cracks)\b"),
+    ("abstract_significance", r"\b(?:highlights how|rais(?:e|es|ing) the stakes|high-stakes confrontation|signals? (?:their|his|her) destiny)\b"),
+    ("synopsis_transition", r"\bthis (?:dramatic|explosive|intense) (?:tie|scene|moment|exchange|confrontation)\b"),
+    ("generic_future_question", r"\bwhat (?:final )?(?:clash|battle|challenge|fate) awaits\b|\bwhat will (?:the |this )?(?:[a-z-]+ ){0,3}(?:character|fighter|warrior|rival|opponent) do next\b"),
+)
+_NARRATIVE_MAX_SPOKEN_SENTENCE_WORDS = 42
 
 
 def _narrative_words(text: object) -> list[str]:
@@ -209,6 +220,21 @@ def _narrative_reporter_signals(
         for text in passage_texts
     )
     return hits, reporter_passages
+
+
+def _narrative_stiff_spoken_signals(passage_texts: Sequence[str]) -> tuple[str, ...]:
+    hits: list[str] = []
+    lower_text = " ".join(passage_texts).casefold()
+    for label, pattern in _NARRATIVE_STIFF_SPOKEN_PATTERNS:
+        if re.search(pattern, lower_text):
+            hits.append(label)
+    if any(
+        len(sentence) > _NARRATIVE_MAX_SPOKEN_SENTENCE_WORDS
+        for text in passage_texts
+        for sentence in _narrative_sentences(text)
+    ):
+        hits.append("overlong_spoken_sentence")
+    return tuple(dict.fromkeys(hits))
 
 
 def has_visual_recap_prose(passages: Sequence[Mapping[str, object]]) -> bool:
@@ -283,6 +309,7 @@ def screen_narrative_naturalness(
     cta_hits = tuple(marker for marker in _NARRATIVE_CTA_MARKERS if marker in lower_text)
     ai_slop_hits = tuple(marker for marker in _NARRATIVE_AI_SLOP_MARKERS if marker in lower_text)
     reporter_prose_hits, reporter_passages = _narrative_reporter_signals(passage_texts)
+    stiff_spoken_prose_hits = _narrative_stiff_spoken_signals(passage_texts)
     mechanical_openings = sum(
         any(
             text.casefold().lstrip().startswith(marker + " ")
@@ -353,6 +380,8 @@ def screen_narrative_naturalness(
         warnings.add("narrative.ai_slop")
     if len(reporter_prose_hits) >= 2 or visual_description_ratio >= 0.4:
         warnings.add("narrative.visual_recap_prose")
+    if stiff_spoken_prose_hits:
+        warnings.add("narrative.stiff_spoken_prose")
     if mechanical_opening_ratio >= 0.5 and mechanical_openings >= 2:
         warnings.add("narrative.mechanical_sequence")
     if unsupported_claim:
@@ -393,6 +422,7 @@ def screen_narrative_naturalness(
         cta_hits=cta_hits,
         ai_slop_hits=ai_slop_hits,
         reporter_prose_hits=reporter_prose_hits,
+        stiff_spoken_prose_hits=stiff_spoken_prose_hits,
         mechanical_opening_ratio=mechanical_opening_ratio,
         visual_description_ratio=visual_description_ratio,
         claim_evidence_coverage_ratio=(

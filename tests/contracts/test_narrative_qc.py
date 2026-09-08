@@ -234,3 +234,38 @@ def test_mechanical_sequence_is_warning_not_blocking():
     results = quality.check_narrative_naturalness(report)
     assert report.mechanical_opening_ratio >= 0.5
     assert any(result.code == "narrative.mechanical_sequence" and not result.blocking for result in results)
+
+
+def test_previous_visual_inventory_narration_is_blocked_as_stiff_spoken_prose():
+    passages = _passages()
+    passages[0]["text"] = "The dark-haired fighter grips a glowing spear while his muscular opponent demonstrates five realms using dramatic fire effects and intense aura."
+    passages[1]["text"] = "The explosive scene highlights how extraordinary talent allows a fighter to bridge a huge power gap during this high-stakes confrontation."
+    report = editorial_qc.screen_narrative_naturalness(passages, _claims(), _profile())
+    results = quality.check_narrative_naturalness(report)
+    assert set(report.stiff_spoken_prose_hits) >= {
+        "appearance_based_character_label",
+        "physique_based_character_label",
+        "visual_effect_inventory",
+        "abstract_significance",
+    }
+    assert any(
+        result.code == "narrative.stiff_spoken_prose" and result.blocking
+        for result in results
+    )
+
+
+def test_previous_synopsis_transition_and_generic_question_are_blocked():
+    passages = _passages()
+    passages[0]["text"] = "This dramatic tie transforms the selection into a true rivalry, raising the stakes for the trials ahead."
+    passages[-1]["text"] = "With both rivals moving forward, what final clash awaits them on the ascent?"
+    report = editorial_qc.screen_narrative_naturalness(passages, _claims(), _profile())
+    results = quality.check_narrative_naturalness(report)
+    assert set(report.stiff_spoken_prose_hits) >= {
+        "abstract_significance",
+        "synopsis_transition",
+        "generic_future_question",
+    }
+    assert any(
+        result.code == "narrative.stiff_spoken_prose" and result.blocking
+        for result in results
+    )

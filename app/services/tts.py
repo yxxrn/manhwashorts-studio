@@ -61,7 +61,7 @@ VOICE_CATALOG: dict[str, dict[str, str]] = {
 }
 
 POCKET_TTS_DEFAULT_VOICE_ID = "alba"
-POCKET_TTS_PROVIDER_VERSION = "pocket-local-v1"
+POCKET_TTS_PROVIDER_VERSION = "pocket-local-v2"
 POCKET_TTS_COMMERCIAL_VOICE_IDS: tuple[str, ...] = (
     "alba", "anna", "azelma", "bill_boerst", "caro_davy", "charles",
     "eponine", "eve", "fantine", "george", "jane", "javert", "marius",
@@ -97,7 +97,7 @@ def production_tts_selection_identity() -> dict[str, object]:
         "pocket_provider_version": POCKET_TTS_PROVIDER_VERSION if local_first else "",
         "pocket_model": settings.tts_pocket_model if local_first else "",
         "pocket_voice": resolve_pocket_voice_id("") if local_first else "",
-        "pocket_production_speed": round(float(settings.tts_pocket_production_speed), 4) if local_first else 0.0,
+        "pocket_production_speed": POCKET_TTS_NATIVE_PRODUCTION_SPEED if local_first else 0.0,
         "fallback_provider": str(settings.tts_provider or ""),
         "fallback_http_protocol": settings.tts_http_protocol if settings.tts_provider == "http" else "",
         "fallback_http_model": settings.tts_http_model if settings.tts_provider == "http" else "",
@@ -162,10 +162,11 @@ def probe_duration(path: Path) -> float:
         raise TTSError(f"could not probe duration of {path.name}: {exc}") from exc
 
 
-PRODUCTION_AUDIO_TIMING_POLICY_VERSION = "production-audio-timing-v1"
+PRODUCTION_AUDIO_TIMING_POLICY_VERSION = "production-audio-timing-v2"
 PRODUCTION_AUDIO_TEMPO_MIN = 0.80
 PRODUCTION_AUDIO_TEMPO_MAX = 1.25
 PRODUCTION_AUDIO_TARGET_MARGIN_S = 0.75
+POCKET_TTS_NATIVE_PRODUCTION_SPEED = 1.0
 
 
 def _duration_window_tempo(
@@ -482,7 +483,13 @@ class PocketTTSProvider:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         raw = out_path.with_name(f".{out_path.stem}.pocket.raw.wav")
         raw.write_bytes(response.content)
-        filters = ["highpass=f=70", "lowpass=f=15000", "loudnorm=I=-16:TP=-1.5:LRA=7"]
+        # Keep segment processing transparent. Final render owns loudness normalization.
+        filters = [
+            "highpass=f=70",
+            "lowpass=f=16000",
+            "equalizer=f=3200:t=q:w=1:g=1.2",
+            "equalizer=f=6500:t=q:w=1:g=0.5",
+        ]
         requested_speed = max(0.5, min(2.0, float(speed)))
         if abs(requested_speed - 1.0) > 0.001:
             filters.insert(0, f"atempo={requested_speed:.6f}")

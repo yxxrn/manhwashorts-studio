@@ -13,12 +13,14 @@ def test_pocket_provider_uses_alba_and_records_stable_profile(monkeypatch, tmp_p
     monkeypatch.setattr(settings, "tts_pocket_voice", "alba")
     monkeypatch.setattr(settings, "tts_pocket_url", "http://pocket.test")
     calls = []
+    ffmpeg_calls = []
 
     def fake_post(url, data=None, timeout=None):
         calls.append((url, dict(data or {}), timeout))
         return httpx.Response(200, content=b"x" * 2048, request=httpx.Request("POST", url))
 
     def fake_run(cmd, **kwargs):
+        ffmpeg_calls.append(list(cmd))
         Path(cmd[-1]).write_bytes(b"normalized")
         return SimpleNamespace(returncode=0, stderr="")
 
@@ -30,6 +32,9 @@ def test_pocket_provider_uses_alba_and_records_stable_profile(monkeypatch, tmp_p
     assert clip.provider == "pocket" and clip.voice_id == "alba"
     assert clip.voice_profile["model"] == settings.tts_pocket_model
     assert clip.voice_profile["provider_version"] == tts_svc.POCKET_TTS_PROVIDER_VERSION
+    filter_chain = " ".join(ffmpeg_calls[0])
+    assert "loudnorm=" not in filter_chain
+    assert "equalizer=f=3200" in filter_chain
 
 
 def test_tts_resolver_local_first_keeps_old_provider_as_lazy_fallback(db, monkeypatch):
@@ -120,7 +125,7 @@ def test_render_identity_changes_when_locked_pocket_voice_changes(db, monkeypatc
     azelma_identity = pl._render_output_identity(project)
     assert alba_identity != azelma_identity
     assert alba_identity["tts_selection"]["pocket_voice"] == "alba"
-    assert alba_identity["tts_selection"]["pocket_production_speed"] == 0.9
+    assert alba_identity["tts_selection"]["pocket_production_speed"] == 1.0
     assert azelma_identity["tts_selection"]["pocket_voice"] == "azelma"
 
 
