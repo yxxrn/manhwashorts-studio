@@ -195,7 +195,13 @@ class Settings(BaseSettings):
     strip_slice_max_parts: int = 12
 
     # --- TTS ---
-    tts_provider: str = Field(default="espeak", description="espeak | null | http")
+    tts_provider: str = Field(default="espeak", description="espeak | null | http | pocket")
+    tts_local_first: bool = False
+    tts_pocket_url: str = "http://127.0.0.1:8790"
+    tts_pocket_voice: str = "alba"
+    tts_pocket_model: str = "pocket-tts-3.1.0-int8"
+    tts_pocket_timeout: float = 180.0
+    tts_pocket_production_speed: float = 0.90
     espeak_bin: str = "espeak-ng"
     tts_http_url: str | None = None
     tts_http_key: SecretStr | None = None

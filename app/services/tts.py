@@ -3,6 +3,7 @@
 Providers implement one interface so the render pipeline never cares which
 engine produced the audio:
 
+* ``PocketTTSProvider`` - local neural TTS service, CPU-only production primary.
 * ``EspeakProvider`` - local espeak-ng, no network, always available.
 * ``HttpProvider``   - any HTTP TTS endpoint returning audio bytes.
 * ``NullProvider``   - silent audio of the estimated length, for tests.
@@ -58,6 +59,51 @@ VOICE_CATALOG: dict[str, dict[str, str]] = {
     "id-male": {"label": "Indonesian, lower pitch", "espeak": "id"},
     "ko": {"label": "Korean (espeak)", "espeak": "ko"},
 }
+
+POCKET_TTS_DEFAULT_VOICE_ID = "alba"
+POCKET_TTS_PROVIDER_VERSION = "pocket-local-v1"
+POCKET_TTS_COMMERCIAL_VOICE_IDS: tuple[str, ...] = (
+    "alba", "anna", "azelma", "bill_boerst", "caro_davy", "charles",
+    "eponine", "eve", "fantine", "george", "jane", "javert", "marius",
+    "mary", "michael", "paul", "peter_yearsley", "stuart_bell", "vera",
+)
+POCKET_TTS_ATTRIBUTIONS = {
+    "alba": "Voice: Alba MacKenna (Kyutai tts-voices), CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/",
+}
+
+
+def resolve_pocket_voice_id(voice_id: str) -> str:
+    value = str(voice_id or "").strip().lower()
+    if value.startswith("pocket:"):
+        value = value.split(":", 1)[1].strip()
+    if value not in POCKET_TTS_COMMERCIAL_VOICE_IDS:
+        value = str(settings.tts_pocket_voice or POCKET_TTS_DEFAULT_VOICE_ID).strip().lower()
+    if value not in POCKET_TTS_COMMERCIAL_VOICE_IDS:
+        raise TTSError(f"Pocket TTS voice is not commercial-safe or unknown: {value}")
+    return value
+
+
+def voice_attribution(provider: str, voice_id: str) -> str:
+    if str(provider or "").strip().lower() != "pocket":
+        return ""
+    return POCKET_TTS_ATTRIBUTIONS.get(str(voice_id or "").strip().lower(), "")
+
+
+def production_tts_selection_identity() -> dict[str, object]:
+    local_first = bool(settings.tts_local_first)
+    return {
+        "version": "tts-selection-v2",
+        "local_first": local_first,
+        "pocket_provider_version": POCKET_TTS_PROVIDER_VERSION if local_first else "",
+        "pocket_model": settings.tts_pocket_model if local_first else "",
+        "pocket_voice": resolve_pocket_voice_id("") if local_first else "",
+        "pocket_production_speed": round(float(settings.tts_pocket_production_speed), 4) if local_first else 0.0,
+        "fallback_provider": str(settings.tts_provider or ""),
+        "fallback_http_protocol": settings.tts_http_protocol if settings.tts_provider == "http" else "",
+        "fallback_http_model": settings.tts_http_model if settings.tts_provider == "http" else "",
+        "fallback_http_voice": settings.tts_http_voice if settings.tts_provider == "http" else "",
+    }
+
 
 GROK_TTS_DEFAULT_MODEL = "grok-voice-latest"
 GROK_TTS_DEFAULT_VOICE_ID = "orion"
@@ -400,6 +446,77 @@ class NullProvider:
         )
 
 
+class PocketTTSProvider:
+    """Local Pocket TTS service. One voice is locked for the whole run."""
+
+    name = "pocket"
+
+    def available(self) -> bool:
+        import httpx
+        try:
+            response = httpx.get(
+                f"{settings.tts_pocket_url.rstrip('/')}/openapi.json",
+                timeout=min(2.0, float(settings.tts_pocket_timeout)),
+            )
+            return response.status_code == 200
+        except Exception:
+            return False
+
+    def synthesize(self, text: str, out_path: Path, voice_id: str = "en", speed: float = 1.0) -> SpeechClip:
+        import httpx
+        if not text.strip():
+            raise TTSError("cannot synthesize empty text")
+        voice = resolve_pocket_voice_id(voice_id)
+        endpoint = f"{settings.tts_pocket_url.rstrip('/')}/tts"
+        try:
+            response = httpx.post(
+                endpoint,
+                data={"text": text, "voice_url": voice},
+                timeout=float(settings.tts_pocket_timeout),
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            raise TTSError(f"Pocket TTS request failed: {type(exc).__name__}: {exc}") from exc
+        if len(response.content) < 1024:
+            raise TTSError("Pocket TTS returned empty audio")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        raw = out_path.with_name(f".{out_path.stem}.pocket.raw.wav")
+        raw.write_bytes(response.content)
+        filters = ["highpass=f=70", "lowpass=f=15000", "loudnorm=I=-16:TP=-1.5:LRA=7"]
+        requested_speed = max(0.5, min(2.0, float(speed)))
+        if abs(requested_speed - 1.0) > 0.001:
+            filters.insert(0, f"atempo={requested_speed:.6f}")
+        try:
+            subprocess.run(
+                [settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+                 "-i", str(raw), "-af", ",".join(filters), "-ar", "48000", "-ac", "2", str(out_path)],
+                capture_output=True, text=True, timeout=180, check=True,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            detail = getattr(exc, "stderr", "") or type(exc).__name__
+            raise TTSError(f"Pocket TTS audio mastering failed: {str(detail)[:300]}") from exc
+        finally:
+            raw.unlink(missing_ok=True)
+        duration = probe_duration(out_path)
+        return SpeechClip(
+            path=out_path, text=text, duration=duration, voice_id=voice, provider=self.name,
+            word_timings=estimate_word_timings(text, duration),
+            voice_profile=voice_profile_for(
+                self.name, voice, language="en-US", model=settings.tts_pocket_model,
+                speed=requested_speed, sample_rate=48000, channels=2,
+                provider_version=POCKET_TTS_PROVIDER_VERSION,
+            ),
+        )
+
+    def synthesize_sections(self, texts: list[str], work_dir: Path, voice_id: str = "en", speed: float = 1.0) -> list[SpeechClip]:
+        if not texts or not all(str(text).strip() for text in texts):
+            raise TTSError("cannot synthesize empty sections")
+        return [
+            self.synthesize(text, work_dir / f"{index:02d}_pocket.wav", voice_id, speed)
+            for index, text in enumerate(texts)
+        ]
+
+
 class HttpProvider:
     """Calls an external TTS HTTP API that returns raw audio bytes."""
 
@@ -681,6 +798,7 @@ _PROVIDERS: dict[str, type] = {
     "espeak": EspeakProvider,
     "null": NullProvider,
     "http": HttpProvider,
+    "pocket": PocketTTSProvider,
 }
 
 
