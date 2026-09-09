@@ -84,7 +84,7 @@ def test_profile_is_frozen_and_has_exact_sharp_friend_identity_fields():
     module = _identity_module()
     profile = getattr(module, "SHARP_FRIEND_V1", None)
     assert profile.profile_id == "sharp_friend_v1"
-    assert profile.profile_version == "1.2.1"
+    assert profile.profile_version == "1.2.2"
     assert profile.language == "en-US"
     assert profile.identity == (
         "a clever, friendly, perceptive friend under controlled tension"
@@ -116,16 +116,17 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     module = _identity_module()
     version, digest, text = module.load_narrative_instruction("sharp_friend_v1")
     assert version == "vision-first-story-analyzer-v3"
-    assert digest == "92278ca08489e64cac1982d1e571968905e262f1f6cdc52860ceac12db20e9bf"
+    assert digest == "b840ac03da1f905b7bd5bd0935204ed3ba75334bf5f4f453fe6e1e289afc582b"
     assert digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert "\r" not in text
     assert "observe every ordered panel" in text.lower()
     assert "contract id: manhwashorts.house_voice" in text.lower()
     assert "primary story-understanding claims decide what the narration is about" in text.lower()
     assert "support_only visual claims" in text.lower()
+    assert "in the final passage, state the concrete new event and its immediate consequence" in text.lower()
     assert (
         module.get_narrative_identity("sharp_friend_v1").contract_sha256
-        == "a901e7d9cab5ad48e9f8ce586633fdec03f51587c892f721bde0291e077674ac"
+        == "ac9ddb908d2af0060c933955771ada21327b45a582154388497456077e6d074b"
     )
 
 

@@ -1,6 +1,6 @@
 MANHWASHORTS HOUSE VOICE
 Contract ID: manhwashorts.house_voice
-Version: manhwa-house-voice-v2.1
+Version: manhwa-house-voice-v2.2
 
 Purpose: turn grounded story understanding into spoken short-form narration that sounds like someone who knows the chapter and is telling a friend why this moment matters.
 
@@ -32,6 +32,7 @@ Meaning over description:
 Endings:
 - Do not manufacture a generic future-facing question such as what will happen next, what final clash awaits, or what will this character do next.
 - Prefer a grounded consequence or cliffhanger. Use an open question only when the chapter itself leaves a specific evidence-backed uncertainty worth asking.
+- In the final passage, state the concrete new event and its immediate consequence; do not spend the ending on appearance inventory or turn that event into a generic question. Default to a declarative cliffhanger.
 - Do not summarize a moral or tie every thread into a perfect ending.
 
 Avoid AI/reporter fingerprints:
