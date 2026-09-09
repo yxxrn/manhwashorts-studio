@@ -1429,7 +1429,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
             _validate_synthesis_subtitle_admission(response, active_request)
             break
         except VisionResponseInvalid as exc:
-            retryable_subtypes = {
+            retryable_subtypes = set(TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES) | {
                 "script_passage_word_count_is_outside_its_role_guardrail",
                 "script_passage_narration_must_contain_90-125_words",
                 "script_passage_copies_source_dialogue",
@@ -1610,6 +1610,8 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 raise
             if subtype not in TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES:
                 active_request = replace(active_request, retry_text_only_locked_output=None)
+            if subtype != "non-question_ending_kind_must_not_end_with_":
+                active_request = replace(active_request, retry_declarative_ending=False)
             if projection_retryable or story_spine_retryable or continuity_entity_retryable:
                 active_request = replace(
                     active_request,
@@ -1815,6 +1817,20 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                     retry_evidence_lineage=False,
                     retry_word_counts=None,
                     retry_passages=(retry_passages if retry_passages is not None else active_request.retry_passages),
+                )
+            elif subtype == "non-question_ending_kind_must_not_end_with_":
+                active_request = replace(
+                    active_request,
+                    retry_declarative_ending=True,
+                    retry_dialogue_paraphrase=False,
+                    retry_visual_selection=False,
+                    retry_claim_qualification=False,
+                    retry_local_claim_grounding=False,
+                    retry_evidence_lineage=False,
+                    retry_projection_contract=False,
+                    retry_word_counts=None,
+                    retry_passages=(retry_passages if retry_passages is not None else active_request.retry_passages),
+                    retry_text_only_locked_output=(dict(getattr(exc, "retry_locked_output", {}) or {}) or None),
                 )
             elif subtype == "script_passage_copies_source_dialogue":
                 active_request = replace(

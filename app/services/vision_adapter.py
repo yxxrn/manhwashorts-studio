@@ -264,6 +264,7 @@ class VisionChapterSynthesisRequest:
     retry_visual_selection: bool = False
     retry_evidence_lineage: bool = False
     retry_dialogue_paraphrase: bool = False
+    retry_declarative_ending: bool = False
     retry_claim_qualification: bool = False
     retry_claim_semantic_grounding: bool = False
     retry_claim_semantic_diagnostics: Mapping[str, Any] | None = None
@@ -369,6 +370,7 @@ TEXT_ONLY_SYNTHESIS_RETRY_SUBTYPES = frozenset(
         "retention_hook_must_be_one_sentence",
         "retention_visual_recap_prose",
         "production_subtitle_overflow",
+        "non-question_ending_kind_must_not_end_with_",
     }
 )
 
@@ -420,6 +422,11 @@ def _apply_text_only_retry_lock(
 
     if set(text_by_id) != locked_ids:
         raise VisionResponseInvalid(validation_subtype="synthesis_text_only_lock_invalid")
+    if request.retry_declarative_ending:
+        final_index = len(rebuilt_passages) - 1
+        for index, passage in enumerate(rebuilt_passages):
+            if index != final_index:
+                passage["text"] = str(locked_passages[index]["text"])
     rebuilt_output = dict(locked)
     rebuilt_output["script_passages"] = rebuilt_passages
     return rebuilt_output
@@ -2086,6 +2093,7 @@ def _validate_synthesis_request(
         or not isinstance(request.retry_visual_selection, bool)
         or not isinstance(request.retry_evidence_lineage, bool)
         or not isinstance(request.retry_dialogue_paraphrase, bool)
+        or not isinstance(request.retry_declarative_ending, bool)
         or not isinstance(request.retry_claim_qualification, bool)
         or not isinstance(request.retry_claim_semantic_grounding, bool)
         or (
@@ -4017,6 +4025,13 @@ def _build_synthesis_payload(
                     "The previous narration text passed its editorial shape but its claim links were not locally grounded. "
                     "Use these previous script_passages as a LOCKED narration base. Preserve passage_id, editorial_role, text, ordering, and grounded meaning. "
                     "You MAY revise claim_ids and evidence_panel_ids and MAY split or rewrite evidence_graph claims so each passage claim has local evidence. "
+                    f"Previous locked script_passages: {locked_json}. "
+                )
+            elif request.retry_declarative_ending:
+                locked_passage_instruction = (
+                    "The previous response passed semantic, evidence, and visual structure but its final passage contradicted the locked declarative ending kind. "
+                    "Preserve every non-final passage text exactly. Preserve every passage_id, editorial_role, claim_ids, evidence_panel_ids, ordering, claims, narrative_outline, and grounded meaning. "
+                    "Rewrite only the final passage text as a declarative consequence or cliffhanger using the same locked claims and evidence, and do not end it with a question mark. Add no facts. "
                     f"Previous locked script_passages: {locked_json}. "
                 )
             elif request.retry_dialogue_paraphrase:
