@@ -376,3 +376,10 @@ def test_analysis_resume_reuses_matching_source_fingerprint(tmp_path, monkeypatc
     result=runner._ensure_analysis(SimpleNamespace(),args,{"events":[],"stages":{}},tmp_path/"state.json",
         SimpleNamespace(id="u"),SimpleNamespace(id="p"))
     assert result is current
+
+def test_runner_defaults_to_manual_editorial_hold_and_requires_explicit_auto_approve():
+    source = SCRIPT_PATH.read_text(encoding='utf-8')
+    assert 'parser.add_argument("--auto-approve", action="store_true", default=False' in source
+    assert 'if bool(getattr(args, "auto_approve", False)) and not bool(getattr(args, "review_hold", False)) and script.approved_at is None:' in source
+    assert 'if script.approved_at is None:' in source
+    assert source.index('if script.approved_at is None:') < source.index('job = _ensure_production')

@@ -9,16 +9,16 @@ import pytest
 from tests.factories.narrative import _seed_sharp_friend
 
 
-@pytest.mark.parametrize("ending_kind", ("consequence", "open_question"))
+@pytest.mark.parametrize("ending_kind", ("consequence", "cliffhanger"))
 def test_review_accepts_two_ending_styles_and_stops_before_media(
     db, monkeypatch, ending_kind: str
 ):
     from app.services import pipeline as pipeline_service
 
     project, analysis = _seed_sharp_friend(db)
-    if ending_kind == "open_question":
+    if ending_kind == "cliffhanger":
         passages = copy.deepcopy(analysis.evidence_graph_json["script_passages"])
-        passages[-1]["text"] = "Mara waits outside, but who claimed the dark boat?"
+        passages[-1]["text"] = "Mara waits outside as the dark boat disappears downriver."
         analysis.evidence_graph_json = {
             **analysis.evidence_graph_json,
             "script_passages": passages,

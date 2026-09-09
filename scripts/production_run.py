@@ -369,7 +369,7 @@ def _ensure_script(db: Any, args: argparse.Namespace, state: dict[str, Any], sta
         )
         db.commit()
         generated = True
-    if script.approved_at is None and not bool(getattr(args, "review_hold", False)):
+    if bool(getattr(args, "auto_approve", False)) and not bool(getattr(args, "review_hold", False)) and script.approved_at is None:
         script = pl.approve_script(
             db,
             script.id,
@@ -512,6 +512,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--voice-id", default=DEFAULT_ENGLISH_VOICE_ID)
     parser.add_argument("--narrative-profile-id", default="sharp_friend_v1")
     parser.add_argument("--review-hold", action="store_true", help="Stop after generating an unapproved script for editorial review")
+    parser.add_argument("--auto-approve", action="store_true", default=False, help="Explicitly bypass the default manual editorial review hold")
     parser.add_argument("--watermark", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--watermark-text", default="")
     parser.add_argument("--max-analysis-attempts", type=int, default=2)
@@ -567,7 +568,7 @@ def main() -> int:
         _ensure_source(db, args, state, state_path, user, project)
         _ensure_analysis(db, args, state, state_path, user, project)
         script = _ensure_script(db, args, state, state_path, user, project)
-        if bool(getattr(args, "review_hold", False)) and script.approved_at is None:
+        if script.approved_at is None:
             state["status"] = "REVIEW_HOLD"
             state.pop("failure", None)
             state["result"] = {
