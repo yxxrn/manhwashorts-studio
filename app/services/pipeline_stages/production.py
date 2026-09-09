@@ -272,6 +272,7 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
     )
     timeline_planning_identity = {
         'version': reference_profile.PRODUCTION_REFERENCE_CADENCE_POLICY_VERSION,
+        'audio_timing_identity': audio_timing_identity,
         'profile_id': str(getattr(resolved_profile, 'profile_id', '') or ''),
         'profile_version': str(getattr(resolved_profile, 'version', '') or ''),
         'standard_reference_production': standard_reference_production,

@@ -335,6 +335,8 @@ def test_production_invalidates_legacy_audio_checkpoint_without_timing_identity(
     assert identity["duration_bounds_s"] == [50.0, 60.0]
     assert identity["voice_id"] == project.voice_id
     assert identity["provider_selection"]["version"] == "tts-selection-v3"
+    timeline_identity = script.editorial_metadata["production"]["timeline_planning_identity"]
+    assert timeline_identity["audio_timing_identity"] == identity
 
 
 def test_production_rejects_sub_50_second_adaptive_policy_before_media(db, monkeypatch):
