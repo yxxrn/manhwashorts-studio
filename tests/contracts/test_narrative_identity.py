@@ -85,7 +85,7 @@ def test_profile_is_frozen_and_has_exact_sharp_friend_identity_fields():
     module = _identity_module()
     profile = getattr(module, "SHARP_FRIEND_V1", None)
     assert profile.profile_id == "sharp_friend_v1"
-    assert profile.profile_version == "1.2.4"
+    assert profile.profile_version == "1.2.5"
     assert profile.language == "en-US"
     assert profile.identity == (
         "a clever, friendly, perceptive friend under controlled tension"
@@ -113,17 +113,19 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     module = _identity_module()
     version, digest, text = module.load_narrative_instruction("sharp_friend_v1")
     assert version == "vision-first-story-analyzer-v3"
-    assert digest == "ee2473b9bc0c2630afcec4d454b76aa636e7239c30522e70718bd5a5b11ee1c9"
+    assert digest == "e8eafd2aefa63c80fcd94ec1d2c6399ee9d24e7396d9b5e0b701f35e7ab7ccda"
     assert digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert "\r" not in text
     assert "observe every ordered panel" in text.lower()
     assert "contract id: manhwashorts.house_voice" in text.lower()
     assert "primary story-understanding claims decide what the narration is about" in text.lower()
     assert "support_only visual claims" in text.lower()
+    assert "prefer sentence economy" in text.lower()
+    assert "state the action and consequence once" in text.lower()
     assert "in the final passage, state the concrete new event and its immediate consequence" in text.lower()
     assert (
         module.get_narrative_identity("sharp_friend_v1").contract_sha256
-        == "b3c2d22435af8594ec532908b5b4433361a43688e4e07fb3e1ba56053c815f22"
+        == "78c1069403e1941e0fc738bf05d7e7af7795b258cd6519658267c1da06294e9f"
     )
 
 
