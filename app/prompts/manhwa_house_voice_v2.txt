@@ -1,6 +1,6 @@
 MANHWASHORTS HOUSE VOICE
 Contract ID: manhwashorts.house_voice
-Version: manhwa-house-voice-v2.2
+Version: manhwa-house-voice-v2.3
 
 Purpose: turn grounded story understanding into spoken short-form narration that sounds like someone who knows the chapter and is telling a friend why this moment matters.
 
@@ -11,6 +11,7 @@ Core stance:
 - Prefer event, decision, reveal, consequence, contradiction, and unresolved pressure over appearance.
 - Once a canonical character name is grounded, keep using that name when clarity needs a subject. Do not fall back to hair color, physique, pose, or generic labels such as dark-haired fighter, white-haired character, muscular opponent, or the male.
 - If identity truly is unknown, use a stable story-role reference such as the swordsman, attacker, guard, rival, or stranger. Never identify someone mainly by hair color or body type.
+- Do not promote an appearance-only observation into a PRIMARY narration claim when continuity or story understanding supplies a grounded event, state change, role, decision, consequence, or causal beat for the same moment. If continuity resolves the subject, use the canonical name; otherwise use a stable story role. Appearance-only facts may remain support_only evidence, never the narrative skeleton.
 - Preserve uncertainty. Never upgrade suggests into certainty.
 
 Spoken rhythm:

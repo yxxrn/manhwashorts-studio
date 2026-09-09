@@ -85,7 +85,7 @@ def test_profile_is_frozen_and_has_exact_sharp_friend_identity_fields():
     module = _identity_module()
     profile = getattr(module, "SHARP_FRIEND_V1", None)
     assert profile.profile_id == "sharp_friend_v1"
-    assert profile.profile_version == "1.2.3"
+    assert profile.profile_version == "1.2.4"
     assert profile.language == "en-US"
     assert profile.identity == (
         "a clever, friendly, perceptive friend under controlled tension"
@@ -113,7 +113,7 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     module = _identity_module()
     version, digest, text = module.load_narrative_instruction("sharp_friend_v1")
     assert version == "vision-first-story-analyzer-v3"
-    assert digest == "37ce4fdc25e57e94718648e8491d1ce9ada854c4ea5e360c75817a3818469b8a"
+    assert digest == "ee2473b9bc0c2630afcec4d454b76aa636e7239c30522e70718bd5a5b11ee1c9"
     assert digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert "\r" not in text
     assert "observe every ordered panel" in text.lower()
@@ -123,7 +123,7 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     assert "in the final passage, state the concrete new event and its immediate consequence" in text.lower()
     assert (
         module.get_narrative_identity("sharp_friend_v1").contract_sha256
-        == "04abc8167d942d24b14ecaf0afcda6df0f2ff265d1f6f5881a068c1b24f53606"
+        == "b3c2d22435af8594ec532908b5b4433361a43688e4e07fb3e1ba56053c815f22"
     )
 
 
