@@ -1,6 +1,8 @@
 """External source connectors exposed through the ManhwaShorts REST API."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
@@ -17,6 +19,8 @@ from app.schemas import (
 )
 from app.services import ingest, suwayomi
 from app.services import pipeline as pl
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["sources"], route_class=CommitRoute)
 
@@ -150,6 +154,9 @@ def import_suwayomi_range(
         try:
             results = ingest.ingest_image_parts(project.id, filename, page.data)
         except ingest.IngestError as exc:
+            if str(exc).startswith("image too small ("):
+                logger.warning("Skipping non-content source page %s: %s", page.filename, exc)
+                continue
             raise HTTPException(status_code=422, detail=f"{page.filename}: {exc}") from exc
         for result in results:
             identity = result.original_filename

@@ -83,6 +83,38 @@ def test_import_range_creates_ordered_normal_assets_and_is_idempotent(client, pa
     assert len(client.get(f"/api/projects/{project['id']}/assets").json()) == 3
 
 
+
+def test_import_skips_non_content_small_source_pages(client, panel_bytes, monkeypatch):
+    _register(client)
+    project = _project(client)
+    from app.routers import sources
+    from app.services import ingest, suwayomi
+
+    class Connector(FakeConnector):
+        def download_range(self, resolved):
+            return [
+                suwayomi.DownloadedPage(51, "51.0", "Chapter 51", 1, "ch51__0001.jpg", self.page_bytes),
+                suwayomi.DownloadedPage(51, "51.0", "Chapter 51", 2, "ch51__0002.webp", b"tiny"),
+            ]
+
+    original = ingest.ingest_image_parts
+    def fake_ingest(project_id, filename, data):
+        if filename.endswith("0002.webp"):
+            raise ingest.IngestError("image too small (800x105); minimum 200x200")
+        return original(project_id, filename, data)
+
+    monkeypatch.setattr(sources, "_ready_client", lambda: Connector(panel_bytes))
+    monkeypatch.setattr(ingest, "ingest_image_parts", fake_ingest)
+    project_id = project["id"]
+    response = client.post(
+        f"/api/projects/{project_id}/sources/suwayomi/import",
+        json={"title": "Infinite Mage", "chapter_from": 51, "chapter_to": 51, "language": "en"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["pages_downloaded"] == 2
+    assert body["assets_created"] == 1
+
 def test_import_refuses_to_mutate_an_already_analyzed_corpus(client, panel_bytes, monkeypatch):
     _register(client)
     project = _project(client)
