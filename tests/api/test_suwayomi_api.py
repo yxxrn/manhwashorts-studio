@@ -118,6 +118,40 @@ def test_range_resolution_keeps_decimal_chapters_in_reading_order(monkeypatch):
     assert [str(ch["chapterNumber"]) for ch in resolved.chapters] == ["20.0", "20.5", "21.0", "22.0", "23.0", "24.0", "25.0"]
 
 
+
+def test_suwayomi_download_retries_transient_page_failures(monkeypatch):
+    from app.services import suwayomi
+
+    class FakeClient:
+        calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url):
+            type(self).calls += 1
+            request = suwayomi.httpx.Request("GET", url)
+            if type(self).calls < 3:
+                raise suwayomi.httpx.ReadTimeout("timed out", request=request)
+            return suwayomi.httpx.Response(200, request=request, headers={"content-type": "image/webp"}, content=b"webp")
+
+    monkeypatch.setattr(suwayomi.httpx, "Client", lambda **kwargs: FakeClient())
+    connector = suwayomi.SuwayomiClient("http://127.0.0.1:4567")
+    resolved = suwayomi.ResolvedRange(
+        manga={"id": 1, "sourceId": "42"},
+        source={"id": "42"},
+        chapters=({"id": 51, "chapterNumber": 51.0, "name": "Chapter 51"},),
+    )
+    monkeypatch.setattr(connector, "chapter_pages", lambda _chapter_id: ["/api/v1/manga/1/chapter/51/page/0"])
+
+    pages = connector.download_range(resolved)
+    assert len(pages) == 1
+    assert FakeClient.calls == 3
+
+
 def test_openapi_advertises_suwayomi_surface(client):
     paths = client.get("/openapi.json").json()["paths"]
     assert "/api/sources/suwayomi/status" in paths

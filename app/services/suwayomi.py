@@ -267,11 +267,35 @@ class SuwayomiClient:
                 number_text = format(number, "f") if number is not None else str(chapter_id)
                 for page_index, page_path in enumerate(self.chapter_pages(chapter_id), start=1):
                     url = _page_url(self.base_url, page_path, source_id)
-                    try:
-                        response = client.get(url)
-                        response.raise_for_status()
-                    except httpx.HTTPError as exc:
-                        raise SuwayomiError(f"failed downloading chapter {number_text} page {page_index}: {exc}") from exc
+                    last_exc: httpx.HTTPError | None = None
+                    for attempt in range(1, 4):
+                        try:
+                            response = client.get(url)
+                            response.raise_for_status()
+                            break
+                        except httpx.HTTPStatusError as exc:
+                            last_exc = exc
+                            status = exc.response.status_code if exc.response is not None else None
+                            if status is not None and status < 500:
+                                raise SuwayomiError(f"failed downloading chapter {number_text} page {page_index}: {exc}") from exc
+                        except httpx.HTTPError as exc:
+                            last_exc = exc
+                        if attempt < 3:
+                            delay = float(min(2 ** (attempt - 1), 4))
+                            logger.warning(
+                                "Retrying Suwayomi page download after transient failure (chapter=%s page=%s attempt=%s delay_s=%s): %s",
+                                number_text,
+                                page_index,
+                                attempt,
+                                delay,
+                                last_exc,
+                            )
+                            time.sleep(delay)
+                    else:
+                        assert last_exc is not None
+                        raise SuwayomiError(
+                            f"failed downloading chapter {number_text} page {page_index} after 3 attempts: {last_exc}"
+                        ) from last_exc
                     ext = _extension(response.headers.get("content-type", ""), url)
                     filename = f"ch{number_text}__{page_index:04d}{ext}"
                     downloaded.append(DownloadedPage(chapter_id, number_text, str(chapter.get("name") or ""), page_index, filename, response.content))
