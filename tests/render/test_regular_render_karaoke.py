@@ -79,6 +79,7 @@ def test_regular_profile_request_carries_sentence_groups_and_timing_contract(mon
             ("pair", 2.5, 3.0),
             ("escapes.", 3.0, 3.5),
         ),
+        dramatic_events=[],
     )
     source = tmp_path / "source.png"
     Image.new("RGB", (1080, 1920), (30, 40, 50)).save(source)
@@ -117,7 +118,8 @@ def test_regular_profile_request_carries_sentence_groups_and_timing_contract(mon
     monkeypatch.setattr(pipeline, "current_script", lambda _db, _id: script)
     monkeypatch.setattr(pipeline, "audio_segments", lambda _db, _id: [audio])
     monkeypatch.setattr(pipeline, "project_scenes", lambda _db, _id: [scene])
-    monkeypatch.setattr(pipeline, "project_cues", lambda _db, _id: [])
+    stale_cues = [SimpleNamespace(order_index=index, text="STALE", start_time=0.0, end_time=0.0) for index in range(7)]
+    monkeypatch.setattr(pipeline, "project_cues", lambda _db, _id: stale_cues)
     monkeypatch.setattr(pipeline, "project_assets", lambda _db, _id: [])
     monkeypatch.setattr(pipeline.storage, "workspace_dir", lambda *_args: tmp_path)
     monkeypatch.setattr(pipeline.storage, "path_for", lambda key: source)
@@ -156,6 +158,9 @@ def test_regular_profile_request_carries_sentence_groups_and_timing_contract(mon
         "ESCAPES",
     ]
     assert request.subtitle_timing_source == "audio_segment.word_timings"
+    assert stale_cues[-1].text == "ESCAPES"
+    assert stale_cues[-1].start_time == pytest.approx(3.0)
+    assert stale_cues[-1].end_time == pytest.approx(3.5)
 
 
 def test_regular_profile_requires_authoritative_word_timing():
@@ -418,3 +423,26 @@ def test_regular_manifest_records_measured_subtitle_contract_evidence():
     assert evidence["font_file_sha256"]
     assert 0 < evidence["max_active_text_width_px"] <= evidence["safe_text_width_px"]
     assert evidence["minimum_horizontal_clearance_px"] >= 120
+
+
+def test_render_audio_gap_follows_persisted_segment_timing():
+    from app.services.pipeline_stages import rendering
+
+    segments = [
+        SimpleNamespace(start_time=0.0, end_time=8.0),
+        SimpleNamespace(start_time=8.355, end_time=17.0),
+        SimpleNamespace(start_time=17.355, end_time=25.0),
+    ]
+    assert rendering._persisted_inter_section_gap(segments) == pytest.approx(0.355)
+
+
+def test_render_audio_gap_rejects_inconsistent_persisted_timing():
+    from app.services.pipeline_stages import rendering
+
+    segments = [
+        SimpleNamespace(start_time=0.0, end_time=8.0),
+        SimpleNamespace(start_time=8.2, end_time=17.0),
+        SimpleNamespace(start_time=17.5, end_time=25.0),
+    ]
+    with pytest.raises(ValueError, match="gaps are inconsistent"):
+        rendering._persisted_inter_section_gap(segments)

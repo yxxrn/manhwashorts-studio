@@ -7,7 +7,7 @@ from __future__ import annotations
 
 _NATIVE_SPEED_RECOVERY_STEPS = (1.0, 0.9)
 _BASE_INTER_SECTION_GAP_S = 0.18
-_POCKET_MAX_INTER_SECTION_GAP_S = 0.45
+_POCKET_MAX_INTER_SECTION_GAP_S = 0.65
 _POCKET_GAP_MARGIN_S = 0.03
 
 def _pocket_safe_inter_section_gap(tts_svc, clips, *, duration_min_s, duration_max_s, base_gap_s):

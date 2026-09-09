@@ -7,6 +7,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+_DEFAULT_INTER_SECTION_GAP_S = 0.18
+
+
+def _persisted_inter_section_gap(segments) -> float:
+    """Recover the uniform persisted gap used when audio timings were created."""
+    if len(segments) <= 1:
+        return _DEFAULT_INTER_SECTION_GAP_S
+    gaps = [
+        max(0.0, float(right.start_time) - float(left.end_time))
+        for left, right in zip(segments, segments[1:], strict=False)
+    ]
+    if max(gaps) - min(gaps) > 0.01:
+        raise ValueError("audio segment gaps are inconsistent")
+    return round(sum(gaps) / len(gaps), 4)
+
 
 def render_silent_review_preview(api, db, project_id, *, actor_id, review_source_upscale_policy, review_source_root, output_dir):
     """Render and persist one video-only review attempt through the regular path."""
@@ -79,11 +94,12 @@ def build_render_request(api, db, job, *, silent_reference_review, output_overri
     _build_silent_reference_request = api._build_silent_reference_request
     _materialize_reference_panel_crop = api._materialize_reference_panel_crop
     audio_segments = api.audio_segments
-    cue_specs = api.cue_specs
     current_script = api.current_script
     get_project = api.get_project
     project_assets = api.project_assets
     project_cues = api.project_cues
+    spans_from_segments = api.spans_from_segments
+    timeline_svc = api.timeline_svc
     project_scenes = api.project_scenes
     reference_profile = api.reference_profile
     review_source_upscale = api.review_source_upscale
@@ -153,20 +169,28 @@ def build_render_request(api, db, job, *, silent_reference_review, output_overri
     if missing:
         raise PipelineError(f'{len(missing)} audio file(s) are missing. Regenerate the voice-over.')
     voice_path = work / 'voice_master.wav'
-    tts_svc.concat_audio(clip_paths, voice_path, gap=0.18)
+    try:
+        audio_gap = _persisted_inter_section_gap(segments)
+    except ValueError as exc:
+        raise PipelineError(f"audio.segment_gap_inconsistent: {exc}") from exc
+    tts_svc.concat_audio(clip_paths, voice_path, gap=audio_gap)
     audio_duration = tts_svc.probe_duration(voice_path)
     scene_end_times = [scene.end_time for scene in scenes]
     scene_end_times[-1] = max(scene_end_times[-1], audio_duration)
     rendered_frames = sum((max(1, int(round(max(0.1, round(end_time - scene.start_time, 3)) * settings.video_fps))) for scene, end_time in zip(scenes, scene_end_times, strict=True)))
     media_duration = round(min(audio_duration, rendered_frames / settings.video_fps), 3)
+    cues = timeline_svc.build_cues(
+        spans_from_segments(segments),
+        media_duration=media_duration,
+    )
     persisted_cues = project_cues(db, job.project_id)
-    cues = cue_specs(persisted_cues)
-    for persisted, cue in zip(persisted_cues, cues, strict=True):
-        cue.start_time = round(min(max(0.0, cue.start_time), media_duration), 3)
-        cue.end_time = round(min(max(cue.start_time, cue.end_time), media_duration), 3)
-        persisted.start_time = cue.start_time
-        persisted.end_time = cue.end_time
-    db.flush()
+    if len(persisted_cues) == len(cues):
+        for persisted, cue in zip(persisted_cues, cues, strict=True):
+            persisted.order_index = cue.order_index
+            persisted.text = cue.text
+            persisted.start_time = cue.start_time
+            persisted.end_time = cue.end_time
+        db.flush()
     scene_inputs: list = []
     music_path: Path | None = None
     audio_assets = [asset for asset in project_assets(db, job.project_id) if asset.type in {'audio', 'music'} and asset.is_publishable and storage.exists(asset.storage_key)]

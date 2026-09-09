@@ -200,7 +200,7 @@ def test_pocket_clarity_gate_keeps_proven_080_retime_local(db, monkeypatch):
     assert len(segments) == 1
     assert segments[0].provider == "pocket"
     assert tts_svc.POCKET_TTS_CLARITY_TEMPO_MIN == 0.80
-    assert tts_svc.PRODUCTION_AUDIO_TIMING_POLICY_VERSION == "production-audio-timing-v4"
+    assert tts_svc.PRODUCTION_AUDIO_TIMING_POLICY_VERSION == "production-audio-timing-v5"
 
 
 def test_pocket_borderline_cadence_uses_bounded_section_gap_instead_of_fallback():
@@ -213,7 +213,7 @@ def test_pocket_borderline_cadence_uses_bounded_section_gap_instead_of_fallback(
     gap = media._pocket_safe_inter_section_gap(
         tts_svc, clips, duration_min_s=50.0, duration_max_s=60.0, base_gap_s=0.18,
     )
-    assert 0.18 < gap <= 0.45
+    assert 0.18 < gap <= 0.65
     correction = tts_svc._duration_window_tempo(
         sum(c.duration for c in clips), len(clips),
         duration_min_s=50.0, duration_max_s=60.0, gap_s=gap,
