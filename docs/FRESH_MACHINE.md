@@ -19,11 +19,8 @@ bootstrap.cmd
 
 Bootstrap installs or verifies Python 3.11+, FFmpeg/FFprobe with libass,
 Tesseract, Chrome, Java 21, the pinned Suwayomi JAR, Asura Scans, Read Comics
-Online, Pocket TTS, database migrations, and machine readiness. Linux also
-installs systemd services; Windows creates login-startup launchers.
-
-Pocket TTS uses `alba`. INT8 is preferred when the host supports `torchao`; local
-FP32 is the automatic fallback on platforms where quantization is unavailable.
+Online, the configured AI TTS, database migrations, and machine readiness. Linux also
+installs systemd services; Windows creates login-startup launchers. AI TTS is required for production and fails closed when unavailable.
 
 ## Move an existing deployment
 
@@ -72,7 +69,7 @@ scripts/manhwashorts doctor
 ```
 
 The required checks include `.env`, Python/venv packages, FFmpeg filters,
-Tesseract, Pocket TTS, Chrome/Playwright, Java/Suwayomi, exact Asura Scans and
+Tesseract, configured AI TTS, Chrome/Playwright, Java/Suwayomi, exact Asura Scans and
 Read Comics Online source IDs, writable runtime paths, and the Alembic schema.
 YouTube authentication is reported separately because it is optional until
 publishing is requested.

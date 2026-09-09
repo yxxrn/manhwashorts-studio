@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
     [switch]$WithoutSuwayomi,
-    [switch]$WithoutPocketTTS,
     [switch]$SkipSystemPackages,
     [switch]$NoStartup,
     [string]$YouTubeAccount = "",
@@ -99,8 +98,6 @@ if (-not $Tesseract) {
     if (Test-Path -LiteralPath $candidate -PathType Leaf) { $Tesseract = $candidate }
 }
 if ($Tesseract) { Set-EnvValue "MS_TESSERACT_BIN" $Tesseract }
-if (Have "espeak-ng.exe") { Set-EnvValue "MS_ESPEAK_BIN" "espeak-ng" }
-elseif (Have "espeak.exe") { Set-EnvValue "MS_ESPEAK_BIN" "espeak" }
 
 $RuntimeBase = Join-Path $env:LOCALAPPDATA "ManhwaShorts"
 New-Item -ItemType Directory -Force -Path $RuntimeBase | Out-Null
@@ -144,30 +141,6 @@ if (-not $WithoutSuwayomi) {
     Set-EnvValue "MS_SUWAYOMI_ENABLED" "false"
     Set-EnvValue "MS_SUWAYOMI_AUTO_START" "false"
 }
-if (-not $WithoutPocketTTS) {
-    $PocketRoot = Join-Path $RuntimeBase "pocket-tts"
-    & $VenvPython (Join-Path $Root "scripts\setup_pocket_tts_runtime.py") --runtime-dir $PocketRoot
-    if ($LASTEXITCODE -ne 0) { throw "Pocket TTS runtime setup failed." }
-    Set-EnvValue "MS_TTS_LOCAL_FIRST" "true"
-    Set-EnvValue "MS_TTS_POCKET_URL" "http://127.0.0.1:8790"
-    Set-EnvValue "MS_TTS_POCKET_VOICE" "alba"
-    $PocketModeFile = Join-Path $PocketRoot "mode.txt"
-    $PocketMode = if (Test-Path -LiteralPath $PocketModeFile) { (Get-Content -LiteralPath $PocketModeFile -Raw).Trim().ToLowerInvariant() } else { "fp32" }
-    Set-EnvValue "MS_TTS_POCKET_MODEL" "pocket-tts-3.1.0-$PocketMode"
-    Set-EnvValue "MS_TTS_POCKET_PRODUCTION_SPEED" "0.90"
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\start_pocket_tts_windows.ps1") -RuntimeDir $PocketRoot -Voice "alba" -Port 8790
-    if ($LASTEXITCODE -ne 0) { throw "Pocket TTS service did not start." }
-    if (-not $NoStartup) {
-        $Startup = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
-        $StartupCmd = Join-Path $Startup "ManhwaShorts-PocketTTS.cmd"
-        $StartScript = Join-Path $Root "scripts\start_pocket_tts_windows.ps1"
-        $line = '@echo off' + "`r`n" + 'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $StartScript + '" -RuntimeDir "' + $PocketRoot + '" -Voice alba -Port 8790' + "`r`n"
-        Set-Content -LiteralPath $StartupCmd -Value $line -Encoding ASCII
-    }
-} else {
-    Set-EnvValue "MS_TTS_LOCAL_FIRST" "false"
-}
-
 if (-not $NoStartup) {
     $Startup = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
     $ServerStartup = Join-Path $Startup "ManhwaShorts-Server.cmd"

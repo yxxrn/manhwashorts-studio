@@ -10,7 +10,7 @@ def _text(relative: str) -> str:
 
 
 def test_one_command_bootstrap_exists_for_linux_and_windows():
-    assert 'exec "$ROOT/install.sh" --systemd --production --with-pocket-tts' in _text("bootstrap.sh")
+    assert 'exec "$ROOT/install.sh" --systemd --production' in _text("bootstrap.sh")
     cmd = _text("bootstrap.cmd").lower()
     assert 'bootstrap.ps1' in cmd
     assert '%*' in cmd
@@ -40,24 +40,18 @@ def test_bootstrap_installs_exact_production_sources():
     assert "shutil.move(str(tmp_path), str(DEST))" in _text("scripts/setup_suwayomi.py")
 
 
-def test_pocket_runtime_is_cross_platform_and_quantization_is_optional():
-    setup = _text("scripts/setup_pocket_tts_runtime.py")
-    assert "Scripts/python.exe" in setup
-    assert 'f"pocket-tts=={VERSION}"' in setup
-    assert '"torchao>=0.16.0"' in setup
-    assert 'POCKET_TTS_MODE' in setup
-    assert '"fp32"' in setup
-    assert 'mode = "int8"' in setup
-    assert 'else "fp32"' in setup
-    win = _text("scripts/start_pocket_tts_windows.ps1")
-    assert "mode.txt" in win
-    assert '$UseQuantized = $Mode -eq "int8"' in win
-    assert "retrying local FP32 mode" in win
-    assert 'Set-Content -LiteralPath $ModeFile -Value "fp32"' in win
-    linux = _text("scripts/setup_pocket_tts.sh")
-    assert "mode.txt" in linux
-    assert "QUANTIZE_ARG" in linux
-
+def test_bootstrap_is_ai_tts_only_and_has_no_pocket_runtime():
+    linux = _text("install.sh") + _text("bootstrap.sh")
+    windows = _text("bootstrap.ps1")
+    env = _text(".env.example")
+    assert "pocket" not in linux.lower()
+    assert "pocket" not in windows.lower()
+    assert "MS_TTS_PROVIDER=http" in env
+    assert "MS_TTS_HTTP_PROTOCOL=grok" in env
+    assert "MS_TTS_HTTP_MODEL=grok-voice-latest" in env
+    assert "MS_TTS_HTTP_VOICE=ara" in env
+    for rel in ("scripts/setup_pocket_tts.sh", "scripts/setup_pocket_tts_runtime.py", "scripts/start_pocket_tts_windows.ps1"):
+        assert not (ROOT / rel).exists()
 
 def test_cookie_bootstrap_is_available_on_both_platforms():
     linux = _text("install.sh")

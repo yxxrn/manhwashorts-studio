@@ -45,14 +45,9 @@ def _write_manual_upload_metadata(api, db, project, script, job, thumbnail_manif
     if not getattr(job, "output_key", ""):
         raise api.PipelineError("manual upload metadata requires a final video artifact")
     assets = api.project_assets(db, project.id)
-    attributions_set = {
-        str(asset.attribution).strip() for asset in assets if str(asset.attribution or "").strip()
-    }
-    for segment in api.audio_segments(db, script.id):
-        voice_credit = api.tts_svc.voice_attribution(segment.provider, segment.voice_id)
-        if voice_credit:
-            attributions_set.add(voice_credit)
-    attributions = sorted(attributions_set)
+    attributions = sorted(
+        {str(asset.attribution).strip() for asset in assets if str(asset.attribution or "").strip()}
+    )
     output_dir = Path(job.output_key).parent
     thumbnail_path = str((thumbnail_manifest or {}).get("thumbnail_path", "") or "")
     subtitle_path = str(getattr(job, "subtitle_key", "") or "")
@@ -246,7 +241,6 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
         'version': tts_svc.PRODUCTION_AUDIO_TIMING_POLICY_VERSION,
         'requested_speed': round(float(speed), 4),
         'provider_override': str(provider_name or ''),
-        'provider_selection': tts_svc.production_tts_selection_identity(),
         'duration_bounds_s': list(audio_duration_bounds) if audio_duration_bounds is not None else [],
     }
     audio_reusable = bool(

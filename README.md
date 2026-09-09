@@ -85,10 +85,9 @@ bootstrap.cmd
 ```
 
 Both paths prepare Python, FFmpeg, Tesseract, Chrome, Java/Suwayomi, the required
-Asura Scans + Read Comics Online sources, Pocket TTS with `alba`, the database,
+Asura Scans + Read Comics Online sources, the configured AI TTS, the database,
 and a final machine-doctor check. Linux installs boot-persistent systemd services;
-Windows creates per-user startup launchers. Pocket prefers INT8 when supported and
-falls back to local FP32 instead of failing bootstrap.
+Windows creates per-user startup launchers. Production fails closed if AI TTS is unavailable.
 
 To carry an existing deployment config to a new machine:
 
@@ -243,18 +242,15 @@ See `.env.example` for the full set. The most important production settings are:
 |---|---:|---|
 | `MS_DEFAULT_TARGET_SECONDS` | `55` | New-project target duration |
 | `MS_MAX_SHORT_SECONDS` | `90` | Absolute project/media ceiling |
-| `MS_TTS_PROVIDER` | `espeak` | Fallback provider when Pocket local-first is disabled/unavailable |
-| `MS_TTS_LOCAL_FIRST` | `false` | Prefer local Pocket TTS before the configured fallback provider |
-| `MS_TTS_POCKET_URL` | `http://127.0.0.1:8790` | Local Pocket TTS service base URL |
-| `MS_TTS_POCKET_VOICE` | `alba` | Locked Pocket narrator voice for a production run |
-| `MS_TTS_POCKET_PRODUCTION_SPEED` | `0.90` | Host-validated Pocket speed baseline before duration normalization |
+| `MS_TTS_PROVIDER` | `http` | Production AI TTS provider; local fallback is disabled |
+| `MS_TTS_HTTP_PROTOCOL` | `grok` | Grok-compatible TTS contract |
+| `MS_TTS_HTTP_MODEL` | `grok-voice-latest` | Default AI voice model |
+| `MS_TTS_HTTP_VOICE` | `ara` | Default production narrator voice |
 | `MS_LLM_PROVIDER` | `rules` | Offline rules default; cloud review uses configured provider/BYOK |
 | `MS_VIDEO_ENCODER` | `auto` | CPU/GPU encoder selection |
 | `MS_REQUIRE_RIGHTS_DECLARATION` | `false` | Optional blocking rights-enforcement switch |
 
-The offline `rules`/`espeak` defaults keep a fresh clone operable for development. They do **not** bypass production approval, evidence, media, or QC gates.
-
-For local neural narration, run `scripts/setup_pocket_tts.sh`, then enable `MS_TTS_LOCAL_FIRST=true`. The production path locks one Pocket voice for the whole video and performs at most one full-session fallback to the previous provider if Pocket is unavailable or fails validation. The Oracle deployment uses INT8 Pocket TTS on localhost with `alba` as the default voice.
+Production narration is AI-only. If the configured Grok/HTTP TTS endpoint is unavailable, the run stops instead of falling back to a local voice.
 
 ## Architecture
 

@@ -289,68 +289,83 @@ def resolve_analyzer(db: Session, workspace_id: str) -> tuple[analysis_svc.Analy
     return analysis_svc.RulesAnalyzer(), decision
 
 
-def _describe_tts_fallback(db: Session, workspace_id: str) -> Resolution:
+def describe_tts(db: Session, workspace_id: str) -> Resolution:
+    """Report which speech provider would run, without building it."""
     row = cred_svc.active_credential(db, workspace_id, CredentialKind.TTS)
     if row is not None:
         return Resolution(
-            source="byok", provider=row.provider, model=row.model, label=row.label,
-            credential_id=row.id, reason=f"using your {row.label} key ({row.key_hint})",
+            source="byok",
+            provider=row.provider,
+            model=row.model,
+            label=row.label,
+            credential_id=row.id,
+            reason=f"using your {row.label} key ({row.key_hint})",
         )
     if settings.tts_provider == "http" and settings.tts_http_url:
         return Resolution(
-            source="env", provider="http", label="environment TTS",
+            source="env",
+            provider="http",
+            label="environment TTS",
             reason="using the server's configured TTS endpoint (MS_TTS_HTTP_URL)",
         )
-    return Resolution(
-        source="local", provider=settings.tts_provider or "espeak", label="espeak-ng",
-        reason="no speech key configured; using offline espeak-ng",
-    )
-
-
-def describe_tts(db: Session, workspace_id: str) -> Resolution:
-    """Report the primary speech path; local Pocket TTS may wrap the old provider as fallback."""
-    if settings.tts_local_first:
-        fallback = _describe_tts_fallback(db, workspace_id)
-        voice = tts_svc.resolve_pocket_voice_id("")
+    if settings.environment != "production":
         return Resolution(
-            source="local", provider="pocket", model=settings.tts_pocket_model,
-            label=f"Pocket TTS ({voice})",
-            reason=f"using local Pocket TTS voice {voice}; fallback is {fallback.label}",
-            notes=[f"fallback:{fallback.source}:{fallback.provider}"],
+            source="local",
+            provider=settings.tts_provider or "espeak",
+            label=settings.tts_provider or "espeak",
+            reason="non-production explicit local/test TTS",
         )
-    return _describe_tts_fallback(db, workspace_id)
-
-
-def resolve_tts_fallback(
-    db: Session, workspace_id: str
-) -> tuple[tts_svc.TTSProvider, Resolution]:
-    """Resolve the pre-Pocket provider only when the local-first path actually fails."""
-    decision = _describe_tts_fallback(db, workspace_id)
-    if decision.source == "byok":
-        row = cred_svc.get_credential(db, workspace_id, decision.credential_id)
-        try:
-            api_key = cred_svc.reveal_secret(row)
-        except cred_svc.CredentialError as exc:
-            raise tts_svc.TTSError(f"stored {row.label} voice credential could not be read") from exc
-        cred_svc.mark_used(db, row)
-        return tts_svc.ByokProvider(
-            provider=row.provider, api_key=api_key, model=row.model, base_url=row.base_url, label=row.label,
-        ), decision
-    return tts_svc.get_provider(decision.provider), decision
+    return Resolution(
+        source="env",
+        provider="http",
+        label="AI TTS not configured",
+        reason="AI TTS endpoint is not configured; local fallback is disabled",
+    )
 
 
 def resolve_tts(
     db: Session, workspace_id: str, override: str | None = None
 ) -> tuple[tts_svc.TTSProvider, Resolution]:
-    """Build the primary speech provider; an explicit override remains strict and wins."""
+    """Build the speech provider for a workspace.
+
+    ``override`` forces a local provider by name, which the seed script and tests
+    use to stay offline. An explicit override always wins so automated runs never
+    spend a user's credits by accident.
+    """
     if override:
+        if settings.environment == "production" and str(override).lower() != "http":
+            raise tts_svc.TTSError("production TTS local override is disabled; use the configured AI provider")
         return tts_svc.get_provider(override), Resolution(
-            source="local", provider=override, label=override,
+            source="local",
+            provider=override,
+            label=override,
             reason=f"explicitly overridden to '{override}'",
         )
-    if settings.tts_local_first:
-        return tts_svc.PocketTTSProvider(), describe_tts(db, workspace_id)
-    return resolve_tts_fallback(db, workspace_id)
+
+    decision = describe_tts(db, workspace_id)
+
+    if decision.source == "byok":
+        row = cred_svc.get_credential(db, workspace_id, decision.credential_id)
+        try:
+            api_key = cred_svc.reveal_secret(row)
+        except cred_svc.CredentialError as exc:
+            raise tts_svc.TTSError(
+                f"stored {row.label} voice credential could not be read; no fallback voice is allowed"
+            ) from exc
+
+        cred_svc.mark_used(db, row)
+        provider = tts_svc.ByokProvider(
+            provider=row.provider,
+            api_key=api_key,
+            model=row.model,
+            base_url=row.base_url,
+            label=row.label,
+        )
+        return provider, decision
+
+    if decision.provider == "http" and not settings.tts_http_url:
+        raise tts_svc.TTSError("AI TTS endpoint is not configured; local fallback is disabled")
+    return tts_svc.get_provider(decision.provider), decision
 
 
 def describe_all(db: Session, workspace_id: str) -> dict[str, object]:

@@ -92,21 +92,13 @@ def collect() -> list[Check]:
     checks.append(Check("Tesseract", bool(tesseract), tesseract or f"{settings.tesseract_bin} not found"))
 
     tts_name = str(settings.tts_provider or "").lower()
-    if settings.tts_local_first:
-        try:
-            import httpx
-            base_url = str(settings.tts_pocket_url).rstrip("/")
-            response = httpx.get(f"{base_url}/openapi.json", timeout=2.0)
-            pocket_ok = response.status_code == 200
-        except Exception:
-            pocket_ok = False
-        checks.append(Check("Pocket TTS", pocket_ok, f"{settings.tts_pocket_voice} @ {settings.tts_pocket_url}"))
-        checks.append(Check("TTS fallback", True, f"configured provider: {tts_name or 'none'}", required=False))
-    elif tts_name == "espeak":
-        espeak = _command(settings.espeak_bin)
-        checks.append(Check("TTS", bool(espeak), espeak or "espeak-ng not found"))
-    else:
-        checks.append(Check("TTS", True, f"configured provider: {tts_name or 'external'}", required=False))
+    ai_tts_ok = bool(tts_name == "http" and settings.tts_http_url)
+    detail = (
+        f"{settings.tts_http_protocol}:{settings.tts_http_model} voice={settings.tts_http_voice}"
+        if ai_tts_ok
+        else f"configured provider: {tts_name or 'none'}; MS_TTS_HTTP_URL required; local fallback disabled"
+    )
+    checks.append(Check("AI TTS", ai_tts_ok, detail))
 
     if settings.youtube_browser_enabled:
         browser = YouTubeStudioBrowserPublisher._resolve_browser_executable(settings.youtube_browser_executable)

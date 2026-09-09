@@ -3,7 +3,6 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 WITH_SUWAYOMI=1
-WITH_POCKET_TTS=0
 WITH_SYSTEMD=0
 PRODUCTION_MODE=0
 INSTALL_PACKAGES=1
@@ -19,7 +18,6 @@ usage() {
 Usage: ./install.sh [options]
   --systemd              install and start a systemd service
   --production           set the single .env config to production defaults
-  --with-pocket-tts      install/start local Pocket TTS (Alba, INT8 CPU)
   --without-suwayomi     skip Java/Suwayomi and disable the sidecar in .env
   --skip-system-packages do not run apt (useful when dependencies already exist)
   --skip-chrome          do not download/install Google Chrome
@@ -35,7 +33,6 @@ while (($#)); do
   case "$1" in
     --systemd) WITH_SYSTEMD=1 ;;
     --production) PRODUCTION_MODE=1 ;;
-    --with-pocket-tts) WITH_POCKET_TTS=1 ;;
     --without-suwayomi) WITH_SUWAYOMI=0 ;;
     --skip-system-packages) INSTALL_PACKAGES=0 ;;
     --skip-chrome) INSTALL_CHROME=0 ;;
@@ -155,23 +152,6 @@ fi
 if ((PRODUCTION_MODE)); then
   upsert_env MS_ENVIRONMENT production
   upsert_env MS_DEBUG false
-fi
-
-if ((WITH_POCKET_TTS)); then
-  say "Installing local Pocket TTS service"
-  run "$ROOT/scripts/setup_pocket_tts.sh"
-  pocket_runtime="${POCKET_TTS_RUNTIME_DIR:-$APP_HOME/pocket-tts-runtime}"
-  if [[ -f "$pocket_runtime/mode.txt" ]]; then
-    pocket_mode="$(tr -d '\r\n' < "$pocket_runtime/mode.txt")"
-  else
-    pocket_mode="fp32"
-  fi
-  pocket_model="pocket-tts-3.1.0-${pocket_mode}"
-  upsert_env MS_TTS_LOCAL_FIRST true
-  upsert_env MS_TTS_POCKET_URL http://127.0.0.1:8790
-  upsert_env MS_TTS_POCKET_VOICE alba
-  upsert_env MS_TTS_POCKET_MODEL "$pocket_model"
-  upsert_env MS_TTS_POCKET_PRODUCTION_SPEED 0.90
 fi
 
 say "Migrating database to Alembic head"

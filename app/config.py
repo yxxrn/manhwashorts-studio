@@ -153,12 +153,12 @@ class Settings(BaseSettings):
     subtitle_font_name: str = "Barber Chop"
     # "legacy" accepts the original {text, format} endpoint; "openai" sends
     # {input, response_format} to a generic OpenAI-compatible speech endpoint.
-    tts_http_protocol: str = "legacy"
-    tts_http_model: str = "tts-1"
+    tts_http_protocol: str = "grok"
+    tts_http_model: str = "grok-voice-latest"
     tts_http_response_format: str = "wav"
     tts_http_instruct: str = "American English narrator, clear, natural, consistent timbre"
     tts_http_language: str = "en-US"
-    tts_http_voice: str = "the-explainer-american"
+    tts_http_voice: str = "ara"
     tts_http_seed: int = 42
     tts_http_num_step: int = 32
     tts_http_guidance_scale: float = 1.8
@@ -200,13 +200,7 @@ class Settings(BaseSettings):
     strip_slice_max_parts: int = 12
 
     # --- TTS ---
-    tts_provider: str = Field(default="espeak", description="espeak | null | http | pocket")
-    tts_local_first: bool = False
-    tts_pocket_url: str = "http://127.0.0.1:8790"
-    tts_pocket_voice: str = "alba"
-    tts_pocket_model: str = "pocket-tts-3.1.0-fp32"
-    tts_pocket_timeout: float = 180.0
-    tts_pocket_production_speed: float = 1.00
+    tts_provider: str = Field(default="http", description="http AI TTS; local providers are explicit test/dev overrides only")
     espeak_bin: str = "espeak-ng"
     tts_http_url: str | None = None
     tts_http_key: SecretStr | None = None

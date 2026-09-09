@@ -4348,8 +4348,6 @@ def _render_output_identity(project: Project, script: ScriptVersion | None = Non
     enabled = bool(getattr(project, "watermark_enabled", False))
     text = str(getattr(project, "watermark_text", "") or "").strip() if enabled else ""
     identity = {"version": "render-watermark-v3", "watermark_enabled": enabled, "watermark_text": text}
-    if settings.tts_local_first:
-        identity["tts_selection"] = tts_svc.production_tts_selection_identity()
     if enabled:
         from app.services import render as render_svc
 

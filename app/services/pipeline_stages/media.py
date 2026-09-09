@@ -6,23 +6,6 @@ Public callers should continue importing app.services.pipeline.
 from __future__ import annotations
 
 _NATIVE_SPEED_RECOVERY_STEPS = (1.0, 0.9)
-_BASE_INTER_SECTION_GAP_S = 0.18
-_POCKET_MAX_INTER_SECTION_GAP_S = 0.65
-_POCKET_GAP_MARGIN_S = 0.03
-
-def _pocket_safe_inter_section_gap(tts_svc, clips, *, duration_min_s, duration_max_s, base_gap_s):
-    """Add only enough between-section breath to keep Pocket above the tempo floor."""
-    count = len(clips)
-    if count <= 1:
-        return float(base_gap_s)
-    speech = sum(float(clip.duration) for clip in clips)
-    target = min(float(duration_max_s), float(duration_min_s) + float(tts_svc.PRODUCTION_AUDIO_TARGET_MARGIN_S))
-    floor = float(tts_svc.POCKET_TTS_CLARITY_TEMPO_MIN)
-    if speech <= 0.0 or floor <= 0.0:
-        return float(base_gap_s)
-    required_total_gap = max(0.0, target - (speech / floor))
-    required_gap = required_total_gap / max(1, count - 1) + _POCKET_GAP_MARGIN_S
-    return min(_POCKET_MAX_INTER_SECTION_GAP_S, max(float(base_gap_s), required_gap))
 
 
 def _normalize_http_duration_with_native_speed_recovery(
@@ -92,6 +75,8 @@ def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, d
     project = get_project(db, project_id)
     script = _script_for_media(db, project_id)
     provider, tts_decision = resolver_svc.resolve_tts(db, project.workspace_id, override=provider_name)
+    if provider.name != 'null' and (not provider.available()):
+        raise PipelineError(f'selected voice provider is unavailable: {provider.name}; no fallback voice is allowed')
     editorial_errors = [warning for warning in script.warnings or [] if warning.get('severity') == 'error']
     if editorial_errors:
         raise PipelineError('editorial validation failed before TTS: ' + '; '.join(item.get('message', item.get('code', '')) for item in editorial_errors[:4]))
@@ -110,117 +95,40 @@ def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, d
     if not prepared:
         raise PipelineError('script has no spoken text')
     requested_voice_id = project.voice_id
-    spoken_texts = [spoken for _, _, spoken in prepared]
-    gap = _BASE_INTER_SECTION_GAP_S
-    primary_provider = provider
-    primary_decision = tts_decision
-    fallback_used = False
-    fallback_reason = ""
-
-    def _voice_for(chosen_provider):
-        requested = str(requested_voice_id or "").strip()
-        if chosen_provider.name == "pocket":
-            return requested
-        value = requested.lower()
-        if value.startswith("pocket:") or value in tts_svc.POCKET_TTS_COMMERCIAL_VOICE_IDS:
-            return tts_svc.DEFAULT_ENGLISH_VOICE_ID
-        return requested
-
-    def _produce(chosen_provider):
-        if chosen_provider.name != "null" and not chosen_provider.available():
-            raise tts_svc.TTSError(f"selected voice provider is unavailable: {chosen_provider.name}")
-        effective_voice_id = _voice_for(chosen_provider)
-        synthesis_speed = float(speed)
-        if chosen_provider.name == "pocket" and duration_bounds_s is not None:
-            # Synthesize once at native cadence; duration normalization may apply one
-            # pitch-preserving correction afterward if the measured master needs it.
-            synthesis_speed = float(tts_svc.POCKET_TTS_NATIVE_PRODUCTION_SPEED)
-        batch = getattr(chosen_provider, "synthesize_sections", None)
-        if callable(batch):
-            produced = batch(spoken_texts, work, effective_voice_id, synthesis_speed)
+    try:
+        if isinstance(provider, tts_svc.HttpProvider):
+            clips = provider.synthesize_sections([spoken for _, _, spoken in prepared], work, requested_voice_id, speed)
         else:
-            produced = [
-                chosen_provider.synthesize(
-                    spoken, work / f"{index:02d}_{section['section']}.wav", effective_voice_id, synthesis_speed
-                )
-                for index, section, spoken in prepared
-            ]
-        policy = None
-        effective_gap = gap
-        if duration_bounds_s is not None:
-            try:
-                duration_min_s, duration_max_s = (
-                    float(duration_bounds_s[0]), float(duration_bounds_s[1])
-                )
-            except (IndexError, TypeError, ValueError) as exc:
-                raise tts_svc.TTSError(f"invalid voice-over duration bounds: {exc}") from exc
-            if chosen_provider.name == "pocket":
-                effective_gap = _pocket_safe_inter_section_gap(
-                    tts_svc, produced, duration_min_s=duration_min_s,
-                    duration_max_s=duration_max_s, base_gap_s=gap,
-                )
-            if isinstance(chosen_provider, tts_svc.HttpProvider):
-                produced, policy = _normalize_http_duration_with_native_speed_recovery(
-                    tts_svc, chosen_provider, spoken_texts, work, effective_voice_id, speed, produced,
-                    duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=effective_gap,
+            clips = [provider.synthesize(spoken, work / f"{index:02d}_{section['section']}.wav", requested_voice_id, speed) for index, section, spoken in prepared]
+    except tts_svc.TTSError as exc:
+        raise PipelineError(f'voice-over failed: {exc}') from exc
+    gap = 0.18
+    timing_policy = None
+    if duration_bounds_s is not None:
+        try:
+            duration_min_s, duration_max_s = (float(duration_bounds_s[0]), float(duration_bounds_s[1]))
+            if isinstance(provider, tts_svc.HttpProvider):
+                clips, timing_policy = _normalize_http_duration_with_native_speed_recovery(
+                    tts_svc,
+                    provider,
+                    [spoken for _, _, spoken in prepared],
+                    work,
+                    requested_voice_id,
+                    speed,
+                    clips,
+                    duration_min_s=duration_min_s,
+                    duration_max_s=duration_max_s,
+                    gap_s=gap,
                 )
             else:
-                if chosen_provider.name == "pocket":
-                    correction = tts_svc._duration_window_tempo(
-                        sum(float(clip.duration) for clip in produced), len(produced),
-                        duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=effective_gap,
-                    )
-                    if correction is not None:
-                        tempo, _target = correction
-                        if not (
-                            tts_svc.POCKET_TTS_CLARITY_TEMPO_MIN
-                            <= float(tempo)
-                            <= tts_svc.POCKET_TTS_CLARITY_TEMPO_MAX
-                        ):
-                            raise tts_svc.TTSError(
-                                "Pocket TTS duration correction exceeds clarity-safe range "
-                                f"({tts_svc.POCKET_TTS_CLARITY_TEMPO_MIN:.2f}-"
-                                f"{tts_svc.POCKET_TTS_CLARITY_TEMPO_MAX:.2f})"
-                            )
-                produced, policy = tts_svc.normalize_speech_clips_to_duration_window(
-                    produced, duration_min_s=duration_min_s, duration_max_s=duration_max_s, gap_s=effective_gap
+                clips, timing_policy = tts_svc.normalize_speech_clips_to_duration_window(
+                    clips,
+                    duration_min_s=duration_min_s,
+                    duration_max_s=duration_max_s,
+                    gap_s=gap,
                 )
-        return produced, policy, synthesis_speed, effective_gap
-
-    try:
-        clips, timing_policy, synthesis_speed, effective_gap = _produce(provider)
-    except tts_svc.TTSError as primary_exc:
-        can_fallback = provider_name is None and primary_provider.name == "pocket"
-        if not can_fallback:
-            raise PipelineError(f"voice-over failed: {primary_exc}") from primary_exc
-        fallback_reason = str(primary_exc)[:300]
-        for stale in work.glob("*_pocket.wav"):
-            stale.unlink(missing_ok=True)
-        try:
-            provider, tts_decision = resolver_svc.resolve_tts_fallback(db, project.workspace_id)
-            if provider.name == "pocket":
-                raise tts_svc.TTSError("Pocket TTS cannot be its own fallback")
-            clips, timing_policy, synthesis_speed, effective_gap = _produce(provider)
-        except tts_svc.TTSError as fallback_exc:
-            raise PipelineError(
-                f"voice-over failed: Pocket TTS failed ({fallback_reason}); fallback failed ({fallback_exc})"
-            ) from fallback_exc
-        fallback_used = True
-
-    timing_policy = {
-        **dict(timing_policy or {}),
-        "tts_primary_provider": primary_provider.name,
-        "tts_primary_source": primary_decision.source,
-        "tts_fallback_used": fallback_used,
-        "tts_effective_provider": provider.name,
-        "tts_synthesis_speed": round(float(synthesis_speed), 4),
-        "inter_section_gap_s": round(float(effective_gap), 4),
-        "pocket_gap_recovery": bool(
-            provider.name == "pocket" and float(effective_gap) > float(gap) + 1e-6
-        ),
-    }
-    if fallback_used:
-        timing_policy["tts_fallback_reason"] = fallback_reason
+        except (IndexError, TypeError, ValueError, tts_svc.TTSError) as exc:
+            raise PipelineError(f'voice-over duration normalization failed: {exc}') from exc
     created: list[AudioSegment] = []
     profile_hashes = {clip.voice_profile_hash for clip in clips}
     if len(profile_hashes) != 1:
@@ -239,7 +147,7 @@ def generate_voiceover(api, db, project_id, *, speed, provider_name, actor_id, d
     for i, segment in enumerate(created):
         segment.start_time = round(cursor, 3)
         segment.end_time = round(cursor + segment.duration, 3)
-        cursor = segment.end_time + (effective_gap if i < len(created) - 1 else 0.0)
+        cursor = segment.end_time + (gap if i < len(created) - 1 else 0.0)
     audit(db, 'voice.generate', 'project', project_id, actor_id, segments=len(created), provider=provider.name, provider_source=tts_decision.source, model=tts_decision.model, timing_policy=dict(timing_policy or {}))
     db.flush()
     return created
