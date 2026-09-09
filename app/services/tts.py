@@ -162,7 +162,7 @@ def probe_duration(path: Path) -> float:
         raise TTSError(f"could not probe duration of {path.name}: {exc}") from exc
 
 
-PRODUCTION_AUDIO_TIMING_POLICY_VERSION = "production-audio-timing-v3"
+PRODUCTION_AUDIO_TIMING_POLICY_VERSION = "production-audio-timing-v4"
 PRODUCTION_AUDIO_TEMPO_MIN = 0.80
 PRODUCTION_AUDIO_TEMPO_MAX = 1.25
 PRODUCTION_AUDIO_TARGET_MARGIN_S = 0.75

@@ -3394,21 +3394,20 @@ def _complete_retry_visual_selection(
         if not isinstance(passage, dict):
             continue
         section = _visual_section_for_passage(passage, passage_index, len(cloned_passages), request)
-        if not section:
-            continue
         evidence = [str(value) for value in (passage.get("evidence_panel_ids") or ())]
         section_order = relevant_section_by_index.get(passage_index, ())
         section_safe = set(section_order)
-        selected_section = {value for value in evidence if value in section_safe}
-        for candidate in ranked_candidates(passage, section_order):
-            if len(selected_section) >= min(4, len(section_safe)):
-                break
-            if candidate not in evidence:
-                evidence.append(candidate)
-            selected_section.add(candidate)
-            if candidate in preferred:
-                global_used.add(candidate)
-        passage["evidence_panel_ids"] = evidence
+        if section:
+            selected_section = {value for value in evidence if value in section_safe}
+            for candidate in ranked_candidates(passage, section_order):
+                if len(selected_section) >= min(4, len(section_safe)):
+                    break
+                if candidate not in evidence:
+                    evidence.append(candidate)
+                selected_section.add(candidate)
+                if candidate in preferred:
+                    global_used.add(candidate)
+            passage["evidence_panel_ids"] = evidence
 
         relevant_generic = relevant_generic_by_index.get(passage_index, ())
         relevant_generic_set = set(relevant_generic)

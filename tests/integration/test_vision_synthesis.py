@@ -944,6 +944,30 @@ def test_corrective_visual_completion_adds_only_grounded_section_safe_support():
     assert len(used) >= 18
 
 
+def test_corrective_visual_completion_handles_custom_editorial_roles():
+    from dataclasses import replace
+
+    module = _vision_module()
+    panel_ids = tuple(f"custom-support-{index:02d}" for index in range(20))
+    observations = tuple({"panel_id": panel_id, "source_asset_id": f"asset-{panel_id}", "source_index": index, "visible_facts": ["Lloyd uses an iron shovel to defeat Neumann in the duel."], "dialogue_or_ocr": [], "inferences": []} for index, panel_id in enumerate(panel_ids))
+    request = replace(_request(module, expected_panel_ids=panel_ids, ordered_observations=observations, narrative_profile_id="sharp_friend_v1", target_word_count_min=115, target_word_count_max=125, preferred_visual_panel_ids=panel_ids), retry_visual_selection=True)
+    claims = []
+    passages = []
+    roles = ("duel-opening", "training-reveal", "combat-climax", "aftermath-contract", "mining-start")
+    for index, role in enumerate(roles):
+        claim_id = f"custom-claim-{index}"
+        claims.append({"claim_id": claim_id, "text": "Lloyd uses an iron shovel to defeat Neumann in the duel.", "qualification": "Grounded combat evidence.", "evidence_panel_ids": [panel_ids[index]]})
+        passages.append({"passage_id": f"custom-passage-{index}", "editorial_role": role, "text": "Lloyd uses the shovel, wins the duel, and changes what happens next.", "claim_ids": [claim_id], "evidence_panel_ids": [panel_ids[index]]})
+    completed = module._complete_retry_visual_selection({"evidence_graph": {"claims": claims}, "script_passages": passages}, request)
+    module.validate_synthesis_visual_selection(completed, request)
+    used = set()
+    for passage in completed["script_passages"]:
+        selected = set(passage["evidence_panel_ids"]) & set(panel_ids)
+        assert len(selected) >= 4
+        used.update(selected)
+    assert len(used) >= 18
+
+
 def test_production_visual_selection_requires_preferred_panel_coverage():
     module = _vision_module()
     request = _request(

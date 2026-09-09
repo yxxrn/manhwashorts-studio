@@ -200,4 +200,44 @@ def test_pocket_clarity_gate_keeps_proven_080_retime_local(db, monkeypatch):
     assert len(segments) == 1
     assert segments[0].provider == "pocket"
     assert tts_svc.POCKET_TTS_CLARITY_TEMPO_MIN == 0.80
-    assert tts_svc.PRODUCTION_AUDIO_TIMING_POLICY_VERSION == "production-audio-timing-v3"
+    assert tts_svc.PRODUCTION_AUDIO_TIMING_POLICY_VERSION == "production-audio-timing-v4"
+
+
+def test_pocket_borderline_cadence_uses_bounded_section_gap_instead_of_fallback():
+    from types import SimpleNamespace
+
+    from app.services import tts as tts_svc
+    from app.services.pipeline_stages import media
+
+    clips = [SimpleNamespace(duration=value) for value in (6.0, 9.8, 9.7, 7.2, 7.1)]
+    gap = media._pocket_safe_inter_section_gap(
+        tts_svc, clips, duration_min_s=50.0, duration_max_s=60.0, base_gap_s=0.18,
+    )
+    assert 0.18 < gap <= 0.45
+    correction = tts_svc._duration_window_tempo(
+        sum(c.duration for c in clips), len(clips),
+        duration_min_s=50.0, duration_max_s=60.0, gap_s=gap,
+    )
+    assert correction is not None
+    tempo, _target = correction
+    assert tempo > tts_svc.POCKET_TTS_CLARITY_TEMPO_MIN
+
+
+def test_pocket_gap_recovery_does_not_hide_truly_short_audio():
+    from types import SimpleNamespace
+
+    import pytest
+
+    from app.services import tts as tts_svc
+    from app.services.pipeline_stages import media
+
+    clips = [SimpleNamespace(duration=value) for value in (5.6, 9.1, 9.1, 7.5, 6.9)]
+    gap = media._pocket_safe_inter_section_gap(
+        tts_svc, clips, duration_min_s=50.0, duration_max_s=60.0, base_gap_s=0.18,
+    )
+    assert gap == pytest.approx(media._POCKET_MAX_INTER_SECTION_GAP_S)
+    with pytest.raises(tts_svc.TTSError, match='safe production range'):
+        tts_svc._duration_window_tempo(
+            sum(c.duration for c in clips), len(clips),
+            duration_min_s=50.0, duration_max_s=60.0, gap_s=gap,
+        )
