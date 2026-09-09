@@ -1451,6 +1451,7 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 "synthesis_provider_json_invalid",
                 "synthesis_echo_lineage_invalid",
                 "synthesis_projection_invalid",
+                "v3_narrative_outline_keys_do_not_match_the_contract",
             }
             subtype = str(getattr(exc, "validation_subtype", "") or "")
             retry_signature = _synthesis_retry_signature(subtype, exc)
@@ -1587,7 +1588,10 @@ def _synthesize_with_cache(provider: Any, request: VisionChapterSynthesisRequest
                 subtype.endswith("_contains_an_unknown_panel")
                 or subtype.endswith("_references_an_unknown_panel")
             )
-            projection_retryable = subtype.startswith("synthesis_projection_")
+            projection_retryable = (
+                subtype.startswith("synthesis_projection_")
+                or subtype == "v3_narrative_outline_keys_do_not_match_the_contract"
+            )
             story_spine_retryable = subtype.startswith("story_spine") and subtype.endswith("_must_be_a_non-empty_string")
             continuity_entity_retryable = subtype in {
                 "motive_references_an_unknown_entity",

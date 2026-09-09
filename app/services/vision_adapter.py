@@ -3815,8 +3815,10 @@ def _build_synthesis_payload(
     projection_retry_instruction = ""
     if request.retry_projection_contract:
         projection_retry_instruction = (
-            "Corrective retry: the previous response failed the synthesis projection contract. "
-            "Return the complete required top-level structure exactly. continuity_ledger MUST preserve the supplied chunk continuity, "
+            "Corrective retry: the previous response failed the synthesis projection or narrative-outline contract. "
+            "Return the complete required top-level structure exactly. narrative_outline MUST be exactly {story_spine,ending_kind}; "
+            "story_spine MUST contain exactly who_wants_what, obstacle, decision, consequence, changed_stakes, unresolved_question; "
+            "ending_kind MUST be one of the active profile's allowed ending kinds. continuity_ledger MUST preserve the supplied chunk continuity, "
             "contain nonempty entities, motives, state_changes, and causal_links arrays as supported by observations, set reconciled_after_final_chunk=true, and fill all six story_spine fields with nonempty grounded strings. "
             "Every motives[*].entity_id and state_changes[*].entity_id MUST exactly equal an entity_id declared in continuity_ledger.entities. If a motive or state change cannot be reconciled to a declared observed entity, drop that unsupported row rather than inventing a new identity. "
             "Do not drop grounded entity identity or replace the continuity ledger with a story summary. Add no unsupported facts. "

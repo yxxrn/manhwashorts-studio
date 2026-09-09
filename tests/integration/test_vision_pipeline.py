@@ -1919,3 +1919,30 @@ def test_panel_transport_reuses_one_source_decode_for_group():
     assert metrics["source_decode_count"] == 1
     assert metrics["panel_count"] == 2
     assert all(result[panel_id]["payload"] for panel_id in result)
+
+class _V3OutlineShapeCorrectiveSynthesisSpy(_RetryablePersistentSynthesisSpy):
+    def synthesize(self, request):
+        from app.services.vision_adapter import VisionResponseInvalid
+
+        self.synthesis_attempts += 1
+        self.synthesis_requests.append(request)
+        if self.synthesis_attempts == 1:
+            raise VisionResponseInvalid(
+                validation_subtype="v3_narrative_outline_keys_do_not_match_the_contract"
+            )
+        return _valid_synthesis_output(request)
+
+
+def test_synthesis_v3_outline_shape_failure_uses_projection_retry(db, tmp_path, monkeypatch):
+    module = _pipeline_module()
+    monkeypatch.setattr(module.settings, "data_dir", tmp_path)
+    project_id, _ = _seed_vision_project(db, standalone_count=13)
+    provider = _V3OutlineShapeCorrectiveSynthesisSpy()
+    _install_provider(monkeypatch, provider)
+
+    row = module.run_analysis(db, project_id)
+
+    assert row.state == "RECONCILED"
+    assert provider.synthesis_attempts == 2
+    assert provider.synthesis_requests[0].retry_projection_contract is False
+    assert provider.synthesis_requests[1].retry_projection_contract is True
