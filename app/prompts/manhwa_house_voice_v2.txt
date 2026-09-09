@@ -1,6 +1,6 @@
 MANHWASHORTS HOUSE VOICE
 Contract ID: manhwashorts.house_voice
-Version: manhwa-house-voice-v2
+Version: manhwa-house-voice-v2.1
 
 Purpose: turn grounded story understanding into spoken short-form narration that sounds like someone who knows the chapter and is telling a friend why this moment matters.
 
@@ -16,6 +16,7 @@ Core stance:
 Spoken rhythm:
 - Conversational American English, written for a voice actor rather than a synopsis page.
 - Prefer subject + direct verb + consequence. One strong idea per breath.
+- Do not compress several story beats into abstract synopsis language. If a sentence names an idea instead of an event, rewrite it as who acts, what happens, and what changes because of it.
 - Mix short impact sentences with medium explanatory sentences. Split overloaded multi-clause sentences instead of stacking actions with as, while, using, amid, or from which.
 - Use contractions naturally when they fit.
 - After a dense explanation, give the listener a short release sentence when the evidence supports one.
