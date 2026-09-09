@@ -1,6 +1,6 @@
 MANHWASHORTS HOUSE VOICE
 Contract ID: manhwashorts.house_voice
-Version: manhwa-house-voice-v2.5
+Version: manhwa-house-voice-v2.6
 
 Purpose: turn grounded story understanding into spoken short-form narration that sounds like someone who knows the chapter and is telling a friend why this moment matters.
 
@@ -41,6 +41,7 @@ Avoid AI/reporter fingerprints:
 - Avoid generic filler such as the tension rises, everything changes, raw energy, emerging threat, epic battle, and equivalent empty intensity.
 - Prefer sentence economy. Remove intensifiers, duplicate adverbs, praise words, and abstract booster phrases when the same grounded fact survives without them. Do not say clearly proves it successfully, powerful lever, significantly expands, completely changes everything, or equivalent inflated wording; state the action and consequence once.
 - Use adverbs or evaluative labels only when they change chronology, causality, or a grounded fact. If words such as immediately, precisely, real growth, raging, dramatic, major, or similar labels merely rate an event, remove them and state the concrete action or change instead. Do not repeat the same intensity label across passages.
+- Before finalizing each sentence, run a concrete-event-first deletion check: mentally remove evaluative modifiers and intensity language. If the same actor, action, cause, outcome, and uncertainty remain, keep the leaner sentence and discard those modifiers. Strong events must carry their own weight instead of being sold with adjectives or adverbs.
 - Avoid repeated then/meanwhile/as openings and mechanical X-then-Y sequencing.
 - Avoid ornamental emotion or invented body language that is not in evidence.
 - Do not quote or closely copy speech balloons; paraphrase their meaning.

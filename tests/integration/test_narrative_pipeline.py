@@ -111,8 +111,8 @@ def test_sharp_friend_materializes_flexible_script_and_persists_identity(db):
     identity = script.editorial_metadata["narrative_identity"]
     assert identity == {
         "profile_id": "sharp_friend_v1",
-        "version": "1.2.6",
-        "sha256": "ca1dec601ce1e606de5b84d080e008e8d7d86d61ea70c24d17e403d21da34dfe",
+        "version": "1.2.7",
+        "sha256": "5aa78a00c8a0ad96531f313bb3d5b28ab205446ca40921bb02d1e1bda6869f3b",
     }
     assert script.editorial_metadata["duration_contract"] == (
         script_service.narration_duration_contract(project.narration_style)
@@ -254,7 +254,7 @@ def test_analysis_status_exposes_only_safe_narrative_identity_summary(db):
     status = pipeline_service.analysis_status(db, project.id)
 
     assert status["narrative_profile_id"] == "sharp_friend_v1"
-    assert status["narrative_profile_version"] == "1.2.6"
+    assert status["narrative_profile_version"] == "1.2.7"
     assert len(status["narrative_profile_sha256"]) == 64
     assert status["narrative_screening_warning_codes"] == []
     forbidden = {
@@ -387,5 +387,5 @@ def test_run_analysis_explicitly_carries_sharp_friend_identity_to_provider(
     assert row.reconciliation_json["narrative_ending_kind"] == "consequence"
     request = provider.synthesis_requests[0]
     assert request.narrative_profile_id == "sharp_friend_v1"
-    assert request.narrative_profile_version == "1.2.6"
+    assert request.narrative_profile_version == "1.2.7"
     assert len(request.narrative_profile_sha256) == 64
