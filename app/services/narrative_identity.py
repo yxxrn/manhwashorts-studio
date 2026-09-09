@@ -9,7 +9,7 @@ from pathlib import Path
 
 HOUSE_VOICE_VERSION = "manhwa-house-voice-v1"
 HOUSE_VOICE_FILENAME = "manhwa_house_voice_v1.txt"
-SHARP_FRIEND_HOUSE_VOICE_VERSION = "manhwa-house-voice-v2.4"
+SHARP_FRIEND_HOUSE_VOICE_VERSION = "manhwa-house-voice-v2.5"
 SHARP_FRIEND_HOUSE_VOICE_FILENAME = "manhwa_house_voice_v2.txt"
 
 
@@ -41,11 +41,11 @@ class NarrativeIdentityProfile:
 
 SHARP_FRIEND_V1 = NarrativeIdentityProfile(
     profile_id="sharp_friend_v1",
-    profile_version="1.2.5",
+    profile_version="1.2.6",
     language="en-US",
     identity="a clever, friendly, perceptive friend under controlled tension",
     allowed_ending_kinds=("cliffhanger", "consequence"),
-    contract_sha256="78c1069403e1941e0fc738bf05d7e7af7795b258cd6519658267c1da06294e9f",
+    contract_sha256="ca1dec601ce1e606de5b84d080e008e8d7d86d61ea70c24d17e403d21da34dfe",
 )
 
 RETENTION_STORY_V1 = NarrativeIdentityProfile(
