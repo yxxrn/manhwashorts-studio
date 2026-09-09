@@ -2666,6 +2666,11 @@ def _narration_retry_feedback(
         )
     allowed_endings = tuple(narrative_identity.SHARP_FRIEND_V1.allowed_ending_kinds)
     allowed_text = " or ".join(allowed_endings)
+    if "non-question ending kind must not end with ?" in value:
+        return (
+            f"use {allowed_text} and rewrite only the final passage as a declarative grounded ending; "
+            "preserve its claim IDs and evidence panel IDs, keep the same supported meaning, and do not end with a question mark"
+        )
     if "open_question ending must be evidence-grounded and end with ?" in value:
         if "open_question" not in allowed_endings:
             return (
@@ -2872,6 +2877,7 @@ def _safe_narration_contract_diagnostic(
     elif (
         "open_question ending" in lowered
         or "ending must be evidence-grounded" in lowered
+        or "non-question ending kind" in lowered
         or "ending_kind" in lowered
     ):
         field, count = "ending_kind", 1

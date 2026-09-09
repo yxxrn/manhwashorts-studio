@@ -1479,6 +1479,29 @@ def test_visual_repair_retry_feedback_enforces_mandatory_capacity_plan():
     assert "claim_ids and evidence_panel_ids" in feedback
     assert "max_lexical_words" in feedback
 
+def test_narration_retry_feedback_targets_non_question_ending_punctuation():
+    module = _module()
+
+    feedback = module._narration_retry_feedback(
+        "non-question ending kind must not end with ?"
+    )
+
+    assert "declarative grounded ending" in feedback
+    assert "do not end with a question mark" in feedback
+    assert "claim IDs and evidence panel IDs" in feedback
+
+
+def test_visual_repair_metadata_classifies_non_question_ending_punctuation():
+    module = _module()
+
+    metadata = module._visual_narrative_repair_analyzer_metadata(
+        "non-question ending kind must not end with ?",
+        {"script_passages": [{}]},
+    )
+
+    assert metadata["failed_field"] == "ending_kind"
+
+
 def test_visual_repair_retry_feedback_targets_ending_and_compaction_contracts():
     module = _module()
 
