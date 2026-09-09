@@ -367,6 +367,50 @@ def test_union_area_does_not_double_count_overlapping_derived_bounds():
     assert coverage.source_content_coverage_ratio == pytest.approx(1.0)
 
 
+def test_completeness_verifier_accepts_byte_identical_lineage_aliases():
+    segmentation_module = _require_segmentation()
+    _strips, inputs = _fixture_inputs(segmentation_module)
+    original = inputs[0]
+    duplicate = replace(
+        original,
+        source_asset_id="duplicate-chapter-footer",
+        strip_order=original.strip_order + 100,
+        region_order=original.region_order + 1,
+    )
+    coverage = segmentation_module.build_complete_coverage_map(
+        (original, duplicate),
+        segmentation_version="task3-v1",
+    )
+    overviews = {
+        item.source_asset_id: {
+            "bounds": tuple(item.source_bounds),
+            "lineage_key": (
+                item.original_checksum or item.source_asset_id,
+                item.original_width,
+                item.original_height,
+            ),
+            "bands": [],
+        }
+        for item in (original, duplicate)
+    }
+    for region in coverage.regions:
+        overviews[region.source_asset_id]["bands"].append({
+            "bounds": tuple(region.bounds),
+            "region_class": region.region_class,
+        })
+    aliases_without_owned_regions = [
+        source_id for source_id, overview in overviews.items() if not overview["bands"]
+    ]
+    assert len(aliases_without_owned_regions) == 1
+    assert segmentation_module.verify_segmentation_completeness(overviews, coverage) == ()
+
+    broken = {key: dict(value) for key, value in overviews.items()}
+    alias_id = aliases_without_owned_regions[0]
+    broken[alias_id] = dict(broken[alias_id])
+    broken[alias_id]["lineage_key"] = ("different-checksum", original.original_width, original.original_height)
+    assert f"coverage.source_asset_missing:{alias_id}" in segmentation_module.verify_segmentation_completeness(broken, coverage)
+
+
 def test_completeness_verifier_reports_source_space_gaps_and_conflicts():
     segmentation_module = _require_segmentation()
     strips, inputs = _fixture_inputs(segmentation_module)

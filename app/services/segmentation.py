@@ -753,6 +753,42 @@ def verify_segmentation_completeness(
             if region.source_asset_id == source_asset_id
         ]
         if not regions:
+            raw_lineage = overview.get("lineage_key")
+            lineage = None
+            if (
+                isinstance(raw_lineage, (tuple, list))
+                and len(raw_lineage) == 3
+                and isinstance(raw_lineage[0], str)
+                and isinstance(raw_lineage[1], int)
+                and not isinstance(raw_lineage[1], bool)
+                and isinstance(raw_lineage[2], int)
+                and not isinstance(raw_lineage[2], bool)
+            ):
+                lineage = (raw_lineage[0], raw_lineage[1], raw_lineage[2])
+            if lineage is not None:
+                sibling_regions = []
+                for sibling_id, sibling_overview in full_strip_overviews.items():
+                    if not isinstance(sibling_overview, Mapping):
+                        continue
+                    sibling_lineage = sibling_overview.get("lineage_key")
+                    if not (
+                        isinstance(sibling_lineage, (tuple, list))
+                        and len(sibling_lineage) == 3
+                        and tuple(sibling_lineage) == lineage
+                    ):
+                        continue
+                    sibling_regions.extend(
+                        region
+                        for region in coverage_map.regions
+                        if region.source_asset_id == sibling_id
+                    )
+                intersections = [
+                    intersection
+                    for region in sibling_regions
+                    if (intersection := _rect_intersection(overview_bounds, region.bounds)) is not None
+                ]
+                if intersections and _union_area(intersections) == _rect_area(overview_bounds):
+                    continue
             errors.append(f"coverage.source_asset_missing:{source_asset_id}")
             continue
         map_bounds = (

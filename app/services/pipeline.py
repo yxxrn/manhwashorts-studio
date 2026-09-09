@@ -719,6 +719,11 @@ def _coverage_overviews(
     return {
         item.source_asset_id: {
             "bounds": list(item.source_bounds),
+            "lineage_key": [
+                item.original_checksum or item.source_asset_id,
+                item.original_width,
+                item.original_height,
+            ],
             "bands": [
                 {
                     "bounds": list(region.bounds),
