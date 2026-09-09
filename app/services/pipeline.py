@@ -4347,7 +4347,7 @@ def _timeline_stage_ready(db: Session, project_id: str) -> bool:
 def _render_output_identity(project: Project, script: ScriptVersion | None = None) -> dict[str, Any]:
     enabled = bool(getattr(project, "watermark_enabled", False))
     text = str(getattr(project, "watermark_text", "") or "").strip() if enabled else ""
-    identity = {"version": "render-watermark-v3", "watermark_enabled": enabled, "watermark_text": text}
+    identity = {"version": "render-watermark-v4", "watermark_enabled": enabled, "watermark_text": text, "voice_id": str(getattr(project, "voice_id", "") or ""), "tts_selection": tts_svc.production_tts_selection_identity()}
     if enabled:
         from app.services import render as render_svc
 

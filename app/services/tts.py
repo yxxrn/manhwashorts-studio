@@ -72,6 +72,18 @@ GROK_NARRATOR_PROFILES: tuple[str, ...] = (
 )
 
 
+def production_tts_selection_identity() -> dict[str, object]:
+    """Stable production TTS identity used to invalidate stale audio/render caches."""
+    provider = str(settings.tts_provider or "").strip().lower()
+    return {
+        "version": "tts-selection-v3",
+        "provider": provider,
+        "http_protocol": str(settings.tts_http_protocol or "") if provider == "http" else "",
+        "http_model": str(settings.tts_http_model or "") if provider == "http" else "",
+        "http_voice": str(settings.tts_http_voice or "") if provider == "http" else "",
+    }
+
+
 def resolve_grok_voice_id(voice_id: str) -> str:
     """Resolve one provider voice; legacy English aliases map to the new default."""
     value = (voice_id or "").strip().lower()

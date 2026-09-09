@@ -241,6 +241,8 @@ def run_production(api, db, project_id, *, actor_id, approved_script_hash, appro
         'version': tts_svc.PRODUCTION_AUDIO_TIMING_POLICY_VERSION,
         'requested_speed': round(float(speed), 4),
         'provider_override': str(provider_name or ''),
+        'voice_id': str(getattr(project, 'voice_id', '') or ''),
+        'provider_selection': tts_svc.production_tts_selection_identity(),
         'duration_bounds_s': list(audio_duration_bounds) if audio_duration_bounds is not None else [],
     }
     audio_reusable = bool(

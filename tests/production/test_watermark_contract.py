@@ -12,14 +12,16 @@ def test_render_output_identity_normalizes_visible_watermark():
     class Project:
         watermark_enabled = True
         watermark_text = "  @Rurushortss  "
-    assert pl._render_output_identity(Project()) == {
-        "version": "render-watermark-v3",
-        "watermark_enabled": True,
-        "watermark_text": "@Rurushortss",
-        "watermark_font_name": "Caacupe One",
-        "watermark_font_sha256": "2f95e76b7df7f29c722c9bafb248cffd3970d92a19dd6b3f545e6934b64998cd",
-        "watermark_synthetic_bold": True,
-    }
+        voice_id = "ara"
+
+    identity = pl._render_output_identity(Project())
+    assert identity["version"] == "render-watermark-v4"
+    assert identity["watermark_enabled"] is True
+    assert identity["watermark_text"] == "@Rurushortss"
+    assert identity["voice_id"] == "ara"
+    assert identity["tts_selection"]["version"] == "tts-selection-v3"
+    assert identity["watermark_font_name"] == "Caacupe One"
+    assert identity["watermark_synthetic_bold"] is True
     Project.watermark_enabled = False
     assert pl._render_output_identity(Project())["watermark_text"] == ""
 
@@ -45,6 +47,10 @@ def test_render_reuse_invalidates_when_watermark_changes(db, tmp_path):
     script.editorial_metadata = {"production": {"script_hash": script_hash, "render_job_id": job.id, "render_output_identity": pl._render_output_identity(project)}}
     assert pl._render_stage_ready(db, project.id, script_hash) is job
     project.watermark_text = "@anotherchannel"
+    assert pl._render_stage_ready(db, project.id, script_hash) is None
+    project.watermark_text = "@Rurushortss"
+    script.editorial_metadata = {"production": {"script_hash": script_hash, "render_job_id": job.id, "render_output_identity": pl._render_output_identity(project)}}
+    project.voice_id = "orion" if project.voice_id != "orion" else "ara"
     assert pl._render_stage_ready(db, project.id, script_hash) is None
 
 
