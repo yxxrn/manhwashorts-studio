@@ -49,7 +49,7 @@ def test_v3_prompt_resource_is_lf_utf8_and_normative():
         "selective evidence-grounded commentary",
         "four to six",
         "cliffhanger",
-        "open_question",
+        "final passage must be declarative",
         "spoken text",
         "do not generate display_text",
         "no fixed intro",
@@ -62,6 +62,7 @@ def test_v3_prompt_resource_is_lf_utf8_and_normative():
     )
     for fragment in required:
         assert fragment in lowered, fragment
+    assert "cliffhanger, consequence, or open_question" not in lowered
     assert lowered.index("observe every ordered panel") < lowered.index("ending_kind")
     assert lowered.index("ending_kind") < lowered.index("four to six")
 
@@ -112,7 +113,7 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     module = _identity_module()
     version, digest, text = module.load_narrative_instruction("sharp_friend_v1")
     assert version == "vision-first-story-analyzer-v3"
-    assert digest == "b840ac03da1f905b7bd5bd0935204ed3ba75334bf5f4f453fe6e1e289afc582b"
+    assert digest == "37ce4fdc25e57e94718648e8491d1ce9ada854c4ea5e360c75817a3818469b8a"
     assert digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert "\r" not in text
     assert "observe every ordered panel" in text.lower()
@@ -122,7 +123,7 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     assert "in the final passage, state the concrete new event and its immediate consequence" in text.lower()
     assert (
         module.get_narrative_identity("sharp_friend_v1").contract_sha256
-        == "dadbe00f8ce4ebd29b4c46938d55f3b032b7a5bf93081d901528cc6ead868f7d"
+        == "04abc8167d942d24b14ecaf0afcda6df0f2ff265d1f6f5881a068c1b24f53606"
     )
 
 

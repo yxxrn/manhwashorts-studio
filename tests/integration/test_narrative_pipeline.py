@@ -112,7 +112,7 @@ def test_sharp_friend_materializes_flexible_script_and_persists_identity(db):
     assert identity == {
         "profile_id": "sharp_friend_v1",
         "version": "1.2.3",
-        "sha256": "dadbe00f8ce4ebd29b4c46938d55f3b032b7a5bf93081d901528cc6ead868f7d",
+        "sha256": "04abc8167d942d24b14ecaf0afcda6df0f2ff265d1f6f5881a068c1b24f53606",
     }
     assert script.editorial_metadata["duration_contract"] == (
         script_service.narration_duration_contract(project.narration_style)

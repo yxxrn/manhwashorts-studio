@@ -36,7 +36,7 @@ top-level keys:
       "changed_stakes": "...",
       "unresolved_question": "..."
     },
-    "ending_kind": "cliffhanger, consequence, or open_question"
+    "ending_kind": "cliffhanger or consequence"
   }
 }
 
@@ -155,10 +155,7 @@ range in capacity_rebalance. Obey duration_policy_contract exactly: standard mod
 uses the local 50-60 second dramatic-duration contract, while adaptive mode uses
 its supplied shorter target_duration_min_s/target_duration_max_s window because
 coherent visual capacity is intentionally lower. Never pad an adaptive story with
-unrelated claims, repeated panels, or generic filler just to reach 50 seconds. The final ending kind controls punctuation: open_question ends
-with an evidence-grounded question; cliffhanger and consequence do not need a
-question mark. Do not generate display_text or subtitle cues; those are derived
-locally from the approved spoken text.
+unrelated claims, repeated panels, or generic filler just to reach 50 seconds. The final ending kind must be cliffhanger or consequence. The final passage must be declarative and must not end with a question mark. Preserve unresolved direction in story_spine.unresolved_question without turning it into a generic question ending. Do not generate display_text or subtitle cues; those are derived locally from the approved spoken text.
 
 Every passage is captioned locally in two lines of at most 22 characters each,
 so keep each sentence short (roughly 6-12 words), split long thoughts into

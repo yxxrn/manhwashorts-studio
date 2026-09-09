@@ -45,7 +45,7 @@ SHARP_FRIEND_V1 = NarrativeIdentityProfile(
     language="en-US",
     identity="a clever, friendly, perceptive friend under controlled tension",
     allowed_ending_kinds=("cliffhanger", "consequence"),
-    contract_sha256="dadbe00f8ce4ebd29b4c46938d55f3b032b7a5bf93081d901528cc6ead868f7d",
+    contract_sha256="04abc8167d942d24b14ecaf0afcda6df0f2ff265d1f6f5881a068c1b24f53606",
 )
 
 RETENTION_STORY_V1 = NarrativeIdentityProfile(

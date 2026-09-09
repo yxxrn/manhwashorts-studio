@@ -21,7 +21,7 @@ This is a normative analyzer instruction contract. The output is evidence for a 
 
 5. Return four to six script_passages. Each passage has exactly passage_id, editorial_role, text, claim_ids, and evidence_panel_ids. Passage IDs are unique. editorial_role is a nonempty semantic label; it is not a fixed vocabulary, order, or quota. Each passage has nonempty claim_ids, and its evidence_panel_ids cover every panel cited by those claims.
 
-6. Set ending_kind to exactly cliffhanger, consequence, or open_question. An open_question final passage must end with ? and its unresolved question must be nonempty and evidence-grounded. A cliffhanger or consequence ending must not be forced to end with ?. Do not manufacture a question to satisfy the format.
+6. Set ending_kind to exactly cliffhanger or consequence. The final passage must be declarative and must not end with ?. Preserve unresolved direction in story_spine.unresolved_question, but never convert that field into a generic question ending.
 
 7. For the standard production path, target 115-125 whitespace-counted words overall, without rigid per-role budgets. If the payload supplies a narrower adaptive grounded range, obey that range. A different grounded count may still be repaired downstream, but do not intentionally draft below the supplied minimum. Spoken text keeps its punctuation and casing for later TTS. Do not generate display_text, subtitle timing, audio, or voice choices.
 
