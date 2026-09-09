@@ -2842,13 +2842,19 @@ def test_visual_repair_ending_canonicalization_is_content_preserving():
     assert normalized["ending_kind"] == "consequence"
     assert provenance == {"from": "open_question", "to": "consequence", "version": "visual-repair-ending-v1"}
 
-def test_visual_repair_ending_canonicalization_promotes_grounded_question():
+def test_visual_repair_ending_canonicalization_does_not_revive_disallowed_open_question():
     module = _module()
     passages = [{"text": "What happens after this visible change?"}]
     outline = {"story_spine": {"unresolved_question": "What happens next?"}, "ending_kind": "consequence"}
     normalized, provenance = module._canonicalize_visual_repair_ending(outline, passages)
-    assert normalized["ending_kind"] == "open_question"
-    assert provenance["to"] == "open_question"
+    assert normalized["ending_kind"] == "consequence"
+    assert provenance is None
+
+    feedback = module._visual_narrative_repair_retry_feedback(
+        "cloud.narrative_not_grounded", failed_field="ending_kind"
+    )
+    assert "cliffhanger or consequence" in feedback
+    assert "open_question is not allowed" in feedback
 
 def test_visual_repair_ending_canonicalization_follows_grounded_final_punctuation():
     module = _module()

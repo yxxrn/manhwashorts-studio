@@ -2664,7 +2664,15 @@ def _narration_retry_feedback(
             "paraphrase the same grounded meaning in fresh spoken prose; preserve every claim ID and evidence panel ID, "
             "but do not quote or closely mirror source dialogue/OCR phrasing and do not add facts"
         )
+    allowed_endings = tuple(narrative_identity.SHARP_FRIEND_V1.allowed_ending_kinds)
+    allowed_text = " or ".join(allowed_endings)
     if "open_question ending must be evidence-grounded and end with ?" in value:
+        if "open_question" not in allowed_endings:
+            return (
+                f"open_question is not allowed by the active narrative profile; use {allowed_text}, "
+                "rewrite the final passage as a declarative grounded consequence or cliffhanger, "
+                "and do not end it with a question mark"
+            )
         return (
             "use open_question only when the final passage is an evidence-grounded question; "
             "otherwise choose consequence or cliffhanger without a question mark"
@@ -2676,8 +2684,8 @@ def _narration_retry_feedback(
     ):
         return (
             "return narrative_outline with the exact keys story_spine and ending_kind; set "
-            "ending_kind to cliffhanger, consequence, or open_question, and make the final "
-            "passage punctuation agree with that choice"
+            f"ending_kind to {allowed_text}; open_question is not allowed by the active profile. "
+            "Make the final passage declarative and make its punctuation agree with that choice"
         )
     if "cloud.narrative_qc_blocked" in value:
         markers = [str(item).strip() for item in (anti_slop_markers or ()) if str(item).strip()]
@@ -2891,7 +2899,13 @@ def _canonicalize_visual_repair_ending(
     current = str(normalized.get("ending_kind", "")).strip()
     if not final_text or not current:
         return normalized, None
-    target = "open_question" if final_text.endswith("?") else ("consequence" if current == "open_question" else current)
+    allowed_endings = set(narrative_identity.SHARP_FRIEND_V1.allowed_ending_kinds)
+    if final_text.endswith("?"):
+        target = "open_question" if "open_question" in allowed_endings else current
+    elif current not in allowed_endings or current == "open_question":
+        target = "consequence" if "consequence" in allowed_endings else next(iter(allowed_endings), current)
+    else:
+        target = current
     question_repaired = not str(story_spine.get("unresolved_question", "")).strip()
     if question_repaired:
         story_spine["unresolved_question"] = final_text if final_text.endswith("?") else "What follows?"
@@ -3143,10 +3157,11 @@ def _visual_narrative_repair_retry_feedback(
             "existing claim IDs, and non-empty feasible evidence_panel_ids"
         )
     if value == "cloud.narrative_not_grounded" and failed_field == "ending_kind":
+        allowed_endings = tuple(narrative_identity.SHARP_FRIEND_V1.allowed_ending_kinds)
         return (
-            "use open_question only when the final passage is an evidence-grounded "
-            "question ending with ?; otherwise choose consequence or cliffhanger and "
-            "do not end the final passage with a question mark"
+            f"use only {' or '.join(allowed_endings)} for the active narrative profile; "
+            "open_question is not allowed. Rewrite the final passage as a declarative grounded "
+            "consequence or cliffhanger and do not end it with a question mark"
         )
     if value == "cloud.narrative_repair_micro_compaction_unavailable":
         return (

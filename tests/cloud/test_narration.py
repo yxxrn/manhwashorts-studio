@@ -283,7 +283,14 @@ def test_narration_retry_feedback_requires_supported_ending_contract():
     )
 
     assert "exact keys story_spine and ending_kind" in feedback
-    assert "cliffhanger, consequence, or open_question" in feedback
+    assert "cliffhanger or consequence" in feedback
+    assert "open_question is not allowed" in feedback
+
+    rejected = module._narration_retry_feedback(
+        "ending_kind is not supported by the narrative profile"
+    )
+    assert "cliffhanger or consequence" in rejected
+    assert "open_question is not allowed" in rejected
 
 def test_narration_retry_feedback_paraphrases_source_dialogue_copy():
     module = _module()
@@ -921,9 +928,9 @@ def test_visual_repair_ending_canonicalization_preserves_passage_text():
         "ending_kind": "consequence",
     }
     normalized, provenance = module._canonicalize_visual_repair_ending(outline, passages)
-    assert normalized["ending_kind"] == "open_question"
+    assert normalized["ending_kind"] == "consequence"
     assert passages[0]["text"] == "What could the visible change mean?"
-    assert provenance["to"] == "open_question"
+    assert provenance is None
 
 
 
