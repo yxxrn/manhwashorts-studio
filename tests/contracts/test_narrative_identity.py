@@ -84,18 +84,14 @@ def test_profile_is_frozen_and_has_exact_sharp_friend_identity_fields():
     module = _identity_module()
     profile = getattr(module, "SHARP_FRIEND_V1", None)
     assert profile.profile_id == "sharp_friend_v1"
-    assert profile.profile_version == "1.2.2"
+    assert profile.profile_version == "1.2.3"
     assert profile.language == "en-US"
     assert profile.identity == (
         "a clever, friendly, perceptive friend under controlled tension"
     )
     assert (profile.target_word_min, profile.target_word_max) == (115, 125)
     assert (profile.passage_min, profile.passage_max) == (4, 6)
-    assert profile.allowed_ending_kinds == (
-        "cliffhanger",
-        "consequence",
-        "open_question",
-    )
+    assert profile.allowed_ending_kinds == ("cliffhanger", "consequence")
     assert profile.prompt_version == "vision-first-story-analyzer-v3"
     assert profile.prompt_filename == "vision_first_story_analyzer_v3.txt"
     assert len(profile.contract_sha256) == 64
@@ -126,7 +122,7 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     assert "in the final passage, state the concrete new event and its immediate consequence" in text.lower()
     assert (
         module.get_narrative_identity("sharp_friend_v1").contract_sha256
-        == "ac9ddb908d2af0060c933955771ada21327b45a582154388497456077e6d074b"
+        == "dadbe00f8ce4ebd29b4c46938d55f3b032b7a5bf93081d901528cc6ead868f7d"
     )
 
 
@@ -350,7 +346,7 @@ def test_v3_accepts_four_or_six_grounded_passages(count):
     _validate_v3(chapter)
 
 
-def test_v3_accepts_grounded_open_question_and_non_question_consequence():
+def test_v3_sharp_friend_rejects_open_question_and_accepts_consequence():
     consequence = _v3_chapter(
         chapter_prefix="consequence",
         passages=_passages("consequence", 4, "consequence"),
@@ -364,7 +360,8 @@ def test_v3_accepts_grounded_open_question_and_non_question_consequence():
         passages=_passages("question", 6, "open_question"),
         ending_kind="open_question",
     )
-    _validate_v3(question)
+    with pytest.raises(Exception, match="ending_kind is not supported by the narrative profile"):
+        _validate_v3(question)
     assert question["script_passages"][-1]["text"].rstrip().endswith("?")
 
 
