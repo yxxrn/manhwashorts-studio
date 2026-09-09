@@ -113,7 +113,7 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     module = _identity_module()
     version, digest, text = module.load_narrative_instruction("sharp_friend_v1")
     assert version == "vision-first-story-analyzer-v3"
-    assert digest == "38d39e5ebc9e0914b95a5a325f39bb3b4ed78dc6811012bd148a5f3e3a672ee4"
+    assert digest == "989d36352a2be01982449bebd622b889fd34f48475f7190efd0b6e7e62ee963d"
     assert digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert "\r" not in text
     assert "observe every ordered panel" in text.lower()
@@ -127,7 +127,7 @@ def test_loader_returns_lf_prompt_and_matches_profile_contract():
     assert "in the final passage, state the concrete new event and its immediate consequence" in text.lower()
     assert (
         module.get_narrative_identity("sharp_friend_v1").contract_sha256
-        == "5aa78a00c8a0ad96531f313bb3d5b28ab205446ca40921bb02d1e1bda6869f3b"
+        == "94869890da2ead9906458061906134dab5a0376445202ebe4242a5865541942d"
     )
 
 
@@ -583,3 +583,17 @@ def test_house_voice_resource_is_versioned_and_loaded_into_identity():
     assert "Tell the story, never narrate the artwork." in voice
     _, _, combined = module.load_narrative_instruction("sharp_friend_v1")
     assert voice in combined
+
+
+def test_sharp_friend_house_voice_requires_event_specificity_over_repeated_or_abstract_filler():
+    module = _identity_module()
+    prompt = module._load_house_voice(module.SHARP_FRIEND_V1).lower()
+    required = (
+        "do not repeat the same idea with multiple adverbs or near-synonyms",
+        "replace abstract planning, control, confidence, or intensity language with the concrete action whenever the evidence supports that action.",
+        "every sentence must earn its place by adding a grounded event, decision, consequence, reveal, contradiction, or unresolved pressure",
+        "do not pad a passage to reach the word target",
+    )
+    for fragment in required:
+        assert fragment in prompt, fragment
+    assert "carefully plans his next move using great care and precision" not in prompt
