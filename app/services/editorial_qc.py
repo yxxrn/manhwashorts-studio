@@ -120,6 +120,9 @@ _NARRATIVE_HYPE_MARKERS = (
     "epic battle",
     "unstoppable attack",
     "insane power",
+    "legendary ascent",
+    "high-stakes confrontation",
+    "explosive scene",
 )
 _NARRATIVE_CTA_MARKERS = (
     "like this video",

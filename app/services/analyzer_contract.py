@@ -939,6 +939,9 @@ _V3_GENERIC_HYPE = (
     "epic battle",
     "unstoppable attack",
     "insane power",
+    "legendary ascent",
+    "high-stakes confrontation",
+    "explosive scene",
 )
 
 

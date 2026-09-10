@@ -280,3 +280,17 @@ standalone plans remain visibly marked HISTORICAL. See `docs/history/README.md` 
 - Run 18 completed analysis on attempt 1 but initially failed closed because Orion at native speed 1.15 produced narration too short to enter the 50-60s window without exceeding the existing `0.80-1.25` post-synthesis tempo safety range. The gate was not widened. HTTP TTS now has one bounded short-audio recovery: resynthesize the same text/provider/model/voice once at native speed 1.0, then re-run the unchanged tempo gate. Live Run 18 recovery recorded requested speed 1.15, effective speed 1.0, safe final tempo 0.922487, one immutable Orion voice-profile hash, and final narration about 50.67s.
 - Final Run 18 artifact is `data/output/bcf8ab59e2f34ecb8b485ba093edc574/final.mp4`, 50.683s, SHA-256 `686b332f25b4ea0212983cb63f724b6d54383167ff06ca033e4aafcf9dfd592f`; final QC and thumbnail QC pass, Caacupe One watermark contract v3 is present with `@Rurushortss`, and publication count is zero.
 - Durability conclusion: Runs 14-18 exercised deterministic synthesis recovery, bounded transient vision retry, cache reuse, fail-closed TTS duration handling, native-speed TTS recovery, and strict sequential run gating. The sequence finished with five PASS states and no skipped failed run; newly discovered failure classes were fixed before continuing.
+
+## 2026-09-09 narrative improvement checkpoint (run-estate-061-065)
+
+- Manual editorial review for `run-estate-061-065-review` revised all five
+  provider passages for retention and house-voice compliance while preserving
+  claim/evidence mapping; approved as a trusted-agent review with an explicit
+  delegated reason, then production completed with PASS (50.63s final).
+- Durable provider-side improvement #1: extended the shared generic-hype
+  marker families (`_V3_GENERIC_HYPE`, `_NARRATIVE_HYPE_MARKERS`) with
+  `legendary ascent`, `high-stakes confrontation`, and `explosive scene` so
+  these empty-intensity phrases now fail closed at synthesis admission instead
+  of reaching manual review. Narrative contract tests pass; the single failing
+  test in `tests/production/test_manual_narrative_review.py` fails identically
+  without this change (pre-existing, ending-kind fixture drift).
