@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import settings
+
+
+def _resolve_path(value: str) -> Path:
+    """Expand $VARS and ~ before building a Path.
+
+    `.env` may hold '$HOME/...' (unexpanded by shell when single-quoted); a Path with a literal $HOME silently points at a fresh, signed-out profile.
+    """
+    return Path(os.path.expandvars(os.path.expanduser(str(value))))
 
 _ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _UNSET = object()
@@ -26,8 +35,8 @@ class YouTubeBrowserAccountRegistry:
     """Keep account labels separate while Chrome auth remains in each profile."""
 
     def __init__(self) -> None:
-        self.base_dir = Path(settings.youtube_browser_accounts_dir).expanduser()
-        self.legacy_profile_dir = Path(settings.youtube_browser_profile_dir).expanduser()
+        self.base_dir = _resolve_path(settings.youtube_browser_accounts_dir)
+        self.legacy_profile_dir = _resolve_path(settings.youtube_browser_profile_dir)
         self.registry_path = self.base_dir / "accounts.json"
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.base_dir.chmod(0o700)
@@ -80,7 +89,7 @@ class YouTubeBrowserAccountRegistry:
         return YouTubeBrowserAccount(
             account_id=str(record["account_id"]),
             label=str(record.get("label") or record["account_id"]),
-            profile_dir=Path(str(record["profile_dir"])).expanduser(),
+            profile_dir=_resolve_path(record["profile_dir"]),
             trust_channel_defaults=(
                 record.get("trust_channel_defaults")
                 if isinstance(record.get("trust_channel_defaults"), bool)
