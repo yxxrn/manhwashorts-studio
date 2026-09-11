@@ -2431,6 +2431,20 @@ def _prepare_exact_reference_frame(
             raise RenderError("visual.panel_lineage_unavailable: blur-fit selected ROI is stale", code="visual.panel_lineage_unavailable")
         return _prepare_blur_fit_reference_frame(panel, dest, width, height)
     persisted_telemetry = _reference_telemetry_mapping(scene.framing_telemetry)
+    # Run-scoped fix (Roxana B2, operator-approved): a plan-accepted
+    # coherence rescue tag must not be silently DEMOTED by the render-time
+    # re-measure. Demotion happens when candidate_is_feasible overwrites
+    # fallback_reason with "review.low_source_resolution" for the same
+    # persisted crop, and the later blank gate then applies the strict 8%
+    # cap to a crop the review already admitted under the bounded rescue
+    # contract (blank <= 0.17, base_zoom <= 1.35). We keep the original
+    # rescue tag only when the persisted snapshot itself satisfies every
+    # rescue bound; all other gates (protected coverage, balloon overlap,
+    # zoom caps) are still enforced below unchanged.
+    persisted_rescue = (
+        persisted_telemetry.get("fallback_reason")
+        == reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+    )
     review_blank_threshold = reference_profile.review_frame_edge_blank_threshold(
         persisted_telemetry
     )
@@ -2470,6 +2484,25 @@ def _prepare_exact_reference_frame(
             code="visual.panel_lineage_unavailable",
         ) from exc
     if rescue_blank and feasible and isinstance(telemetry, framing_analysis.FramingTelemetry):
+        telemetry = replace(
+            telemetry,
+            fallback_reason=reference_profile.REVIEW_COHERENCE_RESCUE_REASON,
+        )
+    elif (
+        persisted_rescue
+        and feasible
+        and isinstance(telemetry, framing_analysis.FramingTelemetry)
+        and telemetry.fallback_reason != reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+        and float(telemetry.edge_connected_blank_fraction)
+        <= reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION + 1e-9
+        and float(telemetry.base_zoom)
+        <= reference_profile.REVIEW_COHERENCE_RESCUE_MAX_BASE_ZOOM + 1e-9
+        and float(persisted_telemetry.get("base_zoom") or 0.0)
+        <= reference_profile.REVIEW_COHERENCE_RESCUE_MAX_BASE_ZOOM + 1e-9
+    ):
+        # Preserve the plan-accepted rescue identity (see persisted_rescue
+        # note above): re-tag only when the re-measured crop still meets
+        # every rescue bound. No other telemetry field changes.
         telemetry = replace(
             telemetry,
             fallback_reason=reference_profile.REVIEW_COHERENCE_RESCUE_REASON,
@@ -2562,6 +2595,27 @@ def _prepare_exact_reference_frame(
     updated_telemetry = dict(persisted_telemetry)
     for field_name in _REFERENCE_TELEMETRY_FIELDS:
         updated_telemetry[field_name] = refined_map[field_name]
+    # Run-scoped fix (Roxana B2, operator-approved): the pixel-blank refine
+    # re-runs candidate_is_feasible WITHOUT the persisted rescue identity,
+    # so a rescued plan crop can come back tagged
+    # review.low_source_resolution again. Re-apply the plan-accepted rescue
+    # tag when the refined crop still satisfies every rescue bound (blank
+    # <= 0.17, zoom <= 1.35 on both the refined measurement and the
+    # persisted snapshot). All other gates stay untouched.
+    if (
+        persisted_rescue
+        and str(updated_telemetry.get("fallback_reason"))
+        != reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+        and float(updated_telemetry.get("edge_connected_blank_fraction") or 0.0)
+        <= reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION + 1e-9
+        and float(updated_telemetry.get("base_zoom") or 0.0)
+        <= reference_profile.REVIEW_COHERENCE_RESCUE_MAX_BASE_ZOOM + 1e-9
+        and float(persisted_telemetry.get("base_zoom") or 0.0)
+        <= reference_profile.REVIEW_COHERENCE_RESCUE_MAX_BASE_ZOOM + 1e-9
+    ):
+        updated_telemetry["fallback_reason"] = (
+            reference_profile.REVIEW_COHERENCE_RESCUE_REASON
+        )
     updated_telemetry["selected_roi"] = refined_selected
     updated_telemetry["pixel_blank_refinement"] = refinement
     scene.selected_roi = refined_selected
