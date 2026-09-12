@@ -1630,7 +1630,16 @@ def _feasible_roi_capacity(
     section: str = "",
     beat: str = "",
 ) -> int:
-    """Count exact feasible ROI alternatives for review cadence allocation."""
+    """Count exact feasible ROI alternatives for review cadence allocation.
+
+    A2 (run-scoped, operator-approved): ROIs the plan-time rescue contract
+    would accept (blank <= 0.17 with zoom <= 1.35, all other gates enforced)
+    count toward capacity even when they fail the strict 8% target, matching
+    what _review_framing_candidate_is_feasible admits when the planner later
+    allocates them. This keeps the white-heavy source chapters (Roxana) from
+    under-reporting capacity; no gate value changes.
+    """
+    from dataclasses import replace as _dc_replace
     source_manifest = candidate.source_upscale_manifest
     allow_low_resolution = bool(
         allow_source_resolution_warning
@@ -1659,6 +1668,37 @@ def _feasible_roi_capacity(
                 standard_blank_target=(reference_profile.REVIEW_MAX_FRAME_EDGE_BLANK_FRACTION if review_aggressive_crop else profile.framing_blank_target_fraction),
                 allow_conservative_full_panel=allow_conservative_full_panel, **feasibility_kwargs,
             )
+            # A2 (run-scoped, operator-approved): the plan-time rescue path in
+            # _review_framing_candidate_is_feasible only runs under
+            # review_aggressive_crop, so with aggressive counting disabled the
+            # counter under-counts ROIs the planner would rescue (blank <=
+            # 0.17, zoom <= 1.35). Probe the rescue contract explicitly so
+            # capacity matches what planning can actually admit. Every other
+            # gate (balloon, protected, zoom, editorial) stays authoritative.
+            if (
+                not accepted
+                and getattr(_telemetry, "rejection_code", None) == "visual.blank_infeasible"
+            ):
+                rescued, rescue_telemetry = framing_analysis.candidate_is_feasible(
+                    roi.crop_box, ready, candidate.border_mask, candidate.panel_size,
+                    (profile.final_width, profile.final_height),
+                    blank_target_fraction=(
+                        reference_profile.REVIEW_COHERENCE_RESCUE_MAX_FRAME_EDGE_BLANK_FRACTION
+                    ),
+                    allow_conservative_full_panel=allow_conservative_full_panel,
+                    review_aggressive_crop=review_aggressive_crop,
+                    **feasibility_kwargs,
+                )
+                if (
+                    rescued
+                    and float(getattr(rescue_telemetry, "base_zoom", 999.0))
+                    <= reference_profile.REVIEW_COHERENCE_RESCUE_MAX_BASE_ZOOM + 1e-9
+                ):
+                    accepted = True
+                    _telemetry = _dc_replace(
+                        rescue_telemetry,
+                        fallback_reason=reference_profile.REVIEW_COHERENCE_RESCUE_REASON,
+                    )
         if accepted:
             if review_aggressive_crop:
                 metrics = _review_crop_editorial_metrics(
